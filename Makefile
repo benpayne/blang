@@ -5,7 +5,7 @@ CXXFLAGS=${CFLAGS}
 YFLAGS=-d
 LDFLAGS=-g $(shell llvm-config --ldflags --libs core ) -lfl -ly 
 
-all : bcc llvm_test
+all : bcc
 
 parser.cpp lexer.cpp : parser.yy lexer.l
 	bison -d -o parser parser.yy
@@ -16,8 +16,8 @@ parser.cpp lexer.cpp : parser.yy lexer.l
 bcc : lexer.o parser.o parse_helpers.o
 	g++ $(LDFLAGS) lexer.o parser.o parse_helpers.o -o $@
 
-llvm_test : llvm_test.cpp
-	g++ $(CXXFLAGS) $(LDFLAGS) llvm_test.cpp -o $@
+#llvm_test : llvm_test.cpp
+#	g++ $(CXXFLAGS) $(LDFLAGS) llvm_test.cpp -o $@
 
 clean:
 	rm -f parser.h lexer.cpp parser.cpp lexer.o parser.o bcc llvm_test

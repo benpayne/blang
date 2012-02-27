@@ -1,6 +1,7 @@
 
 #include "llvm/Module.h"
 #include "llvm/Function.h"
+#include "llvm/DerivedTypes.h"
 #include "llvm/LLVMContext.h"
 #include "llvm/PassManager.h"
 #include "llvm/Analysis/Verifier.h"
@@ -56,7 +57,7 @@ void init( const char *filename )
 
 	gMod = new Module( filename, gContext );
 	
-	vector<const Type *> params;
+	vector<Type *> params;
 	params.push_back( PointerType::get( Type::getInt8Ty( gContext ), 0 ) );	
 	FunctionType *ft = FunctionType::get( Type::getInt32Ty( gContext ), params, true );
 	gMod->getOrInsertFunction( "printf", ft );
@@ -177,7 +178,7 @@ void addFunctionParam( const char *type, const char *name )
 
 void endFunctionDef()
 {
-	vector<const Type *> params;
+	vector<Type *> params;
 	printf( "function %s\n", gFunctionParams[ 0 ]->getName().c_str() );
 	for ( unsigned i = 1; i < gFunctionParams.size(); i++ )
 	{
@@ -242,7 +243,7 @@ llvm::Value *endFunctionCall( const char *name )
 		exit( 1 );
 	}
 	
-	Value* recur_1 = gBuilder->CreateCall( func, gArgs.begin(), gArgs.end() );
+	Value* recur_1 = gBuilder->CreateCall( func, gArgs );
 
 	return recur_1;
 }
@@ -260,7 +261,7 @@ llvm::Value *getArrayLookupValue( llvm::Value *array, llvm::Value *index )
 
 llvm::Value *getConstantNumberValue( ConstData *data )
 {
-	const Type *t = NULL;
+	Type *t = NULL;
 	
 	printf ( "Constant Number %d(%d), width %d, signed %d\n", data->value, data->uvalue, data->width, data->_signed );
 	
@@ -309,9 +310,10 @@ llvm::Value *getBinaryExpression( const char *op, llvm::Value *l, llvm::Value *r
 {
 	Value *v = NULL;
 	
-	printf( "Binary Op \"%s\" l type %s, r type %s\n", op, 
-		l->getType()->getDescription().c_str(), 
-		r->getType()->getDescription().c_str() );
+	printf( "Binary Op \"%s\" \n", op ); 
+	//printf( "Binary Op \"%s\" l type %s, r type %s\n", op, 
+	//	l->getType()->getDescription().c_str(), 
+	//	r->getType()->getDescription().c_str() );
 	
 	if ( l->getType()->getTypeID() == Type::PointerTyID )
 	{
@@ -421,9 +423,10 @@ llvm::Value *getAssignExpression( const char *op, llvm::Value *l, llvm::Value *r
 {
 	Value *v = NULL;
 	
-	printf( "Assign Op \"%s\" l type %s, r type %s\n", op, 
-		l->getType()->getDescription().c_str(), 
-		r->getType()->getDescription().c_str() );
+	printf( "Assign Op \"%s\" \n", op ); 
+	//printf( "Assign Op \"%s\" l type %s, r type %s\n", op, 
+	//	l->getType()->getDescription().c_str(), 
+	//	r->getType()->getDescription().c_str() );
 	
 	if ( l->getType()->getTypeID() != Type::PointerTyID )
 	{
@@ -436,7 +439,7 @@ llvm::Value *getAssignExpression( const char *op, llvm::Value *l, llvm::Value *r
 	}
 
 	PointerType *lPrt = (PointerType*)l->getType();
-	const IntegerType *lType = (IntegerType*)lPrt->getElementType();
+	IntegerType *lType = (IntegerType*)lPrt->getElementType();
 	
 	if ( ((IntegerType*)r->getType())->getBitWidth() != 
 			lType->getBitWidth() )
