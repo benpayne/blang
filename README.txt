@@ -7,4 +7,4 @@ Goals
   support large projects.  Formalization is optional.
 6. Compiler should have options to enforce certian design patterns.
 7. Should be able to synthsis routines into FPGA's
-8. 
+8. Networking and MP should be part of standard library

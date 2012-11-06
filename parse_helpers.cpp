@@ -14,9 +14,9 @@ using namespace std;
 
 LLVMContext gContext;
 
+#include "parse_helpers.h"
 #include "Symbol.h"
 #include "Scope.h"
-#include "parse_helpers.h"
 #include "assert.h"
 
 using namespace BLang;
@@ -33,7 +33,7 @@ extern int lineno;
 
 void init( const char *filename )
 {
-	gGlobalScope = new Scope( SCOPE_GLOBAL );
+	gGlobalScope = new Scope( Scope::SCOPE_GLOBAL );
 	Symbol *_bool = Symbol::CreateType( Type::getInt1Ty( gContext ), "bool" );
 	Symbol *_char = Symbol::CreateType( Type::getInt8Ty( gContext ), "char" );
 	Symbol *_short = Symbol::CreateType( Type::getInt16Ty( gContext ), "short" );
@@ -136,9 +136,9 @@ void addType( const char *name )
 
 }
 
-void pushScope( int type, const char *name )
+void pushScope( Scope::ScopeType type, const char *name )
 {
-	printf( "Push Scope %d %s\n", type, name ); 
+	printf( "Push Scope %d %s\n", (int)type, name ); 
 	Scope *s = new Scope( type );
 	s->setParentScope( gCurrentScope );
 	gCurrentScope = s;
@@ -154,7 +154,7 @@ void popScope()
 
 void startFunction( const char *ret_type, const char *name )
 {
-	pushScope( SCOPE_FUNCTION, name );
+	pushScope( Scope::SCOPE_FUNCTION, name );
 	
 	Symbol *s = lookupType( ret_type );
 	
@@ -263,7 +263,7 @@ llvm::Value *getConstantNumberValue( ConstData *data )
 {
 	Type *t = NULL;
 	
-	printf ( "Constant Number %d(%d), width %d, signed %d\n", data->value, data->uvalue, data->width, data->_signed );
+	printf ( "Constant Number %lld(%llu), width %d, signed %d\n", data->value, data->uvalue, data->width, data->_signed );
 	
 	switch( data->width )
 	{
@@ -478,7 +478,7 @@ void startIf( llvm::Value *expression )
 {
 	printf( "Starting if with %p\n", expression );
 	gIfValue = expression;
-	pushScope( SCOPE_IF, NULL );
+	pushScope( Scope::SCOPE_IF, NULL );
 	gIfBlock = gCurrentScope->getBasicBlock();
 }
 
@@ -492,7 +492,7 @@ void startElse( llvm::Value *expression )
 {
 	printf( "Starting else with %p\n", expression );
 	popScope();
-	pushScope( SCOPE_IF, NULL );
+	pushScope( Scope::SCOPE_IF, NULL );
 	gBuilder->CreateCondBr( gIfValue, gIfBlock, gCurrentScope->getBasicBlock() );
 }
 

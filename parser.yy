@@ -112,7 +112,7 @@ func_block: func_start_block statements end_block;
 func_start_block: '{'
 	;
 	
-start_block: '{'		{ pushScope( SCOPE_ANONYMOUS, "" ); }
+start_block: '{'		{ pushScope( BLang::Scope::SCOPE_ANONYMOUS, "" ); }
 	;
 	
 end_block: '}'			{ popScope(); }

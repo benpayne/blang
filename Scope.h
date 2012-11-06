@@ -3,17 +3,27 @@
 
 #include <string>
 #include <vector>
-#include "parse_helpers.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Function.h"
+#include "Symbol.h"
 
 namespace BLang
 {
 	class Scope
 	{
 	public:		
-		Scope( int type = SCOPE_ANONYMOUS ) : mType( type ), mParentScope( NULL ), mBlock( NULL ), mFunc( NULL ) {}
-		Scope( int type, std::string &name ) : mType( type ), mName( name ), mParentScope( NULL ), mBlock( NULL ), mFunc( NULL ) {}
+		enum ScopeType {
+			SCOPE_GLOBAL,
+			SCOPE_MODULE,
+			SCOPE_ANONYMOUS,
+			SCOPE_NAMESPACE,
+			SCOPE_CLASS,
+			SCOPE_FUNCTION,
+			SCOPE_IF,
+		};
+		
+		Scope( ScopeType type = SCOPE_ANONYMOUS ) : mType( type ), mParentScope( NULL ), mBlock( NULL ), mFunc( NULL ) {}
+		Scope( ScopeType type, std::string &name ) : mType( type ), mName( name ), mParentScope( NULL ), mBlock( NULL ), mFunc( NULL ) {}
 		
 		virtual ~Scope() 
 		{
@@ -101,7 +111,7 @@ namespace BLang
 			if ( f == NULL )
 				printf( "Failed to get Function\n" );
 			
-			mBlock = llvm::BasicBlock::Create( gContext, name, getFunction() );
+			//mBlock = llvm::BasicBlock::Create( gContext, name, getFunction() );
 		}
 
 		void setFunction( llvm::Function *func )
@@ -110,7 +120,7 @@ namespace BLang
 		}
 		
 	private:
-		int mType;
+		ScopeType mType;
 		std::string mName;
 		std::vector<Symbol *> mTypes;
 		std::vector<Symbol *> mSymbols;

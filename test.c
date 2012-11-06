@@ -13,30 +13,30 @@ void test_func( int x, int y )
 int main()
 {
 	// this is a comment
-	int i = 5;
+	int intFive = 5;
 	
-	char c = '\0';
+	char _c = '\0';
 	//c = 0x20;
-	c = 'a';
+	_c = 'a';
 	
 	char a = 0xf;
 	int b = 4, c;
 	
-	c = a + b;
-	c = a << b;
+	_c = a + b;
+	_c = a << b;
 	
 	// block 0a
-	if ( c )
+	if ( _c )
 		printf( "a" );
 
 	// block 0b
-	if ( c )
+	if ( _c )
 	{
 		printf( "a" );
 	}
 
 	// block 0c
-	if ( c == 0 )
+	if ( _c == 0 )
 	{
 		printf( "a" );
 	}
@@ -44,7 +44,7 @@ int main()
 		printf( "b" );
 		
 	// block 1
-	if ( c )
+	if ( _c )
 	{
 		if ( a > 0 )
 			printf( "a" );
@@ -53,17 +53,17 @@ int main()
 	}
 	
 	// block 2
-	if ( c )
+	if ( _c )
 		if ( a < 0 )
 			printf( "a" );
 		else
 			printf( "b" );
 
-	test_func( b, c );
+	test_func( b, _c );
 	
 	string s = "help";
 	
-	printf( "Hello World %d\n", i );
+	printf( "Hello World %d\n", intFive );
 	
 	
 	return i;

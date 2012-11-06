@@ -1,4 +1,5 @@
-#include "Lexer.h"
+#include "FileLexer.h"
+#include <iostream>
 
 Lexer::Lexer( LexerReader *reader ) : mReader( reader )
 {
@@ -6,9 +7,34 @@ Lexer::Lexer( LexerReader *reader ) : mReader( reader )
 	charPos = 0;
 }
 
-std::string Lexer::getSymbolText()
+const std::string &Lexer::getSymbolText()
 {
 	return mMatchString;
+}
+
+bool Lexer::isAlpha( char c )
+{
+	if (( mReader->peekChar() >= 'a' && mReader->peekChar() <= 'z' ) ||
+		( mReader->peekChar() >= 'A' && mReader->peekChar() <= 'Z' ) ||
+		( mReader->peekChar() >= '_' ) )
+	{
+		return true;
+	}
+	
+	return false;
+}
+
+bool Lexer::isAlphaNum( char c )
+{
+	if (( mReader->peekChar() >= 'a' && mReader->peekChar() <= 'z' ) ||
+		( mReader->peekChar() >= 'A' && mReader->peekChar() <= 'Z' ) ||
+		( mReader->peekChar() >= '0' && mReader->peekChar() <= '9' ) ||
+		( mReader->peekChar() >= '_' ) )
+	{
+		return true;
+	}
+	
+	return false;
 }
 
 bool Lexer::match( const char *match_str )
@@ -17,11 +43,33 @@ bool Lexer::match( const char *match_str )
 	
 	for ( int i = 0; i < len; i++ )
 	{
-		if ( mReader[ i ] != match_str[ i ] )
+		if ( (*mReader)[ i ] != match_str[ i ] )
 			return false;
 	}
 
 	mMatchString = match_str;
+	mReader->popChar( len );
+	return true;
+}
+
+bool Lexer::matchKeyword( const char *match_str )
+{
+	int len = strlen( match_str );
+	int i = 0;
+	
+	for ( ; i < len; i++ )
+	{
+		if ( (*mReader)[ i ] != match_str[ i ] )
+			return false;
+	}
+
+	char endChar = (*mReader)[ i ];
+	
+	if ( isAlphaNum( endChar ) )
+		return false;
+	
+	mMatchString = match_str;
+	mReader->popChar( len );
 	return true;
 }
 
@@ -31,10 +79,7 @@ void Lexer::readSymbol()
 
 	while ( !mReader->isEOF() )
 	{
-		if (( mReader->peekChar() >= 'a' && mReader->peekChar() <= 'z' ) ||
-			( mReader->peekChar() >= 'A' && mReader->peekChar() <= 'Z' ) ||
-			( mReader->peekChar() >= '0' && mReader->peekChar() <= '9' ) ||
-			( mReader->peekChar() >= '_' ) )
+		if ( isAlphaNum( mReader->peekChar() ) )
 		{
 			mMatchString.append( 1, mReader->popChar() );
 		}
@@ -45,16 +90,17 @@ void Lexer::readSymbol()
 
 void Lexer::readStringConst()
 {
+	// pop the " char
 	mReader->popChar();
 	
 	while ( !mReader->isEOF() )
 	{
 		if ( mReader->peekChar() == '\n' )
-			printf( "Multi-line string constant on line %d", lineno );
+			printf( "Multi-line string constant on line %d\n", lineno );
 		
 		if ( mReader->peekChar() == '\\' )
 		{
-			switch ( mReader[ 1 ] )
+			switch ( (*mReader)[ 1 ] )
 			{
 				case 'a': // 7
 				case 'b': // 8
@@ -65,7 +111,7 @@ void Lexer::readStringConst()
 				case 'r': // 13
 				case '\"':
 				case '\'':
-					mMatchString.append( 1, mReader[ 1 ] );
+					mMatchString.append( 1, (*mReader)[ 1 ] );
 					mReader->popChar( 2 );
 					break;
 				case '0':
@@ -79,33 +125,92 @@ void Lexer::readStringConst()
 			mMatchString.append( 1, mReader->popChar() );
 		}
 		else
+		{
+			mReader->popChar();
 			return;
+		}
 	}
 }
 
 void Lexer::readCharacterConst()
 {
+	// pop the ' char
+	mReader->popChar();
+	
 	while ( !mReader->isEOF() )
 	{
 		if ( mReader->peekChar() == '\n' )
-			printf( "Multi-line string constant on line %d", lineno );
-		
+			printf( "Multi-line char constant on line %d\n", lineno );
+
+		// could improve the proper grammmer for the constant value.		
 		if ( mReader->peekChar() != '\'' )
 		{
 			mMatchString.append( 1, mReader->popChar() );
 		}
 		else
+		{
+			mReader->popChar();
 			return;
+		}
 	}
 }
 
 void Lexer::readConst()
 {
-
+	bool hex = false;
+	bool oct = false;
+	bool valid_char = true;
+	
+	if ( mReader->peekChar() == '0' )
+	{
+		if ( (*mReader)[ 1 ] == 'x' or (*mReader)[ 1 ] == 'X' )
+		{
+			hex = true;
+			mReader->popChar( 2 );
+			mMatchString = "0x";
+		}
+		else
+		{
+			oct = true;
+			mReader->popChar( 1 );
+			mMatchString = "0";
+		}
+	}
+	
+	while ( !mReader->isEOF() and valid_char )
+	{
+		char c = mReader->peekChar();
+	
+		if ( hex and ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) )
+			mMatchString.append( 1, mReader->popChar() );
+		else if ( oct and (c >= '0' and c <= '7') )
+			mMatchString.append( 1, mReader->popChar() );
+		else if ( c >= '0' and c <= '9' )
+			mMatchString.append( 1, mReader->popChar() );
+		else
+			valid_char = false;
+	}
 }
 
 void Lexer::handleComment( bool singleLine )
 {
+	while ( !mReader->isEOF() )
+	{
+		//std::cout << "single " << singleLine << ", char " << mReader->peekChar() << std::endl;
+		if ( !singleLine and match( "*/" ) )
+		{
+			mMatchString.clear();
+			return;
+		}
+		else if ( singleLine and ( mReader->peekChar() == '\n' ) )
+		{
+			mReader->popChar();
+			mMatchString.clear();
+			return;
+		}
+		else
+			mReader->popChar();
+	}
 }
 
 int Lexer::getSymbol()
@@ -114,71 +219,72 @@ int Lexer::getSymbol()
 
 	while ( !mReader->isEOF() )
 	{
+		//std::cout << "Lexer Symbol " << (int)mReader->peekChar() << std::endl;
+		
 		// check for keywords
 		switch ( mReader->peekChar() )
 		{
 			case 'c':
-				if ( match( "char" ) )
+				if ( matchKeyword( "char" ) )
 					return BUILTIN_TYPE;
-				else if ( match( "const" ) )
+				else if ( matchKeyword( "const" ) )
 					return TYPE_MODIFIER;
 				break;
 			case 'd':
-				if ( match( "double" ) )
+				if ( matchKeyword( "double" ) )
 					return BUILTIN_TYPE;
 				break;
 			case 'e':
-				if ( match( "else" ) )
+				if ( matchKeyword( "else" ) )
 					return KEYWORD_ELSE;
-				else if ( match( "extern" ) )
+				else if ( matchKeyword( "extern" ) )
 					return TYPE_MODIFIER;
 				break;
 			case 'f':
-				if ( match( "float" ) )
+				if ( matchKeyword( "float" ) )
 					return BUILTIN_TYPE;
-				else if ( match( "for" ) )
+				else if ( matchKeyword( "for" ) )
 					return KEYWORD_FOR;
 				break;
 			case 'i':
-				if ( match( "int" ) )
+				if ( matchKeyword( "int" ) )
 					return BUILTIN_TYPE;
-				else if ( match( "if" ) )
+				else if ( matchKeyword( "if" ) )
 					return KEYWORD_IF;
 				break;
 			case 'l':
-				if ( match( "long" ) )
+				if ( matchKeyword( "long" ) )
 					return BUILTIN_TYPE;
 				break;
 			case 'r':
-				if ( match( "return" ) )
+				if ( matchKeyword( "return" ) )
 					return BUILTIN_TYPE;
 				break;
 			case 's':
-				if ( match( "string" ) )
+				if ( matchKeyword( "string" ) )
 					return BUILTIN_TYPE;
-				else if ( match( "static" ) )
+				else if ( matchKeyword( "static" ) )
 					return TYPE_MODIFIER;
-				else if ( match( "signed" ) )
+				else if ( matchKeyword( "signed" ) )
 					return TYPE_MODIFIER;
-				else if ( match( "short" ) )
+				else if ( matchKeyword( "short" ) )
 					return BUILTIN_TYPE;
 				break;
 			case 'u':
-				if ( match( "unsigned" ) )
+				if ( matchKeyword( "unsigned" ) )
 					return TYPE_MODIFIER;
 				break;
 			case 'v':
-				if ( match( "void" ) )
+				if ( matchKeyword( "void" ) )
 					return VOID;
 				break;
 			case 'w':
-				if ( match( "while" ) )
-					return BUILTIN_TYPE;
+				if ( matchKeyword( "while" ) )
+					return KEYWORD_WHILE;
 				break;
 		}
 		
-		if ( ( mReader->peekChar() >= 'a' && mReader->peekChar() <= 'z' ) ||
-			( mReader->peekChar() >= 'A' && mReader->peekChar() <= 'Z' ) )
+		if ( isAlpha( mReader->peekChar() ) )
 		{
 			readSymbol();
 			return SYMBOL;
@@ -232,25 +338,22 @@ int Lexer::getSymbol()
 					return mReader->popChar();
 				break;
 			case '<':
-				if ( match( "!=" ) )
-					return EQ;
-				else if ( match( "=" ) )
+				if ( match( "<<" ) )
+					return SHIFT;
+				else if ( match( "<=" ) )
 					return ASSIGN;
+				else
+					return mReader->popChar();
 				break;
 			case '>':
 				if ( match( ">>" ) )
 					return SHIFT;
-				else if ( match( "=" ) )
+				else if ( match( ">=" ) )
 					return ASSIGN;
+				else
+					return mReader->popChar();
 				break;
-	
-			case '/':
-				if ( match( "//" ) )
-					handleComment( true );
-				else if ( match( "/*" ) )
-					handleComment( false );
-				break;
-				
+					
 			case ' ':
 			case '\t':
 				mReader->popChar();
@@ -260,13 +363,24 @@ int Lexer::getSymbol()
 				mReader->popChar();
 				break;
 				
+			case '/':
+				if ( match( "//" ) )
+				{
+					handleComment( true );
+					break;
+				}
+				else if ( match( "/*" ) )
+				{
+					handleComment( false );
+					break;
+				}
+				// drop thur to operations
 			case '-':
 			case '+':
 			case '*':
-			case '/':
 			case '%':
 			case '^':
-				if ( mReader[ 1 ] == '=' )
+				if ( (*mReader)[ 1 ] == '=' )
 				{
 					mMatchString.append( 1, mReader->popChar() );
 					mMatchString.append( 1, mReader->popChar() );
@@ -290,10 +404,12 @@ int Lexer::getSymbol()
 				break;
 			
 			default:
-				printf( "Unknown Charater %c\n", mReader->peekChar() );
+				printf( "Unknown Charater %d\n", mReader->peekChar() );
 				return mReader->popChar();
 				break;
 		}			
 	}
+	
+	return -1;
 }
 
