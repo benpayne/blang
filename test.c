@@ -4,6 +4,9 @@ int foo( int y )
 	return y;
 }
 
+/* This is a comment 
+ *  that is on multiple lines
+ */
 void test_func( int x, int y )
 {
 	foo( x );

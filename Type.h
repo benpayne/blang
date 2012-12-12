@@ -4,57 +4,84 @@
 
 #include <string>
 #include <map>
+#include <vector>
 
 #include "RefCount.h"
+
+//#include "Expression.h"
 
 class Lexer;
 
 namespace QLang
 {
 	class Scope;
+	class FunctionDefinition;
+	class VariableDefinition;
+	class Type;
+	class Block;
+	class Statement;
 	
-	class Type : public RefCount
+	class Statement : virtual public RefCount
 	{
 	public:
-		Type( std::string &name ) : mName( name ) {}
-		
-		static Type *Parse( Lexer &l, Scope &s, bool allow_void );
-		
-		const std::string &getName() { return mName; }
 
+		static Statement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		Statement() {}	
+	};
+		
+	class Type : virtual public RefCount
+	{
+	public:
+		Type( const std::string &name ) : mName( name ) {}
+		
+		static Type *Parse( Lexer &l, Scope *s, bool allow_void );
+		
+		const std::string &getName() const { return mName; }
+
+		friend std::ostream &operator<<(std::ostream &out, const Type &type);
+		
 	private:
 		std::string mName;
 	};
 
-	class Symbol : public RefCount
+	class Symbol : virtual public RefCount
 	{
 	public:
-		Symbol( std::string &name, Type *t ) : mName( name ), mType( t ) {}
+		Symbol( const std::string &name ) : mName( name ) {}
 		
-		static Symbol *Parse( Lexer &l, Scope &s );
+		static Symbol *Parse( Lexer &l, Scope *s );
 		
-		const std::string &getName() { return mName; }
-
+		const std::string &getName() const { return mName; }
+		
+		enum SymbolType {
+			TypeVariable,
+			TypeFunction
+		};
+		
+		virtual SymbolType getSymbolType() = 0;
+		
 	private:
 		std::string mName;
-		SmartPtr<Type>	mType;
 	};
 		
-	class Scope : public RefCount
+	class Scope : virtual public RefCount
 	{
 	public:
 		enum ScopeType {
 			kScope_Global,
 			kScope_Module,
-			kScope_Anonymous,
 			kScope_Namespace,
 			kScope_Class,
 			kScope_Function,
-			kScope_IfElse
+			kScope_Anonymous,
+			kScope_IfElse,
+			kScope_Loop,
 		};
 		
 		Scope( ScopeType type = kScope_Anonymous ) {}
-		Scope( ScopeType type, std::string &name ) {}
+		Scope( ScopeType type, const std::string &name ) {}
 		
 		void addSymbol( Symbol *sym )
 		{
@@ -70,7 +97,12 @@ namespace QLang
 		{
 			SymbolListType::iterator i = mSymbolList.find( str );
 			if ( i == mSymbolList.end() )
-				return NULL;
+			{
+				if ( mParent != NULL )
+					return mParent->findSymbol( str );
+				else
+					return NULL;
+			}
 			else
 				return (*i).second;
 		}
@@ -79,9 +111,19 @@ namespace QLang
 		{
 			TypeListType::iterator i = mTypeList.find( str );
 			if ( i == mTypeList.end() )
-				return NULL;
+			{
+				if ( mParent != NULL )
+					return mParent->findType( str );
+				else
+					return NULL;
+			}
 			else
 				return (*i).second;
+		}
+		
+		void setParent( Scope *parent )
+		{
+			mParent = parent;
 		}
 		
 	private:
@@ -89,10 +131,65 @@ namespace QLang
 		typedef std::map<std::string, SmartPtr<Type> > TypeListType;
 		
 		ScopeType	mType;
-	
+		SmartPtr<Scope> mParent;		
 		SymbolListType mSymbolList;
 		TypeListType mTypeList;
 	};
+	
+	class Module : virtual public RefCount
+	{
+	public:
+		
+		static Module *Parse( Lexer &l, Scope *s );
+		
+	private:
+		Module() {}
+		
+		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
+	};
+	
+	class FunctionDefinition : public Symbol
+	{
+	public:
+		
+		static FunctionDefinition *Parse( Lexer &l, Scope *s );
+
+		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
+		
+		friend std::ostream &operator<<(std::ostream &out, const FunctionDefinition &func);
+
+		Type *getReturnType() { return mReturnType; }
+		int getNumberParams() { return mParameters.size(); }
+		Type *getParamType( int p );
+		VariableDefinition *getParam( int p );
+		
+	private:
+		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
+
+		SmartPtr<Type> mReturnType;
+		std::vector<SmartPtr<VariableDefinition> > mParameters;
+		SmartPtr<Scope> mFuncScope;
+		SmartPtr<Block> mFuncBody;
+	};
+	
+	class VariableDefinition : public Symbol
+	{
+	public:
+
+		static VariableDefinition *ParseFuncParam( Lexer &l, Scope *s );
+
+		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
+		
+		friend std::ostream &operator<<(std::ostream &out, const VariableDefinition &var);
+		
+		Type *getVariableType() { return mType; }
+		
+	private:
+		VariableDefinition( Type *type, const std::string &name ) : Symbol( name ), mType( type ) {}
+		
+		SmartPtr<Type>	mType;
+	};
+		
 };
 
 #endif // BLANG_TYPE_H_

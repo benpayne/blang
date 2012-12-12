@@ -1,9 +1,12 @@
 #include "FileLexer.h"
 #include <iostream>
 
-Lexer::Lexer( LexerReader *reader ) : mReader( reader )
+using namespace std;
+
+Lexer::Lexer( LexerReader *reader ) : mReader( reader ), 
+	mLastSym( -1 ), mCurrentPos( 0 )
 {
-	lineno = 0;
+	lineno = 1;
 	charPos = 0;
 }
 
@@ -14,9 +17,9 @@ const std::string &Lexer::getSymbolText()
 
 bool Lexer::isAlpha( char c )
 {
-	if (( mReader->peekChar() >= 'a' && mReader->peekChar() <= 'z' ) ||
-		( mReader->peekChar() >= 'A' && mReader->peekChar() <= 'Z' ) ||
-		( mReader->peekChar() >= '_' ) )
+	if (( c >= 'a' && c <= 'z' ) ||
+		( c >= 'A' && c <= 'Z' ) ||
+		( c == '_' ) )
 	{
 		return true;
 	}
@@ -26,10 +29,10 @@ bool Lexer::isAlpha( char c )
 
 bool Lexer::isAlphaNum( char c )
 {
-	if (( mReader->peekChar() >= 'a' && mReader->peekChar() <= 'z' ) ||
-		( mReader->peekChar() >= 'A' && mReader->peekChar() <= 'Z' ) ||
-		( mReader->peekChar() >= '0' && mReader->peekChar() <= '9' ) ||
-		( mReader->peekChar() >= '_' ) )
+	if (( c >= 'a' && c <= 'z' ) ||
+		( c >= 'A' && c <= 'Z' ) ||
+		( c >= '0' && c <= '9' ) ||
+		( c == '_' ) )
 	{
 		return true;
 	}
@@ -202,21 +205,86 @@ void Lexer::handleComment( bool singleLine )
 			mMatchString.clear();
 			return;
 		}
-		else if ( singleLine and ( mReader->peekChar() == '\n' ) )
+		else if ( mReader->peekChar() == '\n' )
 		{
+			lineno += 1;
 			mReader->popChar();
-			mMatchString.clear();
-			return;
+			if ( singleLine )
+			{
+				mMatchString.clear();
+				return;
+			}
 		}
 		else
 			mReader->popChar();
 	}
 }
 
+int Lexer::peekSymbol()
+{
+	if ( mLastSym == -1 )
+		mLastSym = getSymbolInternal();
+	return mLastSym;
+}
+
 int Lexer::getSymbol()
+{	
+	int sym = -1;
+	
+	if ( mLastSym != -1 )
+	{
+		sym = mLastSym;
+		mLastSym = -1;
+	}
+	else 
+		sym = getSymbolInternal();
+
+	mCurrentPos += 1;		
+	
+	return sym;
+}
+
+int Lexer::getCurrentPos()
+{
+	return mCurrentPos;
+}
+
+void Lexer::setCurrentPos( int pos )
+{
+	if ( pos >= 0 or pos < mSymbolList.size() )
+		mCurrentPos = pos;
+	else
+		mCurrentPos = mSymbolList.size() - 1;
+}
+
+int Lexer::getSymbolInternal()
+{
+	int sym = -1;
+	
+	if ( mCurrentPos == mSymbolList.size() )
+	{
+		sym = getSymbolFromFile();
+		mSymbolList.push_back( SymbolInfo( sym, mMatchString ) );
+	}
+	else
+	{
+		sym = mSymbolList[ mCurrentPos ].symbol;
+		mMatchString = mSymbolList[ mCurrentPos ].symbolText;
+	}
+
+	if ( sym < Lexer::NUM_SYMBOLS )
+		std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
+	else
+		std::cout << "Symbol " << (char)sym << std::endl;
+	
+	return sym;
+}
+
+int Lexer::getSymbolFromFile()
 {
 	mMatchString.clear();
-
+	mLastSym = -1;
+	
 	while ( !mReader->isEOF() )
 	{
 		//std::cout << "Lexer Symbol " << (int)mReader->peekChar() << std::endl;
@@ -258,7 +326,7 @@ int Lexer::getSymbol()
 				break;
 			case 'r':
 				if ( matchKeyword( "return" ) )
-					return BUILTIN_TYPE;
+					return KEYWORD_RETURN;
 				break;
 			case 's':
 				if ( matchKeyword( "string" ) )

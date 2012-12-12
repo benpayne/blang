@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <string>
+#include <vector>
 
 class LexerReader
 {
@@ -26,8 +27,12 @@ class Lexer
 public:
 	Lexer( LexerReader *reader );
 	
+	int peekSymbol();
 	int getSymbol();
 	const std::string &getSymbolText();
+	
+	int getCurrentPos();
+	void setCurrentPos( int pos );
 	
 	enum LexerSymbols {
 		BUILTIN_TYPE,
@@ -36,6 +41,7 @@ public:
 		KEYWORD_FOR,
 		KEYWORD_IF,
 		KEYWORD_WHILE,
+		KEYWORD_RETURN,
 		VOID,
 		SYMBOL,
 		CONSTANT_STRING,
@@ -64,12 +70,28 @@ protected:
 	void handleComment( bool singleLine );
 	bool isAlpha( char c );
 	bool isAlphaNum( char c );
+	int getSymbolInternal();
+	int getSymbolFromFile();
 
 private:
 	LexerReader *mReader;
 	std::string	mMatchString;
+	int			mLastSym;
 	uint32_t	lineno;
 	uint32_t	charPos;
+	
+	struct SymbolInfo 
+	{
+		SymbolInfo( int s, std::string &str ) : symbol( s ), symbolText( str ) {}
+		
+		int symbol;
+		std::string symbolText;
+	};
+	
+	std::vector<SymbolInfo> mSymbolList;
+	int mCurrentPos;
+	
+	
 };
 
 #endif // FILE_LEXER_H_
