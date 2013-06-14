@@ -9,15 +9,19 @@
 
 #include "logging.h"
 
+SET_LOG_CAT( LOG_CAT_ALL );
+SET_LOG_LEVEL( LOG_LVL_NOISE );
+
 using namespace QLang;
 using namespace std;
 
 Statement *Statement::Parse( Lexer &l, Scope *scope )
 {
+	TRACE_BEGIN( LOG_LVL_INFO );
 	Statement *statement = NULL;
 	int pos = l.getCurrentPos();
 	
-	cout << "Saving position" << endl;
+	LOG( "Saving position: %d", pos );
 	
 	switch ( l.peekSymbol() )
 	{
@@ -41,9 +45,9 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 		break;
 	default:
 		try { 
-			statement = VariableDefinition::Parse( l, scope );
+			statement = VariableDeclaration::Parse( l, scope );
 		} catch( CompileError &err ) {
-			cerr << "Setting position to " << pos << endl;
+			LOG( "Not a decl, resetting position: %d", pos );
 			l.setCurrentPos( pos );
 			statement = Expression::Parse( l, scope );
 		}				

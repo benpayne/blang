@@ -4,6 +4,7 @@ project (BLang)
 add_subdirectory(jhcommon)
 
 add_definitions(-DPLATFORM_DARWIN)
+add_definitions(-DJH_VERBOSE_LOGGING)
 
 add_executable(lexerTest LexerTest.cpp FileLexer.cpp LexerReader.cpp )
 target_link_libraries(lexerTest jhcommon )

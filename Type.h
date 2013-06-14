@@ -175,6 +175,7 @@ namespace QLang
 	class VariableDefinition : public Symbol
 	{
 	public:
+		VariableDefinition( Type *type, const std::string &name ) : Symbol( name ), mType( type ) {}
 
 		static VariableDefinition *ParseFuncParam( Lexer &l, Scope *s );
 
@@ -184,9 +185,7 @@ namespace QLang
 		
 		Type *getVariableType() { return mType; }
 		
-	private:
-		VariableDefinition( Type *type, const std::string &name ) : Symbol( name ), mType( type ) {}
-		
+	private:		
 		SmartPtr<Type>	mType;
 	};
 		

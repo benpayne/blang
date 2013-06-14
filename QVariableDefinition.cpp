@@ -26,6 +26,7 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s )
 	if ( t != NULL && sym == Lexer::SYMBOL )
 	{
 		def = new VariableDefinition( t, l.getSymbolText() );
+		s->addSymbol( def );
 	}
 
 	return def;
@@ -33,14 +34,16 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s )
 
 VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 {
-	VariableDefinition *def = NULL;
+	VariableDeclaration *def = new VariableDeclaration;
 	SmartPtr<Type> t = Type::Parse( l, s, false );
 	
 	do {
+		VariableDeclaration::DeclData data;
 		int sym = l.getSymbol();
+		
 		if ( t != NULL && sym == Lexer::SYMBOL )
 		{
-			def = new VariableDefinition( t, l.getSymbolText() );
+			data.mVaribale = new VariableDefinition( t, l.getSymbolText() );
 		}
 		else
 		{
@@ -48,17 +51,20 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 			COMPILE_ERROR( l, "Failed parse varible" );
 		}
 	
-		s->addSymbol( def );
+		s->addSymbol( data.mVaribale );
 		
 		if ( l.peekSymbol() == '=' )
 		{
 			sym = l.getSymbol();
-			Expression *exp = Expression::Parse( l, scope );
-			if ( exp != NULL )
+			data.mInitialValue = Expression::Parse( l, s );
+			if ( data.mInitialValue == NULL )
 			{
-				AssignmentExpression *assign = new AssignmentExpression( "=", def, exp );
-				def				
-	} while ( l.peekSymbol() == ',' )
+				// report error
+				COMPILE_ERROR( l, "Failed parse value" );
+			}
+		}
+		def->mVariables.push_back( data );
+	} while ( l.peekSymbol() == ',' );
 	
 	return def;
 }
