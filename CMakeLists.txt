@@ -39,10 +39,12 @@ set(QCC_SOURCES
 	FileLexer.cpp
 	LexerReader.cpp
 	QBlock.cpp
+	QBreakContinue.cpp
 	QExpression.cpp
 	QFunctionDefinition.cpp
 	QReturnStatement.cpp
 	QStatement.cpp
+	QStructDefinition.cpp
 	QType.cpp
 	QVariableDefinition.cpp)
 

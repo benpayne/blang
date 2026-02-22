@@ -37,6 +37,12 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 	case Lexer::KEYWORD_RETURN:
 		statement = ReturnStatement::Parse( l, scope );
 		break;
+	case Lexer::KEYWORD_BREAK:
+		statement = BreakStatement::Parse( l, scope );
+		break;
+	case Lexer::KEYWORD_CONTINUE:
+		statement = ContinueStatement::Parse( l, scope );
+		break;
 	case '{':
 		statement = Block::Parse( l, scope );
 		break;
