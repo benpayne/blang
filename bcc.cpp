@@ -6,11 +6,11 @@
 //   3. Link to native binary     (via cc)
 //
 // Usage:
-//   bcc source.c                  # compile and link -> a.out
-//   bcc source.c -o myprogram     # compile and link -> myprogram
-//   bcc -S source.c               # emit LLVM IR only -> source.ll
-//   bcc -c source.c               # compile to object only -> source.o
-//   bcc -v source.c               # verbose, show each pipeline step
+//   bcc source.b                  # compile and link -> a.out
+//   bcc source.b -o myprogram     # compile and link -> myprogram
+//   bcc -S source.b               # emit LLVM IR only -> source.ll
+//   bcc -c source.b               # compile to object only -> source.o
+//   bcc -v source.b               # verbose, show each pipeline step
 
 #include <iostream>
 #include <string>
@@ -34,7 +34,7 @@ struct Options
 
 static void printUsage( const char *progName )
 {
-	cerr << "Usage: " << progName << " [options] <source.c>" << endl;
+	cerr << "Usage: " << progName << " [options] <source.b>" << endl;
 	cerr << endl;
 	cerr << "Options:" << endl;
 	cerr << "  -o <file>    Output file name" << endl;

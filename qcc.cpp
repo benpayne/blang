@@ -66,7 +66,27 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				continue;
 			}
 
-			def = FunctionDefinition::Parse( l, s );
+			// Handle extern fn declarations
+			bool isExtern = false;
+			if ( nextSym == Lexer::TYPE_MODIFIER )
+			{
+				l.getSymbol(); // consume the modifier
+				string modText = l.getSymbolText();
+				if ( modText == "extern" )
+				{
+					isExtern = true;
+					// Next token should be 'fn'
+				}
+				else
+				{
+					COMPILE_ERROR( l, "Unexpected modifier '" + modText + "' at top level" );
+				}
+			}
+
+			if ( l.peekSymbol() != Lexer::KEYWORD_FN )
+				COMPILE_ERROR( l, "Expected 'fn' keyword for function declaration" );
+
+			def = FunctionDefinition::Parse( l, s, isExtern );
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
 		}

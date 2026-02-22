@@ -19,7 +19,7 @@ std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &fun
 		out << *(func.mReturnType) << " " << func.getName();
 	else
 		out << "void " << func.getName();
-	
+
 	if ( func.mParameters.size() == 0 )
 		out << "()";
 	else
@@ -31,170 +31,77 @@ std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &fun
 		}
 		out << " )";
 	}
-	
+
 	return out;
 }
 
-FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
+FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern )
 {
 	FunctionDefinition *func;
 
-	// Check for BLang-style fn declaration:
+	// All function declarations use the fn keyword:
 	//   fn name( params ) -> returnType { body }
 	//   fn name( params ) { body }   (void return)
-	if ( l.peekSymbol() == Lexer::KEYWORD_FN )
+	//   extern fn name( params ) -> returnType;
+	//
+	// When isExtern is true, the 'extern' keyword has already been consumed
+	// by Module::Parse.
+
+	if ( l.peekSymbol() != Lexer::KEYWORD_FN )
+		COMPILE_ERROR( l, "Expected 'fn' keyword" );
+
+	l.getSymbol(); // consume 'fn'
+
+	// Parse function name
+	int sym = l.getSymbol();
+	if ( sym != Lexer::SYMBOL )
+		COMPILE_ERROR( l, "Expected function name after 'fn'" );
+
+	func = new FunctionDefinition( l.getSymbolText() );
+	func->mIsExtern = isExtern;
+	func->mFuncScope = new Scope( Scope::kScope_Function, l.getSymbolText() );
+	func->mFuncScope->setParent( s );
+	s->addSymbol( func );
+
+	// Check for generic parameters: fn name<T> or fn name<T: Constraint>
+	if ( l.peekSymbol() == '<' )
 	{
-		l.getSymbol(); // consume 'fn'
+		l.getSymbol(); // consume '<'
 
-		// Parse function name
-		int sym = l.getSymbol();
-		if ( sym != Lexer::SYMBOL )
-			COMPILE_ERROR( l, "Expected function name after 'fn'" );
+		do {
+			sym = l.getSymbol();
+			if ( sym != Lexer::SYMBOL )
+				COMPILE_ERROR( l, "Expected type parameter name" );
 
-		func = new FunctionDefinition( l.getSymbolText() );
-		func->mIsExtern = false;
-		func->mFuncScope = new Scope( Scope::kScope_Function, l.getSymbolText() );
-		func->mFuncScope->setParent( s );
-		s->addSymbol( func );
+			GenericParam param;
+			param.mName = l.getSymbolText();
 
-		// Check for generic parameters: fn name<T> or fn name<T: Constraint>
-		if ( l.peekSymbol() == '<' )
-		{
-			l.getSymbol(); // consume '<'
-
-			do {
+			// Check for constraint: <T: Comparable>
+			if ( l.peekSymbol() == ':' )
+			{
+				l.getSymbol(); // consume ':'
 				sym = l.getSymbol();
 				if ( sym != Lexer::SYMBOL )
-					COMPILE_ERROR( l, "Expected type parameter name" );
+					COMPILE_ERROR( l, "Expected constraint name after ':'" );
+				param.mConstraint = l.getSymbolText();
+			}
 
-				GenericParam param;
-				param.mName = l.getSymbolText();
+			func->mGenericParams.push_back( param );
 
-				// Check for constraint: <T: Comparable>
-				if ( l.peekSymbol() == ':' )
-				{
-					l.getSymbol(); // consume ':'
-					sym = l.getSymbol();
-					if ( sym != Lexer::SYMBOL )
-						COMPILE_ERROR( l, "Expected constraint name after ':'" );
-					param.mConstraint = l.getSymbolText();
-				}
+			// Register type parameter in scope so it can be used as a type
+			s->addType( new Type( param.mName ) );
 
-				func->mGenericParams.push_back( param );
+			sym = l.getSymbol();
+		} while ( sym == ',' );
 
-				// Register type parameter in scope so it can be used as a type
-				s->addType( new Type( param.mName ) );
-
-				sym = l.getSymbol();
-			} while ( sym == ',' );
-
-			if ( sym != '>' )
-				COMPILE_ERROR( l, "Expected '>' after generic parameters" );
-		}
-
-		// Parse '(' params ')'
-		sym = l.getSymbol();
-		if ( sym != '(' )
-			COMPILE_ERROR( l, "Expected '(' after function name" );
-
-		sym = l.peekSymbol();
-		if ( sym != ')' )
-		{
-			int paramIndex = 0;
-			do {
-				// Check for ... (variadic)
-				if ( l.peekSymbol() == Lexer::ELLIPSIS )
-				{
-					l.getSymbol(); // consume ...
-					func->mIsVariadic = true;
-					sym = l.getSymbol(); // should be ')'
-					break;
-				}
-
-				VariableDefinition *def = VariableDefinition::ParseFuncParam( l, func->mFuncScope, false, paramIndex );
-				func->mParameters.push_back( def );
-				paramIndex++;
-				sym = l.getSymbol();
-			} while ( sym == ',' );
-
-			if ( sym != ')' )
-				COMPILE_ERROR( l, "expected ',' or ')'" );
-		}
-		else
-			l.getSymbol(); // consume ')'
-
-		// Parse optional '->' return type; default to void
-		sym = l.peekSymbol();
-		if ( sym == Lexer::ARROW )
-		{
-			l.getSymbol(); // consume '->'
-
-			// Parse the return type
-			SmartPtr<Type> retType = Type::Parse( l, s, false );
-			func->mReturnType = retType;
-		}
-		else
-		{
-			// No arrow means void return type
-			func->mReturnType = nullptr;
-		}
-
-		// Parse function body or ';' for bodyless declarations (e.g. protocol methods)
-		if ( l.peekSymbol() == ';' )
-		{
-			l.getSymbol(); // consume ';'
-			func->mFuncBody = nullptr;
-			cout << "Completed function declaration " << endl;
-		}
-		else
-		{
-			func->mFuncBody = Block::Parse( l, func->mFuncScope );
-			cout << "Completed function " << endl;
-		}
-
-		return func;
+		if ( sym != '>' )
+			COMPILE_ERROR( l, "Expected '>' after generic parameters" );
 	}
 
-	// C-style function declaration (backward compatibility):
-	//   [extern] returnType name( params ) { body }
-
-	// Check for extern modifier
-	bool isExtern = false;
-	if ( l.peekSymbol() == Lexer::TYPE_MODIFIER )
-	{
-		string modText = l.getSymbolText();
-		if ( modText == "extern" )
-			isExtern = true;
-		// Type::Parse expects to consume the type token itself,
-		// but we already consumed the modifier. For extern, the modifier
-		// is consumed here and Type::Parse will get the return type directly.
-		// However, Type::Parse calls getSymbol() which will get the next token.
-		// Since we consumed "extern", the next token is the return type. Good.
-	}
-
-	SmartPtr<Type> retType = Type::Parse( l, s, true );
-	int sym = l.getSymbol();
-	if ( sym == Lexer::SYMBOL )
-	{
-		func = new FunctionDefinition( l.getSymbolText() );
-		func->mReturnType = retType;
-		func->mIsExtern = isExtern;
-		func->mFuncScope = new Scope( Scope::kScope_Function, l.getSymbolText() );
-		func->mFuncScope->setParent( s );
-		s->addSymbol( func );
-	}
-	else
-	{
-		// report error
-		COMPILE_ERROR( l, "Failed to parse function name" );
-	}
-
+	// Parse '(' params ')'
 	sym = l.getSymbol();
 	if ( sym != '(' )
-	{
-		// report error
-		COMPILE_ERROR( l, "Failed to find function name" );
-	}
+		COMPILE_ERROR( l, "Expected '(' after function name" );
 
 	sym = l.peekSymbol();
 	if ( sym != ')' )
@@ -217,21 +124,42 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 		} while ( sym == ',' );
 
 		if ( sym != ')' )
-		{
-			// report error
-			COMPILE_ERROR( l, "expected \',\' or \')\'" );
-		}
+			COMPILE_ERROR( l, "expected ',' or ')'" );
 	}
 	else
-		l.getSymbol();
+		l.getSymbol(); // consume ')'
+
+	// Parse optional '->' return type; default to void
+	sym = l.peekSymbol();
+	if ( sym == Lexer::ARROW )
+	{
+		l.getSymbol(); // consume '->'
+
+		// Parse the return type
+		SmartPtr<Type> retType = Type::Parse( l, s, false );
+		func->mReturnType = retType;
+	}
+	else
+	{
+		// No arrow means void return type
+		func->mReturnType = nullptr;
+	}
 
 	// Extern declarations end with ';', regular functions have a body
 	if ( isExtern )
 	{
 		sym = l.getSymbol();
 		if ( sym != ';' )
-			COMPILE_ERROR( l, "Expected \';\' after extern function declaration" );
+			COMPILE_ERROR( l, "Expected ';' after extern function declaration" );
+		func->mFuncBody = nullptr;
 		cout << "Completed extern declaration " << endl;
+	}
+	else if ( l.peekSymbol() == ';' )
+	{
+		// Bodyless declaration (e.g. protocol methods)
+		l.getSymbol(); // consume ';'
+		func->mFuncBody = nullptr;
+		cout << "Completed function declaration " << endl;
 	}
 	else
 	{
@@ -243,13 +171,12 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 }
 
 
-Type *FunctionDefinition::getParamType( int p ) 
+Type *FunctionDefinition::getParamType( int p )
 {
-	return mParameters[ p ]->getVariableType(); 
+	return mParameters[ p ]->getVariableType();
 }
 
-VariableDefinition *FunctionDefinition::getParam( int p ) 
-{ 
+VariableDefinition *FunctionDefinition::getParam( int p )
+{
 	return mParameters[ p ];
 }
-
