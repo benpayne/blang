@@ -39,7 +39,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── QEnumDefinition.cpp        # EnumDefinition::Parse (enum/sum types with variants and associated types)
 ├── QExpression.cpp            # Expression parsing (lvalue, rvalue, binary operations, constants, arrays, method calls, indexing, ranges)
 ├── QForInStatement.cpp        # ForInStatement::Parse (for-in loops, infinite loops)
-├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing (C-style and fn-style, generics)
+├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing (fn-style with extern fn, generics)
 ├── QReturnStatement.cpp       # ReturnStatement::Parse
 ├── QStatement.cpp             # Statement::Parse dispatcher (routes to if/while/for/for-in/return/break/continue/variable/expression)
 ├── QStructDefinition.cpp      # StructDefinition::Parse (with generic parameters)
@@ -52,7 +52,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── parse_helpers.h/cpp        # LLVM 18+ code generation helpers (legacy Bison/Flex approach, superseded by CodeGen)
 ├── LexerTest.cpp              # Basic lexer test program
 ├── LexerTest2.cpp             # Advanced lexer test with position save/restore
-├── test.c                     # Comprehensive BLang test source file
+├── test.b                     # Comprehensive BLang test source file
 ├── test_files/                # Test cases organized in pass/, fail/, xfail/ subdirectories
 ├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> run)
@@ -101,20 +101,20 @@ When LLVM is found, `qcc` gains the `BLANG_HAS_LLVM` define and will generate `.
 
 ```bash
 # Compile a BLang source file to an executable
-bcc hello.c -o hello
+bcc hello.b -o hello
 ./hello
 
 # Emit LLVM IR only
-bcc -S hello.c              # produces hello.ll
+bcc -S hello.b              # produces hello.ll
 
 # Compile to object file only (no linking)
-bcc -c hello.c              # produces hello.o
+bcc -c hello.b              # produces hello.o
 
 # Verbose output (shows each pipeline step)
-bcc -v hello.c -o hello
+bcc -v hello.b -o hello
 
 # Link with external libraries
-bcc hello.c -o hello -lm
+bcc hello.b -o hello -lm
 ```
 
 **Requirements**: `bcc` expects `qcc` in the same directory and requires `llc-18` (or `llc`) and `cc` on PATH. Install `llvm-18-dev` for full pipeline support.
@@ -144,9 +144,9 @@ The project is fully self-contained. `RefCount.h` provides intrusive reference c
 ### Compiler pipeline
 
 ```
-bcc source.c -o program
+bcc source.b -o program
  │
- ├─ 1. qcc source.c          → source.ll   (parse + LLVM IR generation)
+ ├─ 1. qcc source.b          → source.ll   (parse + LLVM IR generation)
  ├─ 2. llc -filetype=obj      → source.o    (IR to native object)
  └─ 3. cc source.o -o program → program     (link to executable)
 ```
@@ -242,6 +242,7 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 ### File naming
 
+- BLang source files: `.b` extension — `hello.b`, `test.b`
 - Headers: PascalCase (`.h`) — `Type.h`, `Expression.h`, `FileLexer.h`
 - Implementation files for QLang parser: `Q` prefix + PascalCase (`.cpp`) — `QBlock.cpp`, `QExpression.cpp`
 - Other implementation files: PascalCase (`.cpp`) — `FileLexer.cpp`, `LexerReader.cpp`
@@ -264,24 +265,24 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 Tests are organized into three categories under `test_files/`:
 
 - **`test_files/pass/`** (51 tests) — Should parse successfully. Includes:
-  - Basic function tests: `func_simple.c`, `func_call.c`, `multi_func.c`, `empty_func.c`
-  - Control flow: `if_simple.c`, `if_nested.c`, `while_simple.c`, `while_block.c`, `for_simple.c`, `for_block.c`
-  - Variables and expressions: `var_decl.c`, `var_infer.c`, `const_decl.c`, `arithmetic_stmt.c`, `assignment_stmt.c`, `binary_expr_return.c`, `comparison_expr.c`
-  - Returns: `return_var.c`, `return_call.c`
-  - Literals and comments: `string_literals.c`, `comments.c`, `float_literal.c`, `bool_type.c`
-  - Function styles: `fn_simple.c`, `fn_void.c`, `arrow_fn.c`
-  - Structs and methods: `struct_basic.c`, `struct_literal.c`, `field_access.c`, `method_call.c`, `impl_basic.c`, `impl_protocol.c`
-  - Protocols: `protocol_basic.c`
-  - Enums: `enum_basic.c`, `enum_variants.c`, `enum_generic.c`
-  - Generics: `generic_fn.c`, `generic_struct.c`, `generic_constraint.c`, `generic_protocol.c`, `generic_type_args.c`
-  - For-in loops: `for_in_range.c`, `for_in_var.c`, `for_infinite.c`
-  - Arrays: `array_literal.c`, `array_index.c`
-  - Pattern matching: `match_basic.c`, `match_wildcard.c`, `match_destructure.c`
-  - Other: `break_continue.c`, `extern_unnamed.c`
-- **`test_files/fail/`** (14 negative tests) — Should fail to parse (exit non-zero): `bad_type.c`, `const_no_init.c`, `duplicate_func.c`, `enum_missing_brace.c`, `fn_missing_arrow_type.c`, `for_in_missing_in.c`, `missing_brace.c`, `missing_paren.c`, `protocol_no_fn.c`, `struct_bad_field.c`, `struct_missing_brace.c`, `undefined_func.c`, `undefined_var.c`, `var_no_init.c`
-- **`test_files/xfail/`** (1 expected failure) — Known-broken features: `extern_func_call.c`
+  - Basic function tests: `func_simple.b`, `func_call.b`, `multi_func.b`, `empty_func.b`
+  - Control flow: `if_simple.b`, `if_nested.b`, `while_simple.b`, `while_block.b`, `for_simple.b`, `for_block.b`
+  - Variables and expressions: `var_decl.b`, `var_infer.b`, `const_decl.b`, `arithmetic_stmt.b`, `assignment_stmt.b`, `binary_expr_return.b`, `comparison_expr.b`
+  - Returns: `return_var.b`, `return_call.b`
+  - Literals and comments: `string_literals.b`, `comments.b`, `float_literal.b`, `bool_type.b`
+  - Function styles: `fn_simple.b`, `fn_void.b`, `arrow_fn.b`
+  - Structs and methods: `struct_basic.b`, `struct_literal.b`, `field_access.b`, `method_call.b`, `impl_basic.b`, `impl_protocol.b`
+  - Protocols: `protocol_basic.b`
+  - Enums: `enum_basic.b`, `enum_variants.b`, `enum_generic.b`
+  - Generics: `generic_fn.b`, `generic_struct.b`, `generic_constraint.b`, `generic_protocol.b`, `generic_type_args.b`
+  - For-in loops: `for_in_range.b`, `for_in_var.b`, `for_infinite.b`
+  - Arrays: `array_literal.b`, `array_index.b`
+  - Pattern matching: `match_basic.b`, `match_wildcard.b`, `match_destructure.b`
+  - Other: `break_continue.b`, `extern_unnamed.b`
+- **`test_files/fail/`** (14 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `missing_brace.b`, `missing_paren.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`
+- **`test_files/xfail/`** (1 expected failure) — Known-broken features: `extern_func_call.b`
 
-Legacy test files (kept for backward compatibility): `test.c`, `test_files/func_call1.c`, `test_files/func_call2.c`, `test_files/func_call3.c`, `test_files/if_call.c`, `test_files/codegen_simple.c`, `test_files/codegen_binexpr.c`, `test_files/codegen_features.c`, `test_files/multi_var_decl.c`
+Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/codegen_simple.b`, `test_files/codegen_binexpr.b`, `test_files/codegen_features.b`, `test_files/multi_var_decl.b`
 
 **Total: 66 tests** (51 pass + 14 fail/negative + 1 xfail)
 
@@ -295,25 +296,24 @@ Legacy test files (kept for backward compatibility): `test.c`, `test_files/func_
 
 # Manual testing
 cd build
-./lexerTest ../test.c
-./lexerTest2 ../test.c
-./qcc ../test.c
-./qcc ../test_files/pass/fn_simple.c
+./lexerTest ../test.b
+./lexerTest2 ../test.b
+./qcc ../test.b
+./qcc ../test_files/pass/fn_simple.b
 ```
 
 The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/`, `test_files/fail/`, and `test_files/xfail/`, checking exit codes against expectations and printing a color-coded summary.
 
 ## Supported Language Features (BLang source)
 
-- **Function definitions** — two styles supported during transition:
-  - C-style: `int add(int a, int b) { ... }`
-  - BLang `fn`-style: `fn add(int a, int b) -> int { ... }` (omitting `->` means void return)
+- **Function definitions** — all functions use the `fn` keyword:
+  - `fn add(int a, int b) -> int { ... }` (omitting `->` means void return)
   - Generic functions: `fn identity<T>(T value) -> T { ... }`
   - Protocol-constrained generics: `fn sort<T: Comparable>(Array<T> items) -> Array<T> { ... }`
-- Extern function declarations (`extern int printf(string fmt, ...);`) for calling C library functions
-  - Named parameters: `extern int printf(string fmt, ...);`
-  - Unnamed parameters: `extern int printf(string, ...);`
-  - Mixed: `extern int mixed(int a, string, int c);`
+- Extern function declarations use `extern fn` syntax:
+  - Named parameters: `extern fn printf(string fmt, ...) -> int;`
+  - Unnamed parameters: `extern fn printf(string, ...) -> int;`
+  - Mixed: `extern fn mixed(int a, string, int c) -> int;`
 - Variadic function support (`...` ellipsis in parameter lists)
 - Variable declarations with optional initialization
 - **Struct definitions** with optional generic parameters: `struct Box<T> { T value; }`
@@ -346,7 +346,7 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 
 This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST.
 
-**Parser features**: Both C-style and BLang `fn`-style function declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, float/double literals, break/continue, and extern declarations with unnamed parameters.
+**Parser features**: BLang `fn`-style function declarations (C-style syntax removed), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, float/double literals, break/continue, and extern declarations with unnamed parameters.
 
 **Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), float constants.
 

@@ -119,7 +119,7 @@ echo "==========================================="
 echo ""
 
 # --- Pass tests ---
-PASS_FILES=$(find "$SCRIPT_DIR/test_files/pass" -name '*.c' 2>/dev/null | sort)
+PASS_FILES=$(find "$SCRIPT_DIR/test_files/pass" -name '*.b' 2>/dev/null | sort)
 if [ -n "$PASS_FILES" ]; then
 	echo -e "${CYAN}--- Tests expected to PASS ---${NC}"
 	while IFS= read -r f; do
@@ -129,7 +129,7 @@ if [ -n "$PASS_FILES" ]; then
 fi
 
 # --- Fail tests ---
-FAIL_FILES=$(find "$SCRIPT_DIR/test_files/fail" -name '*.c' 2>/dev/null | sort)
+FAIL_FILES=$(find "$SCRIPT_DIR/test_files/fail" -name '*.b' 2>/dev/null | sort)
 if [ -n "$FAIL_FILES" ]; then
 	echo -e "${CYAN}--- Tests expected to FAIL (negative tests) ---${NC}"
 	while IFS= read -r f; do
@@ -139,7 +139,7 @@ if [ -n "$FAIL_FILES" ]; then
 fi
 
 # --- Expected failure tests ---
-XFAIL_FILES=$(find "$SCRIPT_DIR/test_files/xfail" -name '*.c' 2>/dev/null | sort)
+XFAIL_FILES=$(find "$SCRIPT_DIR/test_files/xfail" -name '*.b' 2>/dev/null | sort)
 if [ -n "$XFAIL_FILES" ]; then
 	echo -e "${CYAN}--- Tests for known-broken features (XFAIL) ---${NC}"
 	while IFS= read -r f; do

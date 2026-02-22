@@ -166,7 +166,7 @@ namespace QLang
 	{
 	public:
 
-		static FunctionDefinition *Parse( Lexer &l, Scope *s );
+		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
 

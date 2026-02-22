@@ -3,14 +3,14 @@
 # Requires: LLVM dev headers installed and qcc built with -DBLANG_HAS_LLVM
 #
 # Usage: ./test_codegen.sh [test_file]
-#   default test_file: test_files/codegen_simple.c
+#   default test_file: test_files/codegen_simple.b
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QCC="${SCRIPT_DIR}/build/qcc"
-TEST_FILE="${1:-${SCRIPT_DIR}/test_files/codegen_simple.c}"
-BASE_NAME="$(basename "${TEST_FILE}" .c)"
+TEST_FILE="${1:-${SCRIPT_DIR}/test_files/codegen_simple.b}"
+BASE_NAME="$(basename "${TEST_FILE}" .b)"
 IR_FILE="/tmp/${BASE_NAME}.ll"
 OBJ_FILE="/tmp/${BASE_NAME}.o"
 BIN_FILE="/tmp/${BASE_NAME}"
