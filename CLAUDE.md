@@ -20,6 +20,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 
 ```
 /
+├── bcc.cpp                    # BLang compiler driver CLI (orchestrates qcc -> llc -> cc pipeline)
 ├── qcc.cpp                    # Main compiler entry point (parses source files into AST, optionally generates LLVM IR)
 ├── CodeGen.h                  # LLVM code generation class (QLang::CodeGen) — walks AST, emits IR
 ├── CodeGen.cpp                # CodeGen implementation: functions, statements, expressions, type mapping
@@ -73,7 +74,8 @@ The project has **no external dependencies** for the active build targets. The j
 
 | Target       | Description                        | Key source files                                                                    |
 |-------------|------------------------------------|-------------------------------------------------------------------------------------|
-| `qcc`       | Main compiler                      | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QEnumDefinition.cpp, QExpression.cpp, QForInStatement.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, CodeGen.cpp (when LLVM available) |
+| `bcc`       | BLang compiler driver (user-facing)| bcc.cpp                                                                            |
+| `qcc`       | Parser + IR generator (internal)   | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QEnumDefinition.cpp, QExpression.cpp, QForInStatement.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, CodeGen.cpp (when LLVM available) |
 | `lexerTest` | Basic lexer tokenization test      | LexerTest.cpp, FileLexer.cpp, LexerReader.cpp                                     |
 | `lexerTest2`| Advanced lexer test                | LexerTest2.cpp, FileLexer.cpp, LexerReader.cpp                                    |
 
@@ -92,6 +94,30 @@ make
 ```
 
 When LLVM is found, `qcc` gains the `BLANG_HAS_LLVM` define and will generate `.ll` IR files alongside parsing. Without LLVM, `qcc` operates in parse-only mode.
+
+### Using bcc (BLang Compiler Driver)
+
+`bcc` is the user-facing compiler CLI. It orchestrates the full pipeline: `qcc` (parse + IR) → `llc` (compile) → `cc` (link).
+
+```bash
+# Compile a BLang source file to an executable
+bcc hello.c -o hello
+./hello
+
+# Emit LLVM IR only
+bcc -S hello.c              # produces hello.ll
+
+# Compile to object file only (no linking)
+bcc -c hello.c              # produces hello.o
+
+# Verbose output (shows each pipeline step)
+bcc -v hello.c -o hello
+
+# Link with external libraries
+bcc hello.c -o hello -lm
+```
+
+**Requirements**: `bcc` expects `qcc` in the same directory and requires `llc-18` (or `llc`) and `cc` on PATH. Install `llvm-18-dev` for full pipeline support.
 
 ### Platform detection
 
@@ -117,11 +143,21 @@ The project is fully self-contained. `RefCount.h` provides intrusive reference c
 
 ### Compiler pipeline
 
-1. **Parsing — QLang recursive-descent parser** (`QLang` namespace in `Type.h`, `Expression.h`, `Q*.cpp`, `qcc.cpp`): Hand-written parser that builds an AST from source files.
+```
+bcc source.c -o program
+ │
+ ├─ 1. qcc source.c          → source.ll   (parse + LLVM IR generation)
+ ├─ 2. llc -filetype=obj      → source.o    (IR to native object)
+ └─ 3. cc source.o -o program → program     (link to executable)
+```
 
-2. **Code generation — CodeGen** (`QLang::CodeGen` in `CodeGen.h/cpp`): Walks the QLang AST and emits LLVM IR using modern LLVM 18+ APIs (`IRBuilder<>`, opaque pointers, `FunctionCallee`). The `CodeGen` class is a friend of all AST node classes and uses `dynamic_cast` to dispatch to type-specific generation methods. Conditionally compiled (`BLANG_HAS_LLVM`).
+1. **Compiler driver — bcc** (`bcc.cpp`): User-facing CLI that orchestrates the full compilation pipeline. Shells out to `qcc`, `llc`, and `cc`. Handles `-S` (emit IR), `-c` (compile only), `-o` (output name), `-v` (verbose), and linker flags (`-l`, `-L`).
 
-3. **Legacy code generation** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`): Earlier procedural C-style API driven by the Bison/Flex parser. Superseded by `CodeGen` but retained for reference.
+2. **Parsing + IR generation — qcc** (`QLang` namespace in `Type.h`, `Expression.h`, `Q*.cpp`, `qcc.cpp`): Hand-written recursive-descent parser that builds an AST from source files. When built with LLVM, also generates LLVM IR via `CodeGen`.
+
+3. **Code generation — CodeGen** (`QLang::CodeGen` in `CodeGen.h/cpp`): Walks the QLang AST and emits LLVM IR using modern LLVM 18+ APIs (`IRBuilder<>`, opaque pointers, `FunctionCallee`). The `CodeGen` class is a friend of all AST node classes and uses `dynamic_cast` to dispatch to type-specific generation methods. Conditionally compiled (`BLANG_HAS_LLVM`).
+
+4. **Legacy code generation** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`): Earlier procedural C-style API driven by the Bison/Flex parser. Superseded by `CodeGen` but retained for reference.
 
 ### Key class hierarchy (QLang namespace)
 

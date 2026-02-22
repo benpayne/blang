@@ -67,3 +67,7 @@ if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
 	target_link_libraries(qcc ${llvm_libs})
 endif()
+
+# bcc - BLang compiler driver (orchestrates qcc -> llc -> cc pipeline)
+add_executable(bcc bcc.cpp)
+set_target_properties(bcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
