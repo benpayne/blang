@@ -73,6 +73,17 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 {
 	int sym = l.peekSymbol();
 
+	// Unary prefix operators: -, !, ~
+	if ( sym == '-' || sym == '!' || sym == '~' )
+	{
+		l.getSymbol(); // consume operator
+		string opStr( 1, (char)sym );
+		Expression *operand = ParsePrimary( l, scope );
+		if ( operand == nullptr )
+			COMPILE_ERROR( l, "Expected expression after unary operator" );
+		return new UnaryExpression( opStr, operand );
+	}
+
 	// Parenthesized expression
 	if ( sym == '(' )
 	{

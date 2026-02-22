@@ -228,6 +228,18 @@ namespace QLang
 		SmartPtr<Expression> mOp2;
 		friend class CodeGen;
 	};
+
+	class UnaryExpression : public Expression
+	{
+	public:
+		UnaryExpression( std::string operation, Expression *operand ) :
+			mOperation( operation ), mOperand( operand ) {}
+
+	private:
+		std::string mOperation;
+		SmartPtr<Expression> mOperand;
+		friend class CodeGen;
+	};
 };
 
 #endif // BLANG_EXPRESSION_H_

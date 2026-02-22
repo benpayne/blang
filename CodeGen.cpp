@@ -388,6 +388,8 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 		return genOperationsExpression( ops );
 	else if ( auto *assign = dynamic_cast<AssignmentExpression*>( expr ) )
 		return genAssignmentExpression( assign );
+	else if ( auto *unary = dynamic_cast<UnaryExpression*>( expr ) )
+		return genUnaryExpression( unary );
 
 	return nullptr;
 }
@@ -570,4 +572,35 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 
 	mBuilder->CreateStore( result, alloca );
 	return result;
+}
+
+llvm::Value *CodeGen::genUnaryExpression( UnaryExpression *unary )
+{
+	llvm::Value *operand = genExpression( unary->mOperand );
+	if ( operand == nullptr )
+		return nullptr;
+
+	const string &op = unary->mOperation;
+
+	if ( op == "-" )
+		return mBuilder->CreateNeg( operand, "negtmp" );
+
+	if ( op == "!" )
+	{
+		llvm::Value *boolVal = mBuilder->CreateICmpNE(
+			operand,
+			llvm::ConstantInt::get( operand->getType(), 0 ),
+			"tobool" );
+		llvm::Value *notVal = mBuilder->CreateXor(
+			boolVal,
+			llvm::ConstantInt::getTrue( *mContext ),
+			"nottmp" );
+		return mBuilder->CreateZExt( notVal, operand->getType(), "lnot" );
+	}
+
+	if ( op == "~" )
+		return mBuilder->CreateNot( operand, "bnottmp" );
+
+	cerr << "CodeGen: unknown unary operator '" << op << "'" << endl;
+	return nullptr;
 }
