@@ -1,6 +1,7 @@
 #include <assert.h>
 
 #include <iostream>
+#include <fstream>
 #include <sstream>
 
 #include "FileLexer.h"
@@ -10,6 +11,11 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+
+#ifdef BLANG_HAS_LLVM
+#include "CodeGen.h"
+#include "llvm/Support/raw_ostream.h"
+#endif
 
 using namespace QLang;
 using namespace std;
@@ -196,6 +202,46 @@ int main( int argc, char *argv[] )
 	{
 		cout << "Completed parse" << endl;
 	}
-	
+
+#ifdef BLANG_HAS_LLVM
+	// Code generation
+	QLang::CodeGen codegen( argv[1] );
+
+	if ( !codegen.generate( mod ) )
+	{
+		cerr << "Code generation failed" << endl;
+		return -1;
+	}
+
+	if ( !codegen.verify() )
+	{
+		cerr << "Module verification failed" << endl;
+		return -1;
+	}
+
+	// Print IR to stdout
+	codegen.print( llvm::outs() );
+
+	// Also write to .ll file
+	std::string inputFile = argv[1];
+	std::string outputFile = inputFile;
+	size_t dot = outputFile.rfind( '.' );
+	if ( dot != std::string::npos )
+		outputFile = outputFile.substr( 0, dot );
+	outputFile += ".ll";
+
+	std::error_code ec;
+	llvm::raw_fd_ostream outFile( outputFile, ec );
+	if ( !ec )
+	{
+		codegen.print( outFile );
+		cout << "Wrote IR to " << outputFile << endl;
+	}
+	else
+	{
+		cerr << "Failed to write " << outputFile << ": " << ec.message() << endl;
+	}
+#endif
+
 	return 0;
 }

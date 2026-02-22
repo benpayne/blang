@@ -20,7 +20,8 @@ namespace QLang
 	class Type;
 	class Block;
 	class Statement;
-	
+	class CodeGen;
+
 	class Statement : virtual public RefCount
 	{
 	public:
@@ -28,7 +29,8 @@ namespace QLang
 		static Statement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		Statement() {}	
+		Statement() {}
+		friend class CodeGen;
 	};
 		
 	class Type : virtual public RefCount
@@ -139,11 +141,12 @@ namespace QLang
 	class Module : virtual public RefCount
 	{
 	public:
-		
+
 		static Module *Parse( Lexer &l, Scope *s );
-		
+
 	private:
 		Module() {}
+		friend class CodeGen;
 		
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
 	};
@@ -170,6 +173,8 @@ namespace QLang
 		std::vector<SmartPtr<VariableDefinition> > mParameters;
 		SmartPtr<Scope> mFuncScope;
 		SmartPtr<Block> mFuncBody;
+
+		friend class CodeGen;
 	};
 	
 	class VariableDefinition : public Symbol

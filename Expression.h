@@ -32,11 +32,12 @@ namespace QLang
 		static WhileStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		WhileStatement() {}	
-		
+		WhileStatement() {}
+
 	private:
 		SmartPtr<Expression> mLoopExpression;
 		SmartPtr<Statement> mLoopStatement;
+		friend class CodeGen;
 	};
 
 	class ForStatement : public Statement
@@ -46,13 +47,14 @@ namespace QLang
 		static ForStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		ForStatement() {}	
+		ForStatement() {}
 
 	private:
 		SmartPtr<Expression> mInitialExpression;
 		SmartPtr<Expression> mTestExpression;
 		SmartPtr<Expression> mIterationExpression;
 		SmartPtr<Statement> mStatement;
+		friend class CodeGen;
 	};
 
 	class IfStatement : public Statement
@@ -62,12 +64,13 @@ namespace QLang
 		static IfStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		IfStatement() {}	
+		IfStatement() {}
 
 	private:
 		SmartPtr<Expression> mIfExpression;
 		SmartPtr<Statement> mStatement;
 		SmartPtr<Statement> mElseStatement;
+		friend class CodeGen;
 	};
 
 	class ReturnStatement : public Statement
@@ -77,10 +80,11 @@ namespace QLang
 		static ReturnStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		ReturnStatement() {}	
+		ReturnStatement() {}
 
 	private:
 		SmartPtr<Expression> mExpression;
+		friend class CodeGen;
 	};
 	
 	class BinaryExpression : public Expression
@@ -110,18 +114,20 @@ namespace QLang
 	{
 	public:
 		ConstInteger( int64_t value ) : mValue( value ) {}
-		
+
 	private:
 		int64_t mValue;
+		friend class CodeGen;
 	};
 
 	class ConstFloat : public ConstExpression
 	{
 	public:
 		ConstFloat( double value ) : mValue( value ) {}
-		
+
 	private:
 		double mValue;
+		friend class CodeGen;
 	};
 	
 	class ConstString : public ConstExpression
@@ -131,6 +137,7 @@ namespace QLang
 
 	private:
 		std::string mValue;
+		friend class CodeGen;
 	};
 	
 	class ConstChar : public ConstExpression
@@ -146,8 +153,9 @@ namespace QLang
 
 	private:
 		std::string mValue;
+		friend class CodeGen;
 	};
-	
+
 	class VariableDeclaration : public Statement
 	{
 	public:
@@ -160,6 +168,7 @@ namespace QLang
 		};
 		
 		std::vector<DeclData> mVariables;
+		friend class CodeGen;
 	};
 	
 	class VariableExpression : public Expression
@@ -174,6 +183,7 @@ namespace QLang
 		
 	private:
 		SmartPtr<VariableDefinition> mVariable;
+		friend class CodeGen;
 	};
 
 	class CallExpression : public Expression
@@ -187,16 +197,18 @@ namespace QLang
 	private:
 		SmartPtr<FunctionDefinition> mFunction;
 		std::vector<SmartPtr<Expression> > mParams;
+		friend class CodeGen;
 	};
 	
 	class Block : public Statement
 	{
 	public:
 		static Block *Parse( Lexer &l, Scope *block_scope );
-		
+
 	private:
 		SmartPtr<Scope> mScope;
 		std::vector<SmartPtr<Statement> > mStatementList;
+		friend class CodeGen;
 	};
 
 	class AssignmentExpression : public Expression

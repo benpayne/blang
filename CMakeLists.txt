@@ -10,10 +10,12 @@ elseif(WIN32)
 	add_compile_definitions(PLATFORM_WINDOWS)
 endif()
 
-# Optional LLVM integration (for future code generation backend)
+# Optional LLVM integration for code generation
 find_package(LLVM CONFIG QUIET)
 if(LLVM_FOUND)
 	message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+	include_directories(${LLVM_INCLUDE_DIRS})
+	add_definitions(${LLVM_DEFINITIONS})
 	llvm_map_components_to_libnames(llvm_libs
 		support
 		core
@@ -31,8 +33,8 @@ set_target_properties(lexerTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED
 add_executable(lexerTest2 LexerTest2.cpp FileLexer.cpp LexerReader.cpp)
 set_target_properties(lexerTest2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
-# Main compiler
-add_executable(qcc
+# Main compiler source files
+set(QCC_SOURCES
 	qcc.cpp
 	FileLexer.cpp
 	LexerReader.cpp
@@ -43,5 +45,17 @@ add_executable(qcc
 	QStatement.cpp
 	QType.cpp
 	QVariableDefinition.cpp)
+
+# Add LLVM code generation when available
+if(LLVM_FOUND)
+	list(APPEND QCC_SOURCES CodeGen.cpp)
+endif()
+
+add_executable(qcc ${QCC_SOURCES})
 target_compile_definitions(qcc PRIVATE JH_VERBOSE_LOGGING)
 set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+
+if(LLVM_FOUND)
+	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
+	target_link_libraries(qcc ${llvm_libs})
+endif()
