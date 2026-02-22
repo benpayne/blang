@@ -42,6 +42,8 @@ private:
 	llvm::Value *genExpression( Expression *expr );
 	llvm::Value *genCallExpression( CallExpression *call );
 	llvm::Value *genVariableExpression( VariableExpression *var );
+	llvm::Value *genOperationsExpression( OperationsExpression *ops );
+	llvm::Value *genAssignmentExpression( AssignmentExpression *assign );
 	llvm::Value *genConstInteger( ConstInteger *ci );
 	llvm::Value *genConstFloat( ConstFloat *cf );
 	llvm::Value *genConstString( ConstString *cs );

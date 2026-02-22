@@ -18,9 +18,10 @@ namespace QLang
 	{
 	public:
 		static Expression *Parse( Lexer &l, Scope *scope, char terminal = ';' );
-		
-		static Expression *ParseLValue( Lexer &l, Scope *scope );
-		static Expression *ParseRValue( Lexer &l, Scope *scope );
+
+		// Precedence-climbing expression parser (no terminal handling)
+		static Expression *ParseExpr( Lexer &l, Scope *scope, int minPrec = 0 );
+		static Expression *ParsePrimary( Lexer &l, Scope *scope );
 
 	protected:
 	};
@@ -85,17 +86,6 @@ namespace QLang
 	private:
 		SmartPtr<Expression> mExpression;
 		friend class CodeGen;
-	};
-	
-	class BinaryExpression : public Expression
-	{
-	public:
-		
-		BinaryExpression *ParseAssignment( Lexer &l, Scope *scope );
-		BinaryExpression *ParseArithmatic( Lexer &l, Scope *scope );
-		
-	private:
-		
 	};
 	
 	class ConstExpression : public Expression
@@ -177,7 +167,9 @@ namespace QLang
 		VariableExpression( VariableDefinition *def ) : mVariable( def ) {}
 
 		static VariableExpression *Parse( Lexer &l, Scope *scope );
-		
+
+		VariableDefinition *getVariable() { return mVariable; }
+
 	protected:
 		VariableExpression() {}
 		
@@ -216,11 +208,12 @@ namespace QLang
 	public:
 		AssignmentExpression( std::string operation, VariableDefinition *var, Expression *value ) :
 			mOperation( operation ), mVariable( var ), mValue( value ) {}
-	
+
 	private:
 		std::string mOperation;
 		SmartPtr<VariableDefinition> mVariable;
 		SmartPtr<Expression> mValue;
+		friend class CodeGen;
 	};
 	
 	class OperationsExpression : public Expression
@@ -228,11 +221,12 @@ namespace QLang
 	public:
 		OperationsExpression( std::string operation, Expression *op1, Expression *op2 ) :
 			mOperation( operation ), mOp1( op1 ), mOp2( op2 ) {}
-	
+
 	private:
 		std::string mOperation;
 		SmartPtr<Expression> mOp1;
 		SmartPtr<Expression> mOp2;
+		friend class CodeGen;
 	};
 };
 

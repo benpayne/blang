@@ -239,11 +239,11 @@ There is no automated test harness or CI. Tests are run manually.
 
 ## Project Status
 
-This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST. The codegen currently supports: function definitions, variable declarations with constant initialization, return statements, if/else, while, for loops, function calls, and constant expressions (int, float, string, char). Binary expressions and assignment statements are not yet parseable. The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
+This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST. The codegen currently supports: function definitions, variable declarations with initialization (including expression initializers), return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end. The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
 
 ## Known Issues and Limitations
 
 - No CI/CD pipeline.
 - No automated test framework.
-- Binary expressions (e.g., `a + b` as statements) are not fully supported by the parser — causes "Failed to find terminal" errors in `func_call1.c`, `func_call2.c`.
+- External/undeclared functions (e.g., `printf`) cannot be called — all functions must be defined in the source file before use.
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.

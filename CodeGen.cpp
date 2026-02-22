@@ -380,6 +380,10 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 		return genVariableExpression( ve );
 	else if ( auto *ce = dynamic_cast<CallExpression*>( expr ) )
 		return genCallExpression( ce );
+	else if ( auto *ops = dynamic_cast<OperationsExpression*>( expr ) )
+		return genOperationsExpression( ops );
+	else if ( auto *assign = dynamic_cast<AssignmentExpression*>( expr ) )
+		return genAssignmentExpression( assign );
 
 	return nullptr;
 }
@@ -464,4 +468,102 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 	}
 
 	return mBuilder->CreateCall( llvmFunc, args, "calltmp" );
+}
+
+llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
+{
+	llvm::Value *left = genExpression( ops->mOp1 );
+	llvm::Value *right = genExpression( ops->mOp2 );
+
+	if ( left == nullptr || right == nullptr )
+		return nullptr;
+
+	const string &op = ops->mOperation;
+
+	// Integer arithmetic
+	if ( op == "+" )  return mBuilder->CreateAdd( left, right, "addtmp" );
+	if ( op == "-" )  return mBuilder->CreateSub( left, right, "subtmp" );
+	if ( op == "*" )  return mBuilder->CreateMul( left, right, "multmp" );
+	if ( op == "/" )  return mBuilder->CreateSDiv( left, right, "divtmp" );
+	if ( op == "%" )  return mBuilder->CreateSRem( left, right, "modtmp" );
+
+	// Bitwise
+	if ( op == "&" )  return mBuilder->CreateAnd( left, right, "andtmp" );
+	if ( op == "|" )  return mBuilder->CreateOr( left, right, "ortmp" );
+	if ( op == "^" )  return mBuilder->CreateXor( left, right, "xortmp" );
+	if ( op == "<<" ) return mBuilder->CreateShl( left, right, "shltmp" );
+	if ( op == ">>" ) return mBuilder->CreateAShr( left, right, "shrtmp" );
+
+	// Comparisons (produce i1)
+	if ( op == "==" ) return mBuilder->CreateICmpEQ( left, right, "eqtmp" );
+	if ( op == "!=" ) return mBuilder->CreateICmpNE( left, right, "netmp" );
+	if ( op == "<" )  return mBuilder->CreateICmpSLT( left, right, "lttmp" );
+	if ( op == ">" )  return mBuilder->CreateICmpSGT( left, right, "gttmp" );
+	if ( op == "<=" ) return mBuilder->CreateICmpSLE( left, right, "letmp" );
+	if ( op == ">=" ) return mBuilder->CreateICmpSGE( left, right, "getmp" );
+
+	// Logical (treat operands as booleans via != 0)
+	if ( op == "&&" )
+	{
+		llvm::Value *lBool = mBuilder->CreateICmpNE(
+			left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
+		llvm::Value *rBool = mBuilder->CreateICmpNE(
+			right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
+		return mBuilder->CreateAnd( lBool, rBool, "landtmp" );
+	}
+	if ( op == "||" )
+	{
+		llvm::Value *lBool = mBuilder->CreateICmpNE(
+			left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
+		llvm::Value *rBool = mBuilder->CreateICmpNE(
+			right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
+		return mBuilder->CreateOr( lBool, rBool, "lortmp" );
+	}
+
+	cerr << "CodeGen: unknown binary operator '" << op << "'" << endl;
+	return nullptr;
+}
+
+llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
+{
+	VariableDefinition *varDef = assign->mVariable;
+	auto it = mVariableMap.find( varDef );
+	if ( it == mVariableMap.end() )
+	{
+		cerr << "CodeGen: undefined variable '" << varDef->getName() << "'" << endl;
+		return nullptr;
+	}
+
+	llvm::AllocaInst *alloca = it->second;
+	llvm::Value *rhs = genExpression( assign->mValue );
+	if ( rhs == nullptr )
+		return nullptr;
+
+	const string &op = assign->mOperation;
+
+	if ( op == "=" )
+	{
+		mBuilder->CreateStore( rhs, alloca );
+		return rhs;
+	}
+
+	// Compound assignment: load current value, apply operation, store result
+	llvm::Value *current = mBuilder->CreateLoad(
+		alloca->getAllocatedType(), alloca, "cur" );
+	llvm::Value *result = nullptr;
+
+	if ( op == "+=" )      result = mBuilder->CreateAdd( current, rhs, "addassign" );
+	else if ( op == "-=" ) result = mBuilder->CreateSub( current, rhs, "subassign" );
+	else if ( op == "*=" ) result = mBuilder->CreateMul( current, rhs, "mulassign" );
+	else if ( op == "/=" ) result = mBuilder->CreateSDiv( current, rhs, "divassign" );
+	else if ( op == "%=" ) result = mBuilder->CreateSRem( current, rhs, "modassign" );
+	else if ( op == "^=" ) result = mBuilder->CreateXor( current, rhs, "xorassign" );
+	else
+	{
+		cerr << "CodeGen: unknown assignment operator '" << op << "'" << endl;
+		return nullptr;
+	}
+
+	mBuilder->CreateStore( result, alloca );
+	return result;
 }
