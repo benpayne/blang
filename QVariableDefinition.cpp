@@ -18,15 +18,45 @@ std::ostream &QLang::operator<<(std::ostream &out, const VariableDefinition &var
 	return out;
 }
 
-VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s )
+VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool isExtern, int paramIndex )
 {
 	VariableDefinition *def = nullptr;
-	SmartPtr<Type> t = Type::Parse( l, s, false );
-	int sym = l.getSymbol();
-	if ( t != nullptr && sym == Lexer::SYMBOL )
+
+	// Handle 'self' parameter specially — it has an implicit type
+	if ( l.peekSymbol() == Lexer::KEYWORD_SELF )
 	{
+		l.getSymbol(); // consume 'self'
+		SmartPtr<Type> selfType = new Type( "self" );
+		def = new VariableDefinition( selfType, "self" );
+		s->addSymbol( def );
+		return def;
+	}
+
+	SmartPtr<Type> t = Type::Parse( l, s, false );
+
+	if ( t == nullptr )
+		return nullptr;
+
+	// Peek at the next token to determine if a parameter name follows
+	int sym = l.peekSymbol();
+	if ( sym == Lexer::SYMBOL )
+	{
+		// Named parameter — consume the name
+		l.getSymbol();
 		def = new VariableDefinition( t, l.getSymbolText() );
 		s->addSymbol( def );
+	}
+	else if ( isExtern && ( sym == ',' || sym == ')' ) )
+	{
+		// Unnamed parameter in an extern declaration — generate a synthetic name
+		string syntheticName = "_arg" + to_string( paramIndex );
+		def = new VariableDefinition( t, syntheticName );
+		s->addSymbol( def );
+	}
+	else
+	{
+		// Non-extern function requires named parameters
+		COMPILE_ERROR( l, "Expected parameter name" );
 	}
 
 	return def;
@@ -35,24 +65,56 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s )
 VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 {
 	VariableDeclaration *def = new VariableDeclaration;
-	SmartPtr<Type> t = Type::Parse( l, s, false );
-	
+	bool isConst = false;
+	bool isVar = false;
+
+	// Check for const or var modifier before parsing the type
+	if ( l.peekSymbol() == Lexer::TYPE_MODIFIER )
+	{
+		// Peek doesn't consume, so we need to consume to get the text
+		int modSym = l.getSymbol();
+		string modText = l.getSymbolText();
+
+		if ( modText == "var" )
+		{
+			isVar = true;
+		}
+		else if ( modText == "const" )
+		{
+			isConst = true;
+		}
+	}
+
+	SmartPtr<Type> t = nullptr;
+
+	if ( isVar )
+	{
+		// var keyword already consumed, use placeholder type
+		t = new Type( "var" );
+	}
+	else
+	{
+		// Normal type parse
+		t = Type::Parse( l, s, false );
+	}
+
 	do {
 		VariableDeclaration::DeclData data;
 		int sym = l.getSymbol();
-		
+
 		if ( t != nullptr && sym == Lexer::SYMBOL )
 		{
 			data.mVaribale = new VariableDefinition( t, l.getSymbolText() );
+			data.mVaribale->setConst( isConst );
 		}
 		else
 		{
 			// report error
 			COMPILE_ERROR( l, "Failed parse varible" );
 		}
-	
+
 		s->addSymbol( data.mVaribale );
-		
+
 		if ( l.peekSymbol() == '=' )
 		{
 			sym = l.getSymbol();
@@ -63,6 +125,19 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 				COMPILE_ERROR( l, "Failed parse value" );
 			}
 		}
+
+		// const variables must have an initializer
+		if ( isConst && data.mInitialValue == nullptr )
+		{
+			COMPILE_ERROR( l, "const variable must be initialized" );
+		}
+
+		// var variables must have an initializer for type inference
+		if ( isVar && data.mInitialValue == nullptr )
+		{
+			COMPILE_ERROR( l, "var variable must be initialized" );
+		}
+
 		def->mVariables.push_back( data );
 
 		if ( l.peekSymbol() != ',' )
@@ -70,6 +145,6 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 
 		l.getSymbol(); // consume ','
 	} while ( true );
-	
+
 	return def;
 }

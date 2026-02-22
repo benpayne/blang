@@ -443,6 +443,435 @@ fn main() {
 
 No header files. No forward declarations. No include guards. The compiler resolves dependencies from `import` statements.
 
+## Data and Persistence
+
+### Design Philosophy: Language vs Standard Library
+
+Some features need compiler support (new syntax, compile-time checking). Others are purely runtime and belong in the standard library. BLang draws the line as follows:
+
+| Layer | What belongs here | Examples |
+|-------|-------------------|----------|
+| **Language syntax** | Things the compiler must parse, type-check, or transform | Query expressions, table structs, contracts, test blocks |
+| **Standard library** | Runtime implementations that use normal BLang syntax | Database drivers, HTTP servers, serialization codecs |
+| **Built-in annotations** | Compiler-recognized metadata that triggers code generation | `@json`, `@grpc`, `@migrate` |
+
+The goal: an LLM writes normal BLang code and gets databases, serialization, and network services without learning framework APIs. The compiler and standard library collaborate behind the scenes.
+
+### Table Types
+
+A `table` struct is a regular struct that the compiler knows maps to a database table. The compiler can type-check queries against it, generate migrations, and prevent schema mismatches at compile time.
+
+```
+table struct User {
+	int id;
+	string name;
+	string email;
+	bool active;
+}
+
+table struct Post {
+	int id;
+	int user_id;       // foreign key inferred from User.id by naming convention
+	string title;
+	string body;
+}
+```
+
+Table structs are value types like any other struct. They can be passed to functions, stored in lists, and serialized. The `table` keyword simply tells the compiler: "this type has a corresponding database table — check queries against its schema."
+
+### Query Expressions
+
+Queries are language-level expressions that the compiler type-checks and translates to SQL (or another backend). They use a pipeline syntax (`|>`) that composes naturally and reads top-to-bottom.
+
+```
+fn active_users() -> Result<List<User>, DBError> {
+	return query User
+		|> where { .active == true }
+		|> order_by { .name }
+		|> limit(100);
+}
+
+fn user_posts(int user_id) -> Result<List<Post>, DBError> {
+	return query Post
+		|> where { .user_id == user_id }
+		|> order_by { .id };
+}
+
+fn user_with_posts(int id) -> Result<Option<User>, DBError> {
+	return query User
+		|> where { .id == id }
+		|> join Post on { User.id == Post.user_id }
+		|> first;
+}
+```
+
+Key design decisions:
+
+- **No string SQL** — queries are syntax, not strings. SQL injection is impossible.
+- **Compile-time schema checking** — referencing `.nonexistent_field` is a compile error.
+- **One way to query** — no ORM method chains vs raw SQL vs query builder debate.
+- **Pipeline operator `|>`** — each stage transforms the result. LLMs generate this reliably because each step is independent and composable.
+
+Mutations use the same table types:
+
+```
+fn create_user(string name, string email) -> Result<User, DBError> {
+	return insert User { name: name, email: email, active: true };
+}
+
+fn deactivate_user(int id) -> Result<int, DBError> {
+	return update User
+		|> where { .id == id }
+		|> set { .active = false };
+}
+
+fn remove_old_posts(int days) -> Result<int, DBError> {
+	return delete Post
+		|> where { .created_at < time.days_ago(days) };
+}
+```
+
+### Automatic Migrations
+
+Schema migrations are derived from the table struct definitions. The compiler tracks the schema history and generates migration steps automatically. There is no manual migration file authoring.
+
+```bash
+# Compiler compares current table structs against last known schema
+blang migrate --preview     # shows what would change
+blang migrate --apply       # applies to the connected database
+blang migrate --generate    # emits migration SQL for review/CI
+```
+
+When a developer changes a table struct:
+
+```
+table struct User {
+	int id;
+	string name;
+	string email;
+	bool active;
+	string role;         // new field added
+	// removed: nothing  // removing a field requires explicit confirmation
+}
+```
+
+The compiler detects the diff and generates:
+
+```sql
+ALTER TABLE user ADD COLUMN role TEXT NOT NULL DEFAULT '';
+```
+
+Design principles for migrations:
+
+- **Additive changes are automatic** — adding fields, adding tables, adding indexes.
+- **Destructive changes require confirmation** — dropping columns, dropping tables, renaming fields. The compiler flags these and asks for explicit intent (via a `@drop` annotation or CLI confirmation).
+- **No migration numbering** — the compiler tracks schema state, not a sequence of numbered files. This eliminates the merge-conflict problem with migration files.
+- **LLMs never write migrations** — the LLM modifies the table struct; the compiler handles the rest. This removes an entire category of LLM errors (wrong ALTER syntax, missing rollback, out-of-order migrations).
+
+### Database Configuration
+
+Connection configuration is separate from queries, keeping code portable:
+
+```
+// blang.toml (project config, not source code)
+[database]
+driver = "postgres"
+url = "env:DATABASE_URL"
+```
+
+The `query`, `insert`, `update`, and `delete` keywords use the project's configured database. No connection objects to pass around. For multiple databases, named connections are explicit:
+
+```
+result = query User @db("analytics")
+	|> where { .active == true };
+```
+
+## Serialization and Wire Protocols
+
+### Built-in Annotations for Code Generation
+
+BLang uses compiler-recognized annotations to generate serialization code. No external code generators, no reflection, no runtime overhead for formats that can be determined at compile time.
+
+```
+@json
+struct APIResponse {
+	int status;
+	string message;
+	List<User> data;
+}
+
+// Automatically gets:
+// fn to_json(self) -> string
+// fn from_json(string input) -> Result<APIResponse, ParseError>
+```
+
+### gRPC and Protocol Buffers
+
+For cross-system compatibility, BLang supports gRPC natively through annotations. The compiler generates the serialization and service stubs — no separate `.proto` file or `protoc` step.
+
+```
+@grpc
+struct UserRequest {
+	int id;
+}
+
+@grpc
+struct UserResponse {
+	int id;
+	string name;
+	string email;
+}
+
+@grpc
+protocol UserService {
+	fn get_user(UserRequest req) -> Result<UserResponse, RPCError>;
+	fn list_users(Empty req) -> Result<List<UserResponse>, RPCError>;
+}
+```
+
+This generates both client stubs and server interfaces. The struct annotation `@grpc` handles protobuf-compatible serialization. The protocol annotation generates the service definition.
+
+Why gRPC as the primary wire protocol:
+
+- **Schema-first** — the struct *is* the schema. No drift between `.proto` files and code.
+- **Cross-language** — gRPC clients in Python, Go, Java, etc. can call BLang services and vice versa.
+- **LLM-friendly** — the LLM writes normal BLang structs and protocols; the compiler handles the wire format.
+- **One right way** — no debate between REST vs gRPC vs GraphQL for service-to-service communication.
+
+### Supported Serialization Formats
+
+Annotations are the mechanism; the standard library provides the implementations:
+
+| Annotation | Format | Use case |
+|-----------|--------|----------|
+| `@json` | JSON | Human-readable APIs, config files |
+| `@grpc` | Protocol Buffers | Service-to-service, cross-language |
+| `@msgpack` | MessagePack | Compact binary, same-language |
+| `@csv` | CSV | Data import/export |
+
+Multiple annotations can be combined on a single struct. The compiler generates all requested serialization methods.
+
+## Network Services
+
+### The Boundary Question: REST vs GraphQL
+
+REST endpoints and GraphQL schemas are **standard library** concerns, not language syntax. The reasoning: they are presentation-layer patterns that change faster than languages evolve, and they don't require compiler support to be type-safe (BLang's existing type system already catches mismatches).
+
+However, BLang's standard library should make defining services as concise as the language itself. The principle remains: one obvious way, minimal boilerplate, LLM-friendly.
+
+### HTTP Services (Standard Library)
+
+```
+import http;
+
+fn main() {
+	http.Server server = http.Server.new(8080);
+
+	server.get("/users", fn(http.Request req) -> http.Response {
+		users = query User |> where { .active == true }?;
+		return http.ok(users);   // auto-serialized via @json
+	});
+
+	server.post("/users", fn(http.Request req) -> http.Response {
+		input = req.body_as(CreateUserInput)?;
+		user = insert User { name: input.name, email: input.email, active: true }?;
+		return http.created(user);
+	});
+
+	server.listen();
+}
+```
+
+### GraphQL (Standard Library)
+
+For teams that prefer GraphQL, the standard library provides a schema-from-types approach:
+
+```
+import graphql;
+
+@graphql
+table struct User {
+	int id;
+	string name;
+	string email;
+	List<Post> posts;   // resolved as a relationship
+}
+
+fn main() {
+	graphql.Server server = graphql.Server.new(8080);
+	server.expose(User);   // generates query/mutation resolvers from table struct
+	server.listen();
+}
+```
+
+The `@graphql` annotation generates the GraphQL schema from the struct. Queries, mutations, and field resolvers are derived from the table struct and its query expressions. Custom resolvers override the defaults.
+
+### Why Not Language-Level REST/GraphQL?
+
+- **REST is a pattern**, not a type system concept. URL routing, content negotiation, and middleware are runtime behaviors that don't benefit from compiler analysis.
+- **GraphQL is a query language** that could theoretically get language integration (like database queries), but its rapidly evolving spec makes it better suited to library updates than language revisions.
+- **gRPC gets deeper integration** because its schema (protobuf) maps cleanly to BLang's type system and its binary wire format benefits from compile-time code generation.
+
+The standard library approach still gives LLMs a single, canonical API to target — they don't need to choose between Express, Axum, Gin, or Flask equivalents.
+
+## Contracts
+
+### Preconditions and Postconditions
+
+Functions can declare contracts that the compiler checks at call sites (when statically provable) or inserts as runtime assertions.
+
+```
+fn divide(int a, int b) -> int
+	requires b != 0
+{
+	return a / b;
+}
+
+fn binary_search<T: Comparable>(List<T> list, T target) -> Option<int>
+	requires list.is_sorted()
+{
+	// ...
+}
+
+fn sqrt(float x) -> float
+	requires x >= 0.0
+	ensures result >= 0.0
+{
+	// ...
+}
+```
+
+Contracts serve three purposes:
+
+1. **Compile-time error detection** — if the compiler can prove a contract violation (e.g., `divide(x, 0)`), it's a compile error.
+2. **Runtime safety net** — when static analysis can't prove the contract, a runtime check is inserted. Violation is a panic with a clear message, not undefined behavior.
+3. **LLM guidance** — contracts are structured documentation. An LLM reading `requires b != 0` knows to add a zero-check before calling `divide`. This is more reliable than reading prose comments.
+
+Contracts are **not** a full formal verification system. They are lightweight assertions that catch the most common LLM errors: null-like invalid states, off-by-one bounds, and violated preconditions.
+
+## Built-in Testing
+
+### Test Blocks
+
+Tests are part of the language, not a framework. Test blocks can appear in any source file, adjacent to the code they test.
+
+```
+fn add(int a, int b) -> int {
+	return a + b;
+}
+
+test "add returns sum of arguments" {
+	assert add(2, 3) == 5;
+	assert add(-1, 1) == 0;
+	assert add(0, 0) == 0;
+}
+
+test "add handles overflow" {
+	// result type catches overflow instead of wrapping
+	assert add(int.max, 1) == err(OverflowError);
+}
+```
+
+Design decisions:
+
+- **`test` is a keyword** — no test framework to import, no test runner to configure, no naming conventions to follow.
+- **Tests live next to code** — not in a separate `tests/` directory. When an LLM generates a function, it can generate tests in the same file immediately.
+- **`assert` is the only assertion** — no `assertEqual`, `assertThrows`, `assertThat`. One way to assert.
+- **The compiler is the test runner** — `blang test` discovers and runs all test blocks. No third-party test harness.
+- **Test blocks are stripped from release builds** — they have zero runtime cost in production.
+
+### Table-Driven Tests
+
+For parameterized testing, use a `for` loop inside a test block:
+
+```
+test "division by zero returns error" {
+	for numerator in [0, 1, -1, 100, int.max] {
+		assert divide(numerator, 0) == err(DivideByZeroError);
+	}
+}
+```
+
+### Testing Async and Concurrent Code
+
+Test blocks support `async` and `spawn` natively — no special test utilities:
+
+```
+test "channel sends and receives" {
+	chan int c = chan.new(1);
+	spawn {
+		c.send(42);
+	}
+	assert c.recv() == 42;
+}
+```
+
+## Additional LLM-Optimized Design Rules
+
+These rules complement the syntax design to maximize LLM code generation accuracy, informed by research from MoonBit (ICSE LLM4Code 2024) and the broader LLM-for-code community.
+
+### No Function Overloading
+
+Every function name has exactly one signature. This is a strict rule, not a guideline.
+
+```
+// WRONG — BLang does not allow this
+fn format(int x) -> string { ... }
+fn format(float x) -> string { ... }
+fn format(string x) -> string { ... }
+
+// RIGHT — distinct names
+fn format_int(int x) -> string { ... }
+fn format_float(float x) -> string { ... }
+fn format_string(string x) -> string { ... }
+```
+
+Why: LLMs frequently hallucinate overloads that don't exist, or call overloaded functions with the wrong argument types. With no overloading, the function name uniquely determines the signature, and the compiler catches every mismatch.
+
+Generics with protocol constraints handle the cases where overloading would be genuinely useful:
+
+```
+fn format<T: Printable>(T value) -> string {
+	return value.to_string();
+}
+```
+
+### Mandatory Type Signatures on Public Functions
+
+All `pub` functions must have explicit parameter types and return types. Type inference (`var`) is allowed for local variables but not for module boundaries.
+
+```
+// REQUIRED — explicit types on public API
+pub fn calculate_tax(float income, float rate) -> float {
+	return income * rate;
+}
+
+// ALLOWED — inference for locals inside function bodies
+fn internal_helper() -> int {
+	var x = compute();  // type inferred
+	return x + 1;
+}
+```
+
+This gives LLMs stable anchors: when generating code that calls a module's public API, the LLM can rely on the type signature without needing to trace through implementation details.
+
+### Flat Module Namespace
+
+Modules are one level deep. No nested sub-modules, no deeply qualified paths.
+
+```
+// YES
+import http;
+import db;
+import auth;
+
+// NO — BLang does not support this
+import std.net.http.server;
+import org.example.auth.oauth2.providers;
+```
+
+Why: MoonBit's research found that flat structures are "more KV-cache friendly" for LLM inference. Deep namespace paths waste tokens and create opportunities for hallucinated intermediate segments. One level of qualification (`http.Server`) is sufficient and unambiguous.
+
 ## Comparison With Other Languages
 
 ### BLang vs C
@@ -553,28 +982,51 @@ BLang source files use the `.bl` extension.
 
 ## Implementation Status
 
-The BLang compiler is under active development. The current implementation is a hand-written recursive-descent parser that builds an AST. LLVM 18+ code generation infrastructure exists but is not yet connected to the active parser.
+The BLang compiler is under active development. The current implementation is a hand-written recursive-descent parser that builds an AST. LLVM 18+ code generation is wired to the parser via the `CodeGen` class — the full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
+
+For the detailed implementation plan with 217 tasks across all phases, see **[docs/implementation_plan.md](implementation_plan.md)**.
 
 ### Currently Working
 
-- Function definitions with parameters and return types
-- Variable declarations (single and multi-variable)
-- Control flow: if/else, while, for
-- Constants: integer, float, string, char literals
-- Function calls with arguments
-- Return statements
+- Function definitions with parameters and return types (C-style syntax)
+- Extern function declarations with variadic support (`extern int printf(string fmt, ...);`)
+- Variable declarations (single and multi-variable) with expression initializers
+- Binary expressions with full operator precedence: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
+- Unary expressions (`-`, `!`, `~`)
+- Assignment operators (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`)
+- Control flow: if/else, while, for (C-style)
+- Constants: integer, float, string, char literals (with escape sequences)
+- Function calls with arguments (including nested calls)
+- Return statements (with expression support)
 - Block scoping
 - Comments (single-line and multi-line)
+- LLVM IR code generation for all of the above (when built with `llvm-18-dev`)
+- End-to-end compilation: parse → `.ll` → `llc` → native binary
 
 ### Next Steps
 
-1. Binary expressions and assignment operators
-2. Transition from C-style syntax (`int foo()`) to BLang syntax (`fn foo() -> int`)
-3. Struct types and impl blocks
-4. Protocol definitions and conformance checking
-5. Generics with protocol constraints
-6. spawn/chan concurrency primitives
-7. async/await and event loop integration
-8. Wire AST to LLVM code generation (LLVM 18+ backend already exists)
-9. Result/Option types and the `?` operator
-10. Module system and imports
+**Phase 1 — Core Language (current)**
+
+1. Transition from C-style syntax (`int foo()`) to BLang syntax (`fn foo() -> int`)
+2. Struct types and impl blocks
+3. Protocol definitions and conformance checking
+4. Generics with protocol constraints
+5. Result/Option types, `match` expressions, and the `?` operator
+6. Module system and imports (`import`, `pub`)
+
+**Phase 2 — Concurrency and Safety**
+
+9. spawn/chan concurrency primitives
+10. async/await and event loop integration
+11. Ownership model (own/shared/sync)
+12. Contracts (requires/ensures)
+13. Built-in test blocks (`test` keyword)
+
+**Phase 3 — Data and Services**
+
+14. Table structs and query expressions (query/insert/update/delete, pipeline operator `|>`)
+15. Automatic schema migrations (`blang migrate`)
+16. Serialization annotations (@json, @grpc, @msgpack)
+17. gRPC service generation from protocols
+18. HTTP and GraphQL standard library
+19. No-overloading rule enforcement, mandatory public type signatures, flat module namespace

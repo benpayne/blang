@@ -38,8 +38,34 @@ Module *Module::Parse( Lexer &l, Scope *s )
 		while( !l.isEOF() )
 		{
 			// Peek past any trailing whitespace/comments to check for real EOF
-			if ( l.peekSymbol() == -1 )
+			int nextSym = l.peekSymbol();
+			if ( nextSym == -1 )
 				break;
+
+			if ( nextSym == Lexer::KEYWORD_STRUCT )
+			{
+				SmartPtr<StructDefinition> structDef = StructDefinition::Parse( l, s );
+				continue;
+			}
+
+			if ( nextSym == Lexer::KEYWORD_PROTOCOL )
+			{
+				SmartPtr<ProtocolDefinition> protoDef = ProtocolDefinition::Parse( l, s );
+				continue;
+			}
+
+			if ( nextSym == Lexer::KEYWORD_IMPL )
+			{
+				StructDefinition::ParseImplBlock( l, s );
+				continue;
+			}
+
+			if ( nextSym == Lexer::KEYWORD_ENUM )
+			{
+				SmartPtr<EnumDefinition> enumDef = EnumDefinition::Parse( l, s );
+				continue;
+			}
+
 			def = FunctionDefinition::Parse( l, s );
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
@@ -189,6 +215,11 @@ int main( int argc, char *argv[] )
 	gScope->addType( new Type( "int" ) );
 	gScope->addType( new Type( "char" ) );
 	gScope->addType( new Type( "string" ) );
+	gScope->addType( new Type( "bool" ) );
+	gScope->addType( new Type( "float" ) );
+	gScope->addType( new Type( "double" ) );
+	gScope->addType( new Type( "long" ) );
+	gScope->addType( new Type( "short" ) );
 	LexerReader reader( argv[ 1 ] );
 	Lexer l( &reader );
 	

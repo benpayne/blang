@@ -58,6 +58,24 @@ namespace QLang
 		friend class CodeGen;
 	};
 
+	class ForInStatement : public Statement
+	{
+	public:
+
+		static ForInStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		ForInStatement() {}
+
+	private:
+		std::string mVariableName;
+		std::string mSecondVariableName; // for key, value iteration
+		SmartPtr<Expression> mIterableExpression; // nullptr for infinite loop
+		SmartPtr<Statement> mBody;
+		bool mIsInfinite = false;
+		friend class CodeGen;
+	};
+
 	class IfStatement : public Statement
 	{
 	public:
@@ -238,6 +256,156 @@ namespace QLang
 	private:
 		std::string mOperation;
 		SmartPtr<Expression> mOperand;
+		friend class CodeGen;
+	};
+
+	class BreakStatement : public Statement
+	{
+	public:
+
+		static BreakStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		BreakStatement() {}
+
+	private:
+		friend class CodeGen;
+	};
+
+	class ContinueStatement : public Statement
+	{
+	public:
+
+		static ContinueStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		ContinueStatement() {}
+
+	private:
+		friend class CodeGen;
+	};
+
+	class FieldAccessExpression : public Expression
+	{
+	public:
+		FieldAccessExpression( Expression *object, const std::string &fieldName ) :
+			mObject( object ), mFieldName( fieldName ) {}
+
+		static FieldAccessExpression *Parse( Lexer &l, Scope *scope );
+
+	private:
+		SmartPtr<Expression> mObject;
+		std::string mFieldName;
+		friend class CodeGen;
+	};
+
+	class StructLiteralExpression : public Expression
+	{
+	public:
+		StructLiteralExpression( const std::string &typeName ) : mTypeName( typeName ) {}
+
+		void addField( const std::string &name, Expression *value )
+		{
+			mFieldNames.push_back( name );
+			mFieldValues.push_back( value );
+		}
+
+		static StructLiteralExpression *Parse( Lexer &l, Scope *scope, const std::string &typeName );
+
+	private:
+		std::string mTypeName;
+		std::vector<std::string> mFieldNames;
+		std::vector<SmartPtr<Expression>> mFieldValues;
+		friend class CodeGen;
+	};
+
+	class ArrayLiteralExpression : public Expression
+	{
+	public:
+		ArrayLiteralExpression() {}
+
+		void addElement( Expression *elem ) { mElements.push_back( elem ); }
+
+		static ArrayLiteralExpression *Parse( Lexer &l, Scope *scope );
+
+	private:
+		std::vector<SmartPtr<Expression>> mElements;
+		friend class CodeGen;
+	};
+
+	class IndexExpression : public Expression
+	{
+	public:
+		IndexExpression( Expression *object, Expression *index ) :
+			mObject( object ), mIndex( index ) {}
+
+	private:
+		SmartPtr<Expression> mObject;
+		SmartPtr<Expression> mIndex;
+		friend class CodeGen;
+	};
+
+	class MethodCallExpression : public Expression
+	{
+	public:
+		MethodCallExpression( Expression *object, const std::string &methodName ) :
+			mObject( object ), mMethodName( methodName ) {}
+
+		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
+
+	private:
+		SmartPtr<Expression> mObject;
+		std::string mMethodName;
+		std::vector<SmartPtr<Expression>> mArgs;
+		friend class CodeGen;
+	};
+
+	class RangeExpression : public Expression
+	{
+	public:
+		RangeExpression( Expression *start, Expression *end ) :
+			mStart( start ), mEnd( end ) {}
+
+	private:
+		SmartPtr<Expression> mStart;
+		SmartPtr<Expression> mEnd;
+		friend class CodeGen;
+	};
+
+	class StringInterpolation : public Expression
+	{
+	public:
+		StringInterpolation() {}
+
+		void addPart( Expression *part ) { mParts.push_back( part ); }
+
+		static StringInterpolation *Parse( Lexer &l, Scope *scope, const std::string &rawString );
+
+	private:
+		std::vector<SmartPtr<Expression>> mParts;
+		friend class CodeGen;
+	};
+
+	struct MatchArm
+	{
+		std::string mPattern;
+		std::string mBindingName; // variable bound by destructuring (e.g., ok(value) binds "value")
+		SmartPtr<Block> mBody;
+		bool mIsWildcard = false;
+	};
+
+	class MatchExpression : public Expression
+	{
+	public:
+
+		static MatchExpression *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		MatchExpression() {}
+
+	private:
+		SmartPtr<Expression> mSubject;
+		std::vector<MatchArm> mArms;
 		friend class CodeGen;
 	};
 };

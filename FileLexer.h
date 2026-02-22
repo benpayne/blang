@@ -37,23 +37,40 @@ public:
 	
 	enum LexerSymbols {
 		BUILTIN_TYPE,
+		BOOL,
 		TYPE_MODIFIER,
 		KEYWORD_ELSE,
 		KEYWORD_FOR,
 		KEYWORD_IF,
 		KEYWORD_WHILE,
 		KEYWORD_RETURN,
+		KEYWORD_FN,
+		KEYWORD_STRUCT,
+		KEYWORD_IMPL,
+		KEYWORD_SELF,
+		KEYWORD_PROTOCOL,
+		KEYWORD_MATCH,
+		KEYWORD_IMPORT,
+		KEYWORD_PUB,
+		KEYWORD_BREAK,
+		KEYWORD_CONTINUE,
+		KEYWORD_ENUM,
+		KEYWORD_IN,
 		VOID,
 		SYMBOL,
 		CONSTANT_STRING,
 		CONSTANT_CHAR,
 		CONSTANT_NUMBER,
+		CONSTANT_FLOAT,
 		LOR,
 		LAND,
 		EQ,
 		ASSIGN,
 		SHIFT,
 		ELLIPSIS,
+		RANGE,
+		ARROW,
+		WILDCARD,
 		NUM_SYMBOLS
 	};
 	
@@ -68,7 +85,7 @@ protected:
 	void readSymbol();
 	void readStringConst();
 	void readCharacterConst();
-	void readConst();
+	bool readConst();
 	void handleComment( bool singleLine );
 	bool isAlpha( char c );
 	bool isAlphaNum( char c );

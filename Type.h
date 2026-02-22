@@ -37,15 +37,20 @@ namespace QLang
 	{
 	public:
 		Type( const std::string &name ) : mName( name ) {}
-		
+
 		static Type *Parse( Lexer &l, Scope *s, bool allow_void );
-		
+
 		const std::string &getName() const { return mName; }
 
+		void addTypeParam( Type *param ) { mTypeParams.push_back( param ); }
+		int getNumTypeParams() const { return mTypeParams.size(); }
+		Type *getTypeParam( int i ) { return mTypeParams[ i ]; }
+
 		friend std::ostream &operator<<(std::ostream &out, const Type &type);
-		
+
 	private:
 		std::string mName;
+		std::vector<SmartPtr<Type>> mTypeParams;
 	};
 
 	class Symbol : virtual public RefCount
@@ -138,6 +143,12 @@ namespace QLang
 		TypeListType mTypeList;
 	};
 	
+	struct GenericParam
+	{
+		std::string mName;
+		std::string mConstraint; // protocol constraint, empty if unconstrained
+	};
+
 	class Module : virtual public RefCount
 	{
 	public:
@@ -147,18 +158,18 @@ namespace QLang
 	private:
 		Module() {}
 		friend class CodeGen;
-		
+
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
 	};
 	
 	class FunctionDefinition : public Symbol
 	{
 	public:
-		
+
 		static FunctionDefinition *Parse( Lexer &l, Scope *s );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
-		
+
 		friend std::ostream &operator<<(std::ostream &out, const FunctionDefinition &func);
 
 		Type *getReturnType() { return mReturnType; }
@@ -167,6 +178,7 @@ namespace QLang
 		VariableDefinition *getParam( int p );
 		bool isExtern() const { return mIsExtern; }
 		bool isVariadic() const { return mIsVariadic; }
+		bool isGeneric() const { return !mGenericParams.empty(); }
 
 	private:
 		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
@@ -177,27 +189,95 @@ namespace QLang
 		SmartPtr<Block> mFuncBody;
 		bool mIsExtern = false;
 		bool mIsVariadic = false;
+		std::vector<GenericParam> mGenericParams;
 
 		friend class CodeGen;
 	};
-	
+
 	class VariableDefinition : public Symbol
 	{
 	public:
 		VariableDefinition( Type *type, const std::string &name ) : Symbol( name ), mType( type ) {}
 
-		static VariableDefinition *ParseFuncParam( Lexer &l, Scope *s );
+		static VariableDefinition *ParseFuncParam( Lexer &l, Scope *s, bool isExtern = false, int paramIndex = 0 );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
-		
+
 		friend std::ostream &operator<<(std::ostream &out, const VariableDefinition &var);
-		
+
 		Type *getVariableType() { return mType; }
-		
-	private:		
+
+		bool isConst() const { return mIsConst; }
+		void setConst( bool isConst ) { mIsConst = isConst; }
+
+	private:
 		SmartPtr<Type>	mType;
+		bool mIsConst = false;
 	};
-		
+
+	class StructDefinition : public Symbol
+	{
+	public:
+
+		static StructDefinition *Parse( Lexer &l, Scope *s );
+		static void ParseImplBlock( Lexer &l, Scope *s );
+
+		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
+
+		void addMethod( FunctionDefinition *method ) { mMethods.push_back( method ); }
+		bool isGeneric() const { return !mGenericParams.empty(); }
+
+	private:
+		StructDefinition( const std::string &name ) : Symbol( name ) {}
+
+		std::vector<SmartPtr<VariableDefinition> > mFields;
+		std::vector<SmartPtr<FunctionDefinition> > mMethods;
+		std::vector<GenericParam> mGenericParams;
+		friend class CodeGen;
+	};
+
+	class ProtocolDefinition : public Symbol
+	{
+	public:
+
+		static ProtocolDefinition *Parse( Lexer &l, Scope *s );
+
+		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
+
+		bool isGeneric() const { return !mGenericParams.empty(); }
+
+	private:
+		ProtocolDefinition( const std::string &name ) : Symbol( name ) {}
+
+		std::vector<SmartPtr<FunctionDefinition> > mRequiredMethods;
+		std::vector<GenericParam> mGenericParams;
+		friend class CodeGen;
+	};
+
+	class EnumDefinition : public Symbol
+	{
+	public:
+
+		struct Variant
+		{
+			std::string mName;
+			std::vector<SmartPtr<Type>> mAssociatedTypes;
+		};
+
+		static EnumDefinition *Parse( Lexer &l, Scope *s );
+
+		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
+
+		bool isGeneric() const { return !mGenericParams.empty(); }
+
+	private:
+		EnumDefinition( const std::string &name ) : Symbol( name ) {}
+
+		std::vector<Variant> mVariants;
+		std::vector<GenericParam> mGenericParams;
+		friend class CodeGen;
+	};
+
 };
 
 #endif // BLANG_TYPE_H_

@@ -15,6 +15,16 @@ using namespace std;
 std::ostream &QLang::operator<<(std::ostream &out, const Type &type)
 {
 	out << type.mName;
+	if ( !type.mTypeParams.empty() )
+	{
+		out << "<";
+		for ( size_t i = 0; i < type.mTypeParams.size(); i++ )
+		{
+			if ( i > 0 ) out << ", ";
+			out << *type.mTypeParams[ i ];
+		}
+		out << ">";
+	}
 	return out;
 }
 
@@ -22,14 +32,14 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 {
 	int sym = l.getSymbol();
 	Type *t = nullptr;
-	
+
 	while ( sym == Lexer::TYPE_MODIFIER )
 	{
 		// save modifier
 		sym = l.getSymbol();
 	}
-	
-	if ( sym == Lexer::BUILTIN_TYPE || ( allow_void and sym == Lexer::VOID ) )
+
+	if ( sym == Lexer::BUILTIN_TYPE || sym == Lexer::BOOL || ( allow_void and sym == Lexer::VOID ) )
 	{
 		t = s->findType( l.getSymbolText() );
 	}
@@ -41,7 +51,28 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 	{
 		COMPILE_ERROR( l, "Parse Error" );
 	}
-	
+
+	// Check for generic type arguments: Type<Arg1, Arg2>
+	if ( t != nullptr && l.peekSymbol() == '<' )
+	{
+		l.getSymbol(); // consume '<'
+		Type *genericType = new Type( t->getName() );
+
+		do {
+			Type *param = Type::Parse( l, s, false );
+			if ( param == nullptr )
+				COMPILE_ERROR( l, "Expected type argument" );
+			genericType->addTypeParam( param );
+
+			int nextSym = l.getSymbol();
+			if ( nextSym == '>' )
+				break;
+			if ( nextSym != ',' )
+				COMPILE_ERROR( l, "Expected ',' or '>' in type arguments" );
+		} while ( true );
+
+		t = genericType;
+	}
+
 	return t;
 }
-

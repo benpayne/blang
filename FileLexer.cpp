@@ -187,12 +187,13 @@ void Lexer::readCharacterConst()
 	}
 }
 
-void Lexer::readConst()
+bool Lexer::readConst()
 {
 	bool hex = false;
 	bool oct = false;
 	bool valid_char = true;
-	
+	bool isFloat = false;
+
 	if ( mReader->peekChar() == '0' )
 	{
 		if ( (*mReader)[ 1 ] == 'x' or (*mReader)[ 1 ] == 'X' )
@@ -208,13 +209,26 @@ void Lexer::readConst()
 			mMatchString = "0";
 		}
 	}
-	
+
 	while ( !mReader->isEOF() and valid_char )
 	{
 		char c = mReader->peekChar();
-	
+
 		if ( hex and ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) )
 			mMatchString.append( 1, mReader->popChar() );
+		else if ( c == '.' and !hex and !isFloat )
+		{
+			// Check that the next char after '.' is a digit (not '..' range)
+			char nextC = (*mReader)[ 1 ];
+			if ( nextC >= '0' and nextC <= '9' )
+			{
+				isFloat = true;
+				oct = false; // 0.xxx is float, not octal
+				mMatchString.append( 1, mReader->popChar() );
+			}
+			else
+				valid_char = false;
+		}
 		else if ( oct and (c >= '0' and c <= '7') )
 			mMatchString.append( 1, mReader->popChar() );
 		else if ( c >= '0' and c <= '9' )
@@ -222,6 +236,8 @@ void Lexer::readConst()
 		else
 			valid_char = false;
 	}
+
+	return isFloat;
 }
 
 void Lexer::handleComment( bool singleLine )
@@ -284,6 +300,7 @@ void Lexer::setCurrentPos( int pos )
 		mCurrentPos = pos;
 	else
 		mCurrentPos = mSymbolList.size() - 1;
+	mLastSym = -1;
 }
 
 int Lexer::getSymbolInternal()
@@ -321,11 +338,19 @@ int Lexer::getSymbolFromFile()
 		// check for keywords
 		switch ( mReader->peekChar() )
 		{
+			case 'b':
+				if ( matchKeyword( "bool" ) )
+					return BOOL;
+				else if ( matchKeyword( "break" ) )
+					return KEYWORD_BREAK;
+				break;
 			case 'c':
 				if ( matchKeyword( "char" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "const" ) )
 					return TYPE_MODIFIER;
+				else if ( matchKeyword( "continue" ) )
+					return KEYWORD_CONTINUE;
 				break;
 			case 'd':
 				if ( matchKeyword( "double" ) )
@@ -334,6 +359,8 @@ int Lexer::getSymbolFromFile()
 			case 'e':
 				if ( matchKeyword( "else" ) )
 					return KEYWORD_ELSE;
+				else if ( matchKeyword( "enum" ) )
+					return KEYWORD_ENUM;
 				else if ( matchKeyword( "extern" ) )
 					return TYPE_MODIFIER;
 				break;
@@ -342,16 +369,34 @@ int Lexer::getSymbolFromFile()
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "for" ) )
 					return KEYWORD_FOR;
+				else if ( matchKeyword( "fn" ) )
+					return KEYWORD_FN;
 				break;
 			case 'i':
 				if ( matchKeyword( "int" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "if" ) )
 					return KEYWORD_IF;
+				else if ( matchKeyword( "impl" ) )
+					return KEYWORD_IMPL;
+				else if ( matchKeyword( "import" ) )
+					return KEYWORD_IMPORT;
+				else if ( matchKeyword( "in" ) )
+					return KEYWORD_IN;
 				break;
 			case 'l':
 				if ( matchKeyword( "long" ) )
 					return BUILTIN_TYPE;
+				break;
+			case 'm':
+				if ( matchKeyword( "match" ) )
+					return KEYWORD_MATCH;
+				break;
+			case 'p':
+				if ( matchKeyword( "pub" ) )
+					return KEYWORD_PUB;
+				else if ( matchKeyword( "protocol" ) )
+					return KEYWORD_PROTOCOL;
 				break;
 			case 'r':
 				if ( matchKeyword( "return" ) )
@@ -366,6 +411,10 @@ int Lexer::getSymbolFromFile()
 					return TYPE_MODIFIER;
 				else if ( matchKeyword( "short" ) )
 					return BUILTIN_TYPE;
+				else if ( matchKeyword( "struct" ) )
+					return KEYWORD_STRUCT;
+				else if ( matchKeyword( "self" ) )
+					return KEYWORD_SELF;
 				break;
 			case 'u':
 				if ( matchKeyword( "unsigned" ) )
@@ -374,6 +423,8 @@ int Lexer::getSymbolFromFile()
 			case 'v':
 				if ( matchKeyword( "void" ) )
 					return VOID;
+				else if ( matchKeyword( "var" ) )
+					return TYPE_MODIFIER;
 				break;
 			case 'w':
 				if ( matchKeyword( "while" ) )
@@ -384,6 +435,9 @@ int Lexer::getSymbolFromFile()
 		if ( isAlpha( mReader->peekChar() ) )
 		{
 			readSymbol();
+			// Standalone '_' is a wildcard pattern
+			if ( mMatchString == "_" )
+				return WILDCARD;
 			return SYMBOL;
 		}
 		
@@ -401,8 +455,8 @@ int Lexer::getSymbolFromFile()
 	
 		if ( mReader->peekChar() >= '0' && mReader->peekChar() <= '9' )
 		{
-			readConst();
-			return CONSTANT_NUMBER;
+			bool isFloat = readConst();
+			return isFloat ? CONSTANT_FLOAT : CONSTANT_NUMBER;
 		}
 		
 		switch( mReader->peekChar() )
@@ -473,6 +527,9 @@ int Lexer::getSymbolFromFile()
 				}
 				// drop thur to operations
 			case '-':
+				if ( match( "->" ) )
+					return ARROW;
+				// fall through to other operators
 			case '+':
 			case '*':
 			case '%':
@@ -492,6 +549,8 @@ int Lexer::getSymbolFromFile()
 			case '.':
 				if ( match( "..." ) )
 					return ELLIPSIS;
+				else if ( match( ".." ) )
+					return RANGE;
 				else
 					return mReader->popChar();
 				break;

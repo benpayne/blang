@@ -32,10 +32,30 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 		statement = IfStatement::Parse( l, scope );
 		break;
 	case Lexer::KEYWORD_FOR:
-		statement = ForStatement::Parse( l, scope );
+	{
+		// Peek past 'for' to check if it's C-style for(;;) or for-in/infinite
+		int pos = l.getCurrentPos();
+		l.getSymbol(); // consume 'for'
+		int nextSym = l.peekSymbol();
+		l.setCurrentPos( pos ); // restore
+
+		if ( nextSym == '(' )
+			statement = ForStatement::Parse( l, scope );
+		else
+			statement = ForInStatement::Parse( l, scope );
 		break;
+	}
 	case Lexer::KEYWORD_RETURN:
 		statement = ReturnStatement::Parse( l, scope );
+		break;
+	case Lexer::KEYWORD_BREAK:
+		statement = BreakStatement::Parse( l, scope );
+		break;
+	case Lexer::KEYWORD_CONTINUE:
+		statement = ContinueStatement::Parse( l, scope );
+		break;
+	case Lexer::KEYWORD_MATCH:
+		statement = MatchExpression::Parse( l, scope );
 		break;
 	case '{':
 		statement = Block::Parse( l, scope );
