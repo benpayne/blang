@@ -18,7 +18,7 @@ using namespace std;
 Statement *Statement::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
-	Statement *statement = NULL;
+	Statement *statement = nullptr;
 	int pos = l.getCurrentPos();
 	
 	LOG( "Saving position: %d", pos );
@@ -44,13 +44,23 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 		l.getSymbol();
 		break;
 	default:
-		try { 
+		try {
 			statement = VariableDeclaration::Parse( l, scope );
 		} catch( CompileError &err ) {
 			LOG( "Not a decl, resetting position: %d", pos );
 			l.setCurrentPos( pos );
-			statement = Expression::Parse( l, scope );
-		}				
+			try {
+				statement = Expression::Parse( l, scope );
+			} catch ( CompileError &err2 ) {
+				l.setCurrentPos( pos );
+				COMPILE_ERROR( l, "Unexpected token" );
+			}
+			if ( statement == nullptr )
+			{
+				l.setCurrentPos( pos );
+				COMPILE_ERROR( l, "Unexpected token" );
+			}
+		}
 		break;
 	}
 	

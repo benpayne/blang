@@ -14,7 +14,7 @@ using namespace std;
 
 ReturnStatement *ReturnStatement::Parse( Lexer &l, Scope *scope )
 {
-	ReturnStatement *statement = NULL;
+	ReturnStatement *statement = nullptr;
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_RETURN )
 	{
@@ -23,11 +23,11 @@ ReturnStatement *ReturnStatement::Parse( Lexer &l, Scope *scope )
 	
 	statement = new ReturnStatement;
 	statement->mExpression = Expression::Parse( l, scope );
-	if ( statement->mExpression == NULL )
+	if ( statement->mExpression == nullptr )
 	{
 		COMPILE_ERROR( l, "Failed to parse expression in return" );
 		delete statement;
-		return NULL;
+		return nullptr;
 	}
 	
 	return statement;

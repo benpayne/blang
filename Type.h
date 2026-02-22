@@ -20,7 +20,8 @@ namespace QLang
 	class Type;
 	class Block;
 	class Statement;
-	
+	class CodeGen;
+
 	class Statement : virtual public RefCount
 	{
 	public:
@@ -28,7 +29,8 @@ namespace QLang
 		static Statement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		Statement() {}	
+		Statement() {}
+		friend class CodeGen;
 	};
 		
 	class Type : virtual public RefCount
@@ -98,10 +100,10 @@ namespace QLang
 			SymbolListType::iterator i = mSymbolList.find( str );
 			if ( i == mSymbolList.end() )
 			{
-				if ( mParent != NULL )
+				if ( mParent != nullptr )
 					return mParent->findSymbol( str );
 				else
-					return NULL;
+					return nullptr;
 			}
 			else
 				return (*i).second;
@@ -112,10 +114,10 @@ namespace QLang
 			TypeListType::iterator i = mTypeList.find( str );
 			if ( i == mTypeList.end() )
 			{
-				if ( mParent != NULL )
+				if ( mParent != nullptr )
 					return mParent->findType( str );
 				else
-					return NULL;
+					return nullptr;
 			}
 			else
 				return (*i).second;
@@ -139,11 +141,12 @@ namespace QLang
 	class Module : virtual public RefCount
 	{
 	public:
-		
+
 		static Module *Parse( Lexer &l, Scope *s );
-		
+
 	private:
 		Module() {}
+		friend class CodeGen;
 		
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
 	};
@@ -162,7 +165,9 @@ namespace QLang
 		int getNumberParams() { return mParameters.size(); }
 		Type *getParamType( int p );
 		VariableDefinition *getParam( int p );
-		
+		bool isExtern() const { return mIsExtern; }
+		bool isVariadic() const { return mIsVariadic; }
+
 	private:
 		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
 
@@ -170,6 +175,10 @@ namespace QLang
 		std::vector<SmartPtr<VariableDefinition> > mParameters;
 		SmartPtr<Scope> mFuncScope;
 		SmartPtr<Block> mFuncBody;
+		bool mIsExtern = false;
+		bool mIsVariadic = false;
+
+		friend class CodeGen;
 	};
 	
 	class VariableDefinition : public Symbol

@@ -29,8 +29,16 @@ Block *Block::Parse( Lexer &l, Scope *block_scope )
 	
 	while ( l.peekSymbol() != '}' )
 	{
+		int pos_before = l.getCurrentPos();
 		Statement *statement = Statement::Parse( l, block->mScope );
-		block->mStatementList.push_back( statement );
+
+		if ( statement == nullptr && l.getCurrentPos() == pos_before )
+		{
+			COMPILE_ERROR( l, "Failed to parse statement" );
+		}
+
+		if ( statement != nullptr )
+			block->mStatementList.push_back( statement );
 	}
 	
 	sym = l.getSymbol();

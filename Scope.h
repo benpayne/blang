@@ -3,8 +3,8 @@
 
 #include <string>
 #include <vector>
-#include "llvm/BasicBlock.h"
-#include "llvm/Function.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
 #include "Symbol.h"
 
 namespace BLang
@@ -22,8 +22,8 @@ namespace BLang
 			SCOPE_IF,
 		};
 		
-		Scope( ScopeType type = SCOPE_ANONYMOUS ) : mType( type ), mParentScope( NULL ), mBlock( NULL ), mFunc( NULL ) {}
-		Scope( ScopeType type, std::string &name ) : mType( type ), mName( name ), mParentScope( NULL ), mBlock( NULL ), mFunc( NULL ) {}
+		Scope( ScopeType type = SCOPE_ANONYMOUS ) : mType( type ), mParentScope( nullptr ), mBlock( nullptr ), mFunc( nullptr ) {}
+		Scope( ScopeType type, std::string &name ) : mType( type ), mName( name ), mParentScope( nullptr ), mBlock( nullptr ), mFunc( nullptr ) {}
 		
 		virtual ~Scope() 
 		{
@@ -45,10 +45,10 @@ namespace BLang
 					return mSymbols[ i ];
 			}
 			
-			if ( mParentScope != NULL )
+			if ( mParentScope != nullptr )
 				return mParentScope->findSymbol( name );
 			else
-				return NULL;
+				return nullptr;
 		}
 		
 		Symbol *findType( const std::string &name )
@@ -59,10 +59,10 @@ namespace BLang
 					return mTypes[ i ];
 			}
 			
-			if ( mParentScope != NULL )
+			if ( mParentScope != nullptr )
 				return mParentScope->findType( name );
 			else
-				return NULL;
+				return nullptr;
 		}
 		
 		void addSymbol( Symbol *sym )
@@ -93,7 +93,7 @@ namespace BLang
 		llvm::Function *getFunction()
 		{
 			Scope *s = this; 
-			while ( s != NULL )
+			while ( s != nullptr )
 			{
 				if ( s->mType != SCOPE_FUNCTION )
 					s = s->mParentScope;
@@ -101,14 +101,14 @@ namespace BLang
 					return s->mFunc;
 			}
 			
-			return NULL;
+			return nullptr;
 		}
 		
 		void createBasicBlock( const char *name = "entry" )
 		{
 			llvm::Function *f = getFunction();
 			
-			if ( f == NULL )
+			if ( f == nullptr )
 				printf( "Failed to get Function\n" );
 			
 			//mBlock = llvm::BasicBlock::Create( gContext, name, getFunction() );

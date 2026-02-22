@@ -15,7 +15,7 @@ using namespace std;
 
 std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &func)
 {
-	if ( func.mReturnType != NULL )
+	if ( func.mReturnType != nullptr )
 		out << *(func.mReturnType) << " " << func.getName();
 	else
 		out << "void " << func.getName();
@@ -38,12 +38,28 @@ std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &fun
 FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 {
 	FunctionDefinition *func;
+
+	// Check for extern modifier
+	bool isExtern = false;
+	if ( l.peekSymbol() == Lexer::TYPE_MODIFIER )
+	{
+		string modText = l.getSymbolText();
+		if ( modText == "extern" )
+			isExtern = true;
+		// Type::Parse expects to consume the type token itself,
+		// but we already consumed the modifier. For extern, the modifier
+		// is consumed here and Type::Parse will get the return type directly.
+		// However, Type::Parse calls getSymbol() which will get the next token.
+		// Since we consumed "extern", the next token is the return type. Good.
+	}
+
 	SmartPtr<Type> retType = Type::Parse( l, s, true );
 	int sym = l.getSymbol();
 	if ( sym == Lexer::SYMBOL )
 	{
 		func = new FunctionDefinition( l.getSymbolText() );
 		func->mReturnType = retType;
+		func->mIsExtern = isExtern;
 		func->mFuncScope = new Scope( Scope::kScope_Function, l.getSymbolText() );
 		func->mFuncScope->setParent( s );
 		s->addSymbol( func );
@@ -65,6 +81,15 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 	if ( sym != ')' )
 	{
 		do {
+			// Check for ... (variadic)
+			if ( l.peekSymbol() == Lexer::ELLIPSIS )
+			{
+				l.getSymbol(); // consume ...
+				func->mIsVariadic = true;
+				sym = l.getSymbol(); // should be ')'
+				break;
+			}
+
 			VariableDefinition *def = VariableDefinition::ParseFuncParam( l, func->mFuncScope );
 			func->mParameters.push_back( def );
 			sym = l.getSymbol();
@@ -78,11 +103,21 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 	}
 	else
 		l.getSymbol();
-	
-	func->mFuncBody = Block::Parse( l, func->mFuncScope );
 
-	cout << "Completed function " << endl;
-	
+	// Extern declarations end with ';', regular functions have a body
+	if ( isExtern )
+	{
+		sym = l.getSymbol();
+		if ( sym != ';' )
+			COMPILE_ERROR( l, "Expected \';\' after extern function declaration" );
+		cout << "Completed extern declaration " << endl;
+	}
+	else
+	{
+		func->mFuncBody = Block::Parse( l, func->mFuncScope );
+		cout << "Completed function " << endl;
+	}
+
 	return func;
 }
 

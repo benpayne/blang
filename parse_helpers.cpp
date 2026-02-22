@@ -1,12 +1,11 @@
 
-#include "llvm/Module.h"
-#include "llvm/Function.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/LLVMContext.h"
-#include "llvm/PassManager.h"
-#include "llvm/Analysis/Verifier.h"
-#include "llvm/Assembly/PrintModulePass.h"
-#include "llvm/Support/IRBuilder.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -21,13 +20,13 @@ LLVMContext gContext;
 
 using namespace BLang;
 
-Scope *gGlobalScope = NULL;
-Scope *gCurrentScope = NULL;
-Symbol *gCurrentSymbol = NULL;
-Symbol *gCurrentType = NULL;
-Module *gMod = NULL;
+Scope *gGlobalScope = nullptr;
+Scope *gCurrentScope = nullptr;
+Symbol *gCurrentSymbol = nullptr;
+Symbol *gCurrentType = nullptr;
+Module *gMod = nullptr;
 vector<Symbol *>	gFunctionParams;
-IRBuilder<> *gBuilder = NULL;
+IRBuilder<> *gBuilder = nullptr;
 
 extern int lineno;
 
@@ -41,9 +40,9 @@ void init( const char *filename )
 	Symbol *_long = Symbol::CreateType( Type::getInt32Ty( gContext ), "long" );
 	Symbol *_float = Symbol::CreateType( Type::getFloatTy( gContext ), "float" );
 	Symbol *_double = Symbol::CreateType( Type::getDoubleTy( gContext ), "double" );
-	Symbol *_string = Symbol::CreateType( PointerType::get( Type::getInt8Ty( gContext ), 0 ), "string" );
+	Symbol *_string = Symbol::CreateType( PointerType::get( gContext, 0 ), "string" );
 	Symbol *_void = Symbol::CreateType( Type::getVoidTy( gContext ), "void" );
-	
+
 	gGlobalScope->addType( _bool );
 	gGlobalScope->addType( _char );
 	gGlobalScope->addType( _short );
@@ -56,34 +55,35 @@ void init( const char *filename )
 	gCurrentScope = gGlobalScope;
 
 	gMod = new Module( filename, gContext );
-	
+
 	vector<Type *> params;
-	params.push_back( PointerType::get( Type::getInt8Ty( gContext ), 0 ) );	
+	params.push_back( PointerType::get( gContext, 0 ) );
 	FunctionType *ft = FunctionType::get( Type::getInt32Ty( gContext ), params, true );
 	gMod->getOrInsertFunction( "printf", ft );
 }
 
 void destroy()
 {
-	verifyModule(*gMod, PrintMessageAction);
-	
-	PassManager PM;
-	PM.add(createPrintModulePass(&outs()));
-	PM.run(*gMod);
-	
-	delete gMod;	
+	if ( verifyModule( *gMod, &errs() ) )
+	{
+		errs() << "Module verification failed\n";
+	}
+
+	gMod->print( outs(), nullptr );
+
+	delete gMod;
 }
 
 Symbol *lookupSymbol( const char *name )
 {
 	Symbol *s = gCurrentScope->findSymbol( name );
-	
-	if ( s == NULL )
+
+	if ( s == nullptr )
 	{
 		fprintf( stderr, "Error: Failed to find symbol %s at line %d\n", name, lineno );
 		exit( -1 );
 	}
-	
+
 	return s;
 }
 
@@ -91,12 +91,12 @@ Symbol *lookupType( const char *name )
 {
 	Symbol *s = gCurrentScope->findType( name );
 
-	if ( s == NULL )
+	if ( s == nullptr )
 	{
 		fprintf( stderr, "Error: Failed to find type %s at line %d\n", name, lineno );
 		exit( -1 );
 	}
-	
+
 	return s;
 }
 
@@ -107,12 +107,12 @@ void getSymbol( const char *name )
 
 void addSymbol( const char *name )
 {
-	if ( gCurrentType == NULL )
+	if ( gCurrentType == nullptr )
 	{
 		fprintf( stderr, "Internal Error: no type found for symbol %s at line %d\n", name, lineno );
 		exit( -1 );
 	}
-	
+
 	gCurrentSymbol = Symbol::CreateSymbol( gCurrentType->getType(), name );
 	gCurrentScope->addSymbol( gCurrentSymbol );
 }
@@ -121,7 +121,7 @@ llvm::Value *declareVariable( const char *name )
 {
 	printf( "declare variable %s\n", name );
 	addSymbol( name );
-	Value *v = gBuilder->CreateAlloca( gCurrentType->getType(), 0, name );
+	Value *v = gBuilder->CreateAlloca( gCurrentType->getType(), nullptr, name );
 	gCurrentSymbol->setValue( v );
 	return v;
 }
@@ -138,7 +138,7 @@ void addType( const char *name )
 
 void pushScope( Scope::ScopeType type, const char *name )
 {
-	printf( "Push Scope %d %s\n", (int)type, name ); 
+	printf( "Push Scope %d %s\n", (int)type, name );
 	Scope *s = new Scope( type );
 	s->setParentScope( gCurrentScope );
 	gCurrentScope = s;
@@ -155,14 +155,14 @@ void popScope()
 void startFunction( const char *ret_type, const char *name )
 {
 	pushScope( Scope::SCOPE_FUNCTION, name );
-	
+
 	Symbol *s = lookupType( ret_type );
-	
-	if ( s != NULL )
+
+	if ( s != nullptr )
 	{
 		gFunctionParams.push_back( Symbol::CreateSymbol( s->getType(), name ) );
 	}
-	
+
 	printf( "Function %s %s()\n", ret_type, name );
 }
 
@@ -170,7 +170,7 @@ void addFunctionParam( const char *type, const char *name )
 {
 	getType( type );
 	addSymbol( name );
-	
+
 	printf( "Function param %s %s\n", type, name );
 
 	gFunctionParams.push_back( gCurrentSymbol );
@@ -185,40 +185,39 @@ void endFunctionDef()
 		params.push_back( gFunctionParams[ i ]->getType() );
 		printf( "\tparam %s\n", gFunctionParams[ i ]->getName().c_str() );
 	}
-		
-	FunctionType *ft = FunctionType::get( gFunctionParams[ 0 ]->getType(), params, false );
-	
-	Constant* c = gMod->getOrInsertFunction( gFunctionParams[ 0 ]->getName().c_str(), ft );
-	
-	Function* func = cast<Function>(c);
-  
-	Function::arg_iterator args = func->arg_begin();
 
-	for ( unsigned i = 1; i < gFunctionParams.size(); i++ )
+	FunctionType *ft = FunctionType::get( gFunctionParams[ 0 ]->getType(), params, false );
+
+	FunctionCallee fc = gMod->getOrInsertFunction( gFunctionParams[ 0 ]->getName().c_str(), ft );
+
+	Function* func = cast<Function>( fc.getCallee() );
+
+	unsigned i = 1;
+	for ( auto &arg : func->args() )
 	{
-		Value* x = args++;
-		x->setName( gFunctionParams[ i ]->getName().c_str() );
-		gFunctionParams[ i ]->setValue( x );
+		arg.setName( gFunctionParams[ i ]->getName().c_str() );
+		gFunctionParams[ i ]->setValue( &arg );
+		i++;
 	}
-	
+
 	gCurrentScope->setFunction( func );
 	gCurrentScope->createBasicBlock();
 
-	gBuilder = new IRBuilder<>( gCurrentScope->getBasicBlock() );	
+	gBuilder = new IRBuilder<>( gCurrentScope->getBasicBlock() );
 }
 
 void endFunction()
 {
 	printf( "End of function\n" );
-	
+
 	if ( gFunctionParams[ 0 ]->getType() == Type::getVoidTy( gContext ) )
 		gBuilder->CreateRetVoid();
 
 	delete gBuilder;
-	gBuilder = NULL;
+	gBuilder = nullptr;
 
 	delete gFunctionParams[ 0 ];
-	gFunctionParams.clear();	
+	gFunctionParams.clear();
 }
 
 std::vector<Value*> gArgs;
@@ -236,14 +235,14 @@ void addFunctionCallParam( llvm::Value *v )
 llvm::Value *endFunctionCall( const char *name )
 {
 	Function *func = gMod->getFunction( name );
-	
-	if ( func == NULL )
+
+	if ( func == nullptr )
 	{
 		printf( "Error: failed to find function %s\n", name );
 		exit( 1 );
 	}
-	
-	Value* recur_1 = gBuilder->CreateCall( func, gArgs );
+
+	Value* recur_1 = gBuilder->CreateCall( func->getFunctionType(), func, gArgs );
 
 	return recur_1;
 }
@@ -256,15 +255,15 @@ llvm::Value *getVariableValue( const char *name )
 
 llvm::Value *getArrayLookupValue( llvm::Value *array, llvm::Value *index )
 {
-	return array;	
+	return array;
 }
 
 llvm::Value *getConstantNumberValue( ConstData *data )
 {
-	Type *t = NULL;
-	
+	Type *t = nullptr;
+
 	printf ( "Constant Number %lld(%llu), width %d, signed %d\n", data->value, data->uvalue, data->width, data->_signed );
-	
+
 	switch( data->width )
 	{
 		case 32:
@@ -280,11 +279,11 @@ llvm::Value *getConstantNumberValue( ConstData *data )
 			t = Type::getInt32Ty( gContext );
 			break;
 	}
-	
+
 	if ( data->_signed )
 		return ConstantInt::get( t, data->value, false );
 	else
-		return ConstantInt::get( t, data->uvalue, false );		
+		return ConstantInt::get( t, data->uvalue, false );
 }
 
 llvm::Value *getConstantStringValue( const char *str )
@@ -294,44 +293,41 @@ llvm::Value *getConstantStringValue( const char *str )
 
 	if ( str[ 0 ] == '\"' )
 		str += 1;
-		
+
 	printf( "Creating string contant \"%s\"\n", str );
 
-	// TODO handle escape characters	
+	// TODO handle escape characters
 	for( ; str[ i ] != '\0' && str[ i ] != '\"'; i++ )
 	{
 		constStr.push_back( ConstantInt::get( Type::getInt8Ty( gContext ), str[ i ] ) );
 	}
-	
+
 	return ConstantArray::get( ArrayType::get( Type::getInt8Ty( gContext ), i + 1 ), constStr );
 }
 
 llvm::Value *getBinaryExpression( const char *op, llvm::Value *l, llvm::Value *r )
 {
-	Value *v = NULL;
-	
-	printf( "Binary Op \"%s\" \n", op ); 
-	//printf( "Binary Op \"%s\" l type %s, r type %s\n", op, 
-	//	l->getType()->getDescription().c_str(), 
-	//	r->getType()->getDescription().c_str() );
-	
-	if ( l->getType()->getTypeID() == Type::PointerTyID )
+	Value *v = nullptr;
+
+	printf( "Binary Op \"%s\" \n", op );
+
+	if ( l->getType()->isPointerTy() )
 	{
-		l = gBuilder->CreateLoad( l );
+		l = gBuilder->CreateLoad( Type::getInt32Ty( gContext ), l );
 	}
 
-	if ( r->getType()->getTypeID() == Type::PointerTyID )
+	if ( r->getType()->isPointerTy() )
 	{
-		r = gBuilder->CreateLoad( r );
+		r = gBuilder->CreateLoad( Type::getInt32Ty( gContext ), r );
 	}
-	
+
 	assert( l->getType()->getTypeID() == Type::IntegerTyID );
 	assert( r->getType()->getTypeID() == Type::IntegerTyID );
 
-	printf( "zero extend numbers l->%d r->%d\n", 
+	printf( "zero extend numbers l->%d r->%d\n",
 		l->getType()->getPrimitiveSizeInBits(),
-		r->getType()->getPrimitiveSizeInBits());			
-	
+		r->getType()->getPrimitiveSizeInBits());
+
 	if ( l->getType()->getPrimitiveSizeInBits() != r->getType()->getPrimitiveSizeInBits() )
 	{
 		if ( l->getType()->getPrimitiveSizeInBits() > r->getType()->getPrimitiveSizeInBits() )
@@ -339,32 +335,32 @@ llvm::Value *getBinaryExpression( const char *op, llvm::Value *l, llvm::Value *r
 		else
 			l = gBuilder->CreateZExt( l, r->getType() );
 	}
-	
-	if ( r == NULL || l == NULL )
+
+	if ( r == nullptr || l == nullptr )
 		printf( "Failed to get one operand l=%p r=%p", l, r );
-		
+
 	switch( op[ 0 ] )
-	{				
+	{
 		case '+':
 			v = gBuilder->CreateAdd( l, r );
 			break;
-			
+
 		case '-':
 			v = gBuilder->CreateSub( l, r );
 			break;
-			
+
 		case '*':
 			v = gBuilder->CreateMul( l, r );
 			break;
-			
+
 		case '%':
 			v = gBuilder->CreateURem( l, r );
 			break;
-			
+
 		case '/':
 			v = gBuilder->CreateUDiv( l, r );
 			break;
-		
+
 		case '<':
 			if ( op[ 1 ] == '<' )
 			{
@@ -408,12 +404,12 @@ llvm::Value *getBinaryExpression( const char *op, llvm::Value *l, llvm::Value *r
 				v = gBuilder->CreateICmpNE( l, r );
 			}
 			break;
-			
+
 		default:
 			break;
 	}
-	
-	if ( v == NULL )
+
+	if ( v == nullptr )
 		printf( "Failed to build operation!" );
 
 	return v;
@@ -421,54 +417,52 @@ llvm::Value *getBinaryExpression( const char *op, llvm::Value *l, llvm::Value *r
 
 llvm::Value *getAssignExpression( const char *op, llvm::Value *l, llvm::Value *r )
 {
-	Value *v = NULL;
-	
-	printf( "Assign Op \"%s\" \n", op ); 
-	//printf( "Assign Op \"%s\" l type %s, r type %s\n", op, 
-	//	l->getType()->getDescription().c_str(), 
-	//	r->getType()->getDescription().c_str() );
-	
-	if ( l->getType()->getTypeID() != Type::PointerTyID )
+	Value *v = nullptr;
+
+	printf( "Assign Op \"%s\" \n", op );
+
+	if ( !l->getType()->isPointerTy() )
 	{
 		printf( "failed to get pointer type\n" );
 	}
 
-	if ( r->getType()->getTypeID() == Type::PointerTyID )
+	if ( r->getType()->isPointerTy() )
 	{
-		r = gBuilder->CreateLoad( r );
+		r = gBuilder->CreateLoad( Type::getInt32Ty( gContext ), r );
 	}
 
-	PointerType *lPrt = (PointerType*)l->getType();
-	IntegerType *lType = (IntegerType*)lPrt->getElementType();
-	
-	if ( ((IntegerType*)r->getType())->getBitWidth() != 
+	// With opaque pointers, retrieve the target type from the symbol table
+	// rather than from the pointer type. For now, use i32 as default.
+	IntegerType *lType = Type::getInt32Ty( gContext );
+
+	if ( ((IntegerType*)r->getType())->getBitWidth() !=
 			lType->getBitWidth() )
 	{
-		if ( ((IntegerType*)r->getType())->getBitWidth() > 
+		if ( ((IntegerType*)r->getType())->getBitWidth() >
 				lType->getBitWidth() )
 			r = gBuilder->CreateTrunc( r, lType );
 		else
 			r = gBuilder->CreateZExt( r, lType );
 	}
-	
+
 	switch( op[ 0 ] )
 	{
 		case '=':
 			v = gBuilder->CreateStore( r, l );
-								
+
 		default:
 			break;
 	}
-	
+
 	return v;
 }
 
 void addReturn( llvm::Value *val )
 {
-	if ( val == NULL )
+	if ( val == nullptr )
 		gBuilder->CreateRetVoid();
 	else
-		gBuilder->CreateRet( val );		
+		gBuilder->CreateRet( val );
 }
 
 static llvm::Value *gIfValue;
@@ -478,7 +472,7 @@ void startIf( llvm::Value *expression )
 {
 	printf( "Starting if with %p\n", expression );
 	gIfValue = expression;
-	pushScope( Scope::SCOPE_IF, NULL );
+	pushScope( Scope::SCOPE_IF, nullptr );
 	gIfBlock = gCurrentScope->getBasicBlock();
 }
 
@@ -492,8 +486,6 @@ void startElse( llvm::Value *expression )
 {
 	printf( "Starting else with %p\n", expression );
 	popScope();
-	pushScope( Scope::SCOPE_IF, NULL );
+	pushScope( Scope::SCOPE_IF, nullptr );
 	gBuilder->CreateCondBr( gIfValue, gIfBlock, gCurrentScope->getBasicBlock() );
 }
-
-

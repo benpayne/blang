@@ -18,9 +18,10 @@ namespace QLang
 	{
 	public:
 		static Expression *Parse( Lexer &l, Scope *scope, char terminal = ';' );
-		
-		static Expression *ParseLValue( Lexer &l, Scope *scope );
-		static Expression *ParseRValue( Lexer &l, Scope *scope );
+
+		// Precedence-climbing expression parser (no terminal handling)
+		static Expression *ParseExpr( Lexer &l, Scope *scope, int minPrec = 0 );
+		static Expression *ParsePrimary( Lexer &l, Scope *scope );
 
 	protected:
 	};
@@ -32,11 +33,12 @@ namespace QLang
 		static WhileStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		WhileStatement() {}	
-		
+		WhileStatement() {}
+
 	private:
 		SmartPtr<Expression> mLoopExpression;
 		SmartPtr<Statement> mLoopStatement;
+		friend class CodeGen;
 	};
 
 	class ForStatement : public Statement
@@ -46,13 +48,14 @@ namespace QLang
 		static ForStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		ForStatement() {}	
+		ForStatement() {}
 
 	private:
 		SmartPtr<Expression> mInitialExpression;
 		SmartPtr<Expression> mTestExpression;
 		SmartPtr<Expression> mIterationExpression;
 		SmartPtr<Statement> mStatement;
+		friend class CodeGen;
 	};
 
 	class IfStatement : public Statement
@@ -62,12 +65,13 @@ namespace QLang
 		static IfStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		IfStatement() {}	
+		IfStatement() {}
 
 	private:
 		SmartPtr<Expression> mIfExpression;
 		SmartPtr<Statement> mStatement;
 		SmartPtr<Statement> mElseStatement;
+		friend class CodeGen;
 	};
 
 	class ReturnStatement : public Statement
@@ -77,21 +81,11 @@ namespace QLang
 		static ReturnStatement *Parse( Lexer &l, Scope *scope );
 
 	protected:
-		ReturnStatement() {}	
+		ReturnStatement() {}
 
 	private:
 		SmartPtr<Expression> mExpression;
-	};
-	
-	class BinaryExpression : public Expression
-	{
-	public:
-		
-		BinaryExpression *ParseAssignment( Lexer &l, Scope *scope );
-		BinaryExpression *ParseArithmatic( Lexer &l, Scope *scope );
-		
-	private:
-		
+		friend class CodeGen;
 	};
 	
 	class ConstExpression : public Expression
@@ -110,18 +104,20 @@ namespace QLang
 	{
 	public:
 		ConstInteger( int64_t value ) : mValue( value ) {}
-		
+
 	private:
 		int64_t mValue;
+		friend class CodeGen;
 	};
 
 	class ConstFloat : public ConstExpression
 	{
 	public:
 		ConstFloat( double value ) : mValue( value ) {}
-		
+
 	private:
 		double mValue;
+		friend class CodeGen;
 	};
 	
 	class ConstString : public ConstExpression
@@ -131,21 +127,25 @@ namespace QLang
 
 	private:
 		std::string mValue;
+		friend class CodeGen;
 	};
 	
 	class ConstChar : public ConstExpression
 	{
 	public:
+		ConstChar( const std::string &value ) : mValue( value ) {}
+
 		static ConstChar *Parse( Lexer &l, Scope *scope );
 
-		
+
 	protected:
 		ConstChar() {}
-		
+
 	private:
-		uint16_t mValue;
+		std::string mValue;
+		friend class CodeGen;
 	};
-	
+
 	class VariableDeclaration : public Statement
 	{
 	public:
@@ -158,6 +158,7 @@ namespace QLang
 		};
 		
 		std::vector<DeclData> mVariables;
+		friend class CodeGen;
 	};
 	
 	class VariableExpression : public Expression
@@ -166,12 +167,15 @@ namespace QLang
 		VariableExpression( VariableDefinition *def ) : mVariable( def ) {}
 
 		static VariableExpression *Parse( Lexer &l, Scope *scope );
-		
+
+		VariableDefinition *getVariable() { return mVariable; }
+
 	protected:
 		VariableExpression() {}
 		
 	private:
 		SmartPtr<VariableDefinition> mVariable;
+		friend class CodeGen;
 	};
 
 	class CallExpression : public Expression
@@ -185,16 +189,18 @@ namespace QLang
 	private:
 		SmartPtr<FunctionDefinition> mFunction;
 		std::vector<SmartPtr<Expression> > mParams;
+		friend class CodeGen;
 	};
 	
 	class Block : public Statement
 	{
 	public:
 		static Block *Parse( Lexer &l, Scope *block_scope );
-		
+
 	private:
 		SmartPtr<Scope> mScope;
 		std::vector<SmartPtr<Statement> > mStatementList;
+		friend class CodeGen;
 	};
 
 	class AssignmentExpression : public Expression
@@ -202,11 +208,12 @@ namespace QLang
 	public:
 		AssignmentExpression( std::string operation, VariableDefinition *var, Expression *value ) :
 			mOperation( operation ), mVariable( var ), mValue( value ) {}
-	
+
 	private:
 		std::string mOperation;
 		SmartPtr<VariableDefinition> mVariable;
 		SmartPtr<Expression> mValue;
+		friend class CodeGen;
 	};
 	
 	class OperationsExpression : public Expression
@@ -214,11 +221,24 @@ namespace QLang
 	public:
 		OperationsExpression( std::string operation, Expression *op1, Expression *op2 ) :
 			mOperation( operation ), mOp1( op1 ), mOp2( op2 ) {}
-	
+
 	private:
 		std::string mOperation;
 		SmartPtr<Expression> mOp1;
 		SmartPtr<Expression> mOp2;
+		friend class CodeGen;
+	};
+
+	class UnaryExpression : public Expression
+	{
+	public:
+		UnaryExpression( std::string operation, Expression *operand ) :
+			mOperation( operation ), mOperand( operand ) {}
+
+	private:
+		std::string mOperation;
+		SmartPtr<Expression> mOperand;
+		friend class CodeGen;
 	};
 };
 

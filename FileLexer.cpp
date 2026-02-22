@@ -1,4 +1,5 @@
 #include "FileLexer.h"
+#include <cstring>
 #include <iostream>
 
 using namespace std;
@@ -105,22 +106,50 @@ void Lexer::readStringConst()
 		{
 			switch ( (*mReader)[ 1 ] )
 			{
-				case 'a': // 7
-				case 'b': // 8
-				case 't': // 9
-				case 'n': // 10
-				case 'v': // 11
-				case 'f': // 12
-				case 'r': // 13
+				case 'a':
+					mMatchString.append( 1, '\a' );
+					mReader->popChar( 2 );
+					break;
+				case 'b':
+					mMatchString.append( 1, '\b' );
+					mReader->popChar( 2 );
+					break;
+				case 't':
+					mMatchString.append( 1, '\t' );
+					mReader->popChar( 2 );
+					break;
+				case 'n':
+					mMatchString.append( 1, '\n' );
+					mReader->popChar( 2 );
+					break;
+				case 'v':
+					mMatchString.append( 1, '\v' );
+					mReader->popChar( 2 );
+					break;
+				case 'f':
+					mMatchString.append( 1, '\f' );
+					mReader->popChar( 2 );
+					break;
+				case 'r':
+					mMatchString.append( 1, '\r' );
+					mReader->popChar( 2 );
+					break;
+				case '\\':
+					mMatchString.append( 1, '\\' );
+					mReader->popChar( 2 );
+					break;
 				case '\"':
+					mMatchString.append( 1, '\"' );
+					mReader->popChar( 2 );
+					break;
 				case '\'':
-					mMatchString.append( 1, (*mReader)[ 1 ] );
+					mMatchString.append( 1, '\'' );
 					mReader->popChar( 2 );
 					break;
 				case '0':
 					mMatchString.append( 1, '\0' );
 					mReader->popChar( 2 );
-					break;				
+					break;
 			}
 		}
 		else if ( mReader->peekChar() != '\"' )
@@ -460,6 +489,13 @@ int Lexer::getSymbolFromFile()
 				}
 				break;
 				
+			case '.':
+				if ( match( "..." ) )
+					return ELLIPSIS;
+				else
+					return mReader->popChar();
+				break;
+
 			case '{':
 			case '}':
 			case '[':
