@@ -54,24 +54,56 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool
 VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 {
 	VariableDeclaration *def = new VariableDeclaration;
-	SmartPtr<Type> t = Type::Parse( l, s, false );
-	
+	bool isConst = false;
+	bool isVar = false;
+
+	// Check for const or var modifier before parsing the type
+	if ( l.peekSymbol() == Lexer::TYPE_MODIFIER )
+	{
+		// Peek doesn't consume, so we need to consume to get the text
+		int modSym = l.getSymbol();
+		string modText = l.getSymbolText();
+
+		if ( modText == "var" )
+		{
+			isVar = true;
+		}
+		else if ( modText == "const" )
+		{
+			isConst = true;
+		}
+	}
+
+	SmartPtr<Type> t = nullptr;
+
+	if ( isVar )
+	{
+		// var keyword already consumed, use placeholder type
+		t = new Type( "var" );
+	}
+	else
+	{
+		// Normal type parse
+		t = Type::Parse( l, s, false );
+	}
+
 	do {
 		VariableDeclaration::DeclData data;
 		int sym = l.getSymbol();
-		
+
 		if ( t != nullptr && sym == Lexer::SYMBOL )
 		{
 			data.mVaribale = new VariableDefinition( t, l.getSymbolText() );
+			data.mVaribale->setConst( isConst );
 		}
 		else
 		{
 			// report error
 			COMPILE_ERROR( l, "Failed parse varible" );
 		}
-	
+
 		s->addSymbol( data.mVaribale );
-		
+
 		if ( l.peekSymbol() == '=' )
 		{
 			sym = l.getSymbol();
@@ -82,6 +114,19 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 				COMPILE_ERROR( l, "Failed parse value" );
 			}
 		}
+
+		// const variables must have an initializer
+		if ( isConst && data.mInitialValue == nullptr )
+		{
+			COMPILE_ERROR( l, "const variable must be initialized" );
+		}
+
+		// var variables must have an initializer for type inference
+		if ( isVar && data.mInitialValue == nullptr )
+		{
+			COMPILE_ERROR( l, "var variable must be initialized" );
+		}
+
 		def->mVariables.push_back( data );
 
 		if ( l.peekSymbol() != ',' )
@@ -89,6 +134,6 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 
 		l.getSymbol(); // consume ','
 	} while ( true );
-	
+
 	return def;
 }

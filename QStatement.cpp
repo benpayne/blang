@@ -43,6 +43,9 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 	case Lexer::KEYWORD_CONTINUE:
 		statement = ContinueStatement::Parse( l, scope );
 		break;
+	case Lexer::KEYWORD_MATCH:
+		statement = MatchExpression::Parse( l, scope );
+		break;
 	case '{':
 		statement = Block::Parse( l, scope );
 		break;

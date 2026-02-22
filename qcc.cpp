@@ -54,6 +54,12 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				continue;
 			}
 
+			if ( nextSym == Lexer::KEYWORD_IMPL )
+			{
+				StructDefinition::ParseImplBlock( l, s );
+				continue;
+			}
+
 			def = FunctionDefinition::Parse( l, s );
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
@@ -204,6 +210,10 @@ int main( int argc, char *argv[] )
 	gScope->addType( new Type( "char" ) );
 	gScope->addType( new Type( "string" ) );
 	gScope->addType( new Type( "bool" ) );
+	gScope->addType( new Type( "float" ) );
+	gScope->addType( new Type( "double" ) );
+	gScope->addType( new Type( "long" ) );
+	gScope->addType( new Type( "short" ) );
 	LexerReader reader( argv[ 1 ] );
 	Lexer l( &reader );
 	

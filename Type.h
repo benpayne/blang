@@ -194,8 +194,12 @@ namespace QLang
 
 		Type *getVariableType() { return mType; }
 
+		bool isConst() const { return mIsConst; }
+		void setConst( bool isConst ) { mIsConst = isConst; }
+
 	private:
 		SmartPtr<Type>	mType;
+		bool mIsConst = false;
 	};
 
 	class StructDefinition : public Symbol
@@ -203,8 +207,11 @@ namespace QLang
 	public:
 
 		static StructDefinition *Parse( Lexer &l, Scope *s );
+		static void ParseImplBlock( Lexer &l, Scope *s );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
+
+		void addMethod( FunctionDefinition *method ) { mMethods.push_back( method ); }
 
 	private:
 		StructDefinition( const std::string &name ) : Symbol( name ) {}

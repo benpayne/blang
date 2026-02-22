@@ -43,6 +43,8 @@ set(QCC_SOURCES
 	QExpression.cpp
 	QFieldAccessExpression.cpp
 	QFunctionDefinition.cpp
+	QImplBlock.cpp
+	QMatchExpression.cpp
 	QProtocolDefinition.cpp
 	QReturnStatement.cpp
 	QStatement.cpp
