@@ -57,6 +57,41 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 		func->mFuncScope->setParent( s );
 		s->addSymbol( func );
 
+		// Check for generic parameters: fn name<T> or fn name<T: Constraint>
+		if ( l.peekSymbol() == '<' )
+		{
+			l.getSymbol(); // consume '<'
+
+			do {
+				sym = l.getSymbol();
+				if ( sym != Lexer::SYMBOL )
+					COMPILE_ERROR( l, "Expected type parameter name" );
+
+				GenericParam param;
+				param.mName = l.getSymbolText();
+
+				// Check for constraint: <T: Comparable>
+				if ( l.peekSymbol() == ':' )
+				{
+					l.getSymbol(); // consume ':'
+					sym = l.getSymbol();
+					if ( sym != Lexer::SYMBOL )
+						COMPILE_ERROR( l, "Expected constraint name after ':'" );
+					param.mConstraint = l.getSymbolText();
+				}
+
+				func->mGenericParams.push_back( param );
+
+				// Register type parameter in scope so it can be used as a type
+				s->addType( new Type( param.mName ) );
+
+				sym = l.getSymbol();
+			} while ( sym == ',' );
+
+			if ( sym != '>' )
+				COMPILE_ERROR( l, "Expected '>' after generic parameters" );
+		}
+
 		// Parse '(' params ')'
 		sym = l.getSymbol();
 		if ( sym != '(' )
@@ -90,12 +125,9 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 
 		// Parse optional '->' return type; default to void
 		sym = l.peekSymbol();
-		if ( sym == '-' )
+		if ( sym == Lexer::ARROW )
 		{
-			l.getSymbol(); // consume '-'
-			sym = l.getSymbol();
-			if ( sym != '>' )
-				COMPILE_ERROR( l, "Expected '>' to complete '->' arrow" );
+			l.getSymbol(); // consume '->'
 
 			// Parse the return type
 			SmartPtr<Type> retType = Type::Parse( l, s, false );

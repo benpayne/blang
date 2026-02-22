@@ -60,6 +60,12 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				continue;
 			}
 
+			if ( nextSym == Lexer::KEYWORD_ENUM )
+			{
+				SmartPtr<EnumDefinition> enumDef = EnumDefinition::Parse( l, s );
+				continue;
+			}
+
 			def = FunctionDefinition::Parse( l, s );
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;

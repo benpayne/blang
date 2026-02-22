@@ -58,6 +58,24 @@ namespace QLang
 		friend class CodeGen;
 	};
 
+	class ForInStatement : public Statement
+	{
+	public:
+
+		static ForInStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		ForInStatement() {}
+
+	private:
+		std::string mVariableName;
+		std::string mSecondVariableName; // for key, value iteration
+		SmartPtr<Expression> mIterableExpression; // nullptr for infinite loop
+		SmartPtr<Statement> mBody;
+		bool mIsInfinite = false;
+		friend class CodeGen;
+	};
+
 	class IfStatement : public Statement
 	{
 	public:
@@ -301,10 +319,79 @@ namespace QLang
 		friend class CodeGen;
 	};
 
+	class ArrayLiteralExpression : public Expression
+	{
+	public:
+		ArrayLiteralExpression() {}
+
+		void addElement( Expression *elem ) { mElements.push_back( elem ); }
+
+		static ArrayLiteralExpression *Parse( Lexer &l, Scope *scope );
+
+	private:
+		std::vector<SmartPtr<Expression>> mElements;
+		friend class CodeGen;
+	};
+
+	class IndexExpression : public Expression
+	{
+	public:
+		IndexExpression( Expression *object, Expression *index ) :
+			mObject( object ), mIndex( index ) {}
+
+	private:
+		SmartPtr<Expression> mObject;
+		SmartPtr<Expression> mIndex;
+		friend class CodeGen;
+	};
+
+	class MethodCallExpression : public Expression
+	{
+	public:
+		MethodCallExpression( Expression *object, const std::string &methodName ) :
+			mObject( object ), mMethodName( methodName ) {}
+
+		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
+
+	private:
+		SmartPtr<Expression> mObject;
+		std::string mMethodName;
+		std::vector<SmartPtr<Expression>> mArgs;
+		friend class CodeGen;
+	};
+
+	class RangeExpression : public Expression
+	{
+	public:
+		RangeExpression( Expression *start, Expression *end ) :
+			mStart( start ), mEnd( end ) {}
+
+	private:
+		SmartPtr<Expression> mStart;
+		SmartPtr<Expression> mEnd;
+		friend class CodeGen;
+	};
+
+	class StringInterpolation : public Expression
+	{
+	public:
+		StringInterpolation() {}
+
+		void addPart( Expression *part ) { mParts.push_back( part ); }
+
+		static StringInterpolation *Parse( Lexer &l, Scope *scope, const std::string &rawString );
+
+	private:
+		std::vector<SmartPtr<Expression>> mParts;
+		friend class CodeGen;
+	};
+
 	struct MatchArm
 	{
 		std::string mPattern;
+		std::string mBindingName; // variable bound by destructuring (e.g., ok(value) binds "value")
 		SmartPtr<Block> mBody;
+		bool mIsWildcard = false;
 	};
 
 	class MatchExpression : public Expression

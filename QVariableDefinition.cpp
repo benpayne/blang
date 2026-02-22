@@ -21,6 +21,17 @@ std::ostream &QLang::operator<<(std::ostream &out, const VariableDefinition &var
 VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool isExtern, int paramIndex )
 {
 	VariableDefinition *def = nullptr;
+
+	// Handle 'self' parameter specially — it has an implicit type
+	if ( l.peekSymbol() == Lexer::KEYWORD_SELF )
+	{
+		l.getSymbol(); // consume 'self'
+		SmartPtr<Type> selfType = new Type( "self" );
+		def = new VariableDefinition( selfType, "self" );
+		s->addSymbol( def );
+		return def;
+	}
+
 	SmartPtr<Type> t = Type::Parse( l, s, false );
 
 	if ( t == nullptr )

@@ -40,8 +40,10 @@ set(QCC_SOURCES
 	LexerReader.cpp
 	QBlock.cpp
 	QBreakContinue.cpp
+	QEnumDefinition.cpp
 	QExpression.cpp
 	QFieldAccessExpression.cpp
+	QForInStatement.cpp
 	QFunctionDefinition.cpp
 	QImplBlock.cpp
 	QMatchExpression.cpp

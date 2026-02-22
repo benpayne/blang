@@ -47,28 +47,69 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope )
 	{
 		MatchArm arm;
 
-		// Parse pattern: integer literal, string literal, or identifier
+		// Parse pattern: integer literal, string literal, identifier, wildcard (_),
+		// or destructuring pattern like ok(value), some(x)
 		sym = l.peekSymbol();
 		if ( sym == Lexer::CONSTANT_NUMBER ||
+			 sym == Lexer::CONSTANT_FLOAT ||
 			 sym == Lexer::CONSTANT_STRING ||
 			 sym == Lexer::CONSTANT_CHAR )
 		{
 			l.getSymbol();
 			arm.mPattern = l.getSymbolText();
 		}
+		else if ( sym == Lexer::WILDCARD )
+		{
+			l.getSymbol();
+			arm.mPattern = "_";
+			arm.mIsWildcard = true;
+		}
 		else if ( sym == Lexer::SYMBOL )
 		{
 			l.getSymbol();
 			arm.mPattern = l.getSymbolText();
+
+			// Check for destructuring: pattern(binding)
+			// e.g., ok(value), err(e), some(x)
+			if ( l.peekSymbol() == '(' )
+			{
+				l.getSymbol(); // consume '('
+
+				sym = l.getSymbol();
+				if ( sym == Lexer::SYMBOL )
+				{
+					arm.mBindingName = l.getSymbolText();
+				}
+				else if ( sym != ')' )
+				{
+					COMPILE_ERROR( l, "Expected variable name or ')' in match pattern" );
+				}
+
+				if ( sym != ')' )
+				{
+					sym = l.getSymbol();
+					if ( sym != ')' )
+						COMPILE_ERROR( l, "Expected ')' after binding name in match pattern" );
+				}
+			}
 		}
 		else
 		{
-			COMPILE_ERROR( l, "Expected pattern in match arm (constant or identifier)" );
+			COMPILE_ERROR( l, "Expected pattern in match arm (constant, identifier, or '_')" );
 		}
 
 		// Parse the arm body as a Block
 		Scope *armScope = new Scope( Scope::kScope_Anonymous );
 		armScope->setParent( scope );
+
+		// If there's a binding, add it to the arm scope
+		if ( !arm.mBindingName.empty() )
+		{
+			Type *varType = new Type( "var" );
+			VariableDefinition *binding = new VariableDefinition( varType, arm.mBindingName );
+			armScope->addSymbol( binding );
+		}
+
 		arm.mBody = Block::Parse( l, armScope );
 		if ( arm.mBody == nullptr )
 		{

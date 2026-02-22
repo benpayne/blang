@@ -23,7 +23,7 @@ protected:
 	void readSymbol();
 	void readStringConst();
 	void readCharacterConst();
-	void readConst();
+	bool readConst();
 	void handleComment( bool singleLine );
 	
 private:

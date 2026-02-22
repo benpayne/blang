@@ -23,8 +23,8 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── qcc.cpp                    # Main compiler entry point (parses source files into AST, optionally generates LLVM IR)
 ├── CodeGen.h                  # LLVM code generation class (QLang::CodeGen) — walks AST, emits IR
 ├── CodeGen.cpp                # CodeGen implementation: functions, statements, expressions, type mapping
-├── Type.h                     # Core type system, base classes: Statement, Type, Symbol, Scope, Module, FunctionDefinition, VariableDefinition
-├── Expression.h               # Expression/statement AST nodes: Expression, WhileStatement, ForStatement, IfStatement, ReturnStatement, Block, constants, etc.
+├── Type.h                     # Core type system, base classes: Statement, Type, Symbol, Scope, Module, FunctionDefinition, VariableDefinition, EnumDefinition, GenericParam
+├── Expression.h               # Expression/statement AST nodes: Expression, WhileStatement, ForStatement, ForInStatement, IfStatement, ReturnStatement, Block, ArrayLiteralExpression, IndexExpression, MethodCallExpression, RangeExpression, StringInterpolation, etc.
 ├── CompilerHelpers.h          # CompileError exception class, COMPILE_ERROR macro, SmartPtr ostream operator
 ├── RefCount.h                 # Standalone RefCount base class and SmartPtr<T> template (replaces jhcommon)
 ├── logging.h                  # Lightweight logging macros (replaces jhcommon logging)
@@ -35,13 +35,15 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── Scope.h                    # Scope class (BLang namespace, legacy LLVM-based approach with BasicBlock/Function)
 ├── QBlock.cpp                 # Block::Parse implementation
 ├── QBreakContinue.cpp         # BreakStatement::Parse and ContinueStatement::Parse
-├── QExpression.cpp            # Expression parsing (lvalue, rvalue, binary operations, constants)
-├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing (C-style and fn-style)
+├── QEnumDefinition.cpp        # EnumDefinition::Parse (enum/sum types with variants and associated types)
+├── QExpression.cpp            # Expression parsing (lvalue, rvalue, binary operations, constants, arrays, method calls, indexing, ranges)
+├── QForInStatement.cpp        # ForInStatement::Parse (for-in loops, infinite loops)
+├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing (C-style and fn-style, generics)
 ├── QReturnStatement.cpp       # ReturnStatement::Parse
-├── QStatement.cpp             # Statement::Parse dispatcher (routes to if/while/for/return/break/continue/variable/expression)
-├── QStructDefinition.cpp      # StructDefinition::Parse
-├── QType.cpp                  # Type::Parse
-├── QVariableDefinition.cpp    # VariableDeclaration::Parse
+├── QStatement.cpp             # Statement::Parse dispatcher (routes to if/while/for/for-in/return/break/continue/variable/expression)
+├── QStructDefinition.cpp      # StructDefinition::Parse (with generic parameters)
+├── QType.cpp                  # Type::Parse (with generic type arguments)
+├── QVariableDefinition.cpp    # VariableDeclaration::Parse (with self parameter support)
 ├── QParser.cpp                # Empty (placeholder)
 ├── parser.yy                  # Bison grammar (older approach, not used by qcc)
 ├── parser.h                   # Generated Bison header with token definitions
@@ -71,7 +73,7 @@ The project has **no external dependencies** for the active build targets. The j
 
 | Target       | Description                        | Key source files                                                                    |
 |-------------|------------------------------------|-------------------------------------------------------------------------------------|
-| `qcc`       | Main compiler                      | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QExpression.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, CodeGen.cpp (when LLVM available) |
+| `qcc`       | Main compiler                      | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QEnumDefinition.cpp, QExpression.cpp, QForInStatement.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, CodeGen.cpp (when LLVM available) |
 | `lexerTest` | Basic lexer tokenization test      | LexerTest.cpp, FileLexer.cpp, LexerReader.cpp                                     |
 | `lexerTest2`| Advanced lexer test                | LexerTest2.cpp, FileLexer.cpp, LexerReader.cpp                                    |
 
@@ -138,21 +140,28 @@ RefCount
 │   │   ├── OperationsExpression # Binary operations (+, -, etc.)
 │   │   ├── UnaryExpression      # Unary operations (-, !, ~)
 │   │   ├── FieldAccessExpression # Struct field access (obj.field)
+│   │   ├── MethodCallExpression # Method call (obj.method(args))
+│   │   ├── IndexExpression      # Array/collection indexing (expr[index])
+│   │   ├── ArrayLiteralExpression # Array literal [expr, ...]
+│   │   ├── RangeExpression      # Range expression (start..end)
+│   │   ├── StringInterpolation  # String interpolation "hello \(name)"
 │   │   └── MatchExpression      # Pattern matching (match expr { ... })
 │   ├── WhileStatement
-│   ├── ForStatement
+│   ├── ForStatement             # C-style for(init; cond; step)
+│   ├── ForInStatement           # for x in expr { }, for { } (infinite)
 │   ├── IfStatement
 │   ├── ReturnStatement
 │   ├── BreakStatement           # break; in loops
 │   ├── ContinueStatement        # continue; in loops
 │   ├── VariableDeclaration
 │   └── Block                    # { ... } with its own Scope
-├── Type                         # Type representation ("int", "char", "string")
+├── Type                         # Type representation with optional generic type params
 ├── Symbol                       # Named entity base (abstract)
-│   ├── FunctionDefinition       # Function with params, return type, body
+│   ├── FunctionDefinition       # Function with params, return type, body, optional generic params
 │   ├── VariableDefinition       # Variable with type
-│   ├── StructDefinition         # Struct with fields and methods
-│   └── ProtocolDefinition       # Protocol (interface) with required methods
+│   ├── StructDefinition         # Struct with fields, methods, optional generic params
+│   ├── EnumDefinition           # Enum/sum type with variants and associated types
+│   └── ProtocolDefinition       # Protocol (interface) with required methods, optional generic params
 ├── Scope                        # Symbol table with parent chain
 └── Module                       # Top-level container of FunctionDefinitions
 ```
@@ -218,19 +227,27 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 Tests are organized into three categories under `test_files/`:
 
-- **`test_files/pass/`** (24 tests) — Should parse successfully. Includes:
+- **`test_files/pass/`** (51 tests) — Should parse successfully. Includes:
   - Basic function tests: `func_simple.c`, `func_call.c`, `multi_func.c`, `empty_func.c`
   - Control flow: `if_simple.c`, `if_nested.c`, `while_simple.c`, `while_block.c`, `for_simple.c`, `for_block.c`
-  - Variables and expressions: `var_decl.c`, `arithmetic_stmt.c`, `assignment_stmt.c`, `binary_expr_return.c`, `comparison_expr.c`
+  - Variables and expressions: `var_decl.c`, `var_infer.c`, `const_decl.c`, `arithmetic_stmt.c`, `assignment_stmt.c`, `binary_expr_return.c`, `comparison_expr.c`
   - Returns: `return_var.c`, `return_call.c`
-  - Literals and comments: `string_literals.c`, `comments.c`
-  - **New features**: `fn_simple.c` (fn-style with `-> type`), `fn_void.c` (fn-style void return), `break_continue.c`, `struct_basic.c`, `extern_unnamed.c` (unnamed extern params)
-- **`test_files/fail/`** (5 negative tests) — Should fail to parse (exit non-zero): `undefined_var.c`, `undefined_func.c`, `missing_brace.c`, `missing_paren.c`, `bad_type.c`
+  - Literals and comments: `string_literals.c`, `comments.c`, `float_literal.c`, `bool_type.c`
+  - Function styles: `fn_simple.c`, `fn_void.c`, `arrow_fn.c`
+  - Structs and methods: `struct_basic.c`, `struct_literal.c`, `field_access.c`, `method_call.c`, `impl_basic.c`, `impl_protocol.c`
+  - Protocols: `protocol_basic.c`
+  - Enums: `enum_basic.c`, `enum_variants.c`, `enum_generic.c`
+  - Generics: `generic_fn.c`, `generic_struct.c`, `generic_constraint.c`, `generic_protocol.c`, `generic_type_args.c`
+  - For-in loops: `for_in_range.c`, `for_in_var.c`, `for_infinite.c`
+  - Arrays: `array_literal.c`, `array_index.c`
+  - Pattern matching: `match_basic.c`, `match_wildcard.c`, `match_destructure.c`
+  - Other: `break_continue.c`, `extern_unnamed.c`
+- **`test_files/fail/`** (14 negative tests) — Should fail to parse (exit non-zero): `bad_type.c`, `const_no_init.c`, `duplicate_func.c`, `enum_missing_brace.c`, `fn_missing_arrow_type.c`, `for_in_missing_in.c`, `missing_brace.c`, `missing_paren.c`, `protocol_no_fn.c`, `struct_bad_field.c`, `struct_missing_brace.c`, `undefined_func.c`, `undefined_var.c`, `var_no_init.c`
 - **`test_files/xfail/`** (1 expected failure) — Known-broken features: `extern_func_call.c`
 
 Legacy test files (kept for backward compatibility): `test.c`, `test_files/func_call1.c`, `test_files/func_call2.c`, `test_files/func_call3.c`, `test_files/if_call.c`, `test_files/codegen_simple.c`, `test_files/codegen_binexpr.c`, `test_files/codegen_features.c`, `test_files/multi_var_decl.c`
 
-**Total: 30 tests** (24 pass + 5 fail/negative + 1 xfail)
+**Total: 66 tests** (51 pass + 14 fail/negative + 1 xfail)
 
 ### Running tests
 
@@ -255,25 +272,51 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 - **Function definitions** — two styles supported during transition:
   - C-style: `int add(int a, int b) { ... }`
   - BLang `fn`-style: `fn add(int a, int b) -> int { ... }` (omitting `->` means void return)
+  - Generic functions: `fn identity<T>(T value) -> T { ... }`
+  - Protocol-constrained generics: `fn sort<T: Comparable>(Array<T> items) -> Array<T> { ... }`
 - Extern function declarations (`extern int printf(string fmt, ...);`) for calling C library functions
   - Named parameters: `extern int printf(string fmt, ...);`
   - Unnamed parameters: `extern int printf(string, ...);`
   - Mixed: `extern int mixed(int a, string, int c);`
 - Variadic function support (`...` ellipsis in parameter lists)
 - Variable declarations with optional initialization
-- **Struct definitions**: `struct Name { type field; ... }` with typed fields
+- **Struct definitions** with optional generic parameters: `struct Box<T> { T value; }`
+- **Enum/sum type definitions** with variants and associated types: `enum Option<T> { some(T), none }`
+- **Protocol definitions** with optional generic parameters: `protocol Container<T> { ... }`
+- **Method calls**: `obj.method(args)` syntax
+- **Field access**: `obj.field` syntax
+- **Array literals**: `[1, 2, 3]` syntax
+- **Array/collection indexing**: `arr[index]` syntax
+- **Range expressions**: `0..10` syntax
 - Control flow: `if`/`else`, `while`, `for`, `break`, `continue`
+  - C-style for: `for (int i = 0; i < 10; i = i + 1) { ... }`
+  - For-in loops: `for x in collection { ... }`, `for i in 0..10 { ... }`
+  - Key-value iteration: `for key, value in map { ... }`
+  - Infinite loops: `for { ... }`
+- **Pattern matching** with `match`:
+  - Literal patterns: `match x { 1 => { ... }, 2 => { ... } }`
+  - Wildcard pattern: `_ => { ... }` (default/catch-all)
+  - Destructuring with bindings: `ok(value) => { ... }`, `some(x) => { ... }`
 - Expressions: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
 - Assignment operators: `=`, `+=`, `-=`, `*=`, `/=`
 - Function calls with arguments
 - Return statements
 - Block scoping with `{` `}`
 - Single-line (`//`) and multi-line (`/* */`) comments
-- String and character literals
+- **Literals**: integers, floats/doubles (`3.14`, `0.001`), strings, characters
+- **Types**: `int`, `float`, `double`, `char`, `string`, `bool`, `long`, `short`, `void`, generic types (`Array<int>`, `Map<string, int>`)
 
 ## Project Status
 
-This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST. The parser supports both C-style function declarations and the new BLang `fn`-style declarations (`fn name(params) -> type { body }`), struct definitions, break/continue statements, and extern declarations with unnamed parameters. The lexer recognizes new keywords: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`. The codegen currently supports: function definitions, extern function declarations (for calling C library functions like `printf`), variadic function calls, variable declarations with initialization (including expression initializers), return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end. The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
+This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST.
+
+**Parser features**: Both C-style and BLang `fn`-style function declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, float/double literals, break/continue, and extern declarations with unnamed parameters.
+
+**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), float constants.
+
+**Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
+
+The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
 
 ## Known Issues and Limitations
 

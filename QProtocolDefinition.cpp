@@ -28,6 +28,41 @@ ProtocolDefinition *ProtocolDefinition::Parse( Lexer &l, Scope *s )
 
 	ProtocolDefinition *protoDef = new ProtocolDefinition( l.getSymbolText() );
 
+	// Check for generic parameters: protocol Name<T>
+	if ( l.peekSymbol() == '<' )
+	{
+		l.getSymbol(); // consume '<'
+
+		do {
+			sym = l.getSymbol();
+			if ( sym != Lexer::SYMBOL )
+				COMPILE_ERROR( l, "Expected type parameter name" );
+
+			GenericParam param;
+			param.mName = l.getSymbolText();
+
+			// Check for constraint: <T: Comparable>
+			if ( l.peekSymbol() == ':' )
+			{
+				l.getSymbol(); // consume ':'
+				sym = l.getSymbol();
+				if ( sym != Lexer::SYMBOL )
+					COMPILE_ERROR( l, "Expected constraint name after ':'" );
+				param.mConstraint = l.getSymbolText();
+			}
+
+			protoDef->mGenericParams.push_back( param );
+
+			// Register type parameter in scope
+			s->addType( new Type( param.mName ) );
+
+			sym = l.getSymbol();
+		} while ( sym == ',' );
+
+		if ( sym != '>' )
+			COMPILE_ERROR( l, "Expected '>' after generic parameters" );
+	}
+
 	sym = l.getSymbol();
 	if ( sym != '{' )
 	{
