@@ -64,7 +64,12 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 			}
 		}
 		def->mVariables.push_back( data );
-	} while ( l.peekSymbol() == ',' );
+
+		if ( l.peekSymbol() != ',' )
+			break;
+
+		l.getSymbol(); // consume ','
+	} while ( true );
 	
 	return def;
 }
