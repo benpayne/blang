@@ -104,18 +104,44 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 	{
 		result = ConstExpression::Parse( l, scope );
 	}
-	// Symbol: could be a function call or variable reference
+	// Symbol: could be a struct literal, function call, or variable reference
 	else if ( sym == Lexer::SYMBOL )
 	{
 		int pos = l.getCurrentPos();
 
+		// Check for struct literal: StructName { field: value, ... }
+		// Peek at the identifier name and check if it's a known struct
+		l.getSymbol(); // consume SYMBOL to read its text
+		string identName = l.getSymbolText();
+		l.setCurrentPos( pos ); // restore position
+
+		SmartPtr<Symbol> structSym = scope->findSymbol( identName );
+		if ( structSym != nullptr &&
+			 dynamic_cast<StructDefinition*>( (Symbol*)structSym ) != nullptr )
+		{
+			// Save position again to peek past the identifier
+			l.getSymbol(); // consume SYMBOL
+			if ( l.peekSymbol() == '{' )
+			{
+				l.setCurrentPos( pos ); // restore for Parse method
+				result = StructLiteralExpression::Parse( l, scope, identName );
+			}
+			else
+			{
+				l.setCurrentPos( pos ); // restore, not a struct literal
+			}
+		}
+
 		// Try function call first (save/restore position on failure)
-		try {
-			CallExpression *callExpr = CallExpression::Parse( l, scope );
-			if ( callExpr != nullptr )
-				result = callExpr;
-		} catch ( CompileError & ) {
-			// Not a valid call — fall through to variable
+		if ( result == nullptr )
+		{
+			try {
+				CallExpression *callExpr = CallExpression::Parse( l, scope );
+				if ( callExpr != nullptr )
+					result = callExpr;
+			} catch ( CompileError & ) {
+				// Not a valid call — fall through to variable
+			}
 		}
 
 		if ( result == nullptr )
@@ -319,4 +345,57 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 	}
 
 	return exp;
+}
+
+StructLiteralExpression *StructLiteralExpression::Parse( Lexer &l, Scope *scope, const string &typeName )
+{
+	TRACE_BEGIN( LOG_LVL_INFO );
+
+	// Consume the struct type name
+	int sym = l.getSymbol();
+	if ( sym != Lexer::SYMBOL )
+		COMPILE_ERROR( l, "Expected struct type name" );
+
+	// Consume '{'
+	sym = l.getSymbol();
+	if ( sym != '{' )
+		COMPILE_ERROR( l, "Expected '{' in struct literal" );
+
+	StructLiteralExpression *expr = new StructLiteralExpression( typeName );
+
+	// Parse field initializers: fieldName: expression, ...
+	if ( l.peekSymbol() != '}' )
+	{
+		do {
+			// Parse field name
+			sym = l.getSymbol();
+			if ( sym != Lexer::SYMBOL )
+				COMPILE_ERROR( l, "Expected field name in struct literal" );
+			string fieldName = l.getSymbolText();
+
+			// Expect ':'
+			sym = l.getSymbol();
+			if ( sym != ':' )
+				COMPILE_ERROR( l, "Expected ':' after field name in struct literal" );
+
+			// Parse field value expression
+			Expression *value = ParseExpr( l, scope, 0 );
+			if ( value == nullptr )
+				COMPILE_ERROR( l, "Expected expression for field value in struct literal" );
+
+			expr->addField( fieldName, value );
+
+			// Check for ',' or '}'
+			sym = l.peekSymbol();
+			if ( sym == ',' )
+				l.getSymbol(); // consume ','
+		} while ( l.peekSymbol() != '}' );
+	}
+
+	// Consume '}'
+	sym = l.getSymbol();
+	if ( sym != '}' )
+		COMPILE_ERROR( l, "Expected '}' in struct literal" );
+
+	return expr;
 }

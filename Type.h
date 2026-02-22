@@ -179,8 +179,9 @@ namespace QLang
 		bool mIsVariadic = false;
 
 		friend class CodeGen;
+		friend class ProtocolDefinition;
 	};
-	
+
 	class VariableDefinition : public Symbol
 	{
 	public:

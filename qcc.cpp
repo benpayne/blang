@@ -48,6 +48,12 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				continue;
 			}
 
+			if ( nextSym == Lexer::KEYWORD_PROTOCOL )
+			{
+				SmartPtr<ProtocolDefinition> protoDef = ProtocolDefinition::Parse( l, s );
+				continue;
+			}
+
 			def = FunctionDefinition::Parse( l, s );
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
@@ -197,6 +203,7 @@ int main( int argc, char *argv[] )
 	gScope->addType( new Type( "int" ) );
 	gScope->addType( new Type( "char" ) );
 	gScope->addType( new Type( "string" ) );
+	gScope->addType( new Type( "bool" ) );
 	LexerReader reader( argv[ 1 ] );
 	Lexer l( &reader );
 	

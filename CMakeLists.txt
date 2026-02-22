@@ -41,6 +41,7 @@ set(QCC_SOURCES
 	QBlock.cpp
 	QBreakContinue.cpp
 	QExpression.cpp
+	QFieldAccessExpression.cpp
 	QFunctionDefinition.cpp
 	QReturnStatement.cpp
 	QStatement.cpp

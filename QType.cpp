@@ -29,7 +29,7 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 		sym = l.getSymbol();
 	}
 	
-	if ( sym == Lexer::BUILTIN_TYPE || ( allow_void and sym == Lexer::VOID ) )
+	if ( sym == Lexer::BUILTIN_TYPE || sym == Lexer::BOOL || ( allow_void and sym == Lexer::VOID ) )
 	{
 		t = s->findType( l.getSymbolText() );
 	}

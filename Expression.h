@@ -281,6 +281,26 @@ namespace QLang
 		friend class CodeGen;
 	};
 
+	class StructLiteralExpression : public Expression
+	{
+	public:
+		StructLiteralExpression( const std::string &typeName ) : mTypeName( typeName ) {}
+
+		void addField( const std::string &name, Expression *value )
+		{
+			mFieldNames.push_back( name );
+			mFieldValues.push_back( value );
+		}
+
+		static StructLiteralExpression *Parse( Lexer &l, Scope *scope, const std::string &typeName );
+
+	private:
+		std::string mTypeName;
+		std::vector<std::string> mFieldNames;
+		std::vector<SmartPtr<Expression>> mFieldValues;
+		friend class CodeGen;
+	};
+
 	struct MatchArm
 	{
 		std::string mPattern;
