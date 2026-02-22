@@ -28,9 +28,12 @@ Module *Module::Parse( Lexer &l, Scope *s )
 {
 	Module *mod = new Module();
 	SmartPtr<FunctionDefinition> def;
-	try { 
+	try {
 		while( !l.isEOF() )
 		{
+			// Peek past any trailing whitespace/comments to check for real EOF
+			if ( l.peekSymbol() == -1 )
+				break;
 			def = FunctionDefinition::Parse( l, s );
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
