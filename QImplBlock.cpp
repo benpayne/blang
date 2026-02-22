@@ -89,6 +89,11 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 		COMPILE_ERROR( l, "Expected '{' in impl block" );
 	}
 
+	// Use a local scope for impl methods so they don't pollute the global scope
+	// and don't conflict with protocol declarations of the same method name.
+	SmartPtr<Scope> implScope = new Scope( Scope::kScope_Class, structName );
+	implScope->setParent( s );
+
 	// Parse methods until '}'
 	while ( l.peekSymbol() != '}' )
 	{
@@ -97,7 +102,7 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 			COMPILE_ERROR( l, "Expected 'fn' for method in impl block" );
 		}
 
-		SmartPtr<FunctionDefinition> method = FunctionDefinition::Parse( l, s );
+		SmartPtr<FunctionDefinition> method = FunctionDefinition::Parse( l, implScope );
 		structDef->addMethod( method );
 	}
 
@@ -106,6 +111,32 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 
 	if ( !protocolName.empty() )
 	{
+		// Verify that the struct implements all required protocol methods
+		Symbol *protoSym = s->findSymbol( protocolName );
+		ProtocolDefinition *protoDef = dynamic_cast<ProtocolDefinition *>( protoSym );
+
+		// protoDef is non-null here — we already validated it above
+		const std::vector<SmartPtr<FunctionDefinition> > &required = protoDef->getRequiredMethods();
+		const std::vector<SmartPtr<FunctionDefinition> > &implemented = structDef->getMethods();
+
+		for ( const SmartPtr<FunctionDefinition> &req : required )
+		{
+			bool found = false;
+			for ( const SmartPtr<FunctionDefinition> &impl : implemented )
+			{
+				if ( impl->getName() == req->getName() )
+				{
+					found = true;
+					break;
+				}
+			}
+
+			if ( !found )
+			{
+				COMPILE_ERROR( l, "Struct '" + structName + "' does not implement method '" + req->getName() + "' required by protocol '" + protocolName + "'" );
+			}
+		}
+
 		cout << "Completed impl " << protocolName << " for " << structName << endl;
 	}
 	else

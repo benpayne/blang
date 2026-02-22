@@ -266,6 +266,11 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 				COMPILE_ERROR( l, "Expected ']'" );
 			result = new IndexExpression( result, index );
 		}
+		else if ( l.peekSymbol() == Lexer::QUESTION_MARK )
+		{
+			l.getSymbol(); // consume '?'
+			result = new TryExpression( result );
+		}
 		else
 		{
 			break;

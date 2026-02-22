@@ -555,6 +555,11 @@ int Lexer::getSymbolFromFile()
 					return mReader->popChar();
 				break;
 
+			case '?':
+				mReader->popChar();
+				return QUESTION_MARK;
+				break;
+
 			case '{':
 			case '}':
 			case '[':

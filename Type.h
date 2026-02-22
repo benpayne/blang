@@ -90,9 +90,12 @@ namespace QLang
 		Scope( ScopeType type = kScope_Anonymous ) {}
 		Scope( ScopeType type, const std::string &name ) {}
 		
-		void addSymbol( Symbol *sym )
+		bool addSymbol( Symbol *sym )
 		{
+			if ( mSymbolList.find( sym->getName() ) != mSymbolList.end() )
+				return false; // duplicate
 			mSymbolList[ sym->getName() ] = sym;
+			return true;
 		}
 		
 		void addType( Type *type )
@@ -149,6 +152,17 @@ namespace QLang
 		std::string mConstraint; // protocol constraint, empty if unconstrained
 	};
 
+	class ImportStatement : virtual public RefCount
+	{
+	public:
+		ImportStatement( const std::string &moduleName ) : mModuleName( moduleName ) {}
+
+		const std::string &getModuleName() const { return mModuleName; }
+
+	private:
+		std::string mModuleName;
+	};
+
 	class Module : virtual public RefCount
 	{
 	public:
@@ -160,13 +174,14 @@ namespace QLang
 		friend class CodeGen;
 
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
+		std::vector<SmartPtr<ImportStatement>> mImports;
 	};
 	
 	class FunctionDefinition : public Symbol
 	{
 	public:
 
-		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false );
+		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false, bool isPublic = false );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
 
@@ -179,6 +194,7 @@ namespace QLang
 		bool isExtern() const { return mIsExtern; }
 		bool isVariadic() const { return mIsVariadic; }
 		bool isGeneric() const { return !mGenericParams.empty(); }
+		bool isPublic() const { return mIsPublic; }
 
 	private:
 		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
@@ -189,6 +205,7 @@ namespace QLang
 		SmartPtr<Block> mFuncBody;
 		bool mIsExtern = false;
 		bool mIsVariadic = false;
+		bool mIsPublic = false;
 		std::vector<GenericParam> mGenericParams;
 
 		friend class CodeGen;
@@ -219,13 +236,16 @@ namespace QLang
 	{
 	public:
 
-		static StructDefinition *Parse( Lexer &l, Scope *s );
+		static StructDefinition *Parse( Lexer &l, Scope *s, bool isPublic = false );
 		static void ParseImplBlock( Lexer &l, Scope *s );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
 
 		void addMethod( FunctionDefinition *method ) { mMethods.push_back( method ); }
 		bool isGeneric() const { return !mGenericParams.empty(); }
+		bool isPublic() const { return mIsPublic; }
+
+		const std::vector<SmartPtr<FunctionDefinition> > &getMethods() const { return mMethods; }
 
 	private:
 		StructDefinition( const std::string &name ) : Symbol( name ) {}
@@ -233,6 +253,7 @@ namespace QLang
 		std::vector<SmartPtr<VariableDefinition> > mFields;
 		std::vector<SmartPtr<FunctionDefinition> > mMethods;
 		std::vector<GenericParam> mGenericParams;
+		bool mIsPublic = false;
 		friend class CodeGen;
 	};
 
@@ -245,6 +266,8 @@ namespace QLang
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
 
 		bool isGeneric() const { return !mGenericParams.empty(); }
+
+		const std::vector<SmartPtr<FunctionDefinition> > &getRequiredMethods() const { return mRequiredMethods; }
 
 	private:
 		ProtocolDefinition( const std::string &name ) : Symbol( name ) {}

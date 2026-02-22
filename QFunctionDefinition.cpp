@@ -35,7 +35,7 @@ std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &fun
 	return out;
 }
 
-FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern )
+FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern, bool isPublic )
 {
 	FunctionDefinition *func;
 
@@ -45,6 +45,8 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 	//   extern fn name( params ) -> returnType;
 	//
 	// When isExtern is true, the 'extern' keyword has already been consumed
+	// by Module::Parse.
+	// When isPublic is true, the 'pub' keyword has already been consumed
 	// by Module::Parse.
 
 	if ( l.peekSymbol() != Lexer::KEYWORD_FN )
@@ -59,9 +61,11 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 
 	func = new FunctionDefinition( l.getSymbolText() );
 	func->mIsExtern = isExtern;
+	func->mIsPublic = isPublic;
 	func->mFuncScope = new Scope( Scope::kScope_Function, l.getSymbolText() );
 	func->mFuncScope->setParent( s );
-	s->addSymbol( func );
+	if ( !s->addSymbol( func ) )
+		COMPILE_ERROR( l, "Duplicate function definition: '" + func->getName() + "'" );
 
 	// Check for generic parameters: fn name<T> or fn name<T: Constraint>
 	if ( l.peekSymbol() == '<' )
@@ -76,6 +80,13 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 			GenericParam param;
 			param.mName = l.getSymbolText();
 
+			// Check for duplicate generic parameter names
+			for ( const GenericParam &existing : func->mGenericParams )
+			{
+				if ( existing.mName == param.mName )
+					COMPILE_ERROR( l, "Duplicate generic parameter name: '" + param.mName + "'" );
+			}
+
 			// Check for constraint: <T: Comparable>
 			if ( l.peekSymbol() == ':' )
 			{
@@ -84,6 +95,13 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 				if ( sym != Lexer::SYMBOL )
 					COMPILE_ERROR( l, "Expected constraint name after ':'" );
 				param.mConstraint = l.getSymbolText();
+
+				// Validate that the constraint names an existing protocol
+				Symbol *constraintSym = s->findSymbol( param.mConstraint );
+				if ( constraintSym == nullptr )
+					COMPILE_ERROR( l, "Unknown protocol constraint: '" + param.mConstraint + "'" );
+				if ( dynamic_cast<ProtocolDefinition *>( constraintSym ) == nullptr )
+					COMPILE_ERROR( l, "Constraint '" + param.mConstraint + "' is not a protocol" );
 			}
 
 			func->mGenericParams.push_back( param );

@@ -71,6 +71,7 @@ public:
 		RANGE,
 		ARROW,
 		WILDCARD,
+		QUESTION_MARK,
 		NUM_SYMBOLS
 	};
 	
