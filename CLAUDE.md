@@ -2,7 +2,19 @@
 
 ## Project Overview
 
-BLang is a custom programming language compiler written in C++17. It uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST from C-like source files. The project includes an earlier Bison/Flex-based parser (`parser.yy`, `lexer.l`) that has been superseded by the current approach. LLVM integration exists in a legacy code path (`Scope.h` in the `BLang` namespace, `parse_helpers.cpp`) updated for modern LLVM (18+), but the active compiler (`qcc`) does not yet generate output — it only parses source into a tree.
+BLang is a compiled, native-performance language designed for clarity, safety, and LLM code generation. The compiler is written in C++17 and uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST. The project includes an earlier Bison/Flex-based parser (`parser.yy`, `lexer.l`) that has been superseded by the current approach. LLVM 18+ code generation infrastructure exists (`Scope.h` in the `BLang` namespace, `parse_helpers.cpp` — using modern opaque pointers, `FunctionCallee`, `llvm/IR/` headers) but is not yet connected to the active QLang parser. The active compiler (`qcc`) currently parses source into a tree but does not yet generate output.
+
+## Language Design
+
+The full language design specification is in **[docs/language_design.md](docs/language_design.md)**. Key design principles:
+
+- **One right way** — every concept has exactly one syntax, no equivalent alternatives
+- **Explicit over implicit** — no hidden conversions, no invisible control flow
+- **Safe by default** — no null, no data races, no use-after-free at compile time
+- **Native performance** — compiles to native code via LLVM, minimal runtime
+- **LLM-optimized** — regular grammar, small keyword set, constrained output space
+
+The language draws from C (performance, simplicity), Rust (ownership, Result types), Swift (protocols, ARC), Go (spawn/channels), and Python (readability) while enforcing a single canonical way to express each concept. See the design spec for full syntax, type system, concurrency model, and comparison with other languages.
 
 ## Repository Structure
 
@@ -30,11 +42,13 @@ BLang is a custom programming language compiler written in C++17. It uses a hand
 ├── parser.yy                  # Bison grammar (older approach, not used by qcc)
 ├── parser.h                   # Generated Bison header with token definitions
 ├── lexer.l                    # Flex lexer specification (older approach)
-├── parse_helpers.h/cpp        # LLVM code generation helpers (legacy, updated for modern LLVM)
+├── parse_helpers.h/cpp        # LLVM 18+ code generation (IRBuilder, opaque pointers, not yet connected to qcc)
 ├── LexerTest.cpp              # Basic lexer test program
 ├── LexerTest2.cpp             # Advanced lexer test with position save/restore
 ├── test.c                     # Comprehensive BLang test source file
 ├── test_files/                # Individual test cases (func_call*.c, if_call.c)
+├── docs/
+│   └── language_design.md     # BLang language design specification
 ├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals
 ├── jhcommon/                  # Git submodule (legacy, no longer linked — kept for reference)
@@ -83,7 +97,7 @@ Platform is auto-detected by CMake:
 
 | Dependency | Status | Purpose |
 |-----------|--------|---------|
-| LLVM 18+  | Optional, auto-detected | Code generation (legacy code path, not used by `qcc`) |
+| LLVM 18+  | Optional, auto-detected | Code generation (infrastructure ready, not yet connected to `qcc`) |
 
 The project is fully self-contained. `RefCount.h` provides intrusive reference counting (`RefCount` base class + `SmartPtr<T>` template) using `std::atomic` for thread safety. `logging.h` provides lightweight `LOG`, `TRACE_BEGIN`, `SET_LOG_CAT`, and `SET_LOG_LEVEL` macros.
 
@@ -93,7 +107,7 @@ The project is fully self-contained. `RefCount.h` provides intrusive reference c
 
 1. **Active — QLang recursive-descent parser** (`QLang` namespace in `Type.h`, `Expression.h`, `Q*.cpp`, `qcc.cpp`): Hand-written parser that builds an AST. This is the current development focus.
 
-2. **Legacy — Bison/Flex + LLVM** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`, `parser.yy`, `lexer.l`): Earlier approach using generated parser and LLVM IR emission. Updated for modern LLVM APIs (opaque pointers, new pass manager, `llvm/IR/` header paths) but not compiled into `qcc`.
+2. **LLVM code generation** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`): LLVM IR emission infrastructure using modern LLVM 18+ APIs (opaque pointers via `PointerType::get(ctx, 0)`, `FunctionCallee`, `IRBuilder<>`, `llvm/IR/` headers). This code is functional but not yet connected to the QLang parser — it was originally driven by the Bison/Flex parser (`parser.yy`, `lexer.l`) which has been superseded. The next step is wiring the QLang AST to this code generation backend.
 
 ### Key class hierarchy (QLang namespace)
 
