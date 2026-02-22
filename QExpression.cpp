@@ -465,8 +465,8 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 	case Lexer::CONSTANT_FLOAT:
 		exp = new ConstFloat( atof( l.getSymbolText().c_str() ) );
 		break;
-
-	return nullptr;
+	default:
+		return nullptr;
 	}
 
 	return exp;
