@@ -43,6 +43,7 @@ set(QCC_SOURCES
 	QExpression.cpp
 	QFieldAccessExpression.cpp
 	QFunctionDefinition.cpp
+	QProtocolDefinition.cpp
 	QReturnStatement.cpp
 	QStatement.cpp
 	QStructDefinition.cpp

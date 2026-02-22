@@ -107,9 +107,18 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 			func->mReturnType = nullptr;
 		}
 
-		// Parse function body
-		func->mFuncBody = Block::Parse( l, func->mFuncScope );
-		cout << "Completed function " << endl;
+		// Parse function body or ';' for bodyless declarations (e.g. protocol methods)
+		if ( l.peekSymbol() == ';' )
+		{
+			l.getSymbol(); // consume ';'
+			func->mFuncBody = nullptr;
+			cout << "Completed function declaration " << endl;
+		}
+		else
+		{
+			func->mFuncBody = Block::Parse( l, func->mFuncScope );
+			cout << "Completed function " << endl;
+		}
 
 		return func;
 	}
