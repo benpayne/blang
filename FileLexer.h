@@ -1,6 +1,7 @@
 #ifndef FILE_LEXER_H_
 #define FILE_LEXER_H_
 
+#include <cstdint>
 #include <fstream>
 #include <string>
 #include <vector>

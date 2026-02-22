@@ -1,11 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(BLang LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-add_subdirectory(jhcommon)
-
 # Platform detection
 if(APPLE)
 	add_compile_definitions(PLATFORM_DARWIN)
@@ -31,12 +26,10 @@ endif()
 
 # Lexer test targets
 add_executable(lexerTest LexerTest.cpp FileLexer.cpp LexerReader.cpp)
-target_link_libraries(lexerTest PRIVATE jhcommon)
-target_include_directories(lexerTest PRIVATE ${JHCOMMON_SOURCE_DIR}/include)
+set_target_properties(lexerTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 add_executable(lexerTest2 LexerTest2.cpp FileLexer.cpp LexerReader.cpp)
-target_link_libraries(lexerTest2 PRIVATE jhcommon)
-target_include_directories(lexerTest2 PRIVATE ${JHCOMMON_SOURCE_DIR}/include)
+set_target_properties(lexerTest2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # Main compiler
 add_executable(qcc
@@ -50,6 +43,5 @@ add_executable(qcc
 	QStatement.cpp
 	QType.cpp
 	QVariableDefinition.cpp)
-target_link_libraries(qcc PRIVATE jhcommon)
-target_include_directories(qcc PRIVATE ${JHCOMMON_SOURCE_DIR}/include)
 target_compile_definitions(qcc PRIVATE JH_VERBOSE_LOGGING)
+set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

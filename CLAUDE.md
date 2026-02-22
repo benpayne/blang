@@ -12,6 +12,8 @@ BLang is a custom programming language compiler written in C++17. It uses a hand
 ├── Type.h                     # Core type system, base classes: Statement, Type, Symbol, Scope, Module, FunctionDefinition, VariableDefinition
 ├── Expression.h               # Expression/statement AST nodes: Expression, WhileStatement, ForStatement, IfStatement, ReturnStatement, Block, constants, etc.
 ├── CompilerHelpers.h          # CompileError exception class, COMPILE_ERROR macro, SmartPtr ostream operator
+├── RefCount.h                 # Standalone RefCount base class and SmartPtr<T> template (replaces jhcommon)
+├── logging.h                  # Lightweight logging macros (replaces jhcommon logging)
 ├── FileLexer.h / FileLexer.cpp # Hand-written lexer (Lexer and LexerReader classes)
 ├── LexerReader.cpp            # File reader implementation for the lexer
 ├── Lexer.h                    # Abstract lexer interface
@@ -35,13 +37,15 @@ BLang is a custom programming language compiler written in C++17. It uses a hand
 ├── test_files/                # Individual test cases (func_call*.c, if_call.c)
 ├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals
-├── jhcommon/                  # Git submodule: shared utilities (logging, RefCount/SmartPtr)
+├── jhcommon/                  # Git submodule (legacy, no longer linked — kept for reference)
 └── .gitmodules                # Submodule config for jhcommon
 ```
 
 ## Build System
 
 **CMake** (minimum version 3.16), **C++17** standard required.
+
+The project has **no external dependencies** for the active build targets. The jhcommon git submodule was previously required but has been replaced with standalone `RefCount.h` and `logging.h` headers.
 
 ### Build targets
 
@@ -54,7 +58,6 @@ BLang is a custom programming language compiler written in C++17. It uses a hand
 ### Building
 
 ```bash
-git submodule update --init
 mkdir build && cd build
 cmake ..
 make
@@ -74,19 +77,15 @@ Platform is auto-detected by CMake:
 
 ### Compile definitions
 
-- `JH_VERBOSE_LOGGING` — Enables verbose logging from jhcommon (set on `qcc` target)
+- `JH_VERBOSE_LOGGING` — Enables verbose logging and trace output (set on `qcc` target)
 
 ## Dependencies
 
-| Dependency | Source                                      | Purpose                                       |
-|-----------|---------------------------------------------|-----------------------------------------------|
-| jhcommon  | git submodule (`github.com/benpayne/jhcommon`) | Logging framework, RefCount/SmartPtr utilities |
-| LLVM 18+  | System install (optional, auto-detected)     | Code generation (legacy code path, not used by `qcc`) |
+| Dependency | Status | Purpose |
+|-----------|--------|---------|
+| LLVM 18+  | Optional, auto-detected | Code generation (legacy code path, not used by `qcc`) |
 
-After cloning, initialize the submodule:
-```bash
-git submodule update --init
-```
+The project is fully self-contained. `RefCount.h` provides intrusive reference counting (`RefCount` base class + `SmartPtr<T>` template) using `std::atomic` for thread safety. `logging.h` provides lightweight `LOG`, `TRACE_BEGIN`, `SET_LOG_CAT`, and `SET_LOG_LEVEL` macros.
 
 ## Architecture
 
@@ -99,7 +98,7 @@ git submodule update --init
 ### Key class hierarchy (QLang namespace)
 
 ```
-RefCount (jhcommon)
+RefCount
 ├── Statement                    # Base for all statements
 │   ├── Expression               # Base for all expressions
 │   │   ├── ConstExpression      # Literal values
@@ -131,7 +130,7 @@ Every AST node class has a `static Parse(Lexer &l, Scope *scope)` factory method
 
 ### Memory management
 
-All AST nodes inherit from `RefCount` (from jhcommon). Ownership is managed through `SmartPtr<T>` — a reference-counted smart pointer. Raw `new` is used in `Parse` methods; the returned pointer is immediately stored in a `SmartPtr`.
+All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is managed through `SmartPtr<T>` — an intrusive reference-counted smart pointer using `std::atomic<int>` for thread safety. Raw `new` is used in `Parse` methods; the returned pointer is immediately stored in a `SmartPtr`.
 
 ### Error handling
 
@@ -223,4 +222,5 @@ This is an active work-in-progress. The recursive-descent parser can parse BLang
 
 - No CI/CD pipeline.
 - No automated test framework.
+- Binary expressions (e.g., `a + b` as statements) are not fully supported by the parser — causes "Failed to find terminal" errors in `func_call1.c`, `func_call2.c`.
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.
