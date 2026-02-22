@@ -287,18 +287,30 @@ int main( int argc, char *argv[] )
 	if ( opts.verbose )
 		cerr << "--- Step 2: Compiling IR to object file ---" << endl;
 
-	string llc = findTool( "llc-18", { "llc" } );
+	string llc;
+#ifdef BCC_LLC_PATH
+	// Use the llc path discovered at build time
+	if ( access( BCC_LLC_PATH, X_OK ) == 0 )
+		llc = BCC_LLC_PATH;
+#endif
+	if ( llc.empty() )
+		llc = findTool( "llc-18", { "llc" } );
 	if ( llc.empty() )
 	{
 		cerr << "error: llc not found (install llvm-18 or llvm)" << endl;
-		// Cleanup IR file
 		remove( irFile.c_str() );
 		return 1;
 	}
 
 	string objFile = "/tmp/" + baseName + ".o";
 	{
-		vector<string> cmd = { llc, "-filetype=obj", irFile, "-o", objFile };
+		vector<string> cmd = { llc, "-filetype=obj" };
+#ifdef BCC_HOST_ARCH
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+#endif
+		cmd.push_back( irFile );
+		cmd.push_back( "-o" );
+		cmd.push_back( objFile );
 		int ret = runCommand( cmd, opts.verbose );
 		if ( ret != 0 )
 		{
@@ -327,7 +339,18 @@ int main( int argc, char *argv[] )
 
 	string outFile = opts.outputFile.empty() ? "a.out" : opts.outputFile;
 	{
-		vector<string> cmd = { "cc", objFile, "-o", outFile };
+		string cc = "cc";
+#ifdef BCC_CC_PATH
+		cc = BCC_CC_PATH;
+#endif
+		vector<string> cmd = { cc };
+#ifdef BCC_HOST_ARCH
+		cmd.push_back( "-arch" );
+		cmd.push_back( BCC_HOST_ARCH );
+#endif
+		cmd.push_back( objFile );
+		cmd.push_back( "-o" );
+		cmd.push_back( outFile );
 		for ( const auto &flag : opts.linkerFlags )
 			cmd.push_back( flag );
 		int ret = runCommand( cmd, opts.verbose );
