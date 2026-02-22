@@ -982,31 +982,37 @@ BLang source files use the `.bl` extension.
 
 ## Implementation Status
 
-The BLang compiler is under active development. The current implementation is a hand-written recursive-descent parser that builds an AST. LLVM 18+ code generation infrastructure exists but is not yet connected to the active parser.
+The BLang compiler is under active development. The current implementation is a hand-written recursive-descent parser that builds an AST. LLVM 18+ code generation is wired to the parser via the `CodeGen` class — the full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
+
+For the detailed implementation plan with 217 tasks across all phases, see **[docs/implementation_plan.md](implementation_plan.md)**.
 
 ### Currently Working
 
-- Function definitions with parameters and return types
-- Variable declarations (single and multi-variable)
-- Control flow: if/else, while, for
-- Constants: integer, float, string, char literals
-- Function calls with arguments
-- Return statements
+- Function definitions with parameters and return types (C-style syntax)
+- Extern function declarations with variadic support (`extern int printf(string fmt, ...);`)
+- Variable declarations (single and multi-variable) with expression initializers
+- Binary expressions with full operator precedence: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
+- Unary expressions (`-`, `!`, `~`)
+- Assignment operators (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`)
+- Control flow: if/else, while, for (C-style)
+- Constants: integer, float, string, char literals (with escape sequences)
+- Function calls with arguments (including nested calls)
+- Return statements (with expression support)
 - Block scoping
 - Comments (single-line and multi-line)
+- LLVM IR code generation for all of the above (when built with `llvm-18-dev`)
+- End-to-end compilation: parse → `.ll` → `llc` → native binary
 
 ### Next Steps
 
 **Phase 1 — Core Language (current)**
 
-1. Binary expressions and assignment operators
-2. Transition from C-style syntax (`int foo()`) to BLang syntax (`fn foo() -> int`)
-3. Struct types and impl blocks
-4. Protocol definitions and conformance checking
-5. Generics with protocol constraints
-6. Wire AST to LLVM code generation (LLVM 18+ backend already exists)
-7. Result/Option types and the `?` operator
-8. Module system and imports
+1. Transition from C-style syntax (`int foo()`) to BLang syntax (`fn foo() -> int`)
+2. Struct types and impl blocks
+3. Protocol definitions and conformance checking
+4. Generics with protocol constraints
+5. Result/Option types, `match` expressions, and the `?` operator
+6. Module system and imports (`import`, `pub`)
 
 **Phase 2 — Concurrency and Safety**
 
