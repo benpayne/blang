@@ -15,7 +15,7 @@ using namespace std;
 
 std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &func)
 {
-	if ( func.mReturnType != NULL )
+	if ( func.mReturnType != nullptr )
 		out << *(func.mReturnType) << " " << func.getName();
 	else
 		out << "void " << func.getName();

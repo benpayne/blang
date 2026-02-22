@@ -21,7 +21,7 @@ std::ostream &QLang::operator<<(std::ostream &out, const Type &type)
 Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 {
 	int sym = l.getSymbol();
-	Type *t = NULL;
+	Type *t = nullptr;
 	
 	while ( sym == Lexer::TYPE_MODIFIER )
 	{

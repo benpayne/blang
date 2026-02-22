@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-BLang is a custom programming language compiler written in C++. It uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST from C-like source files. The project includes an earlier Bison/Flex-based parser (`parser.yy`, `lexer.l`) that has been superseded by the current approach. LLVM integration exists in an older code path (`Scope.h` in the `BLang` namespace, `parse_helpers.cpp`) but the active compiler (`qcc`) does not yet generate output — it only parses source into a tree.
+BLang is a custom programming language compiler written in C++17. It uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST from C-like source files. The project includes an earlier Bison/Flex-based parser (`parser.yy`, `lexer.l`) that has been superseded by the current approach. LLVM integration exists in a legacy code path (`Scope.h` in the `BLang` namespace, `parse_helpers.cpp`) updated for modern LLVM (18+), but the active compiler (`qcc`) does not yet generate output — it only parses source into a tree.
 
 ## Repository Structure
 
@@ -15,8 +15,8 @@ BLang is a custom programming language compiler written in C++. It uses a hand-w
 ├── FileLexer.h / FileLexer.cpp # Hand-written lexer (Lexer and LexerReader classes)
 ├── LexerReader.cpp            # File reader implementation for the lexer
 ├── Lexer.h                    # Abstract lexer interface
-├── Symbol.h                   # Symbol class (BLang namespace, older LLVM-based approach)
-├── Scope.h                    # Scope class (BLang namespace, older LLVM-based approach with BasicBlock/Function)
+├── Symbol.h                   # Symbol class (BLang namespace, legacy LLVM-based approach)
+├── Scope.h                    # Scope class (BLang namespace, legacy LLVM-based approach with BasicBlock/Function)
 ├── QBlock.cpp                 # Block::Parse implementation
 ├── QExpression.cpp            # Expression parsing (lvalue, rvalue, binary operations, constants)
 ├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing
@@ -28,12 +28,12 @@ BLang is a custom programming language compiler written in C++. It uses a hand-w
 ├── parser.yy                  # Bison grammar (older approach, not used by qcc)
 ├── parser.h                   # Generated Bison header with token definitions
 ├── lexer.l                    # Flex lexer specification (older approach)
-├── parse_helpers.h/cpp        # LLVM code generation helpers (older approach)
+├── parse_helpers.h/cpp        # LLVM code generation helpers (legacy, updated for modern LLVM)
 ├── LexerTest.cpp              # Basic lexer test program
 ├── LexerTest2.cpp             # Advanced lexer test with position save/restore
 ├── test.c                     # Comprehensive BLang test source file
 ├── test_files/                # Individual test cases (func_call*.c, if_call.c)
-├── CMakeLists.txt             # Build configuration
+├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals
 ├── jhcommon/                  # Git submodule: shared utilities (logging, RefCount/SmartPtr)
 └── .gitmodules                # Submodule config for jhcommon
@@ -41,7 +41,7 @@ BLang is a custom programming language compiler written in C++. It uses a hand-w
 
 ## Build System
 
-**CMake** (minimum version 2.6).
+**CMake** (minimum version 3.16), **C++17** standard required.
 
 ### Build targets
 
@@ -54,22 +54,34 @@ BLang is a custom programming language compiler written in C++. It uses a hand-w
 ### Building
 
 ```bash
+git submodule update --init
 mkdir build && cd build
 cmake ..
 make
 ```
 
-### Compile flags
+If LLVM is installed and you want it discovered for future code generation work:
+```bash
+cmake .. -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+```
 
-- `-DPLATFORM_DARWIN` — Platform flag (hardcoded for macOS)
-- `-DJH_VERBOSE_LOGGING` — Enables verbose logging from jhcommon
+### Platform detection
+
+Platform is auto-detected by CMake:
+- macOS: defines `PLATFORM_DARWIN`
+- Linux: defines `PLATFORM_LINUX`
+- Windows: defines `PLATFORM_WINDOWS`
+
+### Compile definitions
+
+- `JH_VERBOSE_LOGGING` — Enables verbose logging from jhcommon (set on `qcc` target)
 
 ## Dependencies
 
 | Dependency | Source                                      | Purpose                                       |
 |-----------|---------------------------------------------|-----------------------------------------------|
 | jhcommon  | git submodule (`github.com/benpayne/jhcommon`) | Logging framework, RefCount/SmartPtr utilities |
-| LLVM 3.0+ | System install (headers only in older code path) | Code generation (not active in current `qcc`)  |
+| LLVM 18+  | System install (optional, auto-detected)     | Code generation (legacy code path, not used by `qcc`) |
 
 After cloning, initialize the submodule:
 ```bash
@@ -82,7 +94,7 @@ git submodule update --init
 
 1. **Active — QLang recursive-descent parser** (`QLang` namespace in `Type.h`, `Expression.h`, `Q*.cpp`, `qcc.cpp`): Hand-written parser that builds an AST. This is the current development focus.
 
-2. **Legacy — Bison/Flex + LLVM** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`, `parser.yy`, `lexer.l`): Earlier approach using generated parser and LLVM IR emission. Not compiled into `qcc`.
+2. **Legacy — Bison/Flex + LLVM** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`, `parser.yy`, `lexer.l`): Earlier approach using generated parser and LLVM IR emission. Updated for modern LLVM APIs (opaque pointers, new pass manager, `llvm/IR/` header paths) but not compiled into `qcc`.
 
 ### Key class hierarchy (QLang namespace)
 
@@ -125,7 +137,7 @@ All AST nodes inherit from `RefCount` (from jhcommon). Ownership is managed thro
 
 - `CompileError` exception class carries the error message, source file, and line number.
 - `COMPILE_ERROR(lexer, message)` macro throws a `CompileError` with `__FILE__` and `__LINE__`.
-- The top-level `Module::Parse` has a try/catch that prints the error and returns `NULL`.
+- The top-level `Module::Parse` has a try/catch that prints the error and returns `nullptr`.
 
 ## Code Conventions
 
@@ -136,6 +148,12 @@ All AST nodes inherit from `RefCount` (from jhcommon). Ownership is managed thro
 - **Local variables**: camelCase (`statement`, `sym`, `scope`)
 - **Enum values**: `kScope_Global` style (QLang) or `SCOPE_GLOBAL` style (BLang)
 - **Constants/macros**: UPPER_SNAKE_CASE (`COMPILE_ERROR`, `NUM_SYMBOLS`)
+
+### C++ standard
+
+- Use C++17 features where appropriate
+- Use `nullptr` instead of `NULL`
+- Prefer range-based `for` loops over iterator-based loops
 
 ### Formatting
 
@@ -203,8 +221,6 @@ This is an active work-in-progress. The recursive-descent parser can parse BLang
 
 ## Known Issues and Limitations
 
-- `ForStatement::Parse` checks for `KEYWORD_IF` instead of `KEYWORD_FOR` (`qcc.cpp:129`) — likely a copy-paste bug.
-- `ForStatement::Parse` returns `NULL` instead of the constructed `statement` object (`qcc.cpp:168`).
-- The `PLATFORM_DARWIN` flag is hardcoded in `CMakeLists.txt` rather than detected.
 - No CI/CD pipeline.
 - No automated test framework.
+- Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.

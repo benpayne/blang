@@ -20,10 +20,10 @@ std::ostream &QLang::operator<<(std::ostream &out, const VariableDefinition &var
 
 VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s )
 {
-	VariableDefinition *def = NULL;
+	VariableDefinition *def = nullptr;
 	SmartPtr<Type> t = Type::Parse( l, s, false );
 	int sym = l.getSymbol();
-	if ( t != NULL && sym == Lexer::SYMBOL )
+	if ( t != nullptr && sym == Lexer::SYMBOL )
 	{
 		def = new VariableDefinition( t, l.getSymbolText() );
 		s->addSymbol( def );
@@ -41,7 +41,7 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 		VariableDeclaration::DeclData data;
 		int sym = l.getSymbol();
 		
-		if ( t != NULL && sym == Lexer::SYMBOL )
+		if ( t != nullptr && sym == Lexer::SYMBOL )
 		{
 			data.mVaribale = new VariableDefinition( t, l.getSymbolText() );
 		}
@@ -57,7 +57,7 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 		{
 			sym = l.getSymbol();
 			data.mInitialValue = Expression::Parse( l, s );
-			if ( data.mInitialValue == NULL )
+			if ( data.mInitialValue == nullptr )
 			{
 				// report error
 				COMPILE_ERROR( l, "Failed parse value" );

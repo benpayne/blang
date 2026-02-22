@@ -37,9 +37,9 @@ Module *Module::Parse( Lexer &l, Scope *s )
 		}
 	} catch( CompileError &err ) {
 		cerr << err.getMessage() << endl;
-		return NULL;
-	}				
-	
+		return nullptr;
+	}
+
 	return mod;
 }
 
@@ -61,7 +61,7 @@ WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 	
 	statement->mLoopExpression = Expression::Parse( l, scope, ')' );
 	
-	if ( statement->mLoopExpression == NULL )
+	if ( statement->mLoopExpression == nullptr )
 	{
 		COMPILE_ERROR( l, "Expected Expression in while statement" );
 	}
@@ -95,7 +95,7 @@ IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 	
 	statement->mIfExpression = Expression::Parse( l, scope, ')' );
 	
-	if ( statement->mIfExpression == NULL )
+	if ( statement->mIfExpression == nullptr )
 	{
 		COMPILE_ERROR( l, "Expected Expression in while statement" );
 	}
@@ -126,7 +126,7 @@ IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 ForStatement *ForStatement::Parse( Lexer &l, Scope *scope )
 {
 	int sym = l.getSymbol();
-	if ( sym != Lexer::KEYWORD_IF )
+	if ( sym != Lexer::KEYWORD_FOR )
 	{
 		COMPILE_ERROR( l, "Internal Compiler Error" );
 	}
@@ -138,34 +138,34 @@ ForStatement *ForStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	ForStatement *statement = new ForStatement;
-	
+
 	statement->mInitialExpression = Expression::Parse( l, scope );
-	if ( statement->mInitialExpression == NULL )
+	if ( statement->mInitialExpression == nullptr )
 	{
 		COMPILE_ERROR( l, "Expected Expression in for statement" );
 	}
-	
+
 	statement->mTestExpression = Expression::Parse( l, scope );
-	if ( statement->mTestExpression == NULL )
+	if ( statement->mTestExpression == nullptr )
 	{
 		COMPILE_ERROR( l, "Expected Expression in for statement" );
 	}
-	
+
 	statement->mIterationExpression = Expression::Parse( l, scope, ')' );
-	if ( statement->mIterationExpression == NULL )
+	if ( statement->mIterationExpression == nullptr )
 	{
 		COMPILE_ERROR( l, "Expected Expression in for statement" );
 	}
-	
+
 	Scope *for_scope = new Scope( Scope::kScope_Loop );
 	for_scope->setParent( scope );
-	
+
 	if ( l.peekSymbol() == '{' )
 		statement->mStatement = Block::Parse( l, for_scope );
 	else
 		statement->mStatement = Statement::Parse( l, for_scope );
-	
-	return NULL;
+
+	return statement;
 }
 
 int main( int argc, char *argv[] )
@@ -185,7 +185,7 @@ int main( int argc, char *argv[] )
 	
 	SmartPtr<Module> mod = Module::Parse( l, gScope );
 
-	if ( mod == NULL )
+	if ( mod == nullptr )
 	{
 		return -1;
 	}

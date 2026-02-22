@@ -19,20 +19,20 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 	int pos = l.getCurrentPos();
-	Expression *exp = NULL;
+	Expression *exp = nullptr;
 	
 	if ( l.peekSymbol() == Lexer::SYMBOL )
 	{
 		exp = CallExpression::Parse( l, scope );
 		int sym = l.getSymbol();
-		if ( exp == NULL or sym != terminal )
+		if ( exp == nullptr or sym != terminal )
 		{
 			LOG( "Not a call, Moving position to %d", pos );
 			l.setCurrentPos( pos );
 			
 			exp = VariableExpression::Parse( l, scope );
 			int sym = l.getSymbol();
-			if ( exp == NULL or sym != terminal )
+			if ( exp == nullptr or sym != terminal )
 			{
 				cerr << "found " << (char)sym << " looking for " << terminal << endl;
 				COMPILE_ERROR( l, "Failed to find terminal" );
@@ -52,12 +52,12 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
-	VariableExpression *exp = NULL;
+	VariableExpression *exp = nullptr;
 	int sym = l.getSymbol();
 	if ( sym == Lexer::SYMBOL )
 	{
 		SmartPtr<Symbol> s = scope->findSymbol( l.getSymbolText() );
-		if ( s == NULL )
+		if ( s == nullptr )
 		{
 			cerr << "Symbol Text " << l.getSymbolText() << endl;
 			COMPILE_ERROR( l, "Failed to find Symbol" );
@@ -67,7 +67,7 @@ VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 		if ( s->getSymbolType() == Symbol::TypeVariable )
 		{
 			VariableDefinition *def = dynamic_cast<VariableDefinition*>( (Symbol*)s );
-			if ( def != NULL )
+			if ( def != nullptr )
 				exp = new VariableExpression( def );
 		}
 	}
@@ -78,12 +78,12 @@ VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 
 CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 {
-	CallExpression *exp = NULL;
+	CallExpression *exp = nullptr;
 	int sym  = l.getSymbol();
 	if ( sym == Lexer::SYMBOL )
 	{
 		SmartPtr<Symbol> s = scope->findSymbol( l.getSymbolText() );
-		if ( s == NULL )
+		if ( s == nullptr )
 		{
 			COMPILE_ERROR( l, "Failed to find Symbol" );
 		}
@@ -95,7 +95,7 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 			
 			sym = l.getSymbol();
 			if ( sym != '(' )
-				return NULL;
+				return nullptr;
 			
 			for ( int i = 0; i < def->getNumberParams(); i++ )
 			{
@@ -104,10 +104,10 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 					term = ')';
 				
 				Expression *param = Expression::Parse( l, scope, term );
-				if ( param != NULL )
+				if ( param != nullptr )
 					exp->mParams.push_back( param );
 				else
-					return NULL;
+					return nullptr;
 			}			
 		}
 	}
@@ -117,7 +117,7 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 
 ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 {
-	ConstExpression *exp = NULL;
+	ConstExpression *exp = nullptr;
 	int sym = l.getSymbol();
 	switch( sym )
 	{
@@ -131,7 +131,7 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 		exp = new ConstInteger( atoi( l.getSymbolText().c_str() ) );
 		break;
 		
-	return NULL;
+	return nullptr;
 	}
 	
 	return exp;
@@ -141,7 +141,7 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 Expression *Expression::ParseLValue( Lexer &l, Scope *scope )
 {
 	// look for proper RValue
-	Expression *exp = NULL;
+	Expression *exp = nullptr;
 	switch( l.peekSymbol() )
 	{
 		case Lexer::TYPE_MODIFIER:
@@ -154,7 +154,7 @@ Expression *Expression::ParseLValue( Lexer &l, Scope *scope )
 		case Lexer::SYMBOL:
 		{
 			SmartPtr<Type> type = scope->findType( l.getSymbolText() );
-			if ( type != NULL )
+			if ( type != nullptr )
 			{
 				SmartPtr<VariableDefinition> def = VariableDefinition::Parse( l, scope );
 				exp = new VariableExpression( def );
@@ -162,7 +162,7 @@ Expression *Expression::ParseLValue( Lexer &l, Scope *scope )
 			else
 			{
 				SmartPtr<Symbol> symbol = scope->findSymbol( l.getSymbolText() );
-				if ( symbol != NULL )
+				if ( symbol != nullptr )
 				{
 					if ( symbol->getSymbolType() == Symbol::TypeVariable )
 						exp = VariableExpression::Parse( l, scope );
@@ -179,21 +179,21 @@ Expression *Expression::ParseLValue( Lexer &l, Scope *scope )
 	
 	// Parse all remaining LValues
 	
-	return NULL;
+	return nullptr;
 }
 #endif
 
 Expression *Expression::ParseRValue( Lexer &l, Scope *scope )
 {
 	// look for proper RValue
-	Expression *exp = NULL;
+	Expression *exp = nullptr;
 	switch( l.peekSymbol() )
 	{
 	case Lexer::SYMBOL:
 	{
 		// encure that this symbol is not a type.
 		SmartPtr<Type> type = scope->findType( l.getSymbolText() );
-		if ( type == NULL )
+		if ( type == nullptr )
 		{
 			SmartPtr<Symbol> symbol = scope->findSymbol( l.getSymbolText() );
 			if ( symbol->getSymbolType() == Symbol::TypeVariable )
@@ -210,6 +210,6 @@ Expression *Expression::ParseRValue( Lexer &l, Scope *scope )
 
 	// Parse all remaining LValues
 	
-	return NULL;
+	return nullptr;
 }
 

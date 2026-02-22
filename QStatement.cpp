@@ -18,7 +18,7 @@ using namespace std;
 Statement *Statement::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
-	Statement *statement = NULL;
+	Statement *statement = nullptr;
 	int pos = l.getCurrentPos();
 	
 	LOG( "Saving position: %d", pos );

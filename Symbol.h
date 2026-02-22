@@ -3,8 +3,8 @@
 
 #include <string>
 #include <vector>
-#include "llvm/Type.h"
-#include "llvm/Value.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/Value.h"
 
 namespace BLang
 {		

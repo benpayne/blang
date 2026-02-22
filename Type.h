@@ -98,10 +98,10 @@ namespace QLang
 			SymbolListType::iterator i = mSymbolList.find( str );
 			if ( i == mSymbolList.end() )
 			{
-				if ( mParent != NULL )
+				if ( mParent != nullptr )
 					return mParent->findSymbol( str );
 				else
-					return NULL;
+					return nullptr;
 			}
 			else
 				return (*i).second;
@@ -112,10 +112,10 @@ namespace QLang
 			TypeListType::iterator i = mTypeList.find( str );
 			if ( i == mTypeList.end() )
 			{
-				if ( mParent != NULL )
+				if ( mParent != nullptr )
 					return mParent->findType( str );
 				else
-					return NULL;
+					return nullptr;
 			}
 			else
 				return (*i).second;
