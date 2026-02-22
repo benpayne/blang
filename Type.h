@@ -186,18 +186,49 @@ namespace QLang
 	public:
 		VariableDefinition( Type *type, const std::string &name ) : Symbol( name ), mType( type ) {}
 
-		static VariableDefinition *ParseFuncParam( Lexer &l, Scope *s );
+		static VariableDefinition *ParseFuncParam( Lexer &l, Scope *s, bool isExtern = false, int paramIndex = 0 );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
-		
+
 		friend std::ostream &operator<<(std::ostream &out, const VariableDefinition &var);
-		
+
 		Type *getVariableType() { return mType; }
-		
-	private:		
+
+	private:
 		SmartPtr<Type>	mType;
 	};
-		
+
+	class StructDefinition : public Symbol
+	{
+	public:
+
+		static StructDefinition *Parse( Lexer &l, Scope *s );
+
+		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
+
+	private:
+		StructDefinition( const std::string &name ) : Symbol( name ) {}
+
+		std::vector<SmartPtr<VariableDefinition> > mFields;
+		std::vector<SmartPtr<FunctionDefinition> > mMethods;
+		friend class CodeGen;
+	};
+
+	class ProtocolDefinition : public Symbol
+	{
+	public:
+
+		static ProtocolDefinition *Parse( Lexer &l, Scope *s );
+
+		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
+
+	private:
+		ProtocolDefinition( const std::string &name ) : Symbol( name ) {}
+
+		std::vector<SmartPtr<FunctionDefinition> > mRequiredMethods;
+		friend class CodeGen;
+	};
+
 };
 
 #endif // BLANG_TYPE_H_

@@ -321,11 +321,19 @@ int Lexer::getSymbolFromFile()
 		// check for keywords
 		switch ( mReader->peekChar() )
 		{
+			case 'b':
+				if ( matchKeyword( "bool" ) )
+					return BOOL;
+				else if ( matchKeyword( "break" ) )
+					return KEYWORD_BREAK;
+				break;
 			case 'c':
 				if ( matchKeyword( "char" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "const" ) )
 					return TYPE_MODIFIER;
+				else if ( matchKeyword( "continue" ) )
+					return KEYWORD_CONTINUE;
 				break;
 			case 'd':
 				if ( matchKeyword( "double" ) )
@@ -342,16 +350,32 @@ int Lexer::getSymbolFromFile()
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "for" ) )
 					return KEYWORD_FOR;
+				else if ( matchKeyword( "fn" ) )
+					return KEYWORD_FN;
 				break;
 			case 'i':
 				if ( matchKeyword( "int" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "if" ) )
 					return KEYWORD_IF;
+				else if ( matchKeyword( "impl" ) )
+					return KEYWORD_IMPL;
+				else if ( matchKeyword( "import" ) )
+					return KEYWORD_IMPORT;
 				break;
 			case 'l':
 				if ( matchKeyword( "long" ) )
 					return BUILTIN_TYPE;
+				break;
+			case 'm':
+				if ( matchKeyword( "match" ) )
+					return KEYWORD_MATCH;
+				break;
+			case 'p':
+				if ( matchKeyword( "pub" ) )
+					return KEYWORD_PUB;
+				else if ( matchKeyword( "protocol" ) )
+					return KEYWORD_PROTOCOL;
 				break;
 			case 'r':
 				if ( matchKeyword( "return" ) )
@@ -366,6 +390,10 @@ int Lexer::getSymbolFromFile()
 					return TYPE_MODIFIER;
 				else if ( matchKeyword( "short" ) )
 					return BUILTIN_TYPE;
+				else if ( matchKeyword( "struct" ) )
+					return KEYWORD_STRUCT;
+				else if ( matchKeyword( "self" ) )
+					return KEYWORD_SELF;
 				break;
 			case 'u':
 				if ( matchKeyword( "unsigned" ) )
@@ -374,6 +402,8 @@ int Lexer::getSymbolFromFile()
 			case 'v':
 				if ( matchKeyword( "void" ) )
 					return VOID;
+				else if ( matchKeyword( "var" ) )
+					return TYPE_MODIFIER;
 				break;
 			case 'w':
 				if ( matchKeyword( "while" ) )

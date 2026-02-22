@@ -240,6 +240,68 @@ namespace QLang
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
 	};
+
+	class BreakStatement : public Statement
+	{
+	public:
+
+		static BreakStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		BreakStatement() {}
+
+	private:
+		friend class CodeGen;
+	};
+
+	class ContinueStatement : public Statement
+	{
+	public:
+
+		static ContinueStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		ContinueStatement() {}
+
+	private:
+		friend class CodeGen;
+	};
+
+	class FieldAccessExpression : public Expression
+	{
+	public:
+
+		static FieldAccessExpression *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		FieldAccessExpression() {}
+
+	private:
+		SmartPtr<Expression> mObject;
+		std::string mFieldName;
+		friend class CodeGen;
+	};
+
+	struct MatchArm
+	{
+		std::string mPattern;
+		SmartPtr<Block> mBody;
+	};
+
+	class MatchExpression : public Expression
+	{
+	public:
+
+		static MatchExpression *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		MatchExpression() {}
+
+	private:
+		SmartPtr<Expression> mSubject;
+		std::vector<MatchArm> mArms;
+		friend class CodeGen;
+	};
 };
 
 #endif // BLANG_EXPRESSION_H_

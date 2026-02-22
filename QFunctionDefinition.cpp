@@ -80,6 +80,7 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 	sym = l.peekSymbol();
 	if ( sym != ')' )
 	{
+		int paramIndex = 0;
 		do {
 			// Check for ... (variadic)
 			if ( l.peekSymbol() == Lexer::ELLIPSIS )
@@ -90,8 +91,9 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s )
 				break;
 			}
 
-			VariableDefinition *def = VariableDefinition::ParseFuncParam( l, func->mFuncScope );
+			VariableDefinition *def = VariableDefinition::ParseFuncParam( l, func->mFuncScope, isExtern, paramIndex );
 			func->mParameters.push_back( def );
+			paramIndex++;
 			sym = l.getSymbol();
 		} while ( sym == ',' );
 

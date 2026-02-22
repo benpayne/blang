@@ -18,15 +18,34 @@ std::ostream &QLang::operator<<(std::ostream &out, const VariableDefinition &var
 	return out;
 }
 
-VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s )
+VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool isExtern, int paramIndex )
 {
 	VariableDefinition *def = nullptr;
 	SmartPtr<Type> t = Type::Parse( l, s, false );
-	int sym = l.getSymbol();
-	if ( t != nullptr && sym == Lexer::SYMBOL )
+
+	if ( t == nullptr )
+		return nullptr;
+
+	// Peek at the next token to determine if a parameter name follows
+	int sym = l.peekSymbol();
+	if ( sym == Lexer::SYMBOL )
 	{
+		// Named parameter — consume the name
+		l.getSymbol();
 		def = new VariableDefinition( t, l.getSymbolText() );
 		s->addSymbol( def );
+	}
+	else if ( isExtern && ( sym == ',' || sym == ')' ) )
+	{
+		// Unnamed parameter in an extern declaration — generate a synthetic name
+		string syntheticName = "_arg" + to_string( paramIndex );
+		def = new VariableDefinition( t, syntheticName );
+		s->addSymbol( def );
+	}
+	else
+	{
+		// Non-extern function requires named parameters
+		COMPILE_ERROR( l, "Expected parameter name" );
 	}
 
 	return def;
