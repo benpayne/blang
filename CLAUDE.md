@@ -34,10 +34,12 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── Symbol.h                   # Symbol class (BLang namespace, legacy LLVM-based approach)
 ├── Scope.h                    # Scope class (BLang namespace, legacy LLVM-based approach with BasicBlock/Function)
 ├── QBlock.cpp                 # Block::Parse implementation
+├── QBreakContinue.cpp         # BreakStatement::Parse and ContinueStatement::Parse
 ├── QExpression.cpp            # Expression parsing (lvalue, rvalue, binary operations, constants)
-├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing
+├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing (C-style and fn-style)
 ├── QReturnStatement.cpp       # ReturnStatement::Parse
-├── QStatement.cpp             # Statement::Parse dispatcher (routes to if/while/for/return/variable/expression)
+├── QStatement.cpp             # Statement::Parse dispatcher (routes to if/while/for/return/break/continue/variable/expression)
+├── QStructDefinition.cpp      # StructDefinition::Parse
 ├── QType.cpp                  # Type::Parse
 ├── QVariableDefinition.cpp    # VariableDeclaration::Parse
 ├── QParser.cpp                # Empty (placeholder)
@@ -48,7 +50,8 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── LexerTest.cpp              # Basic lexer test program
 ├── LexerTest2.cpp             # Advanced lexer test with position save/restore
 ├── test.c                     # Comprehensive BLang test source file
-├── test_files/                # Individual test cases (func_call*.c, if_call.c, codegen_simple.c)
+├── test_files/                # Test cases organized in pass/, fail/, xfail/ subdirectories
+├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> run)
 ├── docs/
 │   └── language_design.md     # BLang language design specification
@@ -68,7 +71,7 @@ The project has **no external dependencies** for the active build targets. The j
 
 | Target       | Description                        | Key source files                                                                    |
 |-------------|------------------------------------|-------------------------------------------------------------------------------------|
-| `qcc`       | Main compiler                      | qcc.cpp, FileLexer.cpp, LexerReader.cpp, Q*.cpp, CodeGen.cpp (when LLVM available) |
+| `qcc`       | Main compiler                      | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QExpression.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, CodeGen.cpp (when LLVM available) |
 | `lexerTest` | Basic lexer tokenization test      | LexerTest.cpp, FileLexer.cpp, LexerReader.cpp                                     |
 | `lexerTest2`| Advanced lexer test                | LexerTest2.cpp, FileLexer.cpp, LexerReader.cpp                                    |
 
@@ -132,17 +135,24 @@ RefCount
 │   │   ├── VariableExpression   # Variable reference
 │   │   ├── CallExpression       # Function call
 │   │   ├── AssignmentExpression # Assignment (=, +=, etc.)
-│   │   └── OperationsExpression # Binary operations (+, -, etc.)
+│   │   ├── OperationsExpression # Binary operations (+, -, etc.)
+│   │   ├── UnaryExpression      # Unary operations (-, !, ~)
+│   │   ├── FieldAccessExpression # Struct field access (obj.field)
+│   │   └── MatchExpression      # Pattern matching (match expr { ... })
 │   ├── WhileStatement
 │   ├── ForStatement
 │   ├── IfStatement
 │   ├── ReturnStatement
+│   ├── BreakStatement           # break; in loops
+│   ├── ContinueStatement        # continue; in loops
 │   ├── VariableDeclaration
 │   └── Block                    # { ... } with its own Scope
 ├── Type                         # Type representation ("int", "char", "string")
 ├── Symbol                       # Named entity base (abstract)
 │   ├── FunctionDefinition       # Function with params, return type, body
-│   └── VariableDefinition       # Variable with type
+│   ├── VariableDefinition       # Variable with type
+│   ├── StructDefinition         # Struct with fields and methods
+│   └── ProtocolDefinition       # Protocol (interface) with required methods
 ├── Scope                        # Symbol table with parent chain
 └── Module                       # Top-level container of FunctionDefinitions
 ```
@@ -206,31 +216,53 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 ### Test source files
 
-- `test.c` — Comprehensive test covering functions, variables, control flow, operators, comments, string/char literals.
-- `test_files/func_call1.c` — Function with arithmetic and calls.
-- `test_files/func_call2.c` — Function with return statement.
-- `test_files/func_call3.c` — Printf with void main.
-- `test_files/if_call.c` — If statement with printf.
+Tests are organized into three categories under `test_files/`:
+
+- **`test_files/pass/`** (24 tests) — Should parse successfully. Includes:
+  - Basic function tests: `func_simple.c`, `func_call.c`, `multi_func.c`, `empty_func.c`
+  - Control flow: `if_simple.c`, `if_nested.c`, `while_simple.c`, `while_block.c`, `for_simple.c`, `for_block.c`
+  - Variables and expressions: `var_decl.c`, `arithmetic_stmt.c`, `assignment_stmt.c`, `binary_expr_return.c`, `comparison_expr.c`
+  - Returns: `return_var.c`, `return_call.c`
+  - Literals and comments: `string_literals.c`, `comments.c`
+  - **New features**: `fn_simple.c` (fn-style with `-> type`), `fn_void.c` (fn-style void return), `break_continue.c`, `struct_basic.c`, `extern_unnamed.c` (unnamed extern params)
+- **`test_files/fail/`** (5 negative tests) — Should fail to parse (exit non-zero): `undefined_var.c`, `undefined_func.c`, `missing_brace.c`, `missing_paren.c`, `bad_type.c`
+- **`test_files/xfail/`** (1 expected failure) — Known-broken features: `extern_func_call.c`
+
+Legacy test files (kept for backward compatibility): `test.c`, `test_files/func_call1.c`, `test_files/func_call2.c`, `test_files/func_call3.c`, `test_files/if_call.c`, `test_files/codegen_simple.c`, `test_files/codegen_binexpr.c`, `test_files/codegen_features.c`, `test_files/multi_var_decl.c`
+
+**Total: 30 tests** (24 pass + 5 fail/negative + 1 xfail)
 
 ### Running tests
 
 ```bash
+# Automated test runner (recommended)
+./run_tests.sh              # Run all tests (requires qcc already built)
+./run_tests.sh --build      # Build first, then run tests
+./run_tests.sh --verbose    # Show detailed output for failures
+
+# Manual testing
 cd build
 ./lexerTest ../test.c
 ./lexerTest2 ../test.c
 ./qcc ../test.c
-./qcc ../test_files/func_call1.c
+./qcc ../test_files/pass/fn_simple.c
 ```
 
-There is no automated test harness or CI. Tests are run manually.
+The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/`, `test_files/fail/`, and `test_files/xfail/`, checking exit codes against expectations and printing a color-coded summary.
 
 ## Supported Language Features (BLang source)
 
-- Function definitions with parameters and return types (`int`, `char`, `string`, `void`)
+- **Function definitions** — two styles supported during transition:
+  - C-style: `int add(int a, int b) { ... }`
+  - BLang `fn`-style: `fn add(int a, int b) -> int { ... }` (omitting `->` means void return)
 - Extern function declarations (`extern int printf(string fmt, ...);`) for calling C library functions
+  - Named parameters: `extern int printf(string fmt, ...);`
+  - Unnamed parameters: `extern int printf(string, ...);`
+  - Mixed: `extern int mixed(int a, string, int c);`
 - Variadic function support (`...` ellipsis in parameter lists)
 - Variable declarations with optional initialization
-- Control flow: `if`/`else`, `while`, `for`
+- **Struct definitions**: `struct Name { type field; ... }` with typed fields
+- Control flow: `if`/`else`, `while`, `for`, `break`, `continue`
 - Expressions: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
 - Assignment operators: `=`, `+=`, `-=`, `*=`, `/=`
 - Function calls with arguments
@@ -241,11 +273,10 @@ There is no automated test harness or CI. Tests are run manually.
 
 ## Project Status
 
-This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST. The codegen currently supports: function definitions, extern function declarations (for calling C library functions like `printf`), variadic function calls, variable declarations with initialization (including expression initializers), return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end. The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
+This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST. The parser supports both C-style function declarations and the new BLang `fn`-style declarations (`fn name(params) -> type { body }`), struct definitions, break/continue statements, and extern declarations with unnamed parameters. The lexer recognizes new keywords: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`. The codegen currently supports: function definitions, extern function declarations (for calling C library functions like `printf`), variadic function calls, variable declarations with initialization (including expression initializers), return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end. The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
 
 ## Known Issues and Limitations
 
 - No CI/CD pipeline.
-- No automated test framework.
-- Extern function declarations require named parameters (e.g., `extern int printf(string fmt, ...);` — unnamed params not yet supported).
+- No automated test framework (but `run_tests.sh` provides a basic test runner with pass/fail/xfail categories).
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.

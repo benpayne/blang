@@ -68,9 +68,10 @@ static string getOperatorString( int sym, const string &symText )
 }
 
 // Parse a primary (atomic) expression: constant, variable, function call,
-// or parenthesized sub-expression.
+// or parenthesized sub-expression, followed by optional postfix field access.
 Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 {
+	Expression *result = nullptr;
 	int sym = l.peekSymbol();
 
 	// Unary prefix operators: -, !, ~
@@ -94,19 +95,17 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		sym = l.getSymbol();
 		if ( sym != ')' )
 			COMPILE_ERROR( l, "Expected ')'" );
-		return expr;
+		result = expr;
 	}
-
 	// Constants
-	if ( sym == Lexer::CONSTANT_NUMBER ||
+	else if ( sym == Lexer::CONSTANT_NUMBER ||
 		 sym == Lexer::CONSTANT_CHAR ||
 		 sym == Lexer::CONSTANT_STRING )
 	{
-		return ConstExpression::Parse( l, scope );
+		result = ConstExpression::Parse( l, scope );
 	}
-
 	// Symbol: could be a function call or variable reference
-	if ( sym == Lexer::SYMBOL )
+	else if ( sym == Lexer::SYMBOL )
 	{
 		int pos = l.getCurrentPos();
 
@@ -114,16 +113,33 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		try {
 			CallExpression *callExpr = CallExpression::Parse( l, scope );
 			if ( callExpr != nullptr )
-				return callExpr;
+				result = callExpr;
 		} catch ( CompileError & ) {
 			// Not a valid call — fall through to variable
 		}
 
-		l.setCurrentPos( pos );
-		return VariableExpression::Parse( l, scope );
+		if ( result == nullptr )
+		{
+			l.setCurrentPos( pos );
+			result = VariableExpression::Parse( l, scope );
+		}
 	}
 
-	return nullptr;
+	// Postfix field access: expr.fieldName
+	// Chains so that a.b.c becomes FieldAccessExpression(FieldAccessExpression(a, "b"), "c")
+	while ( result != nullptr && l.peekSymbol() == '.' )
+	{
+		l.getSymbol(); // consume '.'
+
+		int fieldSym = l.getSymbol();
+		if ( fieldSym != Lexer::SYMBOL )
+			COMPILE_ERROR( l, "Expected field name after '.'" );
+
+		string fieldName = l.getSymbolText();
+		result = new FieldAccessExpression( result, fieldName );
+	}
+
+	return result;
 }
 
 // Precedence-climbing binary expression parser.

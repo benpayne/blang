@@ -270,11 +270,10 @@ namespace QLang
 	class FieldAccessExpression : public Expression
 	{
 	public:
+		FieldAccessExpression( Expression *object, const std::string &fieldName ) :
+			mObject( object ), mFieldName( fieldName ) {}
 
 		static FieldAccessExpression *Parse( Lexer &l, Scope *scope );
-
-	protected:
-		FieldAccessExpression() {}
 
 	private:
 		SmartPtr<Expression> mObject;
