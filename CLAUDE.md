@@ -227,6 +227,8 @@ There is no automated test harness or CI. Tests are run manually.
 ## Supported Language Features (BLang source)
 
 - Function definitions with parameters and return types (`int`, `char`, `string`, `void`)
+- Extern function declarations (`extern int printf(string fmt, ...);`) for calling C library functions
+- Variadic function support (`...` ellipsis in parameter lists)
 - Variable declarations with optional initialization
 - Control flow: `if`/`else`, `while`, `for`
 - Expressions: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
@@ -239,11 +241,11 @@ There is no automated test harness or CI. Tests are run manually.
 
 ## Project Status
 
-This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST. The codegen currently supports: function definitions, variable declarations with initialization (including expression initializers), return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end. The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
+This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST. The codegen currently supports: function definitions, extern function declarations (for calling C library functions like `printf`), variadic function calls, variable declarations with initialization (including expression initializers), return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end. The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
 
 ## Known Issues and Limitations
 
 - No CI/CD pipeline.
 - No automated test framework.
-- External/undeclared functions (e.g., `printf`) cannot be called — all functions must be defined in the source file before use.
+- Extern function declarations require named parameters (e.g., `extern int printf(string fmt, ...);` — unnamed params not yet supported).
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.

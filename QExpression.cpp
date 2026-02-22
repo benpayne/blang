@@ -245,17 +245,26 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 			if ( sym != '(' )
 				return nullptr;
 
-			for ( int i = 0; i < def->getNumberParams(); i++ )
+			// Empty argument list
+			if ( l.peekSymbol() == ')' )
 			{
-				char term = ',';
-				if ( i == def->getNumberParams() - 1 )
-					term = ')';
+				l.getSymbol(); // consume ')'
+			}
+			else
+			{
+				// Parse arguments until ')'
+				do {
+					Expression *param = ParseExpr( l, scope, 0 );
+					if ( param != nullptr )
+						exp->mParams.push_back( param );
+					else
+						return nullptr;
 
-				Expression *param = Expression::Parse( l, scope, term );
-				if ( param != nullptr )
-					exp->mParams.push_back( param );
-				else
-					return nullptr;
+					sym = l.getSymbol();
+				} while ( sym == ',' );
+
+				if ( sym != ')' )
+					COMPILE_ERROR( l, "Expected ',' or ')' in function call" );
 			}
 		}
 	}

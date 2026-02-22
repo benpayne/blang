@@ -461,6 +461,13 @@ int Lexer::getSymbolFromFile()
 				}
 				break;
 				
+			case '.':
+				if ( match( "..." ) )
+					return ELLIPSIS;
+				else
+					return mReader->popChar();
+				break;
+
 			case '{':
 			case '}':
 			case '[':

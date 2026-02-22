@@ -165,7 +165,9 @@ namespace QLang
 		int getNumberParams() { return mParameters.size(); }
 		Type *getParamType( int p );
 		VariableDefinition *getParam( int p );
-		
+		bool isExtern() const { return mIsExtern; }
+		bool isVariadic() const { return mIsVariadic; }
+
 	private:
 		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
 
@@ -173,6 +175,8 @@ namespace QLang
 		std::vector<SmartPtr<VariableDefinition> > mParameters;
 		SmartPtr<Scope> mFuncScope;
 		SmartPtr<Block> mFuncBody;
+		bool mIsExtern = false;
+		bool mIsVariadic = false;
 
 		friend class CodeGen;
 	};

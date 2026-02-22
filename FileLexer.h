@@ -53,6 +53,7 @@ public:
 		EQ,
 		ASSIGN,
 		SHIFT,
+		ELLIPSIS,
 		NUM_SYMBOLS
 	};
 	

@@ -91,12 +91,16 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		paramTypes.push_back( getLLVMType( param->getVariableType() ) );
 	}
 
-	llvm::FunctionType *ft = llvm::FunctionType::get( retType, paramTypes, false );
+	llvm::FunctionType *ft = llvm::FunctionType::get( retType, paramTypes, func->isVariadic() );
 	llvm::Function *llvmFunc = llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, func->getName(), mModule.get() );
 
 	// Store the mapping
 	mFunctionMap[func] = llvmFunc;
+
+	// Extern functions are declarations only — no body
+	if ( func->isExtern() )
+		return llvmFunc;
 
 	// Name the parameters
 	unsigned idx = 0;
