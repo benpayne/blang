@@ -125,7 +125,7 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 		exp = new ConstString( l.getSymbolText() );
 		break;
 	case Lexer::CONSTANT_CHAR:
-		//exp = jh_new ConstString( l.getSymbolText() );
+		exp = new ConstChar( l.getSymbolText() );
 		break;
 	case Lexer::CONSTANT_NUMBER:
 		exp = new ConstInteger( atoi( l.getSymbolText().c_str() ) );

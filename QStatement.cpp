@@ -44,13 +44,23 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 		l.getSymbol();
 		break;
 	default:
-		try { 
+		try {
 			statement = VariableDeclaration::Parse( l, scope );
 		} catch( CompileError &err ) {
 			LOG( "Not a decl, resetting position: %d", pos );
 			l.setCurrentPos( pos );
-			statement = Expression::Parse( l, scope );
-		}				
+			try {
+				statement = Expression::Parse( l, scope );
+			} catch ( CompileError &err2 ) {
+				l.setCurrentPos( pos );
+				COMPILE_ERROR( l, "Unexpected token" );
+			}
+			if ( statement == nullptr )
+			{
+				l.setCurrentPos( pos );
+				COMPILE_ERROR( l, "Unexpected token" );
+			}
+		}
 		break;
 	}
 	

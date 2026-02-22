@@ -136,14 +136,16 @@ namespace QLang
 	class ConstChar : public ConstExpression
 	{
 	public:
+		ConstChar( const std::string &value ) : mValue( value ) {}
+
 		static ConstChar *Parse( Lexer &l, Scope *scope );
 
-		
+
 	protected:
 		ConstChar() {}
-		
+
 	private:
-		uint16_t mValue;
+		std::string mValue;
 	};
 	
 	class VariableDeclaration : public Statement
