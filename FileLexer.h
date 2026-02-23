@@ -72,7 +72,9 @@ public:
 		ARROW,
 		WILDCARD,
 		QUESTION_MARK,
-		KEYWORD_OWN,
+		// Phase 2 keywords start at 256 to avoid collision with ASCII
+		// operator characters (e.g., '-' = 45 would collide with enum value 45)
+		KEYWORD_OWN = 256,
 		KEYWORD_SHARED,
 		KEYWORD_SYNC,
 		KEYWORD_SPAWN,

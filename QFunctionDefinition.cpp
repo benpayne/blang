@@ -172,40 +172,32 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 		func->mReturnType = nullptr;
 	}
 
-	// Parse optional requires/ensures contract clauses
+	// Parse optional requires/ensures contract clauses as expression ASTs
 	while ( l.peekSymbol() == Lexer::KEYWORD_REQUIRES || l.peekSymbol() == Lexer::KEYWORD_ENSURES )
 	{
 		bool isRequires = ( l.peekSymbol() == Lexer::KEYWORD_REQUIRES );
 		l.getSymbol(); // consume 'requires' or 'ensures'
 
-		// Parse the contract expression as text until we hit another keyword or '{'
-		// For now, collect tokens until we see requires, ensures, '{', or ';'
-		string clauseText;
-		int depth = 0;
-		while ( true )
+		// For ensures clauses, add 'result' variable to the function scope
+		// so the expression can reference the return value
+		if ( !isRequires && func->mReturnType != nullptr )
 		{
-			int nextSym = l.peekSymbol();
-			if ( depth == 0 &&
-				 ( nextSym == Lexer::KEYWORD_REQUIRES ||
-				   nextSym == Lexer::KEYWORD_ENSURES ||
-				   nextSym == '{' || nextSym == ';' ) )
-				break;
-
-			l.getSymbol();
-			if ( nextSym == '(' ) depth++;
-			else if ( nextSym == ')' ) depth--;
-
-			if ( !clauseText.empty() ) clauseText += " ";
-			clauseText += l.getSymbolText();
+			if ( func->mFuncScope->findSymbol( "result" ) == nullptr )
+			{
+				VariableDefinition *resultVar = new VariableDefinition( func->mReturnType, "result" );
+				func->mFuncScope->addSymbol( resultVar );
+			}
 		}
 
-		if ( clauseText.empty() )
+		// Parse the contract expression in the function's scope
+		Expression *clauseExpr = Expression::ParseExpr( l, func->mFuncScope );
+		if ( clauseExpr == nullptr )
 			COMPILE_ERROR( l, "Expected expression after '" + string( isRequires ? "requires" : "ensures" ) + "'" );
 
 		if ( isRequires )
-			func->mRequiresClauses.push_back( clauseText );
+			func->mRequiresClauses.push_back( clauseExpr );
 		else
-			func->mEnsuresClauses.push_back( clauseText );
+			func->mEnsuresClauses.push_back( clauseExpr );
 	}
 
 	// Extern declarations end with ';', regular functions have a body

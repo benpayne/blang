@@ -38,6 +38,11 @@ private:
 	void genWhileStatement( WhileStatement *whileStmt );
 	void genForStatement( ForStatement *forStmt );
 
+	// Phase 2 statement generators
+	void genSpawnStatement( SpawnStatement *spawn );
+	void genAssertStatement( AssertStatement *assertStmt );
+	void genEventHandler( EventHandler *handler );
+
 	// Expression generators (return llvm::Value*)
 	llvm::Value *genExpression( Expression *expr );
 	llvm::Value *genCallExpression( CallExpression *call );
@@ -64,6 +69,19 @@ private:
 	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
 	llvm::Value *genIndexExpression( IndexExpression *expr );
 
+	// Phase 2 expression generators
+	llvm::Value *genAwaitExpression( AwaitExpression *await );
+
+	// Phase 2 test block and contract codegen
+	llvm::Function *genTestBlock( TestBlock *testBlock );
+	void genTestRunner( const std::vector<llvm::Function*> &testFunctions,
+		const std::vector<SmartPtr<TestBlock>> &testBlocks );
+	void genContractCheck( Expression *condition, const std::string &message );
+
+	// Runtime helper declarations
+	llvm::Function *getOrDeclarePuts();
+	llvm::Function *getOrDeclareExit();
+
 	// Helper to get the alloca for an expression's address (for GEP)
 	llvm::AllocaInst *getExpressionAddress( Expression *expr );
 
@@ -86,6 +104,10 @@ private:
 
 	// Module scope for type resolution
 	Scope *mScope = nullptr;
+
+	// Current function context (for contract support)
+	FunctionDefinition *mCurrentFunction = nullptr;
+	llvm::AllocaInst *mResultAlloca = nullptr;
 };
 
 } // namespace QLang

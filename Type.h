@@ -220,8 +220,8 @@ namespace QLang
 		bool mIsPublic = false;
 		bool mIsAsync = false;
 		std::vector<GenericParam> mGenericParams;
-		std::vector<std::string> mRequiresClauses;
-		std::vector<std::string> mEnsuresClauses;
+		std::vector<SmartPtr<Expression>> mRequiresClauses;
+		std::vector<SmartPtr<Expression>> mEnsuresClauses;
 
 		friend class CodeGen;
 	};

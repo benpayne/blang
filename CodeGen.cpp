@@ -196,6 +196,22 @@ bool CodeGen::generate( Module *mod )
 		if ( genFunction( func ) == nullptr )
 			return false;
 	}
+
+	// Generate test blocks as callable functions
+	std::vector<llvm::Function*> testFunctions;
+	for ( auto &testBlock : mod->mTestBlocks )
+	{
+		llvm::Function *testFunc = genTestBlock( testBlock );
+		if ( testFunc != nullptr )
+			testFunctions.push_back( testFunc );
+	}
+
+	// Generate test runner function if there are tests
+	if ( !testFunctions.empty() )
+	{
+		genTestRunner( testFunctions, mod->mTestBlocks );
+	}
+
 	return true;
 }
 
@@ -253,6 +269,10 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		*mContext, "entry", llvmFunc );
 	mBuilder->SetInsertPoint( entryBB );
 
+	// Track current function for contract support
+	mCurrentFunction = func;
+	mResultAlloca = nullptr;
+
 	// Create allocas for parameters and store the argument values
 	idx = 0;
 	for ( auto &arg : llvmFunc->args() )
@@ -265,6 +285,24 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		idx++;
 	}
 
+	// If function has ensures clauses and a return value, create result alloca
+	if ( func->hasEnsures() && !retType->isVoidTy() )
+	{
+		mResultAlloca = mBuilder->CreateAlloca( retType, nullptr, "result" );
+		mBuilder->CreateStore( llvm::Constant::getNullValue( retType ), mResultAlloca );
+
+		// Register the result variable so ensures expressions can reference it
+		Symbol *resultSym = func->mFuncScope->findSymbol( "result" );
+		if ( auto *resultVar = dynamic_cast<VariableDefinition*>( resultSym ) )
+			mVariableMap[resultVar] = mResultAlloca;
+	}
+
+	// Generate requires (precondition) checks at function entry
+	for ( auto &clause : func->mRequiresClauses )
+	{
+		genContractCheck( clause, "Precondition violated" );
+	}
+
 	// Generate the function body
 	if ( func->mFuncBody != nullptr )
 	{
@@ -275,9 +313,20 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	llvm::BasicBlock *currentBB = mBuilder->GetInsertBlock();
 	if ( currentBB->getTerminator() == nullptr )
 	{
+		// Generate ensures (postcondition) checks before implicit return
+		for ( auto &clause : func->mEnsuresClauses )
+		{
+			genContractCheck( clause, "Postcondition violated" );
+		}
+
 		if ( retType->isVoidTy() )
 		{
 			mBuilder->CreateRetVoid();
+		}
+		else if ( mResultAlloca != nullptr )
+		{
+			llvm::Value *resultVal = mBuilder->CreateLoad( retType, mResultAlloca, "result.val" );
+			mBuilder->CreateRet( resultVal );
 		}
 		else
 		{
@@ -286,8 +335,9 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		}
 	}
 
-	// Clear variable map for this function scope
-	// (parameters and locals are no longer valid)
+	// Clear function context
+	mCurrentFunction = nullptr;
+	mResultAlloca = nullptr;
 	mVariableMap.clear();
 
 	return llvmFunc;
@@ -335,6 +385,18 @@ void CodeGen::genStatement( Statement *stmt )
 	else if ( auto *forStmt = dynamic_cast<ForStatement*>( stmt ) )
 	{
 		genForStatement( forStmt );
+	}
+	else if ( auto *spawn = dynamic_cast<SpawnStatement*>( stmt ) )
+	{
+		genSpawnStatement( spawn );
+	}
+	else if ( auto *assertStmt = dynamic_cast<AssertStatement*>( stmt ) )
+	{
+		genAssertStatement( assertStmt );
+	}
+	else if ( auto *handler = dynamic_cast<EventHandler*>( stmt ) )
+	{
+		genEventHandler( handler );
 	}
 	else if ( auto *varDecl = dynamic_cast<VariableDeclaration*>( stmt ) )
 	{
@@ -408,6 +470,17 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 					retVal = llvm::Constant::getNullValue( expectedType );
 				}
 			}
+
+			// Store return value and check ensures (postcondition) clauses
+			if ( mResultAlloca != nullptr && mCurrentFunction != nullptr )
+			{
+				mBuilder->CreateStore( retVal, mResultAlloca );
+				for ( auto &clause : mCurrentFunction->mEnsuresClauses )
+				{
+					genContractCheck( clause, "Postcondition violated" );
+				}
+			}
+
 			mBuilder->CreateRet( retVal );
 		}
 		else if ( expectedType->isVoidTy() )
@@ -422,6 +495,14 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 	}
 	else
 	{
+		// Check ensures for void return
+		if ( mCurrentFunction != nullptr )
+		{
+			for ( auto &clause : mCurrentFunction->mEnsuresClauses )
+			{
+				genContractCheck( clause, "Postcondition violated" );
+			}
+		}
 		mBuilder->CreateRetVoid();
 	}
 }
@@ -594,6 +675,8 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 		return genArrayLiteral( arrLit );
 	else if ( auto *idxExpr = dynamic_cast<IndexExpression*>( expr ) )
 		return genIndexExpression( idxExpr );
+	else if ( auto *awaitExpr = dynamic_cast<AwaitExpression*>( expr ) )
+		return genAwaitExpression( awaitExpr );
 
 	return nullptr;
 }
@@ -1218,4 +1301,213 @@ llvm::Value *CodeGen::genIndexExpression( IndexExpression *expr )
 	}
 
 	return nullptr;
+}
+
+// ---- Phase 2: Runtime helper declarations ----
+
+llvm::Function *CodeGen::getOrDeclarePuts()
+{
+	llvm::Function *f = mModule->getFunction( "puts" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "puts", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareExit()
+{
+	llvm::Function *f = mModule->getFunction( "exit" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::Type::getInt32Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "exit", mModule.get() );
+}
+
+// ---- Phase 2: Assert statement codegen ----
+
+void CodeGen::genAssertStatement( AssertStatement *assertStmt )
+{
+	llvm::Value *condVal = genExpression( assertStmt->mExpression );
+	if ( condVal == nullptr )
+		return;
+
+	// Convert condition to i1 if needed
+	if ( !condVal->getType()->isIntegerTy( 1 ) )
+	{
+		condVal = mBuilder->CreateICmpNE(
+			condVal,
+			llvm::ConstantInt::get( condVal->getType(), 0 ),
+			"assertcond" );
+	}
+
+	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+	llvm::BasicBlock *failBB = llvm::BasicBlock::Create( *mContext, "assert.fail", func );
+	llvm::BasicBlock *passBB = llvm::BasicBlock::Create( *mContext, "assert.pass", func );
+
+	mBuilder->CreateCondBr( condVal, passBB, failBB );
+
+	// Fail block: print message and exit(1)
+	mBuilder->SetInsertPoint( failBB );
+
+	llvm::Function *putsFunc = getOrDeclarePuts();
+	llvm::Function *exitFunc = getOrDeclareExit();
+
+	std::string msg = assertStmt->mMessage.empty()
+		? "Assertion failed" : assertStmt->mMessage;
+	llvm::Value *msgVal = mBuilder->CreateGlobalStringPtr( msg, "assert.msg" );
+	mBuilder->CreateCall( putsFunc, { msgVal } );
+	mBuilder->CreateCall( exitFunc,
+		{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 1 ) } );
+	mBuilder->CreateUnreachable();
+
+	// Continue in pass block
+	mBuilder->SetInsertPoint( passBB );
+}
+
+// ---- Phase 2: Contract check codegen ----
+
+void CodeGen::genContractCheck( Expression *condition, const std::string &message )
+{
+	llvm::Value *condVal = genExpression( condition );
+	if ( condVal == nullptr )
+		return;
+
+	// Convert to i1 if needed
+	if ( !condVal->getType()->isIntegerTy( 1 ) )
+	{
+		condVal = mBuilder->CreateICmpNE(
+			condVal,
+			llvm::ConstantInt::get( condVal->getType(), 0 ),
+			"contractcond" );
+	}
+
+	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+	llvm::BasicBlock *failBB = llvm::BasicBlock::Create( *mContext, "contract.fail", func );
+	llvm::BasicBlock *passBB = llvm::BasicBlock::Create( *mContext, "contract.pass", func );
+
+	mBuilder->CreateCondBr( condVal, passBB, failBB );
+
+	// Fail block: print message and exit(1)
+	mBuilder->SetInsertPoint( failBB );
+
+	llvm::Function *putsFunc = getOrDeclarePuts();
+	llvm::Function *exitFunc = getOrDeclareExit();
+
+	llvm::Value *msgVal = mBuilder->CreateGlobalStringPtr( message, "contract.msg" );
+	mBuilder->CreateCall( putsFunc, { msgVal } );
+	mBuilder->CreateCall( exitFunc,
+		{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 1 ) } );
+	mBuilder->CreateUnreachable();
+
+	// Continue in pass block
+	mBuilder->SetInsertPoint( passBB );
+}
+
+// ---- Phase 2: Spawn statement codegen ----
+
+void CodeGen::genSpawnStatement( SpawnStatement *spawn )
+{
+	// Generate the spawn body inline (sequential execution).
+	// Full implementation would create a green thread via runtime.
+	if ( spawn->mBody != nullptr )
+		genBlock( spawn->mBody );
+}
+
+// ---- Phase 2: Event handler codegen ----
+
+void CodeGen::genEventHandler( EventHandler *handler )
+{
+	// Generate event expression for side effects, then execute body inline.
+	// Full implementation would register with an event loop runtime.
+	if ( handler->mEventExpression != nullptr )
+		genExpression( handler->mEventExpression );
+	if ( handler->mBody != nullptr )
+		genBlock( handler->mBody );
+}
+
+// ---- Phase 2: Await expression codegen ----
+
+llvm::Value *CodeGen::genAwaitExpression( AwaitExpression *awaitExpr )
+{
+	// Generate the operand directly (synchronous evaluation).
+	// Full implementation would suspend via coroutines and resume on completion.
+	return genExpression( awaitExpr->mOperand );
+}
+
+// ---- Phase 2: Test block codegen ----
+
+llvm::Function *CodeGen::genTestBlock( TestBlock *testBlock )
+{
+	// Sanitize the test name for use as a function name
+	string testName = "__blang_test_";
+	for ( char c : testBlock->getName() )
+	{
+		if ( isalnum( c ) )
+			testName += c;
+		else
+			testName += '_';
+	}
+
+	// Create the test function: void __blang_test_xxx()
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), {}, false );
+	llvm::Function *testFunc = llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, testName, mModule.get() );
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", testFunc );
+	mBuilder->SetInsertPoint( entryBB );
+
+	// Generate the test body
+	if ( testBlock->mBody != nullptr )
+		genBlock( testBlock->mBody );
+
+	// Add implicit return
+	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+		mBuilder->CreateRetVoid();
+
+	mVariableMap.clear();
+	return testFunc;
+}
+
+void CodeGen::genTestRunner( const std::vector<llvm::Function*> &testFunctions,
+	const std::vector<SmartPtr<TestBlock>> &testBlocks )
+{
+	// Create void __blang_run_tests() that calls each test function
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), {}, false );
+	llvm::Function *runTests = llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_run_tests", mModule.get() );
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", runTests );
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::Function *putsFunc = getOrDeclarePuts();
+
+	for ( size_t i = 0; i < testFunctions.size(); i++ )
+	{
+		// Print test name
+		std::string msg = "Running test: " + testBlocks[i]->getName();
+		llvm::Value *msgVal = mBuilder->CreateGlobalStringPtr( msg, "testmsg" );
+		mBuilder->CreateCall( putsFunc, { msgVal } );
+
+		// Call the test function
+		mBuilder->CreateCall( testFunctions[i], {} );
+
+		// Print pass (if assert failed inside, exit() already terminated)
+		std::string passMsg = "  PASSED: " + testBlocks[i]->getName();
+		llvm::Value *passMsgVal = mBuilder->CreateGlobalStringPtr( passMsg, "passmsg" );
+		mBuilder->CreateCall( putsFunc, { passMsgVal } );
+	}
+
+	mBuilder->CreateRetVoid();
 }

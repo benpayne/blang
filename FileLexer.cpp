@@ -318,7 +318,7 @@ int Lexer::getSymbolInternal()
 		mMatchString = mSymbolList[ mCurrentPos ].symbolText;
 	}
 
-	if ( sym < Lexer::NUM_SYMBOLS )
+	if ( sym <= Lexer::QUESTION_MARK || sym >= 256 )
 		std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
 	else
 		std::cout << "Symbol " << (char)sym << std::endl;

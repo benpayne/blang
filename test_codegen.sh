@@ -43,7 +43,7 @@ cat "${IR_FILE}"
 # Step 2: Compile IR to object file
 echo ""
 echo "--- Step 2: Compiling IR to object file ---"
-llc-18 -filetype=obj "${IR_FILE}" -o "${OBJ_FILE}" 2>&1 || llc -filetype=obj "${IR_FILE}" -o "${OBJ_FILE}" 2>&1
+llc-18 -filetype=obj -relocation-model=pic "${IR_FILE}" -o "${OBJ_FILE}" 2>&1 || llc -filetype=obj -relocation-model=pic "${IR_FILE}" -o "${OBJ_FILE}" 2>&1
 echo "OK: ${OBJ_FILE}"
 
 # Step 3: Link to native binary
