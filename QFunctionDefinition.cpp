@@ -49,6 +49,14 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 	// When isPublic is true, the 'pub' keyword has already been consumed
 	// by Module::Parse.
 
+	// Check for async modifier: async fn name(...) { }
+	bool isAsync = false;
+	if ( l.peekSymbol() == Lexer::KEYWORD_ASYNC )
+	{
+		l.getSymbol(); // consume 'async'
+		isAsync = true;
+	}
+
 	if ( l.peekSymbol() != Lexer::KEYWORD_FN )
 		COMPILE_ERROR( l, "Expected 'fn' keyword" );
 
@@ -62,6 +70,7 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 	func = new FunctionDefinition( l.getSymbolText() );
 	func->mIsExtern = isExtern;
 	func->mIsPublic = isPublic;
+	func->mIsAsync = isAsync;
 	func->mFuncScope = new Scope( Scope::kScope_Function, l.getSymbolText() );
 	func->mFuncScope->setParent( s );
 	if ( !s->addSymbol( func ) )
@@ -161,6 +170,42 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 	{
 		// No arrow means void return type
 		func->mReturnType = nullptr;
+	}
+
+	// Parse optional requires/ensures contract clauses
+	while ( l.peekSymbol() == Lexer::KEYWORD_REQUIRES || l.peekSymbol() == Lexer::KEYWORD_ENSURES )
+	{
+		bool isRequires = ( l.peekSymbol() == Lexer::KEYWORD_REQUIRES );
+		l.getSymbol(); // consume 'requires' or 'ensures'
+
+		// Parse the contract expression as text until we hit another keyword or '{'
+		// For now, collect tokens until we see requires, ensures, '{', or ';'
+		string clauseText;
+		int depth = 0;
+		while ( true )
+		{
+			int nextSym = l.peekSymbol();
+			if ( depth == 0 &&
+				 ( nextSym == Lexer::KEYWORD_REQUIRES ||
+				   nextSym == Lexer::KEYWORD_ENSURES ||
+				   nextSym == '{' || nextSym == ';' ) )
+				break;
+
+			l.getSymbol();
+			if ( nextSym == '(' ) depth++;
+			else if ( nextSym == ')' ) depth--;
+
+			if ( !clauseText.empty() ) clauseText += " ";
+			clauseText += l.getSymbolText();
+		}
+
+		if ( clauseText.empty() )
+			COMPILE_ERROR( l, "Expected expression after '" + string( isRequires ? "requires" : "ensures" ) + "'" );
+
+		if ( isRequires )
+			func->mRequiresClauses.push_back( clauseText );
+		else
+			func->mEnsuresClauses.push_back( clauseText );
 	}
 
 	// Extern declarations end with ';', regular functions have a body

@@ -14,7 +14,7 @@ impl List {
 	}
 }
 
-fn test(List list) {
+fn run_test(List list) {
 	list.add(42);
 	int len = list.length();
 }

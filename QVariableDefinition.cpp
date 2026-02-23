@@ -67,6 +67,24 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 	VariableDeclaration *def = new VariableDeclaration;
 	bool isConst = false;
 	bool isVar = false;
+	OwnershipQualifier ownership = OwnershipQualifier::kOwnership_Value;
+
+	// Check for ownership qualifier before type: own, shared, sync
+	if ( l.peekSymbol() == Lexer::KEYWORD_OWN )
+	{
+		l.getSymbol(); // consume 'own'
+		ownership = OwnershipQualifier::kOwnership_Own;
+	}
+	else if ( l.peekSymbol() == Lexer::KEYWORD_SHARED )
+	{
+		l.getSymbol(); // consume 'shared'
+		ownership = OwnershipQualifier::kOwnership_Shared;
+	}
+	else if ( l.peekSymbol() == Lexer::KEYWORD_SYNC )
+	{
+		l.getSymbol(); // consume 'sync'
+		ownership = OwnershipQualifier::kOwnership_Sync;
+	}
 
 	// Check for const or var modifier before parsing the type
 	if ( l.peekSymbol() == Lexer::TYPE_MODIFIER )
@@ -106,6 +124,7 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 		{
 			data.mVaribale = new VariableDefinition( t, l.getSymbolText() );
 			data.mVaribale->setConst( isConst );
+			data.mVaribale->setOwnership( ownership );
 		}
 		else
 		{

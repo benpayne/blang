@@ -59,7 +59,11 @@ set(QCC_SOURCES
 	QStatement.cpp
 	QStructDefinition.cpp
 	QType.cpp
-	QVariableDefinition.cpp)
+	QVariableDefinition.cpp
+	QSpawnStatement.cpp
+	QEventHandler.cpp
+	QTestBlock.cpp
+	QAssertStatement.cpp)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)

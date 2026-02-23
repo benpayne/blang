@@ -1,6 +1,6 @@
 // Match expression with wildcard pattern
 
-fn test(int x) -> int {
+fn run_test(int x) -> int {
 	match x {
 		0 { return 0; }
 		1 { return 1; }

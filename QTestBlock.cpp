@@ -1,0 +1,44 @@
+#include <assert.h>
+
+#include <iostream>
+#include "FileLexer.h"
+#include "Type.h"
+#include "Expression.h"
+
+#include "CompilerHelpers.h"
+
+#include "logging.h"
+
+SET_LOG_CAT( LOG_CAT_ALL );
+SET_LOG_LEVEL( LOG_LVL_NOISE );
+
+using namespace QLang;
+using namespace std;
+
+TestBlock *TestBlock::Parse( Lexer &l, Scope *s )
+{
+	int sym = l.getSymbol();
+	if ( sym != Lexer::KEYWORD_TEST )
+	{
+		COMPILE_ERROR( l, "Internal Error" );
+	}
+
+	sym = l.getSymbol();
+	if ( sym != Lexer::CONSTANT_STRING )
+	{
+		COMPILE_ERROR( l, "Expected test name string after 'test'" );
+	}
+
+	string name = l.getSymbolText();
+
+	Scope *testScope = new Scope( Scope::kScope_Function, name );
+	testScope->setParent( s );
+
+	TestBlock *testBlock = new TestBlock( name );
+
+	testBlock->mBody = Block::Parse( l, testScope );
+
+	cout << "Completed test block: " << name << endl;
+
+	return testBlock;
+}

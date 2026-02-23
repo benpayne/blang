@@ -130,6 +130,22 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				continue;
 			}
 
+			if ( nextSym == Lexer::KEYWORD_TEST )
+			{
+				SmartPtr<TestBlock> testBlock = TestBlock::Parse( l, s );
+				mod->mTestBlocks.push_back( testBlock );
+				continue;
+			}
+
+			// Handle 'on' event handlers at module level
+			if ( nextSym == Lexer::KEYWORD_ON )
+			{
+				SmartPtr<EventHandler> handler = EventHandler::Parse( l, s );
+				// Event handlers stored in function list as statements for now
+				cout << "Completed event handler" << endl;
+				continue;
+			}
+
 			// Handle extern fn declarations
 			bool isExtern = false;
 			if ( nextSym == Lexer::TYPE_MODIFIER )
@@ -147,8 +163,8 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				}
 			}
 
-			if ( l.peekSymbol() != Lexer::KEYWORD_FN )
-				COMPILE_ERROR( l, "Expected 'fn' keyword for function declaration" );
+			if ( l.peekSymbol() != Lexer::KEYWORD_FN && l.peekSymbol() != Lexer::KEYWORD_ASYNC )
+				COMPILE_ERROR( l, "Expected 'fn' or 'async fn' for function declaration" );
 
 			// Task 66 — Mandatory pub type signatures on public functions:
 			// Public functions must have fully explicit type signatures with no

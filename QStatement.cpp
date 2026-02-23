@@ -57,6 +57,15 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 	case Lexer::KEYWORD_MATCH:
 		statement = MatchExpression::Parse( l, scope );
 		break;
+	case Lexer::KEYWORD_SPAWN:
+		statement = SpawnStatement::Parse( l, scope );
+		break;
+	case Lexer::KEYWORD_ASSERT:
+		statement = AssertStatement::Parse( l, scope );
+		break;
+	case Lexer::KEYWORD_ON:
+		statement = EventHandler::Parse( l, scope );
+		break;
 	case '{':
 		statement = Block::Parse( l, scope );
 		break;
