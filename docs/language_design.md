@@ -192,10 +192,15 @@ fn read_file(string path) -> Result<string, IOError> {
 }
 ```
 
+`Result<T, E>` is a built-in enum type with two variants:
+
+- `ok(T)` — the successful value
+- `err(E)` — the error value
+
 Callers must handle the result explicitly:
 
 ```
-// Option 1: match
+// Option 1: match (exhaustive)
 match read_file("data.txt") {
 	ok(data)  { process(data); }
 	err(e)    { log(e.message); }
@@ -208,11 +213,39 @@ fn load_config() -> Result<Config, IOError> {
 }
 ```
 
-The `?` operator is the only way to propagate errors. This makes error paths visible in the code — an LLM can trace exactly where a function might return early.
+#### The ? Operator
+
+The `?` operator is the only way to propagate errors without explicitly handling them. When applied to a `Result<T, E>` expression:
+
+- If the result is `ok(value)`, execution continues with `value` unwrapped.
+- If the result is `err(e)`, the enclosing function returns `err(e)` immediately.
+
+The enclosing function must return `Result` with a compatible error type. `?` can only appear in postfix position on an expression: `expr?`.
+
+This makes every early-return point visible in the source code. An LLM or code reader can trace exactly which calls might return early by scanning for `?` tokens.
+
+```
+fn process_config() -> Result<int, IOError> {
+	data = read_file("config.txt")?;    // may return early with err
+	parsed = parse_int(data)?;          // may return early with err
+	return ok(parsed);
+}
+```
+
+#### Exhaustive Matching (Future)
+
+The compiler will enforce that all variants are covered in a `match` expression. For `Result`, both `ok` and `err` arms must be present. For `Option`, both `some` and `none` arms must be present. A wildcard `_` arm satisfies any remaining variants.
+
+This guarantee is planned for a future compiler phase. Currently, match arms are parsed and stored but exhaustiveness is not checked at compile time.
 
 ### Null Safety
 
 There is no `null`. Optional values use `Option<T>`.
+
+`Option<T>` is a built-in enum type with two variants:
+
+- `some(T)` — a present value
+- `none` — absence of a value
 
 ```
 fn find_user(int id) -> Option<User> {
@@ -227,6 +260,8 @@ match find_user(42) {
 	none       { log("user not found"); }
 }
 ```
+
+Both `Result` and `Option` use pattern matching as the primary way to extract their contained values. Destructuring bindings in match arms (`ok(value)`, `some(x)`) introduce new variables into the arm's scope.
 
 ## Type System
 
@@ -421,20 +456,23 @@ No format specifiers. The compiler calls `to_string()` (via the `Printable` prot
 
 Each file is a module. Public symbols are exported with `pub`.
 
-```
-// math.bl
-pub fn add(int a, int b) -> int {
-	return a + b;
-}
+### Import Statement
 
-fn helper() -> int {    // private to this module
-	return 0;
-}
-```
+The `import` statement declares a dependency on another module. The syntax is:
 
 ```
-// main.bl
+import module_name;
+import std.io;
+```
+
+Every `import` statement must end with a semicolon. Import statements must appear at the top of the file, before any function or type definitions.
+
+The module name corresponds directly to a source file. `import math;` resolves to `math.b` in the project. Dotted paths (`import std.io;`) are supported as a single flat import name — the dot is part of the name, not a hierarchy separator (see Flat Module Namespace below).
+
+```
+// main.b
 import math;
+import std.io;
 
 fn main() {
 	result = math.add(1, 2);
@@ -442,6 +480,104 @@ fn main() {
 ```
 
 No header files. No forward declarations. No include guards. The compiler resolves dependencies from `import` statements.
+
+### Visibility Modifiers
+
+By default, all top-level symbols (functions, structs, enums, protocols) are **private** to the module that defines them. They cannot be referenced from other modules.
+
+The `pub` keyword makes a symbol visible to any module that imports the defining module:
+
+```
+// math.b
+pub fn add(int a, int b) -> int {    // exported — visible to importers
+	return a + b;
+}
+
+fn helper() -> int {                  // private — only usable within math.b
+	return 0;
+}
+
+pub struct Vector {                   // exported struct
+	float x;
+	float y;
+}
+
+struct Cache {                        // private struct
+	int value;
+}
+
+pub enum Status {                     // exported enum
+	ok,
+	err
+}
+```
+
+The `pub` modifier is placed immediately before the keyword it modifies (`fn`, `struct`, `enum`, `protocol`):
+
+- `pub fn name(...) -> type { ... }` — exported function
+- `pub struct Name { ... }` — exported struct
+- `pub enum Name { ... }` — exported enum
+- `pub protocol Name { ... }` — exported protocol
+
+### Default Private Visibility
+
+Omitting `pub` makes a symbol private. This is the default and does not require any keyword:
+
+```
+fn private_helper() -> int {    // private by default
+	return 42;
+}
+
+pub fn public_api() -> int {    // explicitly public
+	return private_helper();
+}
+```
+
+This differs from languages like Go (uppercase = public) or Java (explicit `public`/`private`). In BLang, privacy is the default and publicity requires an explicit opt-in. This reduces accidental API surface and makes the module's public interface immediately apparent by scanning for `pub`.
+
+### Flat Module Namespace
+
+Modules are one level deep. There are no nested sub-modules and no deeply qualified paths.
+
+```
+// Supported
+import math;
+import http;
+import std.io;       // dotted name is still a single flat import
+
+// Not supported — BLang has no nested module hierarchy
+import std.net.http.server;
+```
+
+When referencing an imported symbol, use the module name as a qualifier:
+
+```
+import math;
+
+fn compute() -> int {
+	return math.add(1, 2);
+}
+```
+
+The flat namespace means every import is one qualifier deep. This eliminates long qualification chains and makes it impossible to hallucinate intermediate namespace segments.
+
+### File Equals Module Convention
+
+Every `.b` source file is exactly one module. The module name is the file's base name without the extension:
+
+| File | Module name |
+|------|-------------|
+| `math.b` | `math` |
+| `http.b` | `http` |
+| `user_auth.b` | `user_auth` |
+
+There is no separate module declaration keyword. The file itself is the module boundary. This means:
+
+- One file = one module (no splitting a module across files)
+- One module = one file (no merging files into one module)
+- The file name is the module name (no mismatch between declaration and file)
+
+This eliminates an entire class of build-system complexity: no `mod.rs`, no `__init__.py`, no package declarations that must match directory names.
 
 ## Data and Persistence
 
@@ -1002,6 +1138,16 @@ For the detailed implementation plan with 217 tasks across all phases, see **[do
 - Comments (single-line and multi-line)
 - LLVM IR code generation for all of the above (when built with `llvm-18-dev`)
 - End-to-end compilation: parse → `.ll` → `llc` → native binary
+- `enum` definitions with variants and associated types, including generic enums (`Result<T, E>`, `Option<T>`)
+- `match` expressions with literal patterns, wildcard `_`, and destructuring bindings (`ok(value)`, `some(x)`)
+- `?` (try/propagate) operator in postfix position on expressions (`expr?`)
+- Struct definitions with fields and generic parameters
+- Protocol definitions with generic parameters
+- `impl` blocks for method definitions
+- `for-in` loops (range, collection, infinite)
+- Array literals and indexing
+- Method calls and field access
+- Range expressions (`start..end`)
 
 ### Next Steps
 

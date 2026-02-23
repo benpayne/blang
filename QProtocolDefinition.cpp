@@ -69,6 +69,11 @@ ProtocolDefinition *ProtocolDefinition::Parse( Lexer &l, Scope *s )
 		COMPILE_ERROR( l, "Expected '{' in protocol definition" );
 	}
 
+	// Use a local scope for method signatures so they don't pollute the global
+	// scope and don't conflict with impl block methods of the same name.
+	SmartPtr<Scope> protoScope = new Scope( Scope::kScope_Class, protoDef->getName() );
+	protoScope->setParent( s );
+
 	while ( l.peekSymbol() != '}' )
 	{
 		// Each method signature must start with 'fn'
@@ -80,7 +85,7 @@ ProtocolDefinition *ProtocolDefinition::Parse( Lexer &l, Scope *s )
 		// Use FunctionDefinition::Parse to handle the fn signature.
 		// The signature ends with ';' (no body), which FunctionDefinition::Parse
 		// handles as a bodyless declaration.
-		SmartPtr<FunctionDefinition> method = FunctionDefinition::Parse( l, s );
+		SmartPtr<FunctionDefinition> method = FunctionDefinition::Parse( l, protoScope );
 
 		protoDef->mRequiredMethods.push_back( method );
 	}

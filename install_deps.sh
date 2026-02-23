@@ -1,13 +1,26 @@
 #!/bin/bash
-# Install development dependencies for building BLang with LLVM code generation
+# Install dependencies for BLang compiler
 set -e
 
-echo "Installing LLVM 18 development headers and dependencies..."
-sudo apt-get update -qq
-sudo apt-get install -y llvm-18-dev libzstd-dev
+echo "Installing BLang build dependencies..."
 
-echo ""
-echo "Dependencies installed. To build with LLVM code generation:"
-echo "  mkdir -p build && cd build"
-echo "  cmake .. -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm"
-echo "  make"
+if [ "$(uname)" = "Linux" ]; then
+    sudo apt-get update
+    sudo apt-get install -y cmake build-essential
+
+    if [ "$1" = "--with-llvm" ]; then
+        echo "Installing LLVM 18 development headers..."
+        sudo apt-get install -y llvm-18-dev
+    fi
+elif [ "$(uname)" = "Darwin" ]; then
+    brew install cmake
+
+    if [ "$1" = "--with-llvm" ]; then
+        brew install llvm@18
+    fi
+else
+    echo "Unsupported platform: $(uname)"
+    exit 1
+fi
+
+echo "Dependencies installed successfully."

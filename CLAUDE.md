@@ -58,6 +58,10 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> run)
 ├── docs/
 │   └── language_design.md     # BLang language design specification
+│   └── implementation_plan.md # Implementation task list and roadmap
+├── .github/
+│   └── workflows/ci.yml      # GitHub Actions CI (parse-only and with-llvm matrix)
+├── install_deps.sh            # Cross-platform dependency installer
 ├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals
 ├── jhcommon/                  # Git submodule (legacy, no longer linked — kept for reference)
@@ -264,7 +268,7 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 Tests are organized into three categories under `test_files/`:
 
-- **`test_files/pass/`** (51 tests) — Should parse successfully. Includes:
+- **`test_files/pass/`** (62 tests) — Should parse successfully. Includes:
   - Basic function tests: `func_simple.b`, `func_call.b`, `multi_func.b`, `empty_func.b`
   - Control flow: `if_simple.b`, `if_nested.b`, `while_simple.b`, `while_block.b`, `for_simple.b`, `for_block.b`
   - Variables and expressions: `var_decl.b`, `var_infer.b`, `const_decl.b`, `arithmetic_stmt.b`, `assignment_stmt.b`, `binary_expr_return.b`, `comparison_expr.b`
@@ -272,19 +276,19 @@ Tests are organized into three categories under `test_files/`:
   - Literals and comments: `string_literals.b`, `comments.b`, `float_literal.b`, `bool_type.b`
   - Function styles: `fn_simple.b`, `fn_void.b`, `arrow_fn.b`
   - Structs and methods: `struct_basic.b`, `struct_literal.b`, `field_access.b`, `method_call.b`, `impl_basic.b`, `impl_protocol.b`
-  - Protocols: `protocol_basic.b`
+  - Protocols: `protocol_basic.b`, `protocol_conformance.b`
   - Enums: `enum_basic.b`, `enum_variants.b`, `enum_generic.b`
   - Generics: `generic_fn.b`, `generic_struct.b`, `generic_constraint.b`, `generic_protocol.b`, `generic_type_args.b`
   - For-in loops: `for_in_range.b`, `for_in_var.b`, `for_infinite.b`
   - Arrays: `array_literal.b`, `array_index.b`
-  - Pattern matching: `match_basic.b`, `match_wildcard.b`, `match_destructure.b`
+  - Pattern matching: `match_basic.b`, `match_wildcard.b`, `match_destructure.b`, `match_enum_variants.b`
+  - Result/Option: `result_option.b`, `try_operator.b`
+  - Modules: `import_basic.b`, `import_dotted.b`, `pub_function.b`, `pub_struct.b`, `pub_enum.b`, `visibility_basic.b`
   - Other: `break_continue.b`, `extern_unnamed.b`
-- **`test_files/fail/`** (14 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `missing_brace.b`, `missing_paren.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`
-- **`test_files/xfail/`** (1 expected failure) — Known-broken features: `extern_func_call.b`
-
+- **`test_files/fail/`** (21 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`
 Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/codegen_simple.b`, `test_files/codegen_binexpr.b`, `test_files/codegen_features.b`, `test_files/multi_var_decl.b`
 
-**Total: 66 tests** (51 pass + 14 fail/negative + 1 xfail)
+**Total: 83 tests** (62 pass + 21 fail/negative)
 
 ### Running tests
 
@@ -319,6 +323,7 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 - **Struct definitions** with optional generic parameters: `struct Box<T> { T value; }`
 - **Enum/sum type definitions** with variants and associated types: `enum Option<T> { some(T), none }`
 - **Protocol definitions** with optional generic parameters: `protocol Container<T> { ... }`
+- **Protocol conformance checking**: `impl Protocol for Struct` verifies all required methods are implemented
 - **Method calls**: `obj.method(args)` syntax
 - **Field access**: `obj.field` syntax
 - **Array literals**: `[1, 2, 3]` syntax
@@ -334,7 +339,11 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
   - Wildcard pattern: `_ => { ... }` (default/catch-all)
   - Destructuring with bindings: `ok(value) => { ... }`, `some(x) => { ... }`
 - Expressions: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
+- **`?` try operator**: `expr?` postfix operator for error propagation (unwraps Result/Option, returns early on error)
 - Assignment operators: `=`, `+=`, `-=`, `*=`, `/=`
+- **Import statements**: `import std;`, `import std.io;` (dotted module paths)
+- **Visibility modifier**: `pub fn`, `pub struct`, `pub enum` for public declarations
+- **Duplicate function detection**: redeclaring a function in the same scope is a compile error
 - Function calls with arguments
 - Return statements
 - Block scoping with `{` `}`
@@ -346,9 +355,11 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 
 This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST.
 
-**Parser features**: BLang `fn`-style function declarations (C-style syntax removed), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, float/double literals, break/continue, and extern declarations with unnamed parameters.
+**Parser features**: BLang `fn`-style function declarations (C-style syntax rejected), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters and conformance checking, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, `?` try operator for error propagation, `import` statements with dotted paths, `pub` visibility modifier, duplicate function detection, float/double literals, break/continue, extern declarations with unnamed parameters, and multi-file compilation.
 
-**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), float constants.
+**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), float constants.
+
+**CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--help` flags and multiple input files. `bcc test` subcommand discovers and runs test files.
 
 **Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
 
@@ -356,6 +367,7 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
 
 ## Known Issues and Limitations
 
-- No CI/CD pipeline.
-- No automated test framework (but `run_tests.sh` provides a basic test runner with pass/fail/xfail categories).
+- Codegen for structs, methods, generics, Result/Option, match, and `?` operator requires LLVM and is not yet implemented.
+- Multi-module codegen (linking symbols across files) is not yet implemented.
+- Generic type instantiation (monomorphization or type erasure) is not yet implemented.
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.

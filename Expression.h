@@ -408,6 +408,16 @@ namespace QLang
 		std::vector<MatchArm> mArms;
 		friend class CodeGen;
 	};
+
+	class TryExpression : public Expression
+	{
+	public:
+		TryExpression( Expression *operand ) : mOperand( operand ) {}
+
+	private:
+		SmartPtr<Expression> mOperand;
+		friend class CodeGen;
+	};
 };
 
 #endif // BLANG_EXPRESSION_H_

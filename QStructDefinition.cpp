@@ -12,7 +12,7 @@
 using namespace QLang;
 using namespace std;
 
-StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s )
+StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 {
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_STRUCT )
@@ -27,6 +27,7 @@ StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s )
 	}
 
 	StructDefinition *structDef = new StructDefinition( l.getSymbolText() );
+	structDef->mIsPublic = isPublic;
 
 	// Check for generic parameters: struct Name<T> or struct Name<T: Constraint>
 	if ( l.peekSymbol() == '<' )

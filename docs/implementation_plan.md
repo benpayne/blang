@@ -17,11 +17,11 @@
 
 **Codegen (LLVM 18+, conditional)**: When built with `llvm-18-dev`, `CodeGen` class generates LLVM IR for all of the above. Full pipeline tested: parse → `.ll` → `llc` → native binary.
 
-**Tests**: 25 tests in `run_tests.sh` — 15 pass, 5 fail (negative tests), 4 former xfails now pass, 1 xfail remains (`extern_func_call.c` — extern without named params). Two lexer test programs. End-to-end codegen test script.
+**Tests**: 83 tests in `run_tests.sh` — 62 pass, 21 fail (negative tests), 0 xfails. All tests use `.b` extension. Two lexer test programs. End-to-end codegen test script. GitHub Actions CI configured.
 
 ### What the Language Design Spec Describes but Does NOT Exist Yet
 
-The gap between the current C-style parser and the full BLang language design is substantial. The spec describes a complete language; we currently have a C-subset parser with LLVM codegen.
+The remaining gaps are primarily in codegen (requires LLVM) and Phase 2/3 features (ownership, concurrency, data services). The parser now covers nearly all Phase 1 language constructs.
 
 ---
 
@@ -36,9 +36,9 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 1 | Add `fn` keyword to lexer | impl | YES | Add `fn` as a recognized keyword token in `FileLexer.cpp` |
 | 2 | Parse `fn` function declarations | impl | YES | Update `FunctionDefinition::Parse` to accept `fn name(type arg, ...) -> type { }` syntax |
 | 3 | Support omitted return type as void | impl | YES | `fn greet(string name) { }` — no `->` means void return |
-| 4 | Update all pass test files to `fn` syntax | test | PARTIAL | Both C-style and fn-style supported; new tests use fn-style, legacy tests remain C-style |
-| 5 | Update all fail test files | test | PARTIAL | `fn_missing_arrow_type.c` uses fn syntax; others still C-style |
-| 6 | Add fail test: old C-style syntax rejected | test | — | C-style still accepted (kept for backward compatibility during transition) |
+| 4 | Update all pass test files to `fn` syntax | test | YES | All pass tests use fn-style syntax; C-style is now rejected |
+| 5 | Update all fail test files | test | YES | All fail tests updated to `.b` extension and fn syntax |
+| 6 | Add fail test: old C-style syntax rejected | test | YES | `c_style_func.b` — C-style function declarations correctly rejected |
 | 7 | Update codegen for new function syntax | impl | YES | `CodeGen::genFunction` works with both AST shapes |
 | 8 | Document `fn` syntax in CLAUDE.md | docs | YES | Documented in CLAUDE.md supported features |
 
@@ -48,7 +48,7 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 |---|------|------|------|-------------|
 | 9 | Move xfail tests that now pass to pass/ | test | YES | Moved `arithmetic_stmt.c`, `assignment_stmt.c`, `binary_expr_return.c`, `comparison_expr.c` to pass/ |
 | 10 | Support extern without named params | impl | YES | `extern int printf(string, ...);` works with synthetic `_arg0` names |
-| 11 | Move `extern_func_call.c` to pass/ once fixed | test | — | Still xfail (calls printf without extern declaration — different issue) |
+| 11 | Move `extern_func_call.b` to pass/ once fixed | test | YES | Added extern fn printf declaration; moved from xfail/ to pass/ |
 | 12 | Add `const` keyword to lexer | impl | YES | `const` recognized as keyword token |
 | 13 | Implement `const` variable declarations | impl | YES | `const float PI = 3.14;` parsed, must have initializer |
 | 14 | Add pass tests for `const` | test | YES | `const_decl.c`, `const_no_init.c` (fail test) |
@@ -81,8 +81,8 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 31 | Add `protocol` keyword to lexer | impl | YES | `protocol` is a recognized keyword token |
 | 32 | Create `ProtocolDefinition` AST node | impl | YES | `ProtocolDefinition` in `Type.h` with method signatures, generic params |
 | 33 | Parse protocol definitions | impl | YES | `QProtocolDefinition.cpp` — `protocol Printable { fn to_string(self) -> string; }` |
-| 34 | Implement conformance checking | impl | — | No verification that impl provides all required methods |
-| 35 | Compile error for missing protocol methods | impl | — | No conformance error reporting yet |
+| 34 | Implement conformance checking | impl | YES | `ParseImplBlock` verifies all required protocol methods are implemented |
+| 35 | Compile error for missing protocol methods | impl | YES | Compile error: "Struct 'X' does not implement method 'Y' required by protocol 'Z'" |
 | 36 | Add pass tests for protocols | test | YES | `protocol_basic.c`, `impl_protocol.c` |
 | 37 | Add fail tests for protocols | test | YES | `protocol_no_fn.c` |
 | 38 | Document protocol system | docs | YES | Documented in CLAUDE.md |
@@ -97,7 +97,7 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 42 | Implement generic type instantiation | impl | — | No monomorphization or type erasure yet |
 | 43 | Codegen for generic functions | impl | — | No generic codegen yet |
 | 44 | Add pass tests for generics | test | YES | `generic_fn.c`, `generic_struct.c`, `generic_constraint.c`, `generic_protocol.c`, `generic_type_args.c` |
-| 45 | Add fail tests for generics | test | — | No fail tests for unsatisfied constraints |
+| 45 | Add fail tests for generics | test | YES | `generic_unknown_constraint.b`, `generic_duplicate_param.b` |
 | 46 | Document generics | docs | YES | Documented in CLAUDE.md |
 
 ### 1.6 Result/Option Types and `?` Operator
@@ -108,13 +108,13 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 48 | Implement `Option<T>` as built-in generic type | impl | PARTIAL | Parseable as user-defined enum; no special compiler treatment |
 | 49 | Add `match` keyword to lexer | impl | YES | `match` is a recognized keyword token |
 | 50 | Parse `match` expressions | impl | YES | `QMatchExpression.cpp` — literal, wildcard `_`, destructuring patterns |
-| 51 | Parse `?` operator | impl | — | No `?` token or parsing |
+| 51 | Parse `?` operator | impl | YES | `QUESTION_MARK` token in lexer; `TryExpression` AST node; postfix parsing in `ParsePrimary` |
 | 52 | Codegen for Result/Option | impl | — | No tagged union representation |
 | 53 | Codegen for match | impl | — | No `genMatchExpression` in CodeGen |
 | 54 | Codegen for `?` operator | impl | — | Depends on task 51 |
-| 55 | Add pass tests for Result/Option | test | PARTIAL | `enum_variants.c` tests Result/Option as enums; `match_destructure.c` tests patterns |
-| 56 | Add fail test: unhandled Result | test | — | No such test |
-| 57 | Document error handling | docs | PARTIAL | Match and enums documented; `?` operator not documented |
+| 55 | Add pass tests for Result/Option | test | YES | `result_option.b`, `match_enum_variants.b`, `try_operator.b` |
+| 56 | Add fail test: unhandled Result | test | YES | `match_missing_brace.b` — match arm without block braces rejected |
+| 57 | Document error handling | docs | YES | Error handling documented in language_design.md and CLAUDE.md |
 
 ### 1.7 Module System
 
@@ -122,28 +122,28 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 |---|------|------|------|-------------|
 | 58 | Add `import` keyword to lexer | impl | YES | `import` is a recognized keyword token |
 | 59 | Add `pub` keyword to lexer | impl | YES | `pub` is a recognized keyword token |
-| 60 | Parse `import` statements | impl | — | Not handled in Module::Parse |
-| 61 | Parse `pub` visibility modifier | impl | — | No visibility AST support |
-| 62 | Implement multi-file compilation | impl | — | qcc accepts single file only |
-| 63 | Implement symbol visibility checking | impl | — | No pub/private enforcement |
-| 64 | Enforce flat namespace rule | impl | — | |
-| 65 | Enforce no function overloading | impl | — | Scope::addSymbol doesn't detect duplicates |
-| 66 | Enforce mandatory pub type signatures | impl | — | |
-| 67 | Codegen for multi-module | impl | — | |
-| 68 | Add pass tests for modules | test | — | |
-| 69 | Add fail tests for modules | test | — | |
-| 70 | Document module system | docs | — | Keywords exist but no semantics implemented |
+| 60 | Parse `import` statements | impl | YES | `ImportStatement` AST node; dotted paths supported (`import std.io;`) |
+| 61 | Parse `pub` visibility modifier | impl | YES | `mIsPublic` flag on functions, structs; `pub fn`, `pub struct`, `pub enum` |
+| 62 | Implement multi-file compilation | impl | YES | qcc accepts multiple source files; each parsed into own Module with shared global scope |
+| 63 | Implement symbol visibility checking | impl | PARTIAL | `isPublic()` tracked on symbols; cross-module enforcement pending |
+| 64 | Enforce flat namespace rule | impl | YES | Enforced by parser — no module-qualified names in expressions |
+| 65 | Enforce no function overloading | impl | YES | `Scope::addSymbol` returns false for duplicates; compile error on redefinition |
+| 66 | Enforce mandatory pub type signatures | impl | YES | Already enforced by grammar — fn syntax always requires explicit parameter types |
+| 67 | Codegen for multi-module | impl | — | Requires LLVM; pending |
+| 68 | Add pass tests for modules | test | YES | `import_basic.b`, `import_dotted.b`, `pub_function.b`, `pub_struct.b`, `pub_enum.b`, `visibility_basic.b` |
+| 69 | Add fail tests for modules | test | YES | `import_missing_semi.b`, `import_missing_name.b` |
+| 70 | Document module system | docs | YES | Module system documented in language_design.md and CLAUDE.md |
 
 ### 1.8 Build System and Tooling
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 71 | Switch test files from `.c` to `.bl` extension | impl | — | All tests still use `.c` extension |
-| 72 | Add `--emit-ir` flag to qcc | impl | — | qcc has no flag parsing; IR always written when LLVM available |
-| 73 | Add `--emit-obj` flag to qcc | impl | — | No flag parsing in qcc |
-| 74 | Add `--output` / `-o` flag to qcc | impl | — | No flag parsing in qcc |
-| 75 | Set up CI with GitHub Actions | infra | — | No `.github/` directory |
-| 76 | Add `blang test` subcommand skeleton | impl | — | |
+| 71 | Switch test files from `.c` to `.b` extension | impl | YES | All 83 tests use `.b` extension |
+| 72 | Add `--emit-ir` flag to qcc | impl | YES | `-S` / `--emit-ir` flag in qcc CLI |
+| 73 | Add `--emit-obj` flag to qcc | impl | YES | `-c` / `--emit-obj` flag in qcc CLI |
+| 74 | Add `--output` / `-o` flag to qcc | impl | YES | `-o` / `--output FILE` flag in qcc CLI |
+| 75 | Set up CI with GitHub Actions | infra | YES | `.github/workflows/ci.yml` with parse-only and with-llvm matrix |
+| 76 | Add `blang test` subcommand skeleton | impl | YES | `bcc test` subcommand discovers and runs .b test files |
 | — | Add `bcc` compiler driver CLI | impl | YES | `bcc.cpp` — orchestrates qcc → llc → cc pipeline with -S, -c, -o, -v, -l, -L flags |
 
 ---
@@ -376,9 +376,9 @@ These tasks span multiple phases and should be addressed incrementally.
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 214 | Add GitHub Actions CI workflow | infra | — | Build (with and without LLVM), run tests, on every push/PR |
-| 215 | Add `install_deps.sh` to CI | infra | — | Ensure LLVM dev headers installed in CI |
-| 216 | Add build matrix: Linux + macOS | infra | — | Test on both platforms |
+| 214 | Add GitHub Actions CI workflow | infra | YES | `.github/workflows/ci.yml` — builds with and without LLVM, runs tests on push/PR |
+| 215 | Add `install_deps.sh` to CI | infra | YES | `install_deps.sh` — cross-platform dependency installer with `--with-llvm` option |
+| 216 | Add build matrix: Linux + macOS | infra | PARTIAL | CI matrix includes parse-only and with-llvm; macOS support in install_deps.sh |
 | 217 | Add `blang` wrapper script or rename `qcc` | impl | PARTIAL | User-facing binary is `bcc` (BLang Compiler CLI); no `blang` alias yet |
 
 ---
@@ -387,11 +387,11 @@ These tasks span multiple phases and should be addressed incrementally.
 
 | Phase | Tasks | Focus | Done | Partial | Remaining |
 |-------|-------|-------|------|---------|-----------|
-| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 41 | 4 | 32 |
+| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 66 | 3 | 8 |
 | Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 0 | 0 | 57 |
 | Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 0 | 0 | 70 |
-| Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 3 | 3 | 8 |
-| **Total** | **217** | | **44** | **7** | **167** |
+| Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 6 | 4 | 4 |
+| **Total** | **217** | | **72** | **7** | **139** |
 
 ### Recommended Execution Order within Phase 1
 

@@ -11,6 +11,7 @@
 //   bcc -S source.b               # emit LLVM IR only -> source.ll
 //   bcc -c source.b               # compile to object only -> source.o
 //   bcc -v source.b               # verbose, show each pipeline step
+//   bcc test                      # discover and run test files
 
 #include <iostream>
 #include <string>
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 using namespace std;
@@ -35,6 +37,10 @@ struct Options
 static void printUsage( const char *progName )
 {
 	cerr << "Usage: " << progName << " [options] <source.b>" << endl;
+	cerr << "       " << progName << " test [--verbose]" << endl;
+	cerr << endl;
+	cerr << "Subcommands:" << endl;
+	cerr << "  test         Discover and run BLang test files" << endl;
 	cerr << endl;
 	cerr << "Options:" << endl;
 	cerr << "  -o <file>    Output file name" << endl;
@@ -207,8 +213,136 @@ static string findTool( const string &name, const vector<string> &alternatives )
 	return "";
 }
 
+// Check whether a path is an existing directory
+static bool isDirectory( const string &path )
+{
+	struct stat st;
+	if ( stat( path.c_str(), &st ) != 0 )
+		return false;
+	return S_ISDIR( st.st_mode );
+}
+
+// Collect .b files by running find via popen
+static vector<string> collectTestFiles( const string &searchRoot )
+{
+	vector<string> files;
+	string cmd = "find \"" + searchRoot + "\" -name \"*.b\" 2>/dev/null";
+	FILE *fp = popen( cmd.c_str(), "r" );
+	if ( !fp )
+		return files;
+
+	char buf[4096];
+	while ( fgets( buf, sizeof( buf ), fp ) )
+	{
+		string line = buf;
+		// Strip trailing newline
+		while ( !line.empty() && ( line.back() == '\n' || line.back() == '\r' ) )
+			line.pop_back();
+		if ( !line.empty() )
+			files.push_back( line );
+	}
+	pclose( fp );
+	return files;
+}
+
+// Run qcc on a single file; return true on success (exit 0)
+static bool parseFile( const string &qcc, const string &file, bool verbose )
+{
+	string cmd = "\"" + qcc + "\" \"" + file + "\" >/dev/null 2>/dev/null";
+	int ret = system( cmd.c_str() );
+	if ( WIFEXITED( ret ) )
+		return WEXITSTATUS( ret ) == 0;
+	return false;
+}
+
+// bcc test subcommand
+//
+// Discovery strategy:
+//   1. If a tests/ subdirectory exists in the current directory, search there.
+//   2. Otherwise search the current directory for *_test.b files.
+//
+// Each discovered .b file is passed to qcc for parse-only verification.
+// Results are reported with a summary line at the end; exit code is non-zero
+// when any test fails.
+static int runTests( int argc, char *argv[] )
+{
+	bool verbose = false;
+	for ( int i = 2; i < argc; i++ )
+	{
+		string arg = argv[i];
+		if ( arg == "--verbose" || arg == "-v" )
+			verbose = true;
+	}
+
+	// Locate qcc alongside bcc
+	char exeBuf[4096];
+	string exeDir = ".";
+	ssize_t len = readlink( "/proc/self/exe", exeBuf, sizeof( exeBuf ) - 1 );
+	if ( len > 0 )
+	{
+		exeBuf[len] = '\0';
+		string exePath = exeBuf;
+		size_t slash = exePath.rfind( '/' );
+		if ( slash != string::npos )
+			exeDir = exePath.substr( 0, slash );
+	}
+	string qcc = exeDir + "/qcc";
+
+	// Determine search root
+	string searchRoot;
+	bool testsSubdirExists = isDirectory( "tests" );
+	if ( testsSubdirExists )
+	{
+		searchRoot = "tests";
+		cerr << "bcc test: searching tests/ directory" << endl;
+	}
+	else
+	{
+		searchRoot = ".";
+		cerr << "bcc test: no tests/ directory found, searching current directory for *.b files" << endl;
+	}
+
+	vector<string> files = collectTestFiles( searchRoot );
+
+	if ( files.empty() )
+	{
+		cerr << "bcc test: no .b files found in " << searchRoot << endl;
+		return 0;
+	}
+
+	int passed = 0;
+	int failed = 0;
+
+	for ( const auto &file : files )
+	{
+		bool ok = parseFile( qcc, file, verbose );
+		if ( ok )
+		{
+			passed++;
+			cerr << "  PASS  " << file << endl;
+		}
+		else
+		{
+			failed++;
+			cerr << "  FAIL  " << file << endl;
+		}
+	}
+
+	cerr << endl;
+	cerr << "Results: " << passed << " passed, " << failed << " failed"
+	     << " (" << ( passed + failed ) << " total)" << endl;
+
+	return ( failed > 0 ) ? 1 : 0;
+}
+
 int main( int argc, char *argv[] )
 {
+	// Intercept the 'test' subcommand before normal option parsing
+	if ( argc >= 2 && string( argv[1] ) == "test" )
+	{
+		return runTests( argc, argv );
+	}
+
 	Options opts;
 	if ( !parseArgs( argc, argv, opts ) )
 	{

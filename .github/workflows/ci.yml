@@ -1,0 +1,51 @@
+name: BLang CI
+
+on:
+  push:
+    branches: [ master, main, 'claude/**' ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        build_type: [parse-only, with-llvm]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential
+        if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
+          sudo apt-get install -y llvm-18-dev
+        fi
+
+    - name: Configure CMake
+      run: |
+        mkdir -p build
+        cd build
+        if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
+          cmake .. -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+        else
+          cmake ..
+        fi
+
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc)
+
+    - name: Run tests
+      run: ./run_tests.sh
+
+    - name: Run codegen tests
+      if: matrix.build_type == 'with-llvm'
+      run: |
+        if [ -f ./test_codegen.sh ]; then
+          ./test_codegen.sh
+        fi
