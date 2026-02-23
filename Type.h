@@ -163,6 +163,9 @@ namespace QLang
 		std::string mModuleName;
 	};
 
+	class StructDefinition;
+	class EnumDefinition;
+
 	class Module : virtual public RefCount
 	{
 	public:
@@ -175,6 +178,9 @@ namespace QLang
 
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
 		std::vector<SmartPtr<ImportStatement>> mImports;
+		std::vector<SmartPtr<StructDefinition>> mStructList;
+		std::vector<SmartPtr<EnumDefinition>> mEnumList;
+		SmartPtr<Scope> mScope;
 	};
 	
 	class FunctionDefinition : public Symbol

@@ -50,6 +50,23 @@ private:
 	llvm::Value *genConstString( ConstString *cs );
 	llvm::Value *genConstChar( ConstChar *cc );
 
+	// Struct and field codegen
+	llvm::StructType *getOrCreateStructType( StructDefinition *structDef );
+	llvm::Value *genStructLiteral( StructLiteralExpression *expr );
+	llvm::Value *genFieldAccess( FieldAccessExpression *expr );
+	llvm::Value *genMethodCall( MethodCallExpression *expr );
+
+	// Match and error handling codegen
+	llvm::Value *genMatchExpression( MatchExpression *expr );
+	llvm::Value *genTryExpression( TryExpression *expr );
+
+	// Array codegen
+	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
+	llvm::Value *genIndexExpression( IndexExpression *expr );
+
+	// Helper to get the alloca for an expression's address (for GEP)
+	llvm::AllocaInst *getExpressionAddress( Expression *expr );
+
 	// Type mapping
 	llvm::Type *getLLVMType( Type *type );
 
@@ -61,6 +78,14 @@ private:
 	// Maps from AST nodes to LLVM values
 	std::map<VariableDefinition*, llvm::AllocaInst*> mVariableMap;
 	std::map<FunctionDefinition*, llvm::Function*> mFunctionMap;
+
+	// Struct type maps
+	std::map<std::string, llvm::StructType*> mStructTypeMap;
+	std::map<std::string, StructDefinition*> mStructDefMap;
+	std::map<std::string, EnumDefinition*> mEnumDefMap;
+
+	// Module scope for type resolution
+	Scope *mScope = nullptr;
 };
 
 } // namespace QLang

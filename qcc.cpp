@@ -43,6 +43,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 	// never produces a qualified-name expression node.
 
 	Module *mod = new Module();
+	mod->mScope = s;
 	SmartPtr<FunctionDefinition> def;
 	try {
 		while( !l.isEOF() )
@@ -106,6 +107,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			if ( nextSym == Lexer::KEYWORD_STRUCT )
 			{
 				SmartPtr<StructDefinition> structDef = StructDefinition::Parse( l, s, isPublic );
+				mod->mStructList.push_back( structDef );
 				continue;
 			}
 
@@ -124,6 +126,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			if ( nextSym == Lexer::KEYWORD_ENUM )
 			{
 				SmartPtr<EnumDefinition> enumDef = EnumDefinition::Parse( l, s );
+				mod->mEnumList.push_back( enumDef );
 				continue;
 			}
 
