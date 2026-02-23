@@ -222,13 +222,35 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 
 void CodeGen::genReturnStatement( ReturnStatement *ret )
 {
+	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+	llvm::Type *expectedType = func->getReturnType();
+
 	if ( ret->mExpression != nullptr )
 	{
 		llvm::Value *retVal = genExpression( ret->mExpression );
 		if ( retVal != nullptr )
+		{
+			// Cast if the value type doesn't match the function return type
+			if ( retVal->getType() != expectedType )
+			{
+				if ( expectedType->isFloatTy() && retVal->getType()->isDoubleTy() )
+					retVal = mBuilder->CreateFPTrunc( retVal, expectedType, "fptrunc" );
+				else if ( expectedType->isDoubleTy() && retVal->getType()->isFloatTy() )
+					retVal = mBuilder->CreateFPExt( retVal, expectedType, "fpext" );
+				else if ( expectedType->isIntegerTy() && retVal->getType()->isIntegerTy() )
+					retVal = mBuilder->CreateIntCast( retVal, expectedType, true, "icast" );
+			}
 			mBuilder->CreateRet( retVal );
-		else
+		}
+		else if ( expectedType->isVoidTy() )
+		{
 			mBuilder->CreateRetVoid();
+		}
+		else
+		{
+			// Expression generation failed — emit a default return value
+			mBuilder->CreateRet( llvm::Constant::getNullValue( expectedType ) );
+		}
 	}
 	else
 	{

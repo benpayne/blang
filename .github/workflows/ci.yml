@@ -32,7 +32,7 @@ jobs:
         if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
           cmake .. -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
         else
-          cmake ..
+          cmake .. -DBLANG_ENABLE_LLVM=OFF
         fi
 
     - name: Build
