@@ -81,6 +81,29 @@ private:
 	// Runtime helper declarations
 	llvm::Function *getOrDeclarePuts();
 	llvm::Function *getOrDeclareExit();
+	llvm::Function *getOrDeclarePrintf();
+
+	// BLang runtime library declarations
+	llvm::Function *getOrDeclareRcAlloc();
+	llvm::Function *getOrDeclareRcAllocSync();
+	llvm::Function *getOrDeclareRcRetain();
+	llvm::Function *getOrDeclareRcRelease();
+	llvm::Function *getOrDeclareSyncLock();
+	llvm::Function *getOrDeclareSyncUnlock();
+	llvm::Function *getOrDeclareRuntimeInit();
+	llvm::Function *getOrDeclareSpawn();
+	llvm::Function *getOrDeclareRuntimeShutdown();
+	llvm::Function *getOrDeclareChanCreate();
+	llvm::Function *getOrDeclareChanSend();
+	llvm::Function *getOrDeclareChanRecv();
+	llvm::Function *getOrDeclareChanClose();
+	llvm::Function *getOrDeclareChanDestroy();
+	llvm::Function *getOrDeclareAsyncCall();
+	llvm::Function *getOrDeclareAwait();
+	llvm::Function *getOrDeclareTaskDestroy();
+
+	// ForIn codegen
+	void genForInStatement( ForInStatement *forInStmt );
 
 	// Helper to get the alloca for an expression's address (for GEP)
 	llvm::AllocaInst *getExpressionAddress( Expression *expr );

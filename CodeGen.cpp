@@ -386,6 +386,10 @@ void CodeGen::genStatement( Statement *stmt )
 	{
 		genForStatement( forStmt );
 	}
+	else if ( auto *forIn = dynamic_cast<ForInStatement*>( stmt ) )
+	{
+		genForInStatement( forIn );
+	}
 	else if ( auto *spawn = dynamic_cast<SpawnStatement*>( stmt ) )
 	{
 		genSpawnStatement( spawn );
@@ -414,31 +418,77 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 	{
 		VariableDefinition *varDef = data.mVaribale;
 		llvm::Type *llvmType = getLLVMType( varDef->getVariableType() );
+		OwnershipQualifier ownership = varDef->getOwnership();
 
-		llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
-			llvmType, nullptr, varDef->getName() );
-		mVariableMap[varDef] = alloca;
-
-		// If there's an initializer, generate it and store
-		if ( data.mInitialValue != nullptr )
+		if ( ownership == OwnershipQualifier::kOwnership_Shared ||
+			 ownership == OwnershipQualifier::kOwnership_Sync )
 		{
-			llvm::Value *initVal = genExpression( data.mInitialValue );
-			if ( initVal != nullptr )
+			// Heap-allocate via runtime ARC.
+			// The alloca stores a pointer (opaque ptr) to the heap data.
+			llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+				ptrType, nullptr, varDef->getName() );
+			mVariableMap[varDef] = alloca;
+
+			// Determine data size
+			llvm::DataLayout dl( mModule.get() );
+			uint64_t dataSize = dl.getTypeAllocSize( llvmType );
+			llvm::Value *sizeVal = llvm::ConstantInt::get(
+				llvm::Type::getInt64Ty( *mContext ), dataSize );
+
+			// Call __blang_rc_alloc or __blang_rc_alloc_sync
+			llvm::Function *allocFn = ( ownership == OwnershipQualifier::kOwnership_Sync )
+				? getOrDeclareRcAllocSync() : getOrDeclareRcAlloc();
+			llvm::Value *heapPtr = mBuilder->CreateCall( allocFn, { sizeVal }, "rc.ptr" );
+			mBuilder->CreateStore( heapPtr, alloca );
+
+			// If there's an initializer, generate and store through the heap pointer
+			if ( data.mInitialValue != nullptr )
 			{
-				// Cast if types don't match (e.g., int literal for struct return type)
-				if ( initVal->getType() != llvmType )
-				{
-					if ( llvmType->isIntegerTy() && initVal->getType()->isIntegerTy() )
-						initVal = mBuilder->CreateIntCast( initVal, llvmType, true, "icast" );
-					else if ( llvmType->isFloatTy() && initVal->getType()->isDoubleTy() )
-						initVal = mBuilder->CreateFPTrunc( initVal, llvmType, "fptrunc" );
-					else if ( llvmType->isDoubleTy() && initVal->getType()->isFloatTy() )
-						initVal = mBuilder->CreateFPExt( initVal, llvmType, "fpext" );
-					else
-						initVal = nullptr; // type mismatch we can't resolve, skip store
-				}
+				llvm::Value *initVal = genExpression( data.mInitialValue );
 				if ( initVal != nullptr )
-					mBuilder->CreateStore( initVal, alloca );
+				{
+					if ( initVal->getType() != llvmType )
+					{
+						if ( llvmType->isIntegerTy() && initVal->getType()->isIntegerTy() )
+							initVal = mBuilder->CreateIntCast( initVal, llvmType, true, "icast" );
+					}
+					if ( initVal != nullptr )
+					{
+						// Store through the heap pointer
+						mBuilder->CreateStore( initVal, heapPtr );
+					}
+				}
+			}
+		}
+		else
+		{
+			// Value type or own: stack allocation (same as before)
+			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+				llvmType, nullptr, varDef->getName() );
+			mVariableMap[varDef] = alloca;
+
+			// If there's an initializer, generate it and store
+			if ( data.mInitialValue != nullptr )
+			{
+				llvm::Value *initVal = genExpression( data.mInitialValue );
+				if ( initVal != nullptr )
+				{
+					// Cast if types don't match
+					if ( initVal->getType() != llvmType )
+					{
+						if ( llvmType->isIntegerTy() && initVal->getType()->isIntegerTy() )
+							initVal = mBuilder->CreateIntCast( initVal, llvmType, true, "icast" );
+						else if ( llvmType->isFloatTy() && initVal->getType()->isDoubleTy() )
+							initVal = mBuilder->CreateFPTrunc( initVal, llvmType, "fptrunc" );
+						else if ( llvmType->isDoubleTy() && initVal->getType()->isFloatTy() )
+							initVal = mBuilder->CreateFPExt( initVal, llvmType, "fpext" );
+						else
+							initVal = nullptr;
+					}
+					if ( initVal != nullptr )
+						mBuilder->CreateStore( initVal, alloca );
+				}
 			}
 		}
 	}
@@ -718,6 +768,19 @@ llvm::Value *CodeGen::genVariableExpression( VariableExpression *var )
 	}
 
 	llvm::AllocaInst *alloca = it->second;
+	OwnershipQualifier ownership = varDef->getOwnership();
+
+	if ( ownership == OwnershipQualifier::kOwnership_Shared ||
+		 ownership == OwnershipQualifier::kOwnership_Sync )
+	{
+		// Shared/sync: alloca holds a pointer to heap data.
+		// Load the pointer, then load the actual value through it.
+		llvm::Value *heapPtr = mBuilder->CreateLoad(
+			llvm::PointerType::get( *mContext, 0 ), alloca, varDef->getName() + ".ptr" );
+		llvm::Type *dataType = getLLVMType( varDef->getVariableType() );
+		return mBuilder->CreateLoad( dataType, heapPtr, varDef->getName() );
+	}
+
 	return mBuilder->CreateLoad( alloca->getAllocatedType(), alloca, varDef->getName() );
 }
 
@@ -833,6 +896,42 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 		return nullptr;
 
 	const string &op = assign->mOperation;
+	OwnershipQualifier ownership = varDef->getOwnership();
+
+	// For shared/sync: store through the heap pointer
+	if ( ownership == OwnershipQualifier::kOwnership_Shared ||
+		 ownership == OwnershipQualifier::kOwnership_Sync )
+	{
+		llvm::Value *heapPtr = mBuilder->CreateLoad(
+			llvm::PointerType::get( *mContext, 0 ), alloca, varDef->getName() + ".ptr" );
+
+		if ( op == "=" )
+		{
+			if ( ownership == OwnershipQualifier::kOwnership_Sync )
+				mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
+			mBuilder->CreateStore( rhs, heapPtr );
+			if ( ownership == OwnershipQualifier::kOwnership_Sync )
+				mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
+			return rhs;
+		}
+
+		// Compound assignment for shared/sync
+		llvm::Type *dataType = getLLVMType( varDef->getVariableType() );
+		if ( ownership == OwnershipQualifier::kOwnership_Sync )
+			mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
+		llvm::Value *current = mBuilder->CreateLoad( dataType, heapPtr, "cur" );
+		llvm::Value *result = nullptr;
+		if ( op == "+=" )      result = mBuilder->CreateAdd( current, rhs, "addassign" );
+		else if ( op == "-=" ) result = mBuilder->CreateSub( current, rhs, "subassign" );
+		else if ( op == "*=" ) result = mBuilder->CreateMul( current, rhs, "mulassign" );
+		else if ( op == "/=" ) result = mBuilder->CreateSDiv( current, rhs, "divassign" );
+		else result = current;
+		if ( result != nullptr )
+			mBuilder->CreateStore( result, heapPtr );
+		if ( ownership == OwnershipQualifier::kOwnership_Sync )
+			mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
+		return result;
+	}
 
 	if ( op == "=" )
 	{
@@ -1333,6 +1432,270 @@ llvm::Function *CodeGen::getOrDeclareExit()
 		ft, llvm::Function::ExternalLinkage, "exit", mModule.get() );
 }
 
+llvm::Function *CodeGen::getOrDeclarePrintf()
+{
+	llvm::Function *f = mModule->getFunction( "printf" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		true /* variadic */ );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "printf", mModule.get() );
+}
+
+// ---- BLang runtime library declarations ----
+
+llvm::Function *CodeGen::getOrDeclareRcAlloc()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_rc_alloc" );
+	if ( f != nullptr )
+		return f;
+
+	// void *__blang_rc_alloc( size_t data_size )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_rc_alloc", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareRcAllocSync()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_rc_alloc_sync" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_rc_alloc_sync", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareRcRetain()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_rc_retain" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_rc_retain", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareRcRelease()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_rc_release" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_rc_release", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareSyncLock()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_sync_lock" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_sync_lock", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareSyncUnlock()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_sync_unlock" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_sync_unlock", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareRuntimeInit()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_runtime_init" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_runtime_init( int num_threads )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::Type::getInt32Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_runtime_init", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareSpawn()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_spawn" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_spawn( void(*)() fn )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_spawn", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareRuntimeShutdown()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_runtime_shutdown" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), {}, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_runtime_shutdown", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareChanCreate()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_chan_create" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangChan *__blang_chan_create( size_t elem_size, size_t capacity )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ),
+		  llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_chan_create", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareChanSend()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_chan_send" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_chan_send( BlangChan *ch, const void *data )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_chan_send", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareChanRecv()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_chan_recv" );
+	if ( f != nullptr )
+		return f;
+
+	// int __blang_chan_recv( BlangChan *ch, void *data_out )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_chan_recv", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareChanClose()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_chan_close" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_chan_close", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareChanDestroy()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_chan_destroy" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_chan_destroy", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareAsyncCall()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_async_call" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangTask *__blang_async_call( void*(*fn)(void*), void *arg )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_async_call", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareAwait()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_await" );
+	if ( f != nullptr )
+		return f;
+
+	// void *__blang_await( BlangTask *task )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_await", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareTaskDestroy()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_task_destroy" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_task_destroy", mModule.get() );
+}
+
 // ---- Phase 2: Assert statement codegen ----
 
 void CodeGen::genAssertStatement( AssertStatement *assertStmt )
@@ -1417,18 +1780,27 @@ void CodeGen::genContractCheck( Expression *condition, const std::string &messag
 
 void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 {
+	if ( spawn->mBody == nullptr )
+		return;
+
 	// Generate the spawn body inline (sequential execution).
-	// Full implementation would create a green thread via runtime.
-	if ( spawn->mBody != nullptr )
-		genBlock( spawn->mBody );
+	// Spawn blocks commonly capture variables from enclosing scope which
+	// prevents trivial extraction into a separate thread function without
+	// closure support. The runtime thread pool (__blang_spawn) is available
+	// for spawn blocks that don't capture variables; closure-based extraction
+	// will be implemented as a future enhancement.
+	genBlock( spawn->mBody );
 }
 
 // ---- Phase 2: Event handler codegen ----
 
 void CodeGen::genEventHandler( EventHandler *handler )
 {
-	// Generate event expression for side effects, then execute body inline.
-	// Full implementation would register with an event loop runtime.
+	// Event handlers evaluate the event expression, then execute the body.
+	// The event expression is generated for its side effects (e.g., registering
+	// a timer). The body is wrapped in a callback-style function.
+	// For now, execute inline since the event loop runtime integration requires
+	// more infrastructure (event registration API).
 	if ( handler->mEventExpression != nullptr )
 		genExpression( handler->mEventExpression );
 	if ( handler->mBody != nullptr )
@@ -1439,9 +1811,109 @@ void CodeGen::genEventHandler( EventHandler *handler )
 
 llvm::Value *CodeGen::genAwaitExpression( AwaitExpression *awaitExpr )
 {
-	// Generate the operand directly (synchronous evaluation).
-	// Full implementation would suspend via coroutines and resume on completion.
+	// Generate the operand — if it's a call to an async function, wrap it
+	// in __blang_async_call + __blang_await. For now, evaluate synchronously
+	// since async function codegen produces regular functions.
+	// When async functions use the task-based runtime, this will call
+	// __blang_await on the returned task handle.
 	return genExpression( awaitExpr->mOperand );
+}
+
+// ---- Phase 2: ForIn statement codegen ----
+
+void CodeGen::genForInStatement( ForInStatement *forInStmt )
+{
+	// Check for infinite loop: for { ... }
+	if ( forInStmt->mIsInfinite )
+	{
+		llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+		llvm::BasicBlock *bodyBB = llvm::BasicBlock::Create( *mContext, "forinf.body", func );
+		llvm::BasicBlock *afterBB = llvm::BasicBlock::Create( *mContext, "forinf.end", func );
+
+		mBuilder->CreateBr( bodyBB );
+		mBuilder->SetInsertPoint( bodyBB );
+
+		if ( forInStmt->mBody != nullptr )
+			genStatement( forInStmt->mBody );
+
+		if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+			mBuilder->CreateBr( bodyBB );
+
+		mBuilder->SetInsertPoint( afterBB );
+		return;
+	}
+
+	// Range-based for-in: for x in start..end { ... }
+	if ( forInStmt->mIterableExpression != nullptr )
+	{
+		auto *rangeExpr = dynamic_cast<RangeExpression*>( (Expression*)forInStmt->mIterableExpression );
+		if ( rangeExpr != nullptr )
+		{
+			llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+
+			// Generate range bounds
+			llvm::Value *startVal = genExpression( rangeExpr->mStart );
+			llvm::Value *endVal = genExpression( rangeExpr->mEnd );
+			if ( startVal == nullptr || endVal == nullptr )
+				return;
+
+			// Create the loop variable alloca
+			llvm::Type *iterType = startVal->getType();
+			llvm::AllocaInst *iterAlloca = mBuilder->CreateAlloca(
+				iterType, nullptr, forInStmt->mVariableName );
+			mBuilder->CreateStore( startVal, iterAlloca );
+
+			// Look up the VariableDefinition from the body's scope to register the alloca
+			if ( forInStmt->mBody != nullptr )
+			{
+				Block *bodyBlock = dynamic_cast<Block*>( (Statement*)forInStmt->mBody );
+				if ( bodyBlock != nullptr && bodyBlock->mScope != nullptr )
+				{
+					Symbol *iterSym = bodyBlock->mScope->findSymbol( forInStmt->mVariableName );
+					if ( auto *iterVar = dynamic_cast<VariableDefinition*>( iterSym ) )
+						mVariableMap[iterVar] = iterAlloca;
+				}
+			}
+
+			llvm::BasicBlock *condBB = llvm::BasicBlock::Create( *mContext, "forin.cond", func );
+			llvm::BasicBlock *bodyBB = llvm::BasicBlock::Create( *mContext, "forin.body", func );
+			llvm::BasicBlock *iterBB = llvm::BasicBlock::Create( *mContext, "forin.iter", func );
+			llvm::BasicBlock *afterBB = llvm::BasicBlock::Create( *mContext, "forin.end", func );
+
+			mBuilder->CreateBr( condBB );
+
+			// Condition: i < end
+			mBuilder->SetInsertPoint( condBB );
+			llvm::Value *curVal = mBuilder->CreateLoad( iterType, iterAlloca, "cur" );
+			llvm::Value *cond = mBuilder->CreateICmpSLT( curVal, endVal, "forin.cmp" );
+			mBuilder->CreateCondBr( cond, bodyBB, afterBB );
+
+			// Body
+			mBuilder->SetInsertPoint( bodyBB );
+			if ( forInStmt->mBody != nullptr )
+				genStatement( forInStmt->mBody );
+			if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+				mBuilder->CreateBr( iterBB );
+
+			// Iteration: i = i + 1
+			mBuilder->SetInsertPoint( iterBB );
+			llvm::Value *nextVal = mBuilder->CreateAdd(
+				mBuilder->CreateLoad( iterType, iterAlloca, "i" ),
+				llvm::ConstantInt::get( iterType, 1 ), "inc" );
+			mBuilder->CreateStore( nextVal, iterAlloca );
+			mBuilder->CreateBr( condBB );
+
+			// After
+			mBuilder->SetInsertPoint( afterBB );
+			return;
+		}
+	}
+
+	// Fallback: generate collection expression and execute body once
+	if ( forInStmt->mIterableExpression != nullptr )
+		genExpression( forInStmt->mIterableExpression );
+	if ( forInStmt->mBody != nullptr )
+		genStatement( forInStmt->mBody );
 }
 
 // ---- Phase 2: Test block codegen ----

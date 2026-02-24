@@ -9,6 +9,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QCC="${SCRIPT_DIR}/build/qcc"
+RUNTIME_LIB="${SCRIPT_DIR}/build/libblang_runtime.a"
 TEST_FILE="${1:-${SCRIPT_DIR}/test_files/codegen_simple.b}"
 BASE_NAME="$(basename "${TEST_FILE}" .b)"
 IR_FILE="/tmp/${BASE_NAME}.ll"
@@ -46,17 +47,24 @@ echo "--- Step 2: Compiling IR to object file ---"
 llc-18 -filetype=obj -relocation-model=pic "${IR_FILE}" -o "${OBJ_FILE}" 2>&1 || llc -filetype=obj -relocation-model=pic "${IR_FILE}" -o "${OBJ_FILE}" 2>&1
 echo "OK: ${OBJ_FILE}"
 
-# Step 3: Link to native binary
+# Step 3: Link to native binary (with runtime library if available)
 echo ""
 echo "--- Step 3: Linking to native binary ---"
-cc "${OBJ_FILE}" -o "${BIN_FILE}" 2>&1
-echo "OK: ${BIN_FILE}"
+if [ -f "${RUNTIME_LIB}" ]; then
+	cc "${OBJ_FILE}" "${RUNTIME_LIB}" -lpthread -o "${BIN_FILE}" 2>&1
+	echo "OK: ${BIN_FILE} (linked with runtime)"
+else
+	cc "${OBJ_FILE}" -o "${BIN_FILE}" 2>&1
+	echo "OK: ${BIN_FILE}"
+fi
 
 # Step 4: Run
 echo ""
 echo "--- Step 4: Running ---"
+set +e
 "${BIN_FILE}"
 EXIT_CODE=$?
+set -e
 echo "Exit code: ${EXIT_CODE}"
 
 # Cleanup
