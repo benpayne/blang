@@ -20,7 +20,9 @@ namespace QLang
 	class Type;
 	class Block;
 	class Statement;
+	class Expression;
 	class CodeGen;
+	class TestBlock;
 
 	class Statement : virtual public RefCount
 	{
@@ -32,7 +34,7 @@ namespace QLang
 		Statement() {}
 		friend class CodeGen;
 	};
-		
+
 	class Type : virtual public RefCount
 	{
 	public:
@@ -57,22 +59,22 @@ namespace QLang
 	{
 	public:
 		Symbol( const std::string &name ) : mName( name ) {}
-		
+
 		static Symbol *Parse( Lexer &l, Scope *s );
-		
+
 		const std::string &getName() const { return mName; }
-		
+
 		enum SymbolType {
 			TypeVariable,
 			TypeFunction
 		};
-		
+
 		virtual SymbolType getSymbolType() = 0;
-		
+
 	private:
 		std::string mName;
 	};
-		
+
 	class Scope : virtual public RefCount
 	{
 	public:
@@ -86,10 +88,10 @@ namespace QLang
 			kScope_IfElse,
 			kScope_Loop,
 		};
-		
+
 		Scope( ScopeType type = kScope_Anonymous ) {}
 		Scope( ScopeType type, const std::string &name ) {}
-		
+
 		bool addSymbol( Symbol *sym )
 		{
 			if ( mSymbolList.find( sym->getName() ) != mSymbolList.end() )
@@ -97,12 +99,12 @@ namespace QLang
 			mSymbolList[ sym->getName() ] = sym;
 			return true;
 		}
-		
+
 		void addType( Type *type )
 		{
 			mTypeList[ type->getName() ] = type;
 		}
-		
+
 		Symbol *findSymbol( const std::string &str )
 		{
 			SymbolListType::iterator i = mSymbolList.find( str );
@@ -116,7 +118,7 @@ namespace QLang
 			else
 				return (*i).second;
 		}
-		
+
 		Type *findType( const std::string &str )
 		{
 			TypeListType::iterator i = mTypeList.find( str );
@@ -130,22 +132,22 @@ namespace QLang
 			else
 				return (*i).second;
 		}
-		
+
 		void setParent( Scope *parent )
 		{
 			mParent = parent;
 		}
-		
+
 	private:
 		typedef std::map<std::string, SmartPtr<Symbol> > SymbolListType;
 		typedef std::map<std::string, SmartPtr<Type> > TypeListType;
-		
+
 		ScopeType	mType;
-		SmartPtr<Scope> mParent;		
+		SmartPtr<Scope> mParent;
 		SymbolListType mSymbolList;
 		TypeListType mTypeList;
 	};
-	
+
 	struct GenericParam
 	{
 		std::string mName;
@@ -180,9 +182,10 @@ namespace QLang
 		std::vector<SmartPtr<ImportStatement>> mImports;
 		std::vector<SmartPtr<StructDefinition>> mStructList;
 		std::vector<SmartPtr<EnumDefinition>> mEnumList;
+		std::vector<SmartPtr<TestBlock>> mTestBlocks;
 		SmartPtr<Scope> mScope;
 	};
-	
+
 	class FunctionDefinition : public Symbol
 	{
 	public:
@@ -201,6 +204,9 @@ namespace QLang
 		bool isVariadic() const { return mIsVariadic; }
 		bool isGeneric() const { return !mGenericParams.empty(); }
 		bool isPublic() const { return mIsPublic; }
+		bool isAsync() const { return mIsAsync; }
+		bool hasRequires() const { return !mRequiresClauses.empty(); }
+		bool hasEnsures() const { return !mEnsuresClauses.empty(); }
 
 	private:
 		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
@@ -212,9 +218,19 @@ namespace QLang
 		bool mIsExtern = false;
 		bool mIsVariadic = false;
 		bool mIsPublic = false;
+		bool mIsAsync = false;
 		std::vector<GenericParam> mGenericParams;
+		std::vector<SmartPtr<Expression>> mRequiresClauses;
+		std::vector<SmartPtr<Expression>> mEnsuresClauses;
 
 		friend class CodeGen;
+	};
+
+	enum class OwnershipQualifier {
+		kOwnership_Value,    // default: stack-allocated value type
+		kOwnership_Own,      // own: single owner, move semantics
+		kOwnership_Shared,   // shared: reference-counted
+		kOwnership_Sync,     // sync: synchronized, auto-locked
 	};
 
 	class VariableDefinition : public Symbol
@@ -233,9 +249,16 @@ namespace QLang
 		bool isConst() const { return mIsConst; }
 		void setConst( bool isConst ) { mIsConst = isConst; }
 
+		OwnershipQualifier getOwnership() const { return mOwnership; }
+		void setOwnership( OwnershipQualifier ownership ) { mOwnership = ownership; }
+		bool isMoved() const { return mIsMoved; }
+		void setMoved( bool moved ) { mIsMoved = moved; }
+
 	private:
 		SmartPtr<Type>	mType;
 		bool mIsConst = false;
+		OwnershipQualifier mOwnership = OwnershipQualifier::kOwnership_Value;
+		bool mIsMoved = false;
 	};
 
 	class StructDefinition : public Symbol
@@ -304,6 +327,21 @@ namespace QLang
 
 		std::vector<Variant> mVariants;
 		std::vector<GenericParam> mGenericParams;
+		friend class CodeGen;
+	};
+
+	class TestBlock : virtual public RefCount
+	{
+	public:
+		TestBlock( const std::string &name ) : mName( name ) {}
+
+		static TestBlock *Parse( Lexer &l, Scope *s );
+
+		const std::string &getName() const { return mName; }
+
+	private:
+		std::string mName;
+		SmartPtr<Block> mBody;
 		friend class CodeGen;
 	};
 

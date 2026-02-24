@@ -77,6 +77,16 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 	Expression *result = nullptr;
 	int sym = l.peekSymbol();
 
+	// await expression: await EXPR
+	if ( sym == Lexer::KEYWORD_AWAIT )
+	{
+		l.getSymbol(); // consume 'await'
+		Expression *operand = ParsePrimary( l, scope );
+		if ( operand == nullptr )
+			COMPILE_ERROR( l, "Expected expression after 'await'" );
+		return new AwaitExpression( operand );
+	}
+
 	// Unary prefix operators: -, !, ~
 	if ( sym == '-' || sym == '!' || sym == '~' )
 	{

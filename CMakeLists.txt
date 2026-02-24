@@ -59,7 +59,11 @@ set(QCC_SOURCES
 	QStatement.cpp
 	QStructDefinition.cpp
 	QType.cpp
-	QVariableDefinition.cpp)
+	QVariableDefinition.cpp
+	QSpawnStatement.cpp
+	QEventHandler.cpp
+	QTestBlock.cpp
+	QAssertStatement.cpp)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
@@ -74,6 +78,18 @@ if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
 	target_link_libraries(qcc ${llvm_libs})
 endif()
+
+# BLang runtime library (ARC, thread pool, channels, async)
+add_library(blang_runtime STATIC runtime/blang_runtime.c)
+set_target_properties(blang_runtime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+find_package(Threads REQUIRED)
+target_link_libraries(blang_runtime Threads::Threads)
+
+# Also build a standalone .o for linking into BLang programs via bcc
+add_library(blang_runtime_obj OBJECT runtime/blang_runtime.c)
+set_target_properties(blang_runtime_obj PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
+target_include_directories(blang_runtime_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 
 # bcc - BLang compiler driver (orchestrates qcc -> llc -> cc pipeline)
 add_executable(bcc bcc.cpp)

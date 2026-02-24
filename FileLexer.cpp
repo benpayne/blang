@@ -318,7 +318,7 @@ int Lexer::getSymbolInternal()
 		mMatchString = mSymbolList[ mCurrentPos ].symbolText;
 	}
 
-	if ( sym < Lexer::NUM_SYMBOLS )
+	if ( sym <= Lexer::QUESTION_MARK || sym >= 256 )
 		std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
 	else
 		std::cout << "Symbol " << (char)sym << std::endl;
@@ -338,6 +338,14 @@ int Lexer::getSymbolFromFile()
 		// check for keywords
 		switch ( mReader->peekChar() )
 		{
+			case 'a':
+				if ( matchKeyword( "assert" ) )
+					return KEYWORD_ASSERT;
+				else if ( matchKeyword( "async" ) )
+					return KEYWORD_ASYNC;
+				else if ( matchKeyword( "await" ) )
+					return KEYWORD_AWAIT;
+				break;
 			case 'b':
 				if ( matchKeyword( "bool" ) )
 					return BOOL;
@@ -345,24 +353,28 @@ int Lexer::getSymbolFromFile()
 					return KEYWORD_BREAK;
 				break;
 			case 'c':
-				if ( matchKeyword( "char" ) )
+				if ( matchKeyword( "continue" ) )
+					return KEYWORD_CONTINUE;
+				else if ( matchKeyword( "char" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "const" ) )
 					return TYPE_MODIFIER;
-				else if ( matchKeyword( "continue" ) )
-					return KEYWORD_CONTINUE;
+				else if ( matchKeyword( "chan" ) )
+					return KEYWORD_CHAN;
 				break;
 			case 'd':
 				if ( matchKeyword( "double" ) )
 					return BUILTIN_TYPE;
 				break;
 			case 'e':
-				if ( matchKeyword( "else" ) )
-					return KEYWORD_ELSE;
+				if ( matchKeyword( "extern" ) )
+					return TYPE_MODIFIER;
+				else if ( matchKeyword( "ensures" ) )
+					return KEYWORD_ENSURES;
 				else if ( matchKeyword( "enum" ) )
 					return KEYWORD_ENUM;
-				else if ( matchKeyword( "extern" ) )
-					return TYPE_MODIFIER;
+				else if ( matchKeyword( "else" ) )
+					return KEYWORD_ELSE;
 				break;
 			case 'f':
 				if ( matchKeyword( "float" ) )
@@ -392,6 +404,12 @@ int Lexer::getSymbolFromFile()
 				if ( matchKeyword( "match" ) )
 					return KEYWORD_MATCH;
 				break;
+			case 'o':
+				if ( matchKeyword( "own" ) )
+					return KEYWORD_OWN;
+				else if ( matchKeyword( "on" ) )
+					return KEYWORD_ON;
+				break;
 			case 'p':
 				if ( matchKeyword( "pub" ) )
 					return KEYWORD_PUB;
@@ -401,20 +419,32 @@ int Lexer::getSymbolFromFile()
 			case 'r':
 				if ( matchKeyword( "return" ) )
 					return KEYWORD_RETURN;
+				else if ( matchKeyword( "requires" ) )
+					return KEYWORD_REQUIRES;
 				break;
 			case 's':
 				if ( matchKeyword( "string" ) )
 					return BUILTIN_TYPE;
+				else if ( matchKeyword( "struct" ) )
+					return KEYWORD_STRUCT;
 				else if ( matchKeyword( "static" ) )
 					return TYPE_MODIFIER;
 				else if ( matchKeyword( "signed" ) )
 					return TYPE_MODIFIER;
+				else if ( matchKeyword( "shared" ) )
+					return KEYWORD_SHARED;
+				else if ( matchKeyword( "spawn" ) )
+					return KEYWORD_SPAWN;
 				else if ( matchKeyword( "short" ) )
 					return BUILTIN_TYPE;
-				else if ( matchKeyword( "struct" ) )
-					return KEYWORD_STRUCT;
+				else if ( matchKeyword( "sync" ) )
+					return KEYWORD_SYNC;
 				else if ( matchKeyword( "self" ) )
 					return KEYWORD_SELF;
+				break;
+			case 't':
+				if ( matchKeyword( "test" ) )
+					return KEYWORD_TEST;
 				break;
 			case 'u':
 				if ( matchKeyword( "unsigned" ) )

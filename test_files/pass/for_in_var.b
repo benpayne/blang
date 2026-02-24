@@ -1,6 +1,6 @@
 // For-in loop iterating over a variable
 
-fn test(int n) {
+fn run_test(int n) {
 	var items = [1, 2, 3];
 	for item in items {
 		int x = item;

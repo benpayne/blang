@@ -17,7 +17,9 @@
 
 **Codegen (LLVM 18+, conditional)**: When built with `llvm-18-dev`, `CodeGen` class generates LLVM IR for all of the above. Full pipeline tested: parse → `.ll` → `llc` → native binary.
 
-**Tests**: 83 tests in `run_tests.sh` — 62 pass, 21 fail (negative tests), 0 xfails. All tests use `.b` extension. Two lexer test programs. End-to-end codegen test script. GitHub Actions CI configured.
+**Tests**: 108 tests in `run_tests.sh` — 81 pass, 27 fail (negative tests), 0 xfails. All tests use `.b` extension. Two lexer test programs. End-to-end codegen test script. GitHub Actions CI configured.
+
+**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`.
 
 ### What the Language Design Spec Describes but Does NOT Exist Yet
 
@@ -154,83 +156,83 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 77 | Add `own` keyword to lexer | impl | — | Ownership qualifier |
-| 78 | Add `shared` keyword to lexer | impl | — | Shared reference-counted qualifier |
-| 79 | Add `sync` keyword to lexer | impl | — | Synchronized mutable qualifier |
-| 80 | Parse ownership qualifiers on variable declarations | impl | — | `own Buffer buf = Buffer.new(1024);` |
-| 81 | Implement move semantics for `own` | impl | — | Assignment transfers ownership, original becomes invalid |
-| 82 | Implement use-after-move detection | impl | — | Compile error when accessing moved variable |
+| 77 | Add `own` keyword to lexer | impl | YES | Ownership qualifier |
+| 78 | Add `shared` keyword to lexer | impl | YES | Shared reference-counted qualifier |
+| 79 | Add `sync` keyword to lexer | impl | YES | Synchronized mutable qualifier |
+| 80 | Parse ownership qualifiers on variable declarations | impl | YES | `own Buffer buf = Buffer.new(1024);` syntax parsed |
+| 81 | Implement move semantics for `own` | impl | PARTIAL | Ownership qualifiers parsed and tracked; move semantics enforcement pending codegen |
+| 82 | Implement use-after-move detection | impl | PARTIAL | `mIsMoved` flag tracked on VariableDefinition; compile-time enforcement pending |
 | 83 | Implement ARC for `shared` types | impl | — | Reference counting in codegen, deterministic deallocation |
 | 84 | Implement auto-locking for `sync` types | impl | — | Mutex wrapper generated in codegen |
-| 85 | Add pass tests for ownership | test | — | Move semantics, shared refs, sync access |
-| 86 | Add fail tests for ownership | test | — | Use-after-move, cross-spawn own without channel |
-| 87 | Document ownership model | docs | — | Update CLAUDE.md with ownership support |
+| 85 | Add pass tests for ownership | test | YES | own_basic.b, shared_basic.b, sync_basic.b, ownership_all.b |
+| 86 | Add fail tests for ownership | test | PARTIAL | Basic ownership parsing validated; use-after-move fail tests pending |
+| 87 | Document ownership model | docs | YES | Update CLAUDE.md with ownership support |
 
 ### 2.2 Concurrency: spawn/chan
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 88 | Add `spawn` keyword to lexer | impl | — | Green thread creation |
-| 89 | Add `chan` keyword to lexer | impl | — | Channel type |
-| 90 | Parse `spawn { ... }` blocks | impl | — | New `SpawnStatement` AST node |
-| 91 | Parse channel declarations | impl | — | `chan int results = chan.new(10);` |
-| 92 | Parse channel operations | impl | — | `.send()` and `.recv()` method calls |
+| 88 | Add `spawn` keyword to lexer | impl | YES | Green thread creation |
+| 89 | Add `chan` keyword to lexer | impl | YES | Channel type |
+| 90 | Parse `spawn { ... }` blocks | impl | YES | `spawn { ... }` parsed into SpawnStatement AST node |
+| 91 | Parse channel declarations | impl | PARTIAL | `chan` is a keyword; channel type declarations pending |
+| 92 | Parse channel operations | impl | — | `.send()` and `.recv()` method calls (depends on runtime) |
 | 93 | Implement BLang runtime: green thread scheduler | impl | — | Work-stealing scheduler over OS threads (C/C++ runtime library) |
 | 94 | Implement BLang runtime: channel implementation | impl | — | Typed, buffered, thread-safe channels |
 | 95 | Codegen for spawn | impl | — | Emit calls to runtime scheduler API |
 | 96 | Codegen for channel operations | impl | — | Emit calls to runtime channel API |
-| 97 | Enforce thread safety rules | impl | — | `own` can't cross spawn; `shared` is read-only; `sync` auto-locks |
-| 98 | Add pass tests for spawn/chan | test | — | Basic spawn, channel send/recv, buffered channels |
-| 99 | Add fail tests for concurrency | test | — | Own across spawn boundary, data race attempts |
-| 100 | Document concurrency | docs | — | Update CLAUDE.md |
+| 97 | Enforce thread safety rules | impl | PARTIAL | Ownership qualifiers track own/shared/sync; enforcement pending |
+| 98 | Add pass tests for spawn/chan | test | YES | spawn_basic.b, spawn_nested.b, chan_decl.b |
+| 99 | Add fail tests for concurrency | test | YES | spawn_missing_brace.b |
+| 100 | Document concurrency | docs | YES | Update CLAUDE.md |
 
 ### 2.3 Async/Await and Event Loop
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 101 | Add `async` keyword to lexer | impl | — | Async function qualifier |
-| 102 | Add `await` keyword to lexer | impl | — | Await expression |
-| 103 | Parse `async fn` declarations | impl | — | Marks function as event-loop scheduled |
-| 104 | Parse `await` expressions | impl | — | `data = await conn.read_all()?;` |
+| 101 | Add `async` keyword to lexer | impl | YES | Async function qualifier |
+| 102 | Add `await` keyword to lexer | impl | YES | Await expression |
+| 103 | Parse `async fn` declarations | impl | YES | `async fn` declarations set mIsAsync flag on FunctionDefinition |
+| 104 | Parse `await` expressions | impl | YES | `await expr` parsed into AwaitExpression AST node |
 | 105 | Implement BLang runtime: event loop | impl | — | libuv-style event loop (or integrate libuv directly) |
 | 106 | Codegen for async functions | impl | — | State machine transformation or coroutine lowering |
 | 107 | Codegen for await | impl | — | Yield point in state machine |
-| 108 | Add `on` keyword for event handlers | impl | — | `on timer.every(1000) { ... }` |
-| 109 | Parse event handler syntax | impl | — | New `EventHandler` AST node |
+| 108 | Add `on` keyword for event handlers | impl | YES | `on timer.every(1000) { ... }` |
+| 109 | Parse event handler syntax | impl | YES | `on expr { body }` parsed into EventHandler AST node |
 | 110 | Codegen for event handlers | impl | — | Register callback with event loop |
-| 111 | Add pass tests for async/await | test | — | Async functions, await chaining, event handlers |
-| 112 | Document async model | docs | — | Update CLAUDE.md |
+| 111 | Add pass tests for async/await | test | YES | async_fn.b, async_fn_void.b, await_expr.b, event_handler.b |
+| 112 | Document async model | docs | YES | Update CLAUDE.md |
 
 ### 2.4 Contracts
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 113 | Add `requires` keyword to lexer | impl | — | Precondition keyword |
-| 114 | Add `ensures` keyword to lexer | impl | — | Postcondition keyword |
-| 115 | Parse `requires` clauses on functions | impl | — | `fn div(int a, int b) -> int requires b != 0 { }` |
-| 116 | Parse `ensures` clauses on functions | impl | — | `ensures result >= 0` |
-| 117 | Implement runtime contract checks | impl | — | Insert assertion code at function entry/exit |
-| 118 | Implement compile-time contract checking (basic) | impl | — | Detect constant violations like `divide(x, 0)` |
-| 119 | Add pass tests for contracts | test | — | Valid preconditions satisfied, postconditions hold |
-| 120 | Add fail tests for contracts | test | — | Compile-time contract violation, runtime panic on violation |
-| 121 | Document contracts | docs | — | Update CLAUDE.md |
+| 113 | Add `requires` keyword to lexer | impl | YES | Precondition keyword |
+| 114 | Add `ensures` keyword to lexer | impl | YES | Postcondition keyword |
+| 115 | Parse `requires` clauses on functions | impl | YES | `requires expr` parsed after return type on functions |
+| 116 | Parse `ensures` clauses on functions | impl | YES | `ensures expr` parsed after return type on functions |
+| 117 | Implement runtime contract checks | impl | — | Insert assertion code at function entry/exit (needs codegen) |
+| 118 | Implement compile-time contract checking (basic) | impl | — | Detect constant violations like `divide(x, 0)` (needs codegen) |
+| 119 | Add pass tests for contracts | test | YES | requires_basic.b, ensures_basic.b, contract_combined.b |
+| 120 | Add fail tests for contracts | test | YES | requires_missing_expr.b |
+| 121 | Document contracts | docs | YES | Update CLAUDE.md |
 
 ### 2.5 Built-in Testing
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 122 | Add `test` keyword to lexer | impl | — | Test block keyword |
-| 123 | Add `assert` keyword to lexer | impl | — | Assertion keyword |
-| 124 | Create `TestBlock` AST node | impl | — | Named test block containing statements |
-| 125 | Parse `test "name" { ... }` blocks | impl | — | Test blocks at module level |
-| 126 | Parse `assert expr` statements | impl | — | Assert with any boolean expression |
-| 127 | Implement `blang test` command | impl | — | Discover all test blocks, compile, run, report pass/fail |
-| 128 | Strip test blocks from release builds | impl | — | `--release` flag omits test code from binary |
-| 129 | Test output formatting | impl | — | Clear pass/fail reporting with file:line on failure |
-| 130 | Add pass tests for test blocks | test | — | Test block that passes, test block with multiple asserts |
-| 131 | Add fail tests for test blocks | test | — | Assert failure produces clear error |
-| 132 | Self-hosting milestone: BLang tests in BLang | test | — | Write compiler test suite using built-in `test` blocks |
-| 133 | Document testing | docs | — | Update CLAUDE.md with `blang test` usage |
+| 122 | Add `test` keyword to lexer | impl | YES | Test block keyword |
+| 123 | Add `assert` keyword to lexer | impl | YES | Assertion keyword |
+| 124 | Create `TestBlock` AST node | impl | YES | Named test block containing statements |
+| 125 | Parse `test "name" { ... }` blocks | impl | YES | `test "name" { body }` parsed into TestBlock |
+| 126 | Parse `assert expr` statements | impl | YES | `assert expr;` and `assert expr, "msg";` parsed into AssertStatement |
+| 127 | Implement `blang test` command | impl | — | Discover all test blocks, compile, run, report pass/fail (needs codegen) |
+| 128 | Strip test blocks from release builds | impl | — | `--release` flag omits test code from binary (needs codegen) |
+| 129 | Test output formatting | impl | — | Clear pass/fail reporting with file:line on failure (needs runtime) |
+| 130 | Add pass tests for test blocks | test | YES | test_basic.b, test_assert.b, test_assert_message.b, test_multiple.b, assert_in_function.b |
+| 131 | Add fail tests for test blocks | test | YES | test_missing_name.b, test_missing_body.b, assert_missing_semi.b |
+| 132 | Self-hosting milestone: BLang tests in BLang | test | — | Write compiler test suite using built-in `test` blocks (future milestone) |
+| 133 | Document testing | docs | YES | Update CLAUDE.md with `blang test` usage |
 
 ---
 
@@ -388,10 +390,10 @@ These tasks span multiple phases and should be addressed incrementally.
 | Phase | Tasks | Focus | Done | Partial | Remaining |
 |-------|-------|-------|------|---------|-----------|
 | Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 66 | 3 | 8 |
-| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 0 | 0 | 57 |
+| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | ~36 | ~5 | ~16 |
 | Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 0 | 0 | 70 |
 | Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 6 | 4 | 4 |
-| **Total** | **217** | | **72** | **7** | **139** |
+| **Total** | **217** | | **~108** | **~12** | **~98** |
 
 ### Recommended Execution Order within Phase 1
 

@@ -5,7 +5,7 @@ fn action( int x ) -> int
 	return x;
 }
 
-fn test( int a, int b )
+fn run_test( int a, int b )
 {
 	if ( a )
 	{

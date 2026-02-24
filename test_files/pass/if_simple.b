@@ -5,7 +5,7 @@ fn check( int x ) -> int
 	return x;
 }
 
-fn test( int a )
+fn run_test( int a )
 {
 	if ( a )
 		check( a );

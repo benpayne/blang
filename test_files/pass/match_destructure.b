@@ -1,6 +1,6 @@
 // Match expression with destructuring patterns
 
-fn test(int status) -> int {
+fn run_test(int status) -> int {
 	match status {
 		ok(value) {
 			return value;

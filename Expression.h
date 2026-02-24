@@ -285,6 +285,47 @@ namespace QLang
 		friend class CodeGen;
 	};
 
+	class SpawnStatement : public Statement
+	{
+	public:
+		static SpawnStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		SpawnStatement() {}
+
+	private:
+		SmartPtr<Block> mBody;
+		friend class CodeGen;
+	};
+
+	class AssertStatement : public Statement
+	{
+	public:
+		static AssertStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		AssertStatement() {}
+
+	private:
+		SmartPtr<Expression> mExpression;
+		std::string mMessage;  // optional assertion message
+		friend class CodeGen;
+	};
+
+	class EventHandler : public Statement
+	{
+	public:
+		static EventHandler *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		EventHandler() {}
+
+	private:
+		SmartPtr<Expression> mEventExpression;  // e.g., timer.every(1000)
+		SmartPtr<Block> mBody;
+		friend class CodeGen;
+	};
+
 	class FieldAccessExpression : public Expression
 	{
 	public:
@@ -413,6 +454,16 @@ namespace QLang
 	{
 	public:
 		TryExpression( Expression *operand ) : mOperand( operand ) {}
+
+	private:
+		SmartPtr<Expression> mOperand;
+		friend class CodeGen;
+	};
+
+	class AwaitExpression : public Expression
+	{
+	public:
+		AwaitExpression( Expression *operand ) : mOperand( operand ) {}
 
 	private:
 		SmartPtr<Expression> mOperand;

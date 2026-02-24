@@ -45,6 +45,10 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── QStructDefinition.cpp      # StructDefinition::Parse (with generic parameters)
 ├── QType.cpp                  # Type::Parse (with generic type arguments)
 ├── QVariableDefinition.cpp    # VariableDeclaration::Parse (with self parameter support)
+├── QSpawnStatement.cpp        # SpawnStatement::Parse (spawn { } blocks)
+├── QEventHandler.cpp          # EventHandler::Parse (on expr { } event handlers)
+├── QTestBlock.cpp             # TestBlock::Parse (test "name" { } blocks)
+├── QAssertStatement.cpp       # AssertStatement::Parse (assert expr; statements)
 ├── QParser.cpp                # Empty (placeholder)
 ├── parser.yy                  # Bison grammar (older approach, not used by qcc)
 ├── parser.h                   # Generated Bison header with token definitions
@@ -79,7 +83,7 @@ The project has **no external dependencies** for the active build targets. The j
 | Target       | Description                        | Key source files                                                                    |
 |-------------|------------------------------------|-------------------------------------------------------------------------------------|
 | `bcc`       | BLang compiler driver (user-facing)| bcc.cpp                                                                            |
-| `qcc`       | Parser + IR generator (internal)   | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QEnumDefinition.cpp, QExpression.cpp, QForInStatement.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, CodeGen.cpp (when LLVM available) |
+| `qcc`       | Parser + IR generator (internal)   | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QEnumDefinition.cpp, QExpression.cpp, QForInStatement.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, QSpawnStatement.cpp, QEventHandler.cpp, QTestBlock.cpp, QAssertStatement.cpp, CodeGen.cpp (when LLVM available) |
 | `lexerTest` | Basic lexer tokenization test      | LexerTest.cpp, FileLexer.cpp, LexerReader.cpp                                     |
 | `lexerTest2`| Advanced lexer test                | LexerTest2.cpp, FileLexer.cpp, LexerReader.cpp                                    |
 
@@ -185,7 +189,8 @@ RefCount
 │   │   ├── ArrayLiteralExpression # Array literal [expr, ...]
 │   │   ├── RangeExpression      # Range expression (start..end)
 │   │   ├── StringInterpolation  # String interpolation "hello \(name)"
-│   │   └── MatchExpression      # Pattern matching (match expr { ... })
+│   │   ├── MatchExpression      # Pattern matching (match expr { ... })
+│   │   └── AwaitExpression      # await expr (async value retrieval)
 │   ├── WhileStatement
 │   ├── ForStatement             # C-style for(init; cond; step)
 │   ├── ForInStatement           # for x in expr { }, for { } (infinite)
@@ -193,6 +198,9 @@ RefCount
 │   ├── ReturnStatement
 │   ├── BreakStatement           # break; in loops
 │   ├── ContinueStatement        # continue; in loops
+│   ├── SpawnStatement           # spawn { ... } green thread block
+│   ├── AssertStatement          # assert expr; with optional message
+│   ├── EventHandler             # on expr { ... } event handler
 │   ├── VariableDeclaration
 │   └── Block                    # { ... } with its own Scope
 ├── Type                         # Type representation with optional generic type params
@@ -203,7 +211,8 @@ RefCount
 │   ├── EnumDefinition           # Enum/sum type with variants and associated types
 │   └── ProtocolDefinition       # Protocol (interface) with required methods, optional generic params
 ├── Scope                        # Symbol table with parent chain
-└── Module                       # Top-level container of FunctionDefinitions
+├── Module                       # Top-level container of FunctionDefinitions
+└── TestBlock                    # test "name" { ... } test block
 ```
 
 ### Parsing pattern
@@ -268,7 +277,7 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 Tests are organized into three categories under `test_files/`:
 
-- **`test_files/pass/`** (62 tests) — Should parse successfully. Includes:
+- **`test_files/pass/`** (81 tests) — Should parse successfully. Includes:
   - Basic function tests: `func_simple.b`, `func_call.b`, `multi_func.b`, `empty_func.b`
   - Control flow: `if_simple.b`, `if_nested.b`, `while_simple.b`, `while_block.b`, `for_simple.b`, `for_block.b`
   - Variables and expressions: `var_decl.b`, `var_infer.b`, `const_decl.b`, `arithmetic_stmt.b`, `assignment_stmt.b`, `binary_expr_return.b`, `comparison_expr.b`
@@ -285,10 +294,15 @@ Tests are organized into three categories under `test_files/`:
   - Result/Option: `result_option.b`, `try_operator.b`
   - Modules: `import_basic.b`, `import_dotted.b`, `pub_function.b`, `pub_struct.b`, `pub_enum.b`, `visibility_basic.b`
   - Other: `break_continue.b`, `extern_unnamed.b`
-- **`test_files/fail/`** (21 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`
+  - Ownership: `own_basic.b`, `shared_basic.b`, `sync_basic.b`, `ownership_all.b`
+  - Concurrency: `spawn_basic.b`, `spawn_nested.b`, `chan_decl.b`
+  - Async/await: `async_fn.b`, `async_fn_void.b`, `await_expr.b`, `event_handler.b`
+  - Contracts: `requires_basic.b`, `ensures_basic.b`, `contract_combined.b`
+  - Testing: `test_basic.b`, `test_assert.b`, `test_assert_message.b`, `test_multiple.b`, `assert_in_function.b`
+- **`test_files/fail/`** (27 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `spawn_missing_brace.b`, `assert_missing_semi.b`, `test_missing_name.b`, `test_missing_body.b`, `requires_missing_expr.b`, `async_missing_fn.b`
 Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/codegen_simple.b`, `test_files/codegen_binexpr.b`, `test_files/codegen_features.b`, `test_files/multi_var_decl.b`
 
-**Total: 83 tests** (62 pass + 21 fail/negative)
+**Total: 108 tests** (81 pass + 27 fail/negative)
 
 ### Running tests
 
@@ -350,14 +364,22 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 - Single-line (`//`) and multi-line (`/* */`) comments
 - **Literals**: integers, floats/doubles (`3.14`, `0.001`), strings, characters
 - **Types**: `int`, `float`, `double`, `char`, `string`, `bool`, `long`, `short`, `void`, generic types (`Array<int>`, `Map<string, int>`)
+- **Ownership qualifiers** — `own`, `shared`, `sync` on variable declarations
+- **Spawn blocks** — `spawn { ... }` for green thread creation
+- **Async functions** — `async fn name() { }` for event-loop scheduled functions
+- **Await expressions** — `await expr` for async value retrieval
+- **Event handlers** — `on expr { ... }` for event-driven programming
+- **Contract clauses** — `requires expr` and `ensures expr` on function declarations
+- **Test blocks** — `test "name" { ... }` for built-in unit testing
+- **Assert statements** — `assert expr;` and `assert expr, "message";`
 
 ## Project Status
 
 This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST.
 
-**Parser features**: BLang `fn`-style function declarations (C-style syntax rejected), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters and conformance checking, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, `?` try operator for error propagation, `import` statements with dotted paths, `pub` visibility modifier, duplicate function detection, float/double literals, break/continue, extern declarations with unnamed parameters, and multi-file compilation.
+**Parser features**: BLang `fn`-style function declarations (C-style syntax rejected), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters and conformance checking, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, `?` try operator for error propagation, `import` statements with dotted paths, `pub` visibility modifier, duplicate function detection, float/double literals, break/continue, extern declarations with unnamed parameters, multi-file compilation, ownership qualifiers (`own`, `shared`, `sync`), spawn blocks, async/await, event handlers (`on`), contract clauses (`requires`/`ensures`), test blocks, and assert statements.
 
-**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), float constants.
+**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), float constants.
 
 **CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--help` flags and multiple input files. `bcc test` subcommand discovers and runs test files.
 
@@ -368,6 +390,7 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
 ## Known Issues and Limitations
 
 - Codegen for structs, methods, generics, Result/Option, match, and `?` operator requires LLVM and is not yet implemented.
+- Codegen for ownership (move semantics, ARC, auto-locking), spawn/chan (green threads, channels), async/await (event loop, coroutines), contracts (runtime checks), and test blocks (test runner) requires LLVM and runtime library, not yet implemented.
 - Multi-module codegen (linking symbols across files) is not yet implemented.
 - Generic type instantiation (monomorphization or type erasure) is not yet implemented.
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.
