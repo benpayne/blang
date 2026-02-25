@@ -1,239 +1,310 @@
-# Plan: Modernize BLang Frameworks and Tooling
+# Phase 3 — Data and Services: Implementation Plan
 
-## Summary
+## Overview
 
-Upgrade BLang from LLVM 3.x-era tooling to modern LLVM (21+), modernize the CMake
-build system, and update C++ standards. The active QLang parser (`qcc`) does not use
-LLVM and requires no changes — all LLVM work is in the legacy `BLang` namespace files.
+Phase 3 contains 70 tasks (134–203), all unstarted. These tasks add BLang's data layer: pipeline operator, table structs, compile-time query expressions, automatic migrations, serialization annotations, gRPC, HTTP, and GraphQL.
 
-There are two strategic options for LLVM modernization:
-- **Option A**: Update the 4 legacy files to compile against modern LLVM
-- **Option B**: Skip legacy migration entirely and build a new LLVM backend for the QLang AST
-
-This plan covers **Option A** (modernize existing code) plus a foundation step for
-Option B, plus CMake/tooling modernization that benefits both paths. The owner can
-decide whether to pursue both or just one approach.
+The work decomposes into **8 sub-phases** with clear dependency ordering.
 
 ---
 
-## Step 1: Modernize CMakeLists.txt
+## Dependency Graph
 
-**File:** `CMakeLists.txt`
+```
+3.1 Pipeline Operator ──┐
+                        ├──> 3.2 Table Structs & Queries ──> 3.3 Migrations
+                        │           │
+3.4 Annotations ────────┘           │
+        │                           │
+        ├──> 3.5 gRPC               │
+        │                           │
+        └──> 3.4 @json ─────> 3.6 HTTP Server ──> 3.7 GraphQL
+                                    │
+                              3.8 DB Config
+```
 
-Changes:
-1. Raise `cmake_minimum_required` from `VERSION 2.6` to `VERSION 3.16`
-2. Set C++ standard to C++17 (`set(CMAKE_CXX_STANDARD 17)`, `set(CMAKE_CXX_STANDARD_REQUIRED ON)`)
-3. Add LLVM discovery via `find_package(LLVM REQUIRED CONFIG)` and `llvm_map_components_to_libnames`
-4. Replace global `add_definitions(-DPLATFORM_DARWIN)` with platform-detected `target_compile_definitions`:
-   - `if(APPLE)` → `PLATFORM_DARWIN`
-   - `if(UNIX AND NOT APPLE)` → `PLATFORM_LINUX`
-5. Replace global `include_directories()` with per-target `target_include_directories()`
-6. Remove `link_directories()` (unnecessary with modern target-based linking)
-7. Add LLVM include dirs, definitions, and link libraries to any target that needs them
-   (the legacy Bison/Flex target, if re-added; not needed for `qcc`, `lexerTest`, `lexerTest2`)
-
----
-
-## Step 2: Update LLVM Header Paths (4 files)
-
-All LLVM IR headers moved from `llvm/` to `llvm/IR/` in LLVM 3.3. Two other headers
-were reorganized into different subdirectories or removed.
-
-### `Symbol.h` (BLang namespace)
-- `#include "llvm/Type.h"` → `#include "llvm/IR/Type.h"`
-- `#include "llvm/Value.h"` → `#include "llvm/IR/Value.h"`
-
-### `Scope.h` (BLang namespace)
-- `#include "llvm/BasicBlock.h"` → `#include "llvm/IR/BasicBlock.h"`
-- `#include "llvm/Function.h"` → `#include "llvm/IR/Function.h"`
-
-### `parse_helpers.h`
-- `#include "llvm/Value.h"` → `#include "llvm/IR/Value.h"`
-
-### `parse_helpers.cpp`
-- `#include "llvm/Module.h"` → `#include "llvm/IR/Module.h"`
-- `#include "llvm/Function.h"` → `#include "llvm/IR/Function.h"`
-- `#include "llvm/DerivedTypes.h"` → `#include "llvm/IR/DerivedTypes.h"`
-- `#include "llvm/LLVMContext.h"` → `#include "llvm/IR/LLVMContext.h"`
-- `#include "llvm/PassManager.h"` → **Remove** (legacy pass manager removed)
-- `#include "llvm/Analysis/Verifier.h"` → `#include "llvm/IR/Verifier.h"`
-- `#include "llvm/Assembly/PrintModulePass.h"` → **Remove** (use `Module::print()` directly)
-- `#include "llvm/Support/IRBuilder.h"` → `#include "llvm/IR/IRBuilder.h"`
-- Add `#include "llvm/IR/Constants.h"` (for `ConstantInt`, `ConstantArray`, `ConstantDataArray`)
+**Critical path**: Pipeline Operator → Table Structs/Queries → Migrations → DB Config
 
 ---
 
-## Step 3: Migrate to Opaque Pointers in `parse_helpers.cpp`
+## Current Foundation
 
-Typed pointers were removed in LLVM 17. All pointer types are now opaque (`ptr`).
-The element type must come from the compiler's own symbol table rather than from LLVM.
+**What exists that Phase 3 builds on:**
+- Lexer handles two-char tokens (`->`, `..`, `||`, etc.) — pattern for adding `|>`
+- `StructDefinition` AST with fields, methods, generic params — extensible with `mIsTable` flag
+- `MethodCallExpression` — correct shape for query pipeline steps like `.where {}`, `.limit()`
+- `FieldAccessExpression` — needed for `.field` references in query predicates
+- `TryExpression` / `MatchExpression` — query results return `Result<T, DBError>`
+- Runtime library (`runtime/blang_runtime.h/c`) with ARC, threads, channels — pattern for new modules
+- `Module` stores typed definition lists (`mStructList`, `mEnumList`) — add `mTableList`
 
-### 3a. `PointerType::get()` signature change
-- **Lines 44, 61:** `PointerType::get(Type::getInt8Ty(gContext), 0)` → `PointerType::get(gContext, 0)`
-
-### 3b. `CreateLoad` requires explicit type parameter
-- **Line 320:** `gBuilder->CreateLoad(l)` → `gBuilder->CreateLoad(pointeeType, l)`
-- **Line 325:** `gBuilder->CreateLoad(r)` → `gBuilder->CreateLoad(pointeeType, r)`
-- **Line 438:** `gBuilder->CreateLoad(r)` → `gBuilder->CreateLoad(pointeeType, r)`
-
-The pointee type must be retrieved from the BLang `Symbol` object associated with
-the variable being loaded. This requires threading the `Symbol*` through to the
-load call sites, or storing type information alongside the `Value*`.
-
-### 3c. Remove `PointerType::getElementType()` usage
-- **Lines 441-442:** Replace `lPrt->getElementType()` with the type from the symbol table:
-  ```cpp
-  // OLD:
-  PointerType *lPrt = (PointerType*)l->getType();
-  IntegerType *lType = (IntegerType*)lPrt->getElementType();
-  // NEW:
-  IntegerType *lType = cast<IntegerType>(symbolForL->getType());
-  ```
-
-### 3d. Pointer type checking
-- **Lines 318, 323, 431, 436:** `l->getType()->getTypeID() == Type::PointerTyID` still
-  works with opaque pointers, but prefer `l->getType()->isPointerTy()` for clarity.
+**What does NOT exist:**
+- No `|>` token, no `@` token in lexer
+- No annotation AST nodes
+- No `table`, `query`, `insert`, `update`, `delete` keywords
+- No SQL generation, no database runtime, no JSON/HTTP/gRPC runtime
+- No `blang.toml` configuration parser
 
 ---
 
-## Step 4: Update `getOrInsertFunction` Return Type
+## Sub-phase 3.1 — Pipeline Operator (Tasks 134–138)
 
-`Module::getOrInsertFunction` now returns `FunctionCallee` instead of `Constant*`
-(changed in LLVM 9).
+**What**: Add `|>` as a two-character operator token. Parse `expr |> fn(args)` as sugar for `fn(expr, args)`.
 
-- **Line 63** (`init` function):
-  ```cpp
-  // OLD:
-  gMod->getOrInsertFunction("printf", ft);
-  // NEW (if you need the Function*):
-  FunctionCallee fc = gMod->getOrInsertFunction("printf", ft);
-  Function *printfFunc = cast<Function>(fc.getCallee());
-  ```
+### Tasks
 
-- **Lines 191-193** (`endFunctionDef`):
-  ```cpp
-  // OLD:
-  Constant* c = gMod->getOrInsertFunction(name, ft);
-  Function* func = cast<Function>(c);
-  // NEW:
-  FunctionCallee fc = gMod->getOrInsertFunction(name, ft);
-  Function* func = cast<Function>(fc.getCallee());
-  ```
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 134 | Add `|>` token to lexer | impl | In `FileLexer.cpp`, when we see `|`, peek next char. If `>`, emit `PIPE_ARROW`. Add `PIPE_ARROW` to `LexerSymbols` enum. |
+| 135 | Parse pipeline expressions | impl | Create `PipelineExpression` AST node in `Expression.h`. Add `|>` as lowest-precedence binary operator in `QExpression.cpp`. Desugar at parse time: `expr |> fn(args)` → `fn(expr, args)`. |
+| 136 | Codegen for pipeline | impl | If desugared at parse time, codegen is free — `CodeGen` sees a `CallExpression`. |
+| 137 | Add pass tests | test | `pipeline_basic.b`, `pipeline_chained.b`, `pipeline_method.b` |
+| 138 | Document pipeline | docs | Update CLAUDE.md |
+
+**Approach**: Desugar at parse time. The parser rewrites `PipelineExpression` into `CallExpression` so codegen never sees it. This is the simplest approach and matches how `|>` works in F#/Elixir.
+
+**Complexity**: Small (~100 lines new code)
 
 ---
 
-## Step 5: Update `CreateCall` Signature
+## Sub-phase 3.2 — Table Structs and Query Expressions (Tasks 139–157)
 
-`CreateCall` now takes `FunctionCallee` or `FunctionType*` + `Value*` instead of
-just `Function*`.
+**What**: `table struct` definitions with compile-time schema awareness. `query`/`insert`/`update`/`delete` expression syntax using `|>` pipeline.
 
-- **Line 246:**
-  ```cpp
-  // OLD:
-  Value* recur_1 = gBuilder->CreateCall(func, gArgs);
-  // NEW:
-  Value* recur_1 = gBuilder->CreateCall(func->getFunctionType(), func, gArgs);
-  ```
+**Depends on**: 3.1 (pipeline operator)
 
----
+### Tasks — Parsing (no LLVM needed)
 
-## Step 6: Replace Legacy Pass Manager
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 139 | Add `table` keyword to lexer | impl | New keyword in `FileLexer.cpp` |
+| 140 | Parse `table struct` | impl | Check for `table` before `struct` in parser. Set `mIsTable` flag on `StructDefinition`. |
+| 141 | Schema metadata storage | impl | Track table structs in `Module`. Store field names/types for compile-time validation. |
+| 142 | Add `query` keyword | impl | New keyword |
+| 143 | Add `insert` keyword | impl | New keyword |
+| 144 | Add `update` keyword | impl | New keyword |
+| 145 | Add `delete` keyword | impl | New keyword |
+| 146 | Parse `query T |> where {} |> order_by {} |> limit()` | impl | `QueryExpression` AST node. Pipeline steps parsed as chained `|>` calls. `where`/`order_by` bodies use `.field` syntax. |
+| 147 | Parse `insert T { field: value }` | impl | `InsertExpression` AST node. Struct-literal-like syntax after type name. |
+| 148 | Parse `update T |> where {} |> set {}` | impl | `UpdateExpression` AST node. Pipeline syntax. |
+| 149 | Parse `delete T |> where {}` | impl | `DeleteExpression` AST node. Pipeline syntax. |
 
-The legacy `PassManager` has been removed from LLVM's optimization pipeline.
+### Tasks — Codegen and Runtime
 
-- **Lines 68-73** (`destroy` function):
-  ```cpp
-  // OLD:
-  verifyModule(*gMod, PrintMessageAction);
-  PassManager PM;
-  PM.add(createPrintModulePass(&outs()));
-  PM.run(*gMod);
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 150 | Compile-time field validation | impl | Resolve `.field` in query blocks against table struct field list. Error on unknown fields. |
+| 151 | SQL generation backend | impl | `SQLGen` class: walks query AST → emits parameterized SQL. |
+| 152 | Database runtime library | impl | `runtime/blang_db.h/c` — connection pooling, prepared statements, result mapping. SQLite first. |
+| 153 | `@db("name")` annotation | impl | Parse `@db("name")` before query expressions (depends on 3.4 annotation parsing). |
+| 154 | Pass tests for queries | test | Select, insert, update, delete, joins, chained pipelines |
+| 155 | Fail tests for queries | test | Wrong field name, type mismatch |
+| 156 | End-to-end SQLite test | test | Parse → SQL → execute against real database |
+| 157 | Document query system | docs | Update CLAUDE.md |
 
-  // NEW (simplest approach — no pass manager needed for just verifying + printing):
-  if (verifyModule(*gMod, &errs())) {
-      errs() << "Module verification failed\n";
-  }
-  gMod->print(outs(), nullptr);
-  ```
-
----
-
-## Step 7: Modernize C++ Usage Across Legacy Files
-
-- Replace all `NULL` with `nullptr` in `parse_helpers.cpp`, `Symbol.h`, `Scope.h`
-- Use range-based `for` loops where iterating function args (lines 195-202):
-  ```cpp
-  unsigned i = 1;
-  for (auto &arg : func->args()) {
-      arg.setName(gFunctionParams[i]->getName());
-      gFunctionParams[i]->setValue(&arg);
-      i++;
-  }
-  ```
+**Complexity**: Large (~500-800 lines parser, ~300 lines SQL gen)
 
 ---
 
-## Step 8: Verify Build and Fix Compilation Errors
+## Sub-phase 3.3 — Automatic Migrations (Tasks 158–168)
 
-1. Ensure LLVM 18+ is installed (or set `LLVM_DIR` to point at the install)
-2. Initialize the jhcommon submodule: `git submodule update --init`
-3. Build: `mkdir build && cd build && cmake .. -DLLVM_DIR=/path/to/llvm/cmake && make`
-4. Fix any remaining compilation errors from API changes not covered above
-5. Test the legacy Bison/Flex path if a build target is added for it
-6. Test the `qcc` target: `./qcc ../test.c` (should be unaffected)
+**What**: Schema diff engine comparing current `table struct` definitions against stored snapshots. Generates migration SQL.
 
----
+**Depends on**: 3.2 (table structs)
 
-## Step 9 (Optional): Remove or Archive Legacy Bison/Flex Files
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 158 | Schema snapshot storage | impl | Store schema as JSON in `.blang/schema.json` |
+| 159 | Schema diff engine | impl | Compare current table structs vs snapshot. Detect new tables, new fields, removed fields. |
+| 160 | Generate `CREATE TABLE` | impl | For new tables |
+| 161 | Generate `ALTER TABLE ADD COLUMN` | impl | For new fields |
+| 162 | Detect destructive changes | impl | Removed/renamed fields flagged unless `@drop` present |
+| 163 | `blang migrate --preview` | impl | CLI subcommand in `bcc.cpp` |
+| 164 | `blang migrate --apply` | impl | Execute migration SQL against database |
+| 165 | `blang migrate --generate` | impl | Write migration SQL to file |
+| 166 | `@drop` annotation | impl | Depends on 3.4 annotation parsing |
+| 167 | Tests for migrations | test | Add field, add table, remove with @drop |
+| 168 | Document migrations | docs | Update CLAUDE.md |
 
-The following files belong to the superseded Bison/Flex approach and are not compiled
-into any current target. They can be removed or moved to an `archive/` directory:
-
-- `parser.yy` — Bison grammar
-- `parser.h` — Generated Bison token header
-- `lexer.l` — Flex lexer spec (also contains an old `main()`)
-- `parse_helpers.h` / `parse_helpers.cpp` — LLVM codegen tied to Bison actions
-- `Symbol.h` (BLang namespace) — LLVM-dependent symbol class
-- `Scope.h` (BLang namespace) — LLVM-dependent scope class
-- `Lexer.h` — Abstract lexer interface (superseded by `FileLexer.h`)
-
-**Note:** If these files are archived/removed, LLVM becomes entirely optional until
-a new code generation backend is built for the QLang AST. The `qcc`, `lexerTest`,
-and `lexerTest2` targets would continue to work with no LLVM dependency.
+**Complexity**: Medium (~400 lines)
 
 ---
 
-## Step 10 (Optional): Lay Groundwork for New QLang Code Generation Backend
+## Sub-phase 3.4 — Serialization Annotations (Tasks 169–176)
 
-Instead of (or in addition to) modernizing the old legacy code, add a new code
-generation path that walks the QLang AST and emits LLVM IR using modern APIs.
+**What**: `@annotation` syntax in lexer/parser, then `@json` code generation.
 
-1. Create `Codegen.h` / `Codegen.cpp` with a `CodegenVisitor` class
-2. Add `codegen()` or `emit()` virtual methods to the `Statement` / `Expression` base classes
-3. Use modern LLVM APIs from the start (opaque pointers, new pass manager, `FunctionCallee`)
-4. Wire it into `qcc.cpp` after `Module::Parse` completes
+**Depends on**: Nothing (can parallel with 3.1). Unblocks 3.2 task 153, 3.3 task 166, 3.5.
 
-This is likely the better long-term investment since the QLang AST is cleaner than
-the Bison-coupled code generation approach.
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 169 | Add `@` annotation syntax | impl | Lexer: `@` → `AT_SIGN` token. Parser: parse `@name` and `@name("arg")` before declarations. Add `mAnnotations` vector to `StructDefinition`, `FunctionDefinition`, `EnumDefinition`. |
+| 170 | Implement `@json` | impl | Generate `to_json(self) -> string` and `from_json(string) -> Result<T, ParseError>` methods via codegen. |
+| 171 | JSON serializer in stdlib | impl | `runtime/blang_json.h/c` — JSON encode/decode |
+| 172 | `@msgpack` | impl | Binary format. **Lower priority — defer.** |
+| 173 | `@csv` | impl | CSV format. **Lower priority — defer.** |
+| 174 | Pass tests for @json | test | Serialize/deserialize structs |
+| 175 | Fail tests | test | Malformed JSON returns error |
+| 176 | Document serialization | docs | Update CLAUDE.md |
+
+**Complexity**: Medium (~150 lines annotation parsing, ~300 lines JSON runtime)
 
 ---
 
-## Files Modified (Summary)
+## Sub-phase 3.5 — gRPC and Protocol Buffers (Tasks 177–184)
 
-| File | Change Type |
+**What**: `@grpc` on structs generates protobuf serialization. `@grpc` on protocols generates service stubs.
+
+**Depends on**: 3.4 (annotations)
+
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 177 | `@grpc` on structs | impl | Generate protobuf wire format methods |
+| 178 | `@grpc` on protocols | impl | Generate client stub + server interface |
+| 179 | Protobuf wire format in stdlib | impl | `runtime/blang_protobuf.h/c` |
+| 180 | gRPC client runtime | impl | HTTP/2 transport — likely wraps `libgrpc` or `nghttp2` |
+| 181 | gRPC server runtime | impl | HTTP/2 listener, request dispatch |
+| 182 | Pass tests | test | Service definition, stubs, roundtrip |
+| 183 | Interop test | test | Cross-language with Go/Python |
+| 184 | Document gRPC | docs | Update CLAUDE.md |
+
+**Complexity**: Very large. Consider wrapping existing C libraries rather than reimplementing HTTP/2.
+
+---
+
+## Sub-phase 3.6 — HTTP Standard Library (Tasks 185–191)
+
+**What**: `http.Server` and `http.Client` in the standard library.
+
+**Depends on**: 3.4 (@json for auto-serialization)
+
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 185 | `http.Server` | impl | `runtime/blang_http.h/c` — HTTP/1.1 server with routing |
+| 186 | `http.Request` / `http.Response` | impl | Request parsing, response building |
+| 187 | Route registration | impl | `.get()`, `.post()`, etc. |
+| 188 | Auto JSON serialization | impl | `http.ok(struct)` calls `to_json()` if `@json` |
+| 189 | `http.Client` | impl | Outgoing requests |
+| 190 | Pass tests | test | Server start, request, validate response |
+| 191 | Document HTTP | docs | Update CLAUDE.md |
+
+**Complexity**: Large (~1000+ lines C runtime)
+
+---
+
+## Sub-phase 3.7 — GraphQL Standard Library (Tasks 192–197)
+
+**What**: `@graphql` annotation and `graphql.Server` with auto-generated resolvers from table structs.
+
+**Depends on**: 3.2 (table structs), 3.4 (annotations), 3.6 (HTTP transport)
+
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 192 | `@graphql` annotation | impl | Generate GraphQL schema from struct fields |
+| 193 | `graphql.Server` | impl | Query parser and executor |
+| 194 | Auto-resolver generation | impl | CRUD resolvers from table structs |
+| 195 | Custom resolver override | impl | User-defined replaces generated |
+| 196 | Pass tests | test | Schema, queries, mutations |
+| 197 | Document GraphQL | docs | Update CLAUDE.md |
+
+**Complexity**: Large
+
+---
+
+## Sub-phase 3.8 — Database Configuration (Tasks 198–203)
+
+**What**: `blang.toml` project config, database drivers, connection pooling.
+
+**Depends on**: 3.2 (queries need a database)
+
+| # | Task | Type | Details |
+|---|------|------|---------|
+| 198 | `blang.toml` config | impl | TOML parser for database URL, driver |
+| 199 | Postgres driver | impl | Wraps `libpq` |
+| 200 | SQLite driver | impl | Wraps `libsqlite3` |
+| 201 | Connection pooling | impl | Shared pool, configurable size |
+| 202 | Integration tests | test | Full roundtrip: table → migrate → query → validate |
+| 203 | Document DB config | docs | Update CLAUDE.md |
+
+**Complexity**: Medium-large
+
+---
+
+## Recommended Execution Order
+
+### Batch 1: Parser-only (no LLVM, no runtime — validate syntax)
+1. **3.1** Pipeline Operator — lexer + parser (tasks 134-138)
+2. **3.4** Annotation parsing infrastructure only (task 169)
+3. **3.2** Table structs + query parsing only (tasks 139-149)
+
+### Batch 2: Core codegen + runtime
+4. **3.4** `@json` implementation (tasks 170-176)
+5. **3.2** Query codegen — SQL generation + DB runtime (tasks 150-157)
+6. **3.8** Database config + drivers (tasks 198-203)
+7. **3.3** Automatic migrations (tasks 158-168)
+
+### Batch 3: Services (heaviest — can be deferred to Phase 3b)
+8. **3.6** HTTP server (tasks 185-191)
+9. **3.5** gRPC (tasks 177-184)
+10. **3.7** GraphQL (tasks 192-197)
+
+---
+
+## Scope Decisions
+
+1. **Parser-first approach**: Implement all parsing (Batch 1) before any codegen/runtime. This follows the successful Phase 1/2 pattern and validates the syntax design with tests before investing in runtime work.
+
+2. **Defer @msgpack/@csv** (tasks 172-173): Low value early. Focus on `@json` first.
+
+3. **Defer gRPC/GraphQL** (tasks 177-197): These are the heaviest sub-phases and depend on substantial runtime infrastructure (HTTP/2, query parsing). They could become a separate Phase 3b.
+
+4. **SQLite-first**: Start with SQLite driver (task 200) for testing. Postgres (task 199) follows once the query pipeline works end-to-end.
+
+5. **Wrap, don't reimplement**: For HTTP, gRPC, and database drivers, wrap existing C libraries (`libsqlite3`, `libpq`, `libcurl`/`libuv`) rather than writing from scratch.
+
+---
+
+## Files to Create/Modify
+
+### New Files (Parser)
+| File | Purpose |
 |---|---|
-| `CMakeLists.txt` | Modernize build system, add LLVM integration, platform detection |
-| `Symbol.h` | Update LLVM include paths |
-| `Scope.h` | Update LLVM include paths |
-| `parse_helpers.h` | Update LLVM include paths |
-| `parse_helpers.cpp` | Update includes, opaque pointers, pass manager, API signatures, C++ modernization |
+| `QPipelineExpression.cpp` | Pipeline `|>` parsing and desugaring |
+| `QQueryExpression.cpp` | `query`, `insert`, `update`, `delete` expression parsing |
+| `QAnnotation.cpp` | `@name` annotation parsing |
 
-## No Changes Required
-
-| File | Reason |
+### Modified Files (Parser)
+| File | Changes |
 |---|---|
-| `qcc.cpp`, `Q*.cpp` | Active QLang parser — no LLVM dependency |
-| `Type.h`, `Expression.h` | QLang AST classes — no LLVM dependency |
-| `FileLexer.h/cpp`, `LexerReader.cpp` | Hand-written lexer — no LLVM dependency |
-| `CompilerHelpers.h` | Error handling — no LLVM dependency |
-| `test.c`, `test_files/*` | Test source files — language-level, not compiler-level |
+| `FileLexer.h` | Add `PIPE_ARROW`, `AT_SIGN`, new keyword enums |
+| `FileLexer.cpp` | Add `|>` token, `@` token, keywords: `table`, `query`, `insert`, `update`, `delete` |
+| `Expression.h` | Add `PipelineExpression`, `QueryExpression`, `InsertExpression`, `UpdateExpression`, `DeleteExpression`, `AnnotationNode` |
+| `Type.h` | Add `mIsTable` to `StructDefinition`, `mAnnotations` to definition classes |
+| `QExpression.cpp` | Integrate pipeline operator at low precedence |
+| `QStructDefinition.cpp` | Handle `table struct` prefix |
+| `QStatement.cpp` | Route `query`/`insert`/`update`/`delete` to query parser |
+| `CodeGen.cpp` | Add codegen for pipeline (if not desugared), queries, annotations |
+| `CMakeLists.txt` | Add new .cpp files to build |
+
+### New Files (Runtime)
+| File | Purpose |
+|---|---|
+| `runtime/blang_db.h/c` | Database abstraction, connection pooling, SQL execution |
+| `runtime/blang_json.h/c` | JSON encode/decode |
+| `runtime/blang_http.h/c` | HTTP server/client |
+| `runtime/blang_protobuf.h/c` | Protobuf wire format |
+
+### New Test Files
+| File | Category |
+|---|---|
+| `test_files/pass/pipeline_basic.b` | Pipeline syntax |
+| `test_files/pass/pipeline_chained.b` | Chained pipelines |
+| `test_files/pass/table_struct.b` | Table struct definition |
+| `test_files/pass/query_basic.b` | Basic query expression |
+| `test_files/pass/query_insert.b` | Insert expression |
+| `test_files/pass/query_update.b` | Update expression |
+| `test_files/pass/query_delete.b` | Delete expression |
+| `test_files/pass/annotation_json.b` | @json annotation |
+| `test_files/fail/pipeline_missing_fn.b` | Pipeline without function |
+| `test_files/fail/query_bad_field.b` | Unknown field in query |
+| `test_files/fail/table_missing_struct.b` | `table` without `struct` |
