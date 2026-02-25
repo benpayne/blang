@@ -14,6 +14,8 @@ class Lexer;
 
 namespace QLang
 {
+	class SQLGen;  // forward declaration for friend access
+
 	class Expression : public Statement
 	{
 	public:
@@ -126,6 +128,7 @@ namespace QLang
 	private:
 		int64_t mValue;
 		friend class CodeGen;
+		friend class SQLGen;
 	};
 
 	class ConstFloat : public ConstExpression
@@ -136,8 +139,9 @@ namespace QLang
 	private:
 		double mValue;
 		friend class CodeGen;
+		friend class SQLGen;
 	};
-	
+
 	class ConstString : public ConstExpression
 	{
 	public:
@@ -146,6 +150,7 @@ namespace QLang
 	private:
 		std::string mValue;
 		friend class CodeGen;
+		friend class SQLGen;
 	};
 	
 	class ConstChar : public ConstExpression
@@ -199,11 +204,12 @@ namespace QLang
 	class CallExpression : public Expression
 	{
 	public:
+		CallExpression( FunctionDefinition *def ) : mFunction( def ) {}
+
 		static CallExpression *Parse( Lexer &l, Scope *scope );
 
-	protected:
-		CallExpression( FunctionDefinition *def ) : mFunction( def ) {}
-		
+		void addParam( Expression *param ) { mParams.push_back( param ); }
+
 	private:
 		SmartPtr<FunctionDefinition> mFunction;
 		std::vector<SmartPtr<Expression> > mParams;
@@ -245,6 +251,7 @@ namespace QLang
 		SmartPtr<Expression> mOp1;
 		SmartPtr<Expression> mOp2;
 		friend class CodeGen;
+		friend class SQLGen;
 	};
 
 	class UnaryExpression : public Expression
@@ -468,6 +475,116 @@ namespace QLang
 	private:
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
+	};
+
+	// Phase 3: Pipeline expression — a |> b desugars to b(a)
+	class PipelineExpression : public Expression
+	{
+	public:
+		PipelineExpression( Expression *input, Expression *transform ) :
+			mInput( input ), mTransform( transform ) {}
+
+	private:
+		SmartPtr<Expression> mInput;
+		SmartPtr<Expression> mTransform;
+		friend class CodeGen;
+	};
+
+	// Phase 3: Query field reference — .field_name in query context
+	class QueryFieldExpression : public Expression
+	{
+	public:
+		QueryFieldExpression( const std::string &fieldName ) : mFieldName( fieldName ) {}
+
+		const std::string &getFieldName() const { return mFieldName; }
+
+	private:
+		std::string mFieldName;
+		friend class CodeGen;
+	};
+
+	// Phase 3: Query pipeline step types
+	struct QueryPipelineStep
+	{
+		enum StepType { WHERE, ORDER_BY, LIMIT, JOIN, FIRST, SET };
+
+		StepType mType;
+		SmartPtr<Expression> mExpression;         // predicate/sort key/limit count/join condition
+		std::string mJoinTable;                    // table name for join steps
+		std::vector<std::pair<std::string, SmartPtr<Expression>>> mSetFields; // for set steps
+	};
+
+	// Phase 3: Query expression — query T |> where { ... } |> order_by { ... } |> limit(n)
+	class QueryExpression : public Expression
+	{
+	public:
+		QueryExpression( const std::string &tableName ) : mTableName( tableName ) {}
+
+		static QueryExpression *Parse( Lexer &l, Scope *scope );
+
+		void addStep( const QueryPipelineStep &step ) { mSteps.push_back( step ); }
+
+	private:
+		std::string mTableName;
+		std::vector<QueryPipelineStep> mSteps;
+		friend class CodeGen;
+		friend class SQLGen;
+	};
+
+	// Phase 3: Insert expression — insert T { field: value, ... }
+	class InsertExpression : public Expression
+	{
+	public:
+		InsertExpression( const std::string &tableName ) : mTableName( tableName ) {}
+
+		static InsertExpression *Parse( Lexer &l, Scope *scope );
+
+		void addField( const std::string &name, Expression *value )
+		{
+			mFieldNames.push_back( name );
+			mFieldValues.push_back( value );
+		}
+
+	private:
+		std::string mTableName;
+		std::vector<std::string> mFieldNames;
+		std::vector<SmartPtr<Expression>> mFieldValues;
+		friend class CodeGen;
+		friend class SQLGen;
+	};
+
+	// Phase 3: Update expression — update T |> where { ... } |> set { ... }
+	class UpdateExpression : public Expression
+	{
+	public:
+		UpdateExpression( const std::string &tableName ) : mTableName( tableName ) {}
+
+		static UpdateExpression *Parse( Lexer &l, Scope *scope );
+
+		void addStep( const QueryPipelineStep &step ) { mSteps.push_back( step ); }
+
+	private:
+		std::string mTableName;
+		std::vector<QueryPipelineStep> mSteps;
+		friend class CodeGen;
+		friend class SQLGen;
+	};
+
+	// Phase 3: Delete expression — delete T |> where { ... }
+	class DeleteExpression : public Expression
+	{
+	public:
+		DeleteExpression( const std::string &tableName ) : mTableName( tableName ) {}
+
+		static DeleteExpression *Parse( Lexer &l, Scope *scope );
+
+		void addStep( const QueryPipelineStep &step ) { mSteps.push_back( step ); }
+
+	private:
+		std::string mTableName;
+		std::vector<QueryPipelineStep> mSteps;
+		friend class CodeGen;
+		friend class SQLGen;
 	};
 };
 

@@ -49,11 +49,14 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── QEventHandler.cpp          # EventHandler::Parse (on expr { } event handlers)
 ├── QTestBlock.cpp             # TestBlock::Parse (test "name" { } blocks)
 ├── QAssertStatement.cpp       # AssertStatement::Parse (assert expr; statements)
+├── QQueryExpression.cpp        # Query/insert/update/delete expression parsing (table struct queries)
 ├── QParser.cpp                # Empty (placeholder)
 ├── parser.yy                  # Bison grammar (older approach, not used by qcc)
 ├── parser.h                   # Generated Bison header with token definitions
 ├── lexer.l                    # Flex lexer specification (older approach)
 ├── parse_helpers.h/cpp        # LLVM 18+ code generation helpers (legacy Bison/Flex approach, superseded by CodeGen)
+├── SQLGen.h / SQLGen.cpp      # SQL generation from query AST nodes (SELECT/INSERT/UPDATE/DELETE, CREATE TABLE)
+├── SchemaMigration.h / SchemaMigration.cpp # Schema migration engine (diff, CREATE/ALTER TABLE, preview/apply)
 ├── LexerTest.cpp              # Basic lexer test program
 ├── LexerTest2.cpp             # Advanced lexer test with position save/restore
 ├── test.b                     # Comprehensive BLang test source file
@@ -63,6 +66,10 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── docs/
 │   └── language_design.md     # BLang language design specification
 │   └── implementation_plan.md # Implementation task list and roadmap
+├── runtime/
+│   ├── blang_runtime.h/c     # Core runtime (ARC, thread pool, channels, async event loop)
+│   ├── blang_json.h/c        # JSON encode/decode library (for @json annotation support)
+│   └── blang_db.h/c          # Database abstraction layer (connection, query, result; optional SQLite backend)
 ├── .github/
 │   └── workflows/ci.yml      # GitHub Actions CI (parse-only and with-llvm matrix)
 ├── install_deps.sh            # Cross-platform dependency installer
@@ -84,6 +91,9 @@ The project has **no external dependencies** for the active build targets. The j
 |-------------|------------------------------------|-------------------------------------------------------------------------------------|
 | `bcc`       | BLang compiler driver (user-facing)| bcc.cpp                                                                            |
 | `qcc`       | Parser + IR generator (internal)   | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QEnumDefinition.cpp, QExpression.cpp, QForInStatement.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, QSpawnStatement.cpp, QEventHandler.cpp, QTestBlock.cpp, QAssertStatement.cpp, CodeGen.cpp (when LLVM available) |
+| `blang_json`| JSON runtime library (static)      | runtime/blang_json.c                                                               |
+| `blang_db`  | Database runtime library (static)  | runtime/blang_db.c (optional SQLite via pkg-config)                                |
+| `blang_sqlgen`| SQL gen + migrations library     | SQLGen.cpp, SchemaMigration.cpp                                                    |
 | `lexerTest` | Basic lexer tokenization test      | LexerTest.cpp, FileLexer.cpp, LexerReader.cpp                                     |
 | `lexerTest2`| Advanced lexer test                | LexerTest2.cpp, FileLexer.cpp, LexerReader.cpp                                    |
 
@@ -144,6 +154,7 @@ Platform is auto-detected by CMake:
 | Dependency | Status | Purpose |
 |-----------|--------|---------|
 | LLVM 18+  | Optional, auto-detected | Code generation via `CodeGen` class (requires `llvm-18-dev` package) |
+| SQLite3   | Optional, auto-detected via pkg-config | Database runtime backend for `blang_db` library |
 
 The project is fully self-contained. `RefCount.h` provides intrusive reference counting (`RefCount` base class + `SmartPtr<T>` template) using `std::atomic` for thread safety. `logging.h` provides lightweight `LOG`, `TRACE_BEGIN`, `SET_LOG_CAT`, and `SET_LOG_LEVEL` macros.
 
@@ -190,7 +201,13 @@ RefCount
 │   │   ├── RangeExpression      # Range expression (start..end)
 │   │   ├── StringInterpolation  # String interpolation "hello \(name)"
 │   │   ├── MatchExpression      # Pattern matching (match expr { ... })
-│   │   └── AwaitExpression      # await expr (async value retrieval)
+│   │   ├── AwaitExpression      # await expr (async value retrieval)
+│   │   ├── PipelineExpression   # expr |> fn(args) pipeline operator
+│   │   ├── QueryFieldExpression # .field references in query contexts
+│   │   ├── QueryExpression      # query T |> where {} |> order_by {} |> limit(n)
+│   │   ├── InsertExpression     # insert T { field: value, ... }
+│   │   ├── UpdateExpression     # update T |> where {} |> set { .field = value }
+│   │   └── DeleteExpression     # delete T |> where {}
 │   ├── WhileStatement
 │   ├── ForStatement             # C-style for(init; cond; step)
 │   ├── ForInStatement           # for x in expr { }, for { } (infinite)
@@ -277,7 +294,7 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 Tests are organized into three categories under `test_files/`:
 
-- **`test_files/pass/`** (81 tests) — Should parse successfully. Includes:
+- **`test_files/pass/`** (93 tests) — Should parse successfully. Includes:
   - Basic function tests: `func_simple.b`, `func_call.b`, `multi_func.b`, `empty_func.b`
   - Control flow: `if_simple.b`, `if_nested.b`, `while_simple.b`, `while_block.b`, `for_simple.b`, `for_block.b`
   - Variables and expressions: `var_decl.b`, `var_infer.b`, `const_decl.b`, `arithmetic_stmt.b`, `assignment_stmt.b`, `binary_expr_return.b`, `comparison_expr.b`
@@ -299,10 +316,13 @@ Tests are organized into three categories under `test_files/`:
   - Async/await: `async_fn.b`, `async_fn_void.b`, `await_expr.b`, `event_handler.b`
   - Contracts: `requires_basic.b`, `ensures_basic.b`, `contract_combined.b`
   - Testing: `test_basic.b`, `test_assert.b`, `test_assert_message.b`, `test_multiple.b`, `assert_in_function.b`
-- **`test_files/fail/`** (27 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `spawn_missing_brace.b`, `assert_missing_semi.b`, `test_missing_name.b`, `test_missing_body.b`, `requires_missing_expr.b`, `async_missing_fn.b`
+  - Pipeline operator: `pipeline_basic.b`, `pipeline_chained.b`, `pipeline_with_args.b`
+  - Annotations: `annotation_json.b`, `annotation_multiple.b`, `annotation_with_args.b`
+  - Table structs and queries: `table_struct.b`, `query_basic.b`, `query_insert.b`, `query_update.b`, `query_delete.b`, `query_join.b`
+- **`test_files/fail/`** (31 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `spawn_missing_brace.b`, `assert_missing_semi.b`, `test_missing_name.b`, `test_missing_body.b`, `requires_missing_expr.b`, `async_missing_fn.b`, `annotation_missing_name.b`, `table_missing_struct.b`, `query_missing_table.b`, `insert_missing_brace.b`
 Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/codegen_simple.b`, `test_files/codegen_binexpr.b`, `test_files/codegen_features.b`, `test_files/multi_var_decl.b`
 
-**Total: 108 tests** (81 pass + 27 fail/negative)
+**Total: 124 tests** (93 pass + 31 fail/negative)
 
 ### Running tests
 
@@ -372,16 +392,26 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 - **Contract clauses** — `requires expr` and `ensures expr` on function declarations
 - **Test blocks** — `test "name" { ... }` for built-in unit testing
 - **Assert statements** — `assert expr;` and `assert expr, "message";`
+- **Pipeline operator** — `expr |> fn(args)` desugars to `fn(expr, args)`; supports chaining
+- **Annotations** — `@name` and `@name("arg")` on struct, enum, and function declarations
+- **Table structs** — `table struct T { ... }` marks structs as database-backed tables
+- **Query expressions** — `query T |> where { .field == value } |> order_by { .field } |> limit(n) |> first`
+- **Insert expressions** — `insert T { field: value, ... }`
+- **Update expressions** — `update T |> where { ... } |> set { .field = value }`
+- **Delete expressions** — `delete T |> where { ... }`
+- **Boolean constants** — `true` and `false` as first-class constant expressions
 
 ## Project Status
 
 This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST.
 
-**Parser features**: BLang `fn`-style function declarations (C-style syntax rejected), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters and conformance checking, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, `?` try operator for error propagation, `import` statements with dotted paths, `pub` visibility modifier, duplicate function detection, float/double literals, break/continue, extern declarations with unnamed parameters, multi-file compilation, ownership qualifiers (`own`, `shared`, `sync`), spawn blocks, async/await, event handlers (`on`), contract clauses (`requires`/`ensures`), test blocks, and assert statements.
+**Parser features**: BLang `fn`-style function declarations (C-style syntax rejected), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters and conformance checking, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, `?` try operator for error propagation, `import` statements with dotted paths, `pub` visibility modifier, duplicate function detection, float/double literals, break/continue, extern declarations with unnamed parameters, multi-file compilation, ownership qualifiers (`own`, `shared`, `sync`), spawn blocks, async/await, event handlers (`on`), contract clauses (`requires`/`ensures`), test blocks, assert statements, pipeline operator (`|>`), annotations (`@name("arg")`), table structs (`table struct`), query/insert/update/delete expressions with pipeline steps, and boolean constants (`true`/`false`).
 
-**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), float constants.
+**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`, `table`, `query`, `insert`, `update`, `delete`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), `|>` (pipeline), `@` (annotation), `true`/`false` (boolean constants), float constants.
 
-**CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--help` flags and multiple input files. `bcc test` subcommand discovers and runs test files.
+**CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--help` flags and multiple input files. `bcc test` subcommand discovers and runs test files. `bcc migrate` subcommand supports `--preview`, `--apply`, and `--generate` modes for schema migrations.
+
+**Runtime libraries**: `blang_json` (C library for JSON encode/decode), `blang_db` (database abstraction with optional SQLite backend). SQL generation (`SQLGen`) converts query AST nodes to parameterized SQL. Schema migration (`SchemaMigration`) diffs table struct definitions against stored schema and generates CREATE/ALTER TABLE statements.
 
 **Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
 

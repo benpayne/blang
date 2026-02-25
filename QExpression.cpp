@@ -87,6 +87,34 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		return new AwaitExpression( operand );
 	}
 
+	// Query expressions: query T, insert T, update T, delete T
+	if ( sym == Lexer::KEYWORD_QUERY )
+	{
+		return QueryExpression::Parse( l, scope );
+	}
+	if ( sym == Lexer::KEYWORD_INSERT )
+	{
+		return InsertExpression::Parse( l, scope );
+	}
+	if ( sym == Lexer::KEYWORD_UPDATE )
+	{
+		return UpdateExpression::Parse( l, scope );
+	}
+	if ( sym == Lexer::KEYWORD_DELETE )
+	{
+		return DeleteExpression::Parse( l, scope );
+	}
+
+	// Query field reference: .field (used in query where/order_by/set blocks)
+	if ( sym == '.' )
+	{
+		l.getSymbol(); // consume '.'
+		int fieldSym = l.getSymbol();
+		if ( fieldSym != Lexer::SYMBOL )
+			COMPILE_ERROR( l, "Expected field name after '.'" );
+		result = new QueryFieldExpression( l.getSymbolText() );
+	}
+
 	// Unary prefix operators: -, !, ~
 	if ( sym == '-' || sym == '!' || sym == '~' )
 	{
@@ -158,7 +186,8 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 	// Other constants
 	else if ( sym == Lexer::CONSTANT_NUMBER ||
 		 sym == Lexer::CONSTANT_FLOAT ||
-		 sym == Lexer::CONSTANT_CHAR )
+		 sym == Lexer::CONSTANT_CHAR ||
+		 sym == Lexer::CONSTANT_BOOL )
 	{
 		result = ConstExpression::Parse( l, scope );
 	}
@@ -302,6 +331,80 @@ Expression *Expression::ParseExpr( Lexer &l, Scope *scope, int minPrec )
 	{
 		int nextSym = l.peekSymbol();
 		string nextText = l.getSymbolText();
+
+		// Handle pipeline operator |> at lowest precedence (below range)
+		// Desugars: expr |> fn       -> fn(expr)
+		//           expr |> fn(args) -> fn(expr, args)
+		if ( nextSym == Lexer::PIPE_ARROW )
+		{
+			if ( minPrec > 0 )
+				break;  // |> has precedence 0, below everything except itself
+
+			l.getSymbol(); // consume |>
+
+			// The RHS of a pipeline can be:
+			// 1. A function call: expr |> fn(args) -> fn(expr, args)
+			// 2. A bare function name: expr |> fn -> fn(expr)
+			int rhsSym = l.peekSymbol();
+			if ( rhsSym == Lexer::SYMBOL )
+			{
+				int pos = l.getCurrentPos();
+				l.getSymbol(); // consume symbol
+				string name = l.getSymbolText();
+
+				SmartPtr<Symbol> funcSym = scope->findSymbol( name );
+				if ( funcSym != nullptr && funcSym->getSymbolType() == Symbol::TypeFunction )
+				{
+					FunctionDefinition *funcDef = dynamic_cast<FunctionDefinition*>( (Symbol*)funcSym );
+					CallExpression *call = new CallExpression( funcDef );
+					call->addParam( left );
+
+					// Check if there are additional arguments: fn(args)
+					if ( l.peekSymbol() == '(' )
+					{
+						l.getSymbol(); // consume '('
+						if ( l.peekSymbol() != ')' )
+						{
+							do {
+								Expression *arg = ParseExpr( l, scope, 0 );
+								if ( arg == nullptr )
+									COMPILE_ERROR( l, "Expected expression in pipeline call arguments" );
+								call->addParam( arg );
+								int s = l.getSymbol();
+								if ( s == ')' ) break;
+								if ( s != ',' )
+									COMPILE_ERROR( l, "Expected ',' or ')' in pipeline call" );
+							} while ( true );
+						}
+						else
+						{
+							l.getSymbol(); // consume ')'
+						}
+					}
+
+					left = call;
+				}
+				else
+				{
+					// Not a function — try parsing as a general expression
+					l.setCurrentPos( pos );
+					Expression *right = ParsePrimary( l, scope );
+					if ( right == nullptr )
+						COMPILE_ERROR( l, "Expected expression after '|>'" );
+					left = new PipelineExpression( left, right );
+				}
+			}
+			else
+			{
+				// RHS starts with something other than a symbol
+				Expression *right = ParsePrimary( l, scope );
+				if ( right == nullptr )
+					COMPILE_ERROR( l, "Expected expression after '|>'" );
+				left = new PipelineExpression( left, right );
+			}
+			continue;
+		}
+
 		int prec = getOperatorPrec( nextSym, nextText );
 
 		if ( prec < 0 || prec < minPrec )
@@ -474,6 +577,9 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 		break;
 	case Lexer::CONSTANT_FLOAT:
 		exp = new ConstFloat( atof( l.getSymbolText().c_str() ) );
+		break;
+	case Lexer::CONSTANT_BOOL:
+		exp = new ConstInteger( l.getSymbolText() == "true" ? 1 : 0 );
 		break;
 	default:
 		return nullptr;

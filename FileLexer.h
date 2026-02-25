@@ -62,6 +62,7 @@ public:
 		CONSTANT_CHAR,
 		CONSTANT_NUMBER,
 		CONSTANT_FLOAT,
+		CONSTANT_BOOL,
 		LOR,
 		LAND,
 		EQ,
@@ -86,6 +87,14 @@ public:
 		KEYWORD_ENSURES,
 		KEYWORD_TEST,
 		KEYWORD_ASSERT,
+		// Phase 3 tokens and keywords
+		PIPE_ARROW,        // |>
+		AT_SIGN,           // @
+		KEYWORD_TABLE,
+		KEYWORD_QUERY,
+		KEYWORD_INSERT,
+		KEYWORD_UPDATE,
+		KEYWORD_DELETE,
 		NUM_SYMBOLS
 	};
 	
