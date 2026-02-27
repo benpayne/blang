@@ -11,7 +11,7 @@ BLang is a compiled, native-performance language designed for **clarity, safety,
 Every concept has exactly one syntax. There are no equivalent alternatives.
 
 - One function declaration syntax (`fn`)
-- One iteration construct (`for ... in`)
+- Two loop constructs: `for ... in` (iteration) and `while` (conditional)
 - One error handling pattern (`Result` + `?`)
 - One concurrency primitive pair (`spawn` + `chan`)
 - One memory model (ownership + automatic reference counting)
@@ -128,7 +128,7 @@ if x > 0 {
 
 #### For Loops
 
-One loop construct. Iteration is always over a range or collection.
+Iteration is always over a range or collection using `for ... in`.
 
 ```
 for i in 0..10 {
@@ -144,7 +144,7 @@ for key, value in map {
 }
 ```
 
-There is no C-style `for(;;)`, no `while`, no `do-while`. Infinite loops use `for` with no condition:
+There is no C-style `for(;;)` and no `do-while`. Counted loops use range expressions (`0..10`) instead of manual index manipulation. Infinite loops use `for` with no condition:
 
 ```
 for {
@@ -154,7 +154,22 @@ for {
 }
 ```
 
-This eliminates four loop syntaxes (C `for`, `while`, `do-while`, range-for) in favor of one.
+#### While Loops
+
+For condition-based looping, `while` is available. Braces are always required. No parentheses around the condition.
+
+```
+while running {
+	process_next();
+}
+
+while buffer.has_data() {
+	byte = buffer.read();
+	handle(byte);
+}
+```
+
+BLang has two loop constructs: `for ... in` for iteration over ranges and collections, and `while` for condition-based loops. There is no C-style `for(;;)` and no `do-while`.
 
 #### Match
 
@@ -1114,7 +1129,7 @@ Fewer tokens means fewer opportunities for the model to make errors.
 
 ## File Extension
 
-BLang source files use the `.bl` extension.
+BLang source files use the `.b` extension.
 
 ## Implementation Status
 
@@ -1122,57 +1137,92 @@ The BLang compiler is under active development. The current implementation is a 
 
 For the detailed implementation plan with 217 tasks across all phases, see **[docs/implementation_plan.md](implementation_plan.md)**.
 
-### Currently Working
+### Currently Working — Parser
 
-- Function definitions with parameters and return types (C-style syntax)
-- Extern function declarations with variadic support (`extern int printf(string fmt, ...);`)
+All of the following are parsed into AST nodes by the recursive-descent parser (`qcc`):
+
+- Function definitions using `fn` keyword with parameters and return types (`fn add(int a, int b) -> int { }`)
+- Extern function declarations with variadic support (`extern fn printf(string fmt, ...) -> int;`)
 - Variable declarations (single and multi-variable) with expression initializers
+- Constants: `const` declarations, integer, float, string, char, boolean (`true`/`false`) literals
 - Binary expressions with full operator precedence: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
 - Unary expressions (`-`, `!`, `~`)
 - Assignment operators (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`)
-- Control flow: if/else, while, for (C-style)
-- Constants: integer, float, string, char literals (with escape sequences)
+- Control flow: if/else, while, for-in (range, collection, key-value, infinite)
 - Function calls with arguments (including nested calls)
-- Return statements (with expression support)
-- Block scoping
-- Comments (single-line and multi-line)
-- LLVM IR code generation for all of the above (when built with `llvm-18-dev`)
-- End-to-end compilation: parse → `.ll` → `llc` → native binary
-- `enum` definitions with variants and associated types, including generic enums (`Result<T, E>`, `Option<T>`)
+- Return statements, break, continue
+- Block scoping with `{ }`
+- Comments (single-line `//` and multi-line `/* */`)
+- Struct definitions with fields and generic parameters
+- Enum/sum type definitions with variants and associated types, including generic enums (`Result<T, E>`, `Option<T>`)
+- Protocol definitions with generic parameters
+- Protocol conformance checking (`impl Protocol for Struct`)
+- Generic functions with protocol constraints (`fn sort<T: Comparable>(...)`)
+- `impl` blocks for method definitions
+- Method calls (`obj.method(args)`) and field access (`obj.field`)
+- Array literals (`[1, 2, 3]`) and indexing (`arr[i]`)
+- Range expressions (`start..end`)
+- String interpolation (`"hello {name}"`)
 - `match` expressions with literal patterns, wildcard `_`, and destructuring bindings (`ok(value)`, `some(x)`)
 - `?` (try/propagate) operator in postfix position on expressions (`expr?`)
-- Struct definitions with fields and generic parameters
-- Protocol definitions with generic parameters
-- `impl` blocks for method definitions
-- `for-in` loops (range, collection, infinite)
-- Array literals and indexing
-- Method calls and field access
-- Range expressions (`start..end`)
+- Import statements (`import std;`, `import std.io;`)
+- Visibility modifier (`pub fn`, `pub struct`, `pub enum`)
+- Ownership qualifiers (`own`, `shared`, `sync`)
+- Spawn blocks (`spawn { }`)
+- Channel declarations (`chan int c;`)
+- Async functions (`async fn fetch() -> int { }`)
+- Await expressions (`await expr`)
+- Event handlers (`on expr { }`)
+- Contract clauses (`requires expr`, `ensures expr`)
+- Test blocks (`test "name" { }`)
+- Assert statements (`assert expr;`, `assert expr, "message";`)
+- Pipeline operator (`expr |> fn(args)`)
+- Annotations (`@name`, `@name("arg")`)
+- Table structs (`table struct T { }`)
+- Query expressions (`query T |> where { } |> order_by { } |> limit(n)`)
+- Insert/update/delete expressions
+
+### Currently Working — Code Generation
+
+LLVM IR code generation (when built with `llvm-18-dev`) covers:
+
+- Function definitions and extern declarations (including variadic)
+- Variable declarations with initialization
+- Return statements
+- If/else, while, for loops
+- Function calls
+- Binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence)
+- Assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`)
+- Constant expressions (int, float, string, char)
+- End-to-end compilation: parse → `.ll` → `llc` → native binary
 
 ### Next Steps
 
-**Phase 1 — Core Language (current)**
+**Codegen expansion** — Extend LLVM IR generation to cover all parsed features:
 
-1. Transition from C-style syntax (`int foo()`) to BLang syntax (`fn foo() -> int`)
-2. Struct types and impl blocks
-3. Protocol definitions and conformance checking
-4. Generics with protocol constraints
-5. Result/Option types, `match` expressions, and the `?` operator
-6. Module system and imports (`import`, `pub`)
+1. Struct types (layout, field access, method dispatch)
+2. Enum types and match expressions
+3. Generic type instantiation (monomorphization)
+4. Result/Option types and the `?` operator
+5. For-in loops with range and collection iteration
+6. Array literals and indexing
+7. String interpolation
+8. Ownership semantics (move, ARC for `shared`, auto-locking for `sync`)
+9. Spawn/channel concurrency (runtime integration)
+10. Async/await and event loop (runtime integration)
+11. Contract clauses (runtime assertion insertion)
+12. Test block discovery and execution
+13. Multi-module compilation (linking symbols across files)
 
-**Phase 2 — Concurrency and Safety**
+**Parser updates** — Align parser with language spec:
 
-9. spawn/chan concurrency primitives
-10. async/await and event loop integration
-11. Ownership model (own/shared/sync)
-12. Contracts (requires/ensures)
-13. Built-in test blocks (`test` keyword)
+14. Remove C-style `for(;;)` loops (use `for..in` and `while` instead)
+15. Remove parentheses requirement from `if` and `while` conditions
 
-**Phase 3 — Data and Services**
+**Runtime and tooling:**
 
-14. Table structs and query expressions (query/insert/update/delete, pipeline operator `|>`)
-15. Automatic schema migrations (`blang migrate`)
-16. Serialization annotations (@json, @grpc, @msgpack)
-17. gRPC service generation from protocols
-18. HTTP and GraphQL standard library
-19. No-overloading rule enforcement, mandatory public type signatures, flat module namespace
+16. Automatic schema migrations (`bcc migrate`)
+17. Serialization code generation (`@json`, `@grpc`, `@msgpack`)
+18. gRPC service generation from protocols
+19. HTTP and GraphQL standard library
+20. No-overloading rule enforcement, mandatory public type signatures
