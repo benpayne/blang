@@ -22,7 +22,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake build-essential
         if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
-          sudo apt-get install -y llvm-18-dev
+          sudo apt-get install -y llvm-18-dev libzstd-dev
         fi
 
     - name: Configure CMake
