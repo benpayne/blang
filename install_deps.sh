@@ -10,7 +10,7 @@ if [ "$(uname)" = "Linux" ]; then
 
     if [ "$1" = "--with-llvm" ]; then
         echo "Installing LLVM 18 development headers..."
-        sudo apt-get install -y llvm-18-dev
+        sudo apt-get install -y llvm-18-dev libzstd-dev
     fi
 elif [ "$(uname)" = "Darwin" ]; then
     brew install cmake
