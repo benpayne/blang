@@ -95,6 +95,44 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			// At present, each module is parsed independently with no cross-module
 			// symbol resolution, so this check is deferred to that future phase.
 
+			// Parse annotations before declarations: @name or @name("arg")
+			std::vector<AnnotationNode> annotations;
+			while ( nextSym == Lexer::AT_SIGN )
+			{
+				l.getSymbol(); // consume '@'
+				int annSym = l.getSymbol();
+				if ( annSym != Lexer::SYMBOL )
+					COMPILE_ERROR( l, "Expected annotation name after '@'" );
+
+				AnnotationNode ann;
+				ann.mName = l.getSymbolText();
+
+				// Check for optional arguments: @name("arg")
+				if ( l.peekSymbol() == '(' )
+				{
+					l.getSymbol(); // consume '('
+					// Parse string arguments
+					while ( l.peekSymbol() != ')' )
+					{
+						int argSym = l.getSymbol();
+						if ( argSym == Lexer::CONSTANT_STRING )
+							ann.mArgs.push_back( l.getSymbolText() );
+						else if ( argSym == Lexer::SYMBOL )
+							ann.mArgs.push_back( l.getSymbolText() );
+						else
+							COMPILE_ERROR( l, "Expected string or identifier in annotation argument" );
+
+						if ( l.peekSymbol() == ',' )
+							l.getSymbol(); // consume ','
+					}
+					l.getSymbol(); // consume ')'
+				}
+
+				annotations.push_back( ann );
+				cout << "annotation @" << ann.mName << endl;
+				nextSym = l.peekSymbol();
+			}
+
 			// Handle pub visibility modifier
 			bool isPublic = false;
 			if ( nextSym == Lexer::KEYWORD_PUB )
@@ -104,9 +142,26 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				nextSym = l.peekSymbol();
 			}
 
+			// Handle table struct
+			if ( nextSym == Lexer::KEYWORD_TABLE )
+			{
+				l.getSymbol(); // consume 'table'
+				nextSym = l.peekSymbol();
+				if ( nextSym != Lexer::KEYWORD_STRUCT )
+					COMPILE_ERROR( l, "Expected 'struct' after 'table'" );
+
+				SmartPtr<StructDefinition> structDef = StructDefinition::Parse( l, s, isPublic );
+				structDef->setIsTable( true );
+				structDef->setAnnotations( annotations );
+				mod->mStructList.push_back( structDef );
+				cout << "Completed table struct " << structDef->getName() << endl;
+				continue;
+			}
+
 			if ( nextSym == Lexer::KEYWORD_STRUCT )
 			{
 				SmartPtr<StructDefinition> structDef = StructDefinition::Parse( l, s, isPublic );
+				structDef->setAnnotations( annotations );
 				mod->mStructList.push_back( structDef );
 				continue;
 			}
@@ -126,6 +181,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			if ( nextSym == Lexer::KEYWORD_ENUM )
 			{
 				SmartPtr<EnumDefinition> enumDef = EnumDefinition::Parse( l, s );
+				enumDef->setAnnotations( annotations );
 				mod->mEnumList.push_back( enumDef );
 				continue;
 			}
@@ -176,6 +232,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			// validation is required here.
 
 			def = FunctionDefinition::Parse( l, s, isExtern, isPublic );
+			def->setAnnotations( annotations );
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
 		}

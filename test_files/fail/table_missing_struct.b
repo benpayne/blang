@@ -1,0 +1,3 @@
+table User {
+	int id;
+}

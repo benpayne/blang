@@ -154,6 +154,12 @@ namespace QLang
 		std::string mConstraint; // protocol constraint, empty if unconstrained
 	};
 
+	struct AnnotationNode
+	{
+		std::string mName;                     // e.g., "json", "grpc", "db", "drop", "graphql"
+		std::vector<std::string> mArgs;        // e.g., for @db("analytics") -> ["analytics"]
+	};
+
 	class ImportStatement : virtual public RefCount
 	{
 	public:
@@ -208,6 +214,9 @@ namespace QLang
 		bool hasRequires() const { return !mRequiresClauses.empty(); }
 		bool hasEnsures() const { return !mEnsuresClauses.empty(); }
 
+		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
+		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
+
 	private:
 		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
 
@@ -222,6 +231,7 @@ namespace QLang
 		std::vector<GenericParam> mGenericParams;
 		std::vector<SmartPtr<Expression>> mRequiresClauses;
 		std::vector<SmartPtr<Expression>> mEnsuresClauses;
+		std::vector<AnnotationNode> mAnnotations;
 
 		friend class CodeGen;
 	};
@@ -245,6 +255,7 @@ namespace QLang
 		friend std::ostream &operator<<(std::ostream &out, const VariableDefinition &var);
 
 		Type *getVariableType() { return mType; }
+		const Type *getVariableType() const { return mType; }
 
 		bool isConst() const { return mIsConst; }
 		void setConst( bool isConst ) { mIsConst = isConst; }
@@ -273,8 +284,14 @@ namespace QLang
 		void addMethod( FunctionDefinition *method ) { mMethods.push_back( method ); }
 		bool isGeneric() const { return !mGenericParams.empty(); }
 		bool isPublic() const { return mIsPublic; }
+		bool isTable() const { return mIsTable; }
+		void setIsTable( bool isTable ) { mIsTable = isTable; }
+
+		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
+		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 
 		const std::vector<SmartPtr<FunctionDefinition> > &getMethods() const { return mMethods; }
+		const std::vector<SmartPtr<VariableDefinition> > &getFields() const { return mFields; }
 
 	private:
 		StructDefinition( const std::string &name ) : Symbol( name ) {}
@@ -282,7 +299,9 @@ namespace QLang
 		std::vector<SmartPtr<VariableDefinition> > mFields;
 		std::vector<SmartPtr<FunctionDefinition> > mMethods;
 		std::vector<GenericParam> mGenericParams;
+		std::vector<AnnotationNode> mAnnotations;
 		bool mIsPublic = false;
+		bool mIsTable = false;
 		friend class CodeGen;
 	};
 
@@ -322,11 +341,15 @@ namespace QLang
 
 		bool isGeneric() const { return !mGenericParams.empty(); }
 
+		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
+		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
+
 	private:
 		EnumDefinition( const std::string &name ) : Symbol( name ) {}
 
 		std::vector<Variant> mVariants;
 		std::vector<GenericParam> mGenericParams;
+		std::vector<AnnotationNode> mAnnotations;
 		friend class CodeGen;
 	};
 

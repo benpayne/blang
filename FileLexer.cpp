@@ -318,7 +318,7 @@ int Lexer::getSymbolInternal()
 		mMatchString = mSymbolList[ mCurrentPos ].symbolText;
 	}
 
-	if ( sym <= Lexer::QUESTION_MARK || sym >= 256 )
+	if ( sym <= Lexer::QUESTION_MARK || (sym >= 256 && sym < Lexer::NUM_SYMBOLS) )
 		std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
 	else
 		std::cout << "Symbol " << (char)sym << std::endl;
@@ -365,6 +365,8 @@ int Lexer::getSymbolFromFile()
 			case 'd':
 				if ( matchKeyword( "double" ) )
 					return BUILTIN_TYPE;
+				else if ( matchKeyword( "delete" ) )
+					return KEYWORD_DELETE;
 				break;
 			case 'e':
 				if ( matchKeyword( "extern" ) )
@@ -379,6 +381,8 @@ int Lexer::getSymbolFromFile()
 			case 'f':
 				if ( matchKeyword( "float" ) )
 					return BUILTIN_TYPE;
+				else if ( matchKeyword( "false" ) )
+					return CONSTANT_BOOL;
 				else if ( matchKeyword( "for" ) )
 					return KEYWORD_FOR;
 				else if ( matchKeyword( "fn" ) )
@@ -393,6 +397,8 @@ int Lexer::getSymbolFromFile()
 					return KEYWORD_IMPL;
 				else if ( matchKeyword( "import" ) )
 					return KEYWORD_IMPORT;
+				else if ( matchKeyword( "insert" ) )
+					return KEYWORD_INSERT;
 				else if ( matchKeyword( "in" ) )
 					return KEYWORD_IN;
 				break;
@@ -442,13 +448,23 @@ int Lexer::getSymbolFromFile()
 				else if ( matchKeyword( "self" ) )
 					return KEYWORD_SELF;
 				break;
+			case 'q':
+				if ( matchKeyword( "query" ) )
+					return KEYWORD_QUERY;
+				break;
 			case 't':
 				if ( matchKeyword( "test" ) )
 					return KEYWORD_TEST;
+				else if ( matchKeyword( "true" ) )
+					return CONSTANT_BOOL;
+				else if ( matchKeyword( "table" ) )
+					return KEYWORD_TABLE;
 				break;
 			case 'u':
 				if ( matchKeyword( "unsigned" ) )
 					return TYPE_MODIFIER;
+				else if ( matchKeyword( "update" ) )
+					return KEYWORD_UPDATE;
 				break;
 			case 'v':
 				if ( matchKeyword( "void" ) )
@@ -494,6 +510,8 @@ int Lexer::getSymbolFromFile()
 			case '|':
 				if ( match( "||" ) )
 					return LOR;
+				else if ( match( "|>" ) )
+					return PIPE_ARROW;
 				else
 					return mReader->popChar();
 				break;
@@ -588,6 +606,11 @@ int Lexer::getSymbolFromFile()
 			case '?':
 				mReader->popChar();
 				return QUESTION_MARK;
+				break;
+
+			case '@':
+				mReader->popChar();
+				return AT_SIGN;
 				break;
 
 			case '{':

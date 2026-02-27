@@ -63,7 +63,8 @@ set(QCC_SOURCES
 	QSpawnStatement.cpp
 	QEventHandler.cpp
 	QTestBlock.cpp
-	QAssertStatement.cpp)
+	QAssertStatement.cpp
+	QQueryExpression.cpp)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
@@ -90,6 +91,35 @@ target_link_libraries(blang_runtime Threads::Threads)
 add_library(blang_runtime_obj OBJECT runtime/blang_runtime.c)
 set_target_properties(blang_runtime_obj PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_include_directories(blang_runtime_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+# BLang JSON runtime library
+add_library(blang_json STATIC runtime/blang_json.c)
+set_target_properties(blang_json PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_json PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+# BLang database runtime library
+add_library(blang_db STATIC runtime/blang_db.c)
+set_target_properties(blang_db PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_db PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+# Check for SQLite3
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+	pkg_check_modules(SQLITE3 QUIET sqlite3)
+endif()
+if(SQLITE3_FOUND)
+	message(STATUS "Found SQLite3: ${SQLITE3_VERSION}")
+	target_compile_definitions(blang_db PRIVATE BLANG_HAS_SQLITE)
+	target_include_directories(blang_db PRIVATE ${SQLITE3_INCLUDE_DIRS})
+	target_link_libraries(blang_db ${SQLITE3_LIBRARIES})
+else()
+	message(STATUS "SQLite3 not found -- database runtime will use stubs")
+endif()
+
+# SQL generation and schema migration (C++ library for qcc/bcc)
+add_library(blang_sqlgen STATIC SQLGen.cpp SchemaMigration.cpp)
+set_target_properties(blang_sqlgen PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(blang_sqlgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # bcc - BLang compiler driver (orchestrates qcc -> llc -> cc pipeline)
 add_executable(bcc bcc.cpp)
