@@ -508,9 +508,13 @@ int main( int argc, char *argv[] )
 
 	string objFile = "/tmp/" + baseName + ".o";
 	{
-		vector<string> cmd = { llc, "-filetype=obj" };
-#ifdef BCC_HOST_ARCH
+		vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
+#if defined(BCC_HOST_ARCH)
+#if defined(PLATFORM_DARWIN)
 		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+#elif defined(PLATFORM_LINUX)
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
+#endif
 #endif
 		cmd.push_back( irFile );
 		cmd.push_back( "-o" );
@@ -548,7 +552,7 @@ int main( int argc, char *argv[] )
 		cc = BCC_CC_PATH;
 #endif
 		vector<string> cmd = { cc };
-#ifdef BCC_HOST_ARCH
+#if defined(BCC_HOST_ARCH) && defined(PLATFORM_DARWIN)
 		cmd.push_back( "-arch" );
 		cmd.push_back( BCC_HOST_ARCH );
 #endif
