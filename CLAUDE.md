@@ -41,7 +41,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── QForInStatement.cpp        # ForInStatement::Parse (for-in loops, infinite loops)
 ├── QFunctionDefinition.cpp    # FunctionDefinition::Parse and parameter parsing (fn-style with extern fn, generics)
 ├── QReturnStatement.cpp       # ReturnStatement::Parse
-├── QStatement.cpp             # Statement::Parse dispatcher (routes to if/while/for/for-in/return/break/continue/variable/expression)
+├── QStatement.cpp             # Statement::Parse dispatcher (routes to if/while/for-in/return/break/continue/variable/expression)
 ├── QStructDefinition.cpp      # StructDefinition::Parse (with generic parameters)
 ├── QType.cpp                  # Type::Parse (with generic type arguments)
 ├── QVariableDefinition.cpp    # VariableDeclaration::Parse (with self parameter support)
@@ -199,7 +199,7 @@ RefCount
 │   │   ├── IndexExpression      # Array/collection indexing (expr[index])
 │   │   ├── ArrayLiteralExpression # Array literal [expr, ...]
 │   │   ├── RangeExpression      # Range expression (start..end)
-│   │   ├── StringInterpolation  # String interpolation "hello \(name)"
+│   │   ├── StringInterpolation  # String interpolation "hello {name}"
 │   │   ├── MatchExpression      # Pattern matching (match expr { ... })
 │   │   ├── AwaitExpression      # await expr (async value retrieval)
 │   │   ├── PipelineExpression   # expr |> fn(args) pipeline operator
@@ -208,8 +208,8 @@ RefCount
 │   │   ├── InsertExpression     # insert T { field: value, ... }
 │   │   ├── UpdateExpression     # update T |> where {} |> set { .field = value }
 │   │   └── DeleteExpression     # delete T |> where {}
-│   ├── WhileStatement
-│   ├── ForStatement             # C-style for(init; cond; step)
+│   ├── WhileStatement           # while expr { }
+│   ├── ForStatement             # C-style for(init; cond; step) — DEPRECATED, no longer parsed
 │   ├── ForInStatement           # for x in expr { }, for { } (infinite)
 │   ├── IfStatement
 │   ├── ReturnStatement
@@ -294,9 +294,9 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 Tests are organized into three categories under `test_files/`:
 
-- **`test_files/pass/`** (93 tests) — Should parse successfully. Includes:
+- **`test_files/pass/`** (91 tests) — Should parse successfully. Includes:
   - Basic function tests: `func_simple.b`, `func_call.b`, `multi_func.b`, `empty_func.b`
-  - Control flow: `if_simple.b`, `if_nested.b`, `while_simple.b`, `while_block.b`, `for_simple.b`, `for_block.b`
+  - Control flow: `if_simple.b`, `if_nested.b`, `while_simple.b`, `while_block.b`
   - Variables and expressions: `var_decl.b`, `var_infer.b`, `const_decl.b`, `arithmetic_stmt.b`, `assignment_stmt.b`, `binary_expr_return.b`, `comparison_expr.b`
   - Returns: `return_var.b`, `return_call.b`
   - Literals and comments: `string_literals.b`, `comments.b`, `float_literal.b`, `bool_type.b`
@@ -319,10 +319,10 @@ Tests are organized into three categories under `test_files/`:
   - Pipeline operator: `pipeline_basic.b`, `pipeline_chained.b`, `pipeline_with_args.b`
   - Annotations: `annotation_json.b`, `annotation_multiple.b`, `annotation_with_args.b`
   - Table structs and queries: `table_struct.b`, `query_basic.b`, `query_insert.b`, `query_update.b`, `query_delete.b`, `query_join.b`
-- **`test_files/fail/`** (31 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `spawn_missing_brace.b`, `assert_missing_semi.b`, `test_missing_name.b`, `test_missing_body.b`, `requires_missing_expr.b`, `async_missing_fn.b`, `annotation_missing_name.b`, `table_missing_struct.b`, `query_missing_table.b`, `insert_missing_brace.b`
+- **`test_files/fail/`** (33 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_c_style.b`, `for_c_style_block.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `spawn_missing_brace.b`, `assert_missing_semi.b`, `test_missing_name.b`, `test_missing_body.b`, `requires_missing_expr.b`, `async_missing_fn.b`, `annotation_missing_name.b`, `table_missing_struct.b`, `query_missing_table.b`, `insert_missing_brace.b`
 Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/codegen_simple.b`, `test_files/codegen_binexpr.b`, `test_files/codegen_features.b`, `test_files/multi_var_decl.b`
 
-**Total: 124 tests** (93 pass + 31 fail/negative)
+**Total: 124 tests** (91 pass + 33 fail/negative)
 
 ### Running tests
 
@@ -363,15 +363,16 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 - **Array literals**: `[1, 2, 3]` syntax
 - **Array/collection indexing**: `arr[index]` syntax
 - **Range expressions**: `0..10` syntax
-- Control flow: `if`/`else`, `while`, `for`, `break`, `continue`
-  - C-style for: `for (int i = 0; i < 10; i = i + 1) { ... }`
+- Control flow: `if`/`else`, `while`, `for..in`, `break`, `continue`
+  - No parentheses on `if` or `while` conditions: `if x > 0 { }`, `while running { }`
   - For-in loops: `for x in collection { ... }`, `for i in 0..10 { ... }`
   - Key-value iteration: `for key, value in map { ... }`
   - Infinite loops: `for { ... }`
+  - No C-style `for(;;)` — use `for..in` with ranges or `while` instead
 - **Pattern matching** with `match`:
-  - Literal patterns: `match x { 1 => { ... }, 2 => { ... } }`
-  - Wildcard pattern: `_ => { ... }` (default/catch-all)
-  - Destructuring with bindings: `ok(value) => { ... }`, `some(x) => { ... }`
+  - Literal patterns: `match x { 1 { ... } 2 { ... } }`
+  - Wildcard pattern: `_ { ... }` (default/catch-all)
+  - Destructuring with bindings: `ok(value) { ... }`, `some(x) { ... }`
 - Expressions: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
 - **`?` try operator**: `expr?` postfix operator for error propagation (unwraps Result/Option, returns early on error)
 - Assignment operators: `=`, `+=`, `-=`, `*=`, `/=`
@@ -413,7 +414,7 @@ This is an active work-in-progress. The recursive-descent parser can parse BLang
 
 **Runtime libraries**: `blang_json` (C library for JSON encode/decode), `blang_db` (database abstraction with optional SQLite backend). SQL generation (`SQLGen`) converts query AST nodes to parameterized SQL. Schema migration (`SchemaMigration`) diffs table struct definitions against stored schema and generates CREATE/ALTER TABLE statements.
 
-**Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else, while, for loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
+**Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else (no parentheses), while (no parentheses), for-in loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
 
 The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
 
