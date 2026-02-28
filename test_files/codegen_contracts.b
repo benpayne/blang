@@ -5,8 +5,9 @@ fn divide(int a, int b) -> int requires b != 0 {
 }
 
 fn positive(int x) -> int ensures result >= 0 {
-	if (x < 0)
+	if x < 0 {
 		return 0;
+	}
 	return x;
 }
 

@@ -252,19 +252,13 @@ WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Internal Compiler Error" );
 	}
 
-	sym = l.getSymbol();
-	if ( sym != '(' )
-	{
-		COMPILE_ERROR( l, "Expected \'(\'" );
-	}
-
 	WhileStatement *statement = new WhileStatement;
-	
-	statement->mLoopExpression = Expression::Parse( l, scope, ')' );
-	
+
+	statement->mLoopExpression = Expression::ParseExpr( l, scope, 0 );
+
 	if ( statement->mLoopExpression == nullptr )
 	{
-		COMPILE_ERROR( l, "Expected Expression in while statement" );
+		COMPILE_ERROR( l, "Expected expression in while condition" );
 	}
 	
 	Scope *loop_scope = new Scope( Scope::kScope_Loop );
@@ -286,19 +280,13 @@ IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Internal Compiler Error" );
 	}
 
-	sym = l.getSymbol();
-	if ( sym != '(' )
-	{
-		COMPILE_ERROR( l, "Expected \'(\'" );
-	}
-
 	IfStatement *statement = new IfStatement;
-	
-	statement->mIfExpression = Expression::Parse( l, scope, ')' );
-	
+
+	statement->mIfExpression = Expression::ParseExpr( l, scope, 0 );
+
 	if ( statement->mIfExpression == nullptr )
 	{
-		COMPILE_ERROR( l, "Expected Expression in while statement" );
+		COMPILE_ERROR( l, "Expected expression in if condition" );
 	}
 	
 	Scope *if_scope = new Scope( Scope::kScope_IfElse );
