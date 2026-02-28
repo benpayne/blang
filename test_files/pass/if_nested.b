@@ -7,17 +7,11 @@ fn action( int x ) -> int
 
 fn run_test( int a, int b )
 {
-	if ( a )
-	{
-		if ( b )
+	if a {
+		if b {
 			action( a );
-		else
+		} else {
 			action( b );
+		}
 	}
-
-	if ( a )
-		if ( b )
-			action( a );
-		else
-			action( b );
 }

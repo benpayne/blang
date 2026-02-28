@@ -7,8 +7,7 @@ fn process( int x ) -> int
 
 fn run_test( int a )
 {
-	while ( a )
-	{
+	while a {
 		process( a );
 	}
 }

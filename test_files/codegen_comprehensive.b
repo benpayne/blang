@@ -4,7 +4,7 @@
 extern fn printf(string fmt, ...) -> int;
 
 fn abs(int x) -> int requires x >= -1000 ensures result >= 0 {
-	if (x < 0) {
+	if x < 0 {
 		return 0 - x;
 	}
 	return x;
@@ -51,7 +51,7 @@ fn main() -> int {
 	// 7. Nested control flow
 	int result = 0;
 	for k in 0..5 {
-		if (k > 2) {
+		if k > 2 {
 			result = result + k;
 		}
 	}

@@ -7,25 +7,20 @@ fn check( int x ) -> int
 
 fn run_test( int a )
 {
-	if ( a )
-		check( a );
-
-	if ( a )
-	{
+	if a {
 		check( a );
 	}
 
-	if ( a )
-	{
+	if a {
 		check( a );
 	}
-	else
-	{
+	else {
 		check( a );
 	}
 
-	if ( a )
+	if a {
 		check( a );
-	else
+	} else {
 		check( a );
+	}
 }

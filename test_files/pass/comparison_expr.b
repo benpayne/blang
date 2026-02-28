@@ -8,6 +8,7 @@ fn check( int x ) -> int
 
 fn run_test( int a )
 {
-	if ( a == 0 )
+	if a == 0 {
 		check( a );
+	}
 }
