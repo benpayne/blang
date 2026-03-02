@@ -89,9 +89,15 @@ void __blang_sync_unlock( void *ptr )
 /* Simple fixed-size task queue. */
 #define TASK_QUEUE_CAPACITY 4096
 
+typedef struct SpawnTask
+{
+	blang_spawn_fn fn;
+	void *ctx;
+} SpawnTask;
+
 typedef struct TaskQueue
 {
-	blang_spawn_fn tasks[TASK_QUEUE_CAPACITY];
+	SpawnTask tasks[TASK_QUEUE_CAPACITY];
 	int head;
 	int tail;
 	int count;
@@ -132,14 +138,18 @@ static void *worker_thread( void *arg )
 			break;
 		}
 
-		blang_spawn_fn fn = q->tasks[q->head];
+		SpawnTask task = q->tasks[q->head];
 		q->head = ( q->head + 1 ) % TASK_QUEUE_CAPACITY;
 		q->count--;
 		pthread_cond_signal( &q->not_full );
 		pthread_mutex_unlock( &q->mutex );
 
-		/* Execute the task. */
-		fn();
+		/* Execute the task with its context. */
+		task.fn( task.ctx );
+
+		/* Free the context if it was heap-allocated. */
+		if ( task.ctx != NULL )
+			free( task.ctx );
 
 		/* Decrement in-flight counter. */
 		pthread_mutex_lock( &pool->flight_mutex );
@@ -181,7 +191,7 @@ void __blang_runtime_init( int num_threads )
 		pthread_create( &g_pool->threads[i], NULL, worker_thread, g_pool );
 }
 
-void __blang_spawn( blang_spawn_fn fn )
+void __blang_spawn( blang_spawn_fn fn, void *ctx )
 {
 	if ( g_pool == NULL )
 		__blang_runtime_init( 0 );
@@ -204,7 +214,8 @@ void __blang_spawn( blang_spawn_fn fn )
 		return;
 	}
 
-	q->tasks[q->tail] = fn;
+	q->tasks[q->tail].fn = fn;
+	q->tasks[q->tail].ctx = ctx;
 	q->tail = ( q->tail + 1 ) % TASK_QUEUE_CAPACITY;
 	q->count++;
 	pthread_cond_signal( &q->not_empty );

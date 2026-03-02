@@ -42,16 +42,17 @@ void __blang_sync_unlock( void *ptr );
 
 /* ---- Green Thread Pool (spawn) ---- */
 
-/* Signature for a spawn body: void(*)(void). */
-typedef void (*blang_spawn_fn)( void );
+/* Signature for a spawn body: void(*)(void*) with context pointer. */
+typedef void (*blang_spawn_fn)( void *ctx );
 
 /* Initialize the global thread pool with `num_threads` worker threads.
    If num_threads == 0, uses the number of CPU cores. */
 void __blang_runtime_init( int num_threads );
 
 /* Submit a task to the thread pool. The function `fn` will be executed
-   asynchronously by one of the worker threads. */
-void __blang_spawn( blang_spawn_fn fn );
+   asynchronously by one of the worker threads with the given context.
+   The context will be freed after the function returns. */
+void __blang_spawn( blang_spawn_fn fn, void *ctx );
 
 /* Block until all submitted tasks have completed, then destroy the pool. */
 void __blang_runtime_shutdown( void );

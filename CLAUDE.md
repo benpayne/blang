@@ -414,14 +414,17 @@ This is an active work-in-progress. The recursive-descent parser can parse BLang
 
 **Runtime libraries**: `blang_json` (C library for JSON encode/decode), `blang_db` (database abstraction with optional SQLite backend). SQL generation (`SQLGen`) converts query AST nodes to parameterized SQL. Schema migration (`SchemaMigration`) diffs table struct definitions against stored schema and generates CREATE/ALTER TABLE statements.
 
-**Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else (no parentheses), while (no parentheses), for-in loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and constant expressions (int, float, string, char). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
+**Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else (no parentheses), while (no parentheses), for-in loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), constant expressions (int, float, string, char), break/continue in all loop types (while, for, for-in, infinite), string interpolation via `snprintf`, pipeline operator (`|>` desugaring), ARC retain/release at scope boundaries for shared/sync variables, runtime init/shutdown in `main()` for concurrency features, spawn blocks with closure extraction (captured variables packed into context struct, dispatched to thread pool via `__blang_spawn`), channel variable declarations (`chan<T>` → `__blang_chan_create`), async function wrappers (body extracted to `void*(void*)`, called via `__blang_async_call`), await expressions (`__blang_await` + `__blang_task_destroy`), event handler callback extraction, and database query/insert/update/delete codegen (SQL generated at compile time via `SQLGen`, emits `__blang_db_query`/`__blang_db_exec` calls). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
 
 The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
 
 ## Known Issues and Limitations
 
-- Codegen for structs, methods, generics, Result/Option, match, and `?` operator requires LLVM and is not yet implemented.
-- Codegen for ownership (move semantics, ARC, auto-locking), spawn/chan (green threads, channels), async/await (event loop, coroutines), contracts (runtime checks), and test blocks (test runner) requires LLVM and runtime library, not yet implemented.
+- Codegen for generics (monomorphization or type erasure) is not yet implemented.
+- Channel send/receive operations lack parser syntax — only `chan<T>` variable declarations are codegen'd.
+- Async function return value boxing/unboxing is simplified (heap-allocated, not yet optimized).
+- Event handler registration requires runtime event loop API (currently executes inline as a fallback).
+- Database query codegen uses NULL connection pointer — needs global DB connection management.
 - Multi-module codegen (linking symbols across files) is not yet implemented.
 - Generic type instantiation (monomorphization or type erasure) is not yet implemented.
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.

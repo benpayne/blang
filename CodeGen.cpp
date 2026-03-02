@@ -90,8 +90,9 @@ llvm::StructType *CodeGen::getOrCreateStructType( StructDefinition *structDef )
 
 bool CodeGen::generate( Module *mod )
 {
-	// Store the module scope for type resolution
+	// Store the module scope and pointer for type resolution and SQL gen
 	mScope = mod->mScope;
+	mQLangModule = mod;
 
 	// Register all struct definitions and create LLVM struct types
 	for ( auto &structDef : mod->mStructList )
@@ -186,6 +187,17 @@ bool CodeGen::generate( Module *mod )
 		}
 	}
 
+	// Scan module for concurrency features to determine if runtime init/shutdown is needed
+	for ( auto &func : mod->mFunctionList )
+	{
+		if ( func->isAsync() )
+		{
+			mUsesConcurrency = true;
+			break;
+		}
+	}
+	// Also check for spawn or shared/sync usage (set during codegen)
+
 	// Generate top-level functions
 	for ( auto &func : mod->mFunctionList )
 	{
@@ -256,6 +268,180 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	if ( func->isExtern() )
 		return llvmFunc;
 
+	// Async functions: create a void*(void*) wrapper and generate the body inside it
+	if ( func->isAsync() )
+	{
+		mUsesConcurrency = true;
+
+		// Create a wrapper function: void* __blang_async_wrapper_name(void* arg)
+		string wrapperName = "__blang_async_wrapper_" + func->getName();
+		llvm::FunctionType *wrapperType = llvm::FunctionType::get(
+			llvm::PointerType::get( *mContext, 0 ),
+			{ llvm::PointerType::get( *mContext, 0 ) },
+			false );
+		llvm::Function *wrapperFn = llvm::Function::Create(
+			wrapperType, llvm::Function::InternalLinkage, wrapperName, mModule.get() );
+		wrapperFn->getArg( 0 )->setName( "arg" );
+
+		// Generate the wrapper body
+		llvm::BasicBlock *wrapEntry = llvm::BasicBlock::Create(
+			*mContext, "entry", wrapperFn );
+		mBuilder->SetInsertPoint( wrapEntry );
+
+		// Track current function
+		mCurrentFunction = func;
+		mResultAlloca = nullptr;
+
+		// Unpack parameters from a context struct if the function has params
+		if ( !func->mParameters.empty() )
+		{
+			// Create a context struct for parameters
+			std::vector<llvm::Type*> paramTypesForCtx;
+			for ( auto &param : func->mParameters )
+				paramTypesForCtx.push_back( getLLVMType( param->getVariableType() ) );
+
+			llvm::StructType *ctxType = llvm::StructType::create(
+				*mContext, paramTypesForCtx, func->getName() + ".async.ctx" );
+
+			llvm::Value *ctxPtr = wrapperFn->getArg( 0 );
+			unsigned pidx = 0;
+			for ( auto &param : func->mParameters )
+			{
+				llvm::Type *pType = getLLVMType( param->getVariableType() );
+				llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+					pType, nullptr, param->getName() );
+				llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+					ctxType, ctxPtr, pidx, "async.param" );
+				llvm::Value *val = mBuilder->CreateLoad( pType, fieldPtr, param->getName() );
+				mBuilder->CreateStore( val, alloca );
+				mVariableMap[param] = alloca;
+				pidx++;
+			}
+		}
+
+		// Set up async wrapper context so return statements store + branch
+		llvm::BasicBlock *asyncExitBB = llvm::BasicBlock::Create(
+			*mContext, "async.exit", wrapperFn );
+
+		llvm::AllocaInst *asyncResultAlloca = nullptr;
+		if ( !retType->isVoidTy() )
+		{
+			asyncResultAlloca = mBuilder->CreateAlloca( retType, nullptr, "async.result" );
+			mBuilder->CreateStore( llvm::Constant::getNullValue( retType ), asyncResultAlloca );
+		}
+
+		mAsyncResultAlloca = asyncResultAlloca;
+		mAsyncExitBB = asyncExitBB;
+		mAsyncReturnType = retType;
+
+		// Generate the function body
+		if ( func->mFuncBody != nullptr )
+			genBlock( func->mFuncBody );
+
+		// Fall through to the exit block if body doesn't terminate
+		if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+			mBuilder->CreateBr( asyncExitBB );
+
+		// Generate the exit block: box result and return void*
+		mBuilder->SetInsertPoint( asyncExitBB );
+		if ( asyncResultAlloca != nullptr )
+		{
+			// Box the return value: allocate heap memory, store value, return ptr
+			llvm::DataLayout dl( mModule.get() );
+			uint64_t typeSize = dl.getTypeAllocSize( retType );
+			llvm::Function *mallocFn = getOrDeclareMalloc();
+			llvm::Value *boxPtr = mBuilder->CreateCall( mallocFn,
+				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), typeSize ) },
+				"async.box" );
+			llvm::Value *resultVal = mBuilder->CreateLoad( retType, asyncResultAlloca, "res" );
+			mBuilder->CreateStore( resultVal, boxPtr );
+			mBuilder->CreateRet( boxPtr );
+		}
+		else
+		{
+			llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+				llvm::PointerType::get( *mContext, 0 ) );
+			mBuilder->CreateRet( nullPtr );
+		}
+
+		// Clear async context
+		mAsyncResultAlloca = nullptr;
+		mAsyncExitBB = nullptr;
+		mAsyncReturnType = nullptr;
+
+		// Now generate the public function that calls __blang_async_call(wrapper, args)
+		llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+			*mContext, "entry", llvmFunc );
+		mBuilder->SetInsertPoint( entryBB );
+
+		mVariableMap.clear();
+
+		// Create parameter allocas for the public function
+		unsigned idx = 0;
+		for ( auto &arg : llvmFunc->args() )
+		{
+			VariableDefinition *paramDef = func->mParameters[idx];
+			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+				arg.getType(), nullptr, paramDef->getName() );
+			mBuilder->CreateStore( &arg, alloca );
+			mVariableMap[paramDef] = alloca;
+			idx++;
+		}
+
+		// Pack parameters into context struct and call __blang_async_call
+		llvm::Value *ctxArg = llvm::ConstantPointerNull::get(
+			llvm::PointerType::get( *mContext, 0 ) );
+
+		if ( !func->mParameters.empty() )
+		{
+			std::vector<llvm::Type*> paramTypesForCtx;
+			for ( auto &param : func->mParameters )
+				paramTypesForCtx.push_back( getLLVMType( param->getVariableType() ) );
+
+			llvm::StructType *ctxType = llvm::StructType::create(
+				*mContext, paramTypesForCtx, func->getName() + ".call.ctx" );
+
+			llvm::DataLayout dl( mModule.get() );
+			uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
+			llvm::Function *mallocFn = getOrDeclareMalloc();
+			ctxArg = mBuilder->CreateCall( mallocFn,
+				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
+				"async.ctx" );
+
+			unsigned pidx = 0;
+			for ( auto &param : func->mParameters )
+			{
+				llvm::AllocaInst *alloca = mVariableMap[param];
+				llvm::Type *pType = getLLVMType( param->getVariableType() );
+				llvm::Value *val = mBuilder->CreateLoad( pType, alloca, "param.val" );
+				llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+					ctxType, ctxArg, pidx, "ctx.store" );
+				mBuilder->CreateStore( val, fieldPtr );
+				pidx++;
+			}
+		}
+
+		// Call __blang_async_call(wrapper, ctx) -> BlangTask*
+		llvm::Value *taskPtr = mBuilder->CreateCall(
+			getOrDeclareAsyncCall(), { wrapperFn, ctxArg }, "task" );
+
+		// Return the task pointer (or void)
+		if ( retType->isVoidTy() )
+		{
+			mBuilder->CreateRetVoid();
+		}
+		else
+		{
+			// For now return 0 — proper return value would need boxing
+			mBuilder->CreateRet( llvm::Constant::getNullValue( retType ) );
+		}
+
+		mCurrentFunction = nullptr;
+		mResultAlloca = nullptr;
+		mVariableMap.clear();
+		return llvmFunc;
+	}
+
 	// Name the parameters
 	unsigned idx = 0;
 	for ( auto &arg : llvmFunc->args() )
@@ -297,6 +483,14 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 			mVariableMap[resultVar] = mResultAlloca;
 	}
 
+	// Insert runtime init for main() if concurrency features are used
+	bool isMain = ( func->getName() == "main" );
+	if ( isMain && mUsesConcurrency )
+	{
+		mBuilder->CreateCall( getOrDeclareRuntimeInit(),
+			{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
+	}
+
 	// Generate requires (precondition) checks at function entry
 	for ( auto &clause : func->mRequiresClauses )
 	{
@@ -318,6 +512,10 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		{
 			genContractCheck( clause, "Postcondition violated" );
 		}
+
+		// Insert runtime shutdown for main() if concurrency features are used
+		if ( isMain && mUsesConcurrency )
+			mBuilder->CreateCall( getOrDeclareRuntimeShutdown(), {} );
 
 		if ( retType->isVoidTy() )
 		{
@@ -345,6 +543,9 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 
 void CodeGen::genBlock( Block *block )
 {
+	// Push a new ARC scope to track shared/sync variables declared in this block
+	mArcScopeStack.push_back( {} );
+
 	for ( auto &stmt : block->mStatementList )
 	{
 		if ( stmt != nullptr )
@@ -355,6 +556,19 @@ void CodeGen::genBlock( Block *block )
 			genStatement( stmt );
 		}
 	}
+
+	// Emit release calls for all shared/sync variables declared in this scope
+	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+	{
+		for ( auto *alloca : mArcScopeStack.back() )
+		{
+			llvm::Value *heapPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), alloca, "rc.rel.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
+		}
+	}
+
+	mArcScopeStack.pop_back();
 }
 
 void CodeGen::genStatement( Statement *stmt )
@@ -402,6 +616,14 @@ void CodeGen::genStatement( Statement *stmt )
 	{
 		genEventHandler( handler );
 	}
+	else if ( dynamic_cast<BreakStatement*>( stmt ) )
+	{
+		genBreakStatement();
+	}
+	else if ( dynamic_cast<ContinueStatement*>( stmt ) )
+	{
+		genContinueStatement();
+	}
 	else if ( auto *varDecl = dynamic_cast<VariableDeclaration*>( stmt ) )
 	{
 		genVariableDeclaration( varDecl );
@@ -420,6 +642,39 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 		llvm::Type *llvmType = getLLVMType( varDef->getVariableType() );
 		OwnershipQualifier ownership = varDef->getOwnership();
 
+		// Check for channel type: chan<T>
+		Type *varType = varDef->getVariableType();
+		if ( varType != nullptr && varType->getName() == "chan" )
+		{
+			// chan<T> -> __blang_chan_create(sizeof(T), capacity)
+			llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+				ptrType, nullptr, varDef->getName() );
+			mVariableMap[varDef] = alloca;
+
+			// Determine element size from type parameter
+			uint64_t elemSize = 4; // default to int-sized
+			if ( varType->getNumTypeParams() > 0 )
+			{
+				llvm::Type *elemType = getLLVMType( varType->getTypeParam( 0 ) );
+				llvm::DataLayout dl( mModule.get() );
+				elemSize = dl.getTypeAllocSize( elemType );
+			}
+
+			// Default capacity of 16
+			llvm::Value *sizeVal = llvm::ConstantInt::get(
+				llvm::Type::getInt64Ty( *mContext ), elemSize );
+			llvm::Value *capVal = llvm::ConstantInt::get(
+				llvm::Type::getInt64Ty( *mContext ), 16 );
+
+			llvm::Value *chanPtr = mBuilder->CreateCall(
+				getOrDeclareChanCreate(), { sizeVal, capVal }, "chan.ptr" );
+			mBuilder->CreateStore( chanPtr, alloca );
+
+			mUsesConcurrency = true;
+			continue;
+		}
+
 		if ( ownership == OwnershipQualifier::kOwnership_Shared ||
 			 ownership == OwnershipQualifier::kOwnership_Sync )
 		{
@@ -429,6 +684,10 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
 				ptrType, nullptr, varDef->getName() );
 			mVariableMap[varDef] = alloca;
+
+			// Track for ARC release at scope exit
+			if ( !mArcScopeStack.empty() )
+				mArcScopeStack.back().push_back( alloca );
 
 			// Determine data size
 			llvm::DataLayout dl( mModule.get() );
@@ -496,6 +755,38 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 
 void CodeGen::genReturnStatement( ReturnStatement *ret )
 {
+	// Emit ARC releases for all in-scope shared/sync variables before returning
+	for ( auto it = mArcScopeStack.rbegin(); it != mArcScopeStack.rend(); ++it )
+	{
+		for ( auto *alloca : *it )
+		{
+			llvm::Value *heapPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), alloca, "rc.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
+		}
+	}
+
+	// In an async wrapper, return statements store the value and branch to exit
+	if ( mAsyncExitBB != nullptr )
+	{
+		if ( ret->mExpression != nullptr && mAsyncResultAlloca != nullptr )
+		{
+			llvm::Value *retVal = genExpression( ret->mExpression );
+			if ( retVal != nullptr )
+			{
+				// Cast if needed
+				if ( retVal->getType() != mAsyncReturnType )
+				{
+					if ( mAsyncReturnType->isIntegerTy() && retVal->getType()->isIntegerTy() )
+						retVal = mBuilder->CreateIntCast( retVal, mAsyncReturnType, true, "icast" );
+				}
+				mBuilder->CreateStore( retVal, mAsyncResultAlloca );
+			}
+		}
+		mBuilder->CreateBr( mAsyncExitBB );
+		return;
+	}
+
 	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
 	llvm::Type *expectedType = func->getReturnType();
 
@@ -518,6 +809,15 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 					// Returning a primitive for a struct-typed function — create a
 					// zero-initialized struct (semantic mismatch, but valid IR)
 					retVal = llvm::Constant::getNullValue( expectedType );
+				}
+				else if ( expectedType->isIntegerTy() && retVal->getType()->isPointerTy() )
+				{
+					// Pointer to integer conversion (e.g., query result as int)
+					retVal = mBuilder->CreatePtrToInt( retVal, expectedType, "ptrtoint" );
+				}
+				else if ( expectedType->isPointerTy() && retVal->getType()->isIntegerTy() )
+				{
+					retVal = mBuilder->CreateIntToPtr( retVal, expectedType, "inttoptr" );
 				}
 			}
 
@@ -623,12 +923,17 @@ void CodeGen::genWhileStatement( WhileStatement *whileStmt )
 		mBuilder->CreateCondBr( condVal, bodyBB, afterBB );
 	}
 
+	// Push loop targets for break/continue
+	mLoopStack.push_back( { condBB, afterBB } );
+
 	// Body block
 	mBuilder->SetInsertPoint( bodyBB );
 	if ( whileStmt->mLoopStatement != nullptr )
 		genStatement( whileStmt->mLoopStatement );
 	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 		mBuilder->CreateBr( condBB );
+
+	mLoopStack.pop_back();
 
 	// Continue after loop
 	mBuilder->SetInsertPoint( afterBB );
@@ -671,12 +976,17 @@ void CodeGen::genForStatement( ForStatement *forStmt )
 		mBuilder->CreateBr( bodyBB );
 	}
 
+	// Push loop targets: continue goes to iter, break goes to after
+	mLoopStack.push_back( { iterBB, afterBB } );
+
 	// Body
 	mBuilder->SetInsertPoint( bodyBB );
 	if ( forStmt->mStatement != nullptr )
 		genStatement( forStmt->mStatement );
 	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 		mBuilder->CreateBr( iterBB );
+
+	mLoopStack.pop_back();
 
 	// Iteration
 	mBuilder->SetInsertPoint( iterBB );
@@ -727,6 +1037,18 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 		return genIndexExpression( idxExpr );
 	else if ( auto *awaitExpr = dynamic_cast<AwaitExpression*>( expr ) )
 		return genAwaitExpression( awaitExpr );
+	else if ( auto *pipeline = dynamic_cast<PipelineExpression*>( expr ) )
+		return genPipelineExpression( pipeline );
+	else if ( auto *interp = dynamic_cast<StringInterpolation*>( expr ) )
+		return genStringInterpolation( interp );
+	else if ( auto *queryExpr = dynamic_cast<QueryExpression*>( expr ) )
+		return genQueryExpression( queryExpr );
+	else if ( auto *insertExpr = dynamic_cast<InsertExpression*>( expr ) )
+		return genInsertExpression( insertExpr );
+	else if ( auto *updateExpr = dynamic_cast<UpdateExpression*>( expr ) )
+		return genUpdateExpression( updateExpr );
+	else if ( auto *deleteExpr = dynamic_cast<DeleteExpression*>( expr ) )
+		return genDeleteExpression( deleteExpr );
 
 	return nullptr;
 }
@@ -1554,10 +1876,11 @@ llvm::Function *CodeGen::getOrDeclareSpawn()
 	if ( f != nullptr )
 		return f;
 
-	// void __blang_spawn( void(*)() fn )
+	// void __blang_spawn( void(*fn)(void*), void *ctx )
 	llvm::FunctionType *ft = llvm::FunctionType::get(
 		llvm::Type::getVoidTy( *mContext ),
-		{ llvm::PointerType::get( *mContext, 0 ) },
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ) },
 		false );
 	return llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, "__blang_spawn", mModule.get() );
@@ -1783,40 +2106,245 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	if ( spawn->mBody == nullptr )
 		return;
 
-	// Generate the spawn body inline (sequential execution).
-	// Spawn blocks commonly capture variables from enclosing scope which
-	// prevents trivial extraction into a separate thread function without
-	// closure support. The runtime thread pool (__blang_spawn) is available
-	// for spawn blocks that don't capture variables; closure-based extraction
-	// will be implemented as a future enhancement.
-	genBlock( spawn->mBody );
+	mUsesConcurrency = true;
+
+	// Identify captured variables: variables referenced in the spawn body
+	// that are defined in an outer scope. We scan the block's scope for
+	// all variables and check which ones have allocas in mVariableMap
+	// (meaning they were defined before the spawn block).
+	Block *bodyBlock = spawn->mBody;
+	std::vector<std::pair<VariableDefinition*, llvm::AllocaInst*>> captures;
+
+	// Collect outer variables used in this scope
+	if ( bodyBlock->mScope != nullptr )
+	{
+		Scope *bodyScope = bodyBlock->mScope;
+		// Check each statement in the body for variable references
+		// For simplicity, capture all variables visible from the outer scope
+		// that already have allocas (i.e., were declared before spawn)
+		for ( auto &entry : mVariableMap )
+		{
+			captures.push_back( { entry.first, entry.second } );
+		}
+	}
+
+	// Create the context struct type
+	std::vector<llvm::Type*> captureTypes;
+	for ( auto &cap : captures )
+	{
+		captureTypes.push_back( cap.second->getAllocatedType() );
+	}
+
+	llvm::StructType *ctxType = llvm::StructType::create(
+		*mContext, captureTypes, "spawn.ctx" );
+
+	// Generate a unique spawn function name
+	static int spawnCounter = 0;
+	string spawnFnName = "__blang_spawn_body_" + to_string( spawnCounter++ );
+
+	// Create the spawn body function: void spawn_body(void* ctx)
+	llvm::FunctionType *spawnFnType = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	llvm::Function *spawnFn = llvm::Function::Create(
+		spawnFnType, llvm::Function::InternalLinkage, spawnFnName, mModule.get() );
+	spawnFn->getArg( 0 )->setName( "ctx" );
+
+	// Save current state
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	auto savedVarMap = mVariableMap;
+	auto savedLoopStack = mLoopStack;
+	auto savedArcStack = mArcScopeStack;
+
+	// Generate the spawn function body
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+		*mContext, "entry", spawnFn );
+	mBuilder->SetInsertPoint( entryBB );
+
+	mVariableMap.clear();
+	mLoopStack.clear();
+	mArcScopeStack.clear();
+
+	// Unpack the context struct into local allocas
+	llvm::Value *ctxPtr = spawnFn->getArg( 0 );
+	for ( size_t i = 0; i < captures.size(); i++ )
+	{
+		llvm::Type *fieldType = captureTypes[i];
+		llvm::AllocaInst *localAlloca = mBuilder->CreateAlloca(
+			fieldType, nullptr, captures[i].first->getName() );
+
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+			ctxType, ctxPtr, static_cast<unsigned>( i ), "ctx.field" );
+		llvm::Value *fieldVal = mBuilder->CreateLoad( fieldType, fieldPtr, "ctx.val" );
+		mBuilder->CreateStore( fieldVal, localAlloca );
+
+		mVariableMap[captures[i].first] = localAlloca;
+	}
+
+	// Generate the spawn body
+	genBlock( bodyBlock );
+
+	// Add implicit return
+	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+		mBuilder->CreateRetVoid();
+
+	// Restore state
+	mBuilder->SetInsertPoint( savedBB );
+	mVariableMap = savedVarMap;
+	mLoopStack = savedLoopStack;
+	mArcScopeStack = savedArcStack;
+
+	// Back in the caller: allocate context, populate, and call __blang_spawn
+	llvm::DataLayout dl( mModule.get() );
+	uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
+
+	llvm::Function *mallocFn = getOrDeclareMalloc();
+	llvm::Value *ctxAlloc = mBuilder->CreateCall( mallocFn,
+		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
+		"spawn.ctx" );
+
+	// Store captured variable values into the context
+	for ( size_t i = 0; i < captures.size(); i++ )
+	{
+		llvm::AllocaInst *alloca = captures[i].second;
+		llvm::Type *fieldType = captureTypes[i];
+		llvm::Value *val = mBuilder->CreateLoad( fieldType, alloca, "cap.val" );
+
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+			ctxType, ctxAlloc, static_cast<unsigned>( i ), "ctx.store" );
+		mBuilder->CreateStore( val, fieldPtr );
+	}
+
+	// Call __blang_spawn(spawn_body, ctx)
+	mBuilder->CreateCall( getOrDeclareSpawn(), { spawnFn, ctxAlloc } );
 }
 
 // ---- Phase 2: Event handler codegen ----
 
 void CodeGen::genEventHandler( EventHandler *handler )
 {
-	// Event handlers evaluate the event expression, then execute the body.
-	// The event expression is generated for its side effects (e.g., registering
-	// a timer). The body is wrapped in a callback-style function.
-	// For now, execute inline since the event loop runtime integration requires
-	// more infrastructure (event registration API).
+	if ( handler->mBody == nullptr )
+		return;
+
+	// Extract the handler body into a callback function: void(void*)
+	static int handlerCounter = 0;
+	string handlerName = "__blang_event_handler_" + to_string( handlerCounter++ );
+
+	// Capture outer variables (same pattern as spawn)
+	Block *bodyBlock = handler->mBody;
+	std::vector<std::pair<VariableDefinition*, llvm::AllocaInst*>> captures;
+	for ( auto &entry : mVariableMap )
+		captures.push_back( { entry.first, entry.second } );
+
+	std::vector<llvm::Type*> captureTypes;
+	for ( auto &cap : captures )
+		captureTypes.push_back( cap.second->getAllocatedType() );
+
+	llvm::StructType *ctxType = llvm::StructType::create(
+		*mContext, captureTypes, handlerName + ".ctx" );
+
+	// Create callback function
+	llvm::FunctionType *cbType = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	llvm::Function *cbFn = llvm::Function::Create(
+		cbType, llvm::Function::InternalLinkage, handlerName, mModule.get() );
+	cbFn->getArg( 0 )->setName( "ctx" );
+
+	// Save state
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	auto savedVarMap = mVariableMap;
+	auto savedLoopStack = mLoopStack;
+	auto savedArcStack = mArcScopeStack;
+
+	// Generate callback body
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+		*mContext, "entry", cbFn );
+	mBuilder->SetInsertPoint( entryBB );
+
+	mVariableMap.clear();
+	mLoopStack.clear();
+	mArcScopeStack.clear();
+
+	// Unpack captures
+	llvm::Value *ctxPtr = cbFn->getArg( 0 );
+	for ( size_t i = 0; i < captures.size(); i++ )
+	{
+		llvm::Type *fieldType = captureTypes[i];
+		llvm::AllocaInst *localAlloca = mBuilder->CreateAlloca(
+			fieldType, nullptr, captures[i].first->getName() );
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+			ctxType, ctxPtr, static_cast<unsigned>( i ), "ctx.field" );
+		llvm::Value *fieldVal = mBuilder->CreateLoad( fieldType, fieldPtr, "ctx.val" );
+		mBuilder->CreateStore( fieldVal, localAlloca );
+		mVariableMap[captures[i].first] = localAlloca;
+	}
+
+	genBlock( bodyBlock );
+
+	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+		mBuilder->CreateRetVoid();
+
+	// Restore state
+	mBuilder->SetInsertPoint( savedBB );
+	mVariableMap = savedVarMap;
+	mLoopStack = savedLoopStack;
+	mArcScopeStack = savedArcStack;
+
+	// In the caller: evaluate the event expression (for side effects)
 	if ( handler->mEventExpression != nullptr )
 		genExpression( handler->mEventExpression );
-	if ( handler->mBody != nullptr )
-		genBlock( handler->mBody );
+
+	// Allocate context and populate captures
+	llvm::DataLayout dl( mModule.get() );
+	uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
+	llvm::Function *mallocFn = getOrDeclareMalloc();
+	llvm::Value *ctxAlloc = mBuilder->CreateCall( mallocFn,
+		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
+		"event.ctx" );
+
+	for ( size_t i = 0; i < captures.size(); i++ )
+	{
+		llvm::AllocaInst *alloca = captures[i].second;
+		llvm::Type *fieldType = captureTypes[i];
+		llvm::Value *val = mBuilder->CreateLoad( fieldType, alloca, "cap.val" );
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+			ctxType, ctxAlloc, static_cast<unsigned>( i ), "ctx.store" );
+		mBuilder->CreateStore( val, fieldPtr );
+	}
+
+	// For now, call the handler inline (synchronous execution)
+	// When the event loop runtime is available, this would register
+	// the callback instead: __blang_event_register(event, cbFn, ctxAlloc)
+	mBuilder->CreateCall( cbFn, { ctxAlloc } );
 }
 
 // ---- Phase 2: Await expression codegen ----
 
 llvm::Value *CodeGen::genAwaitExpression( AwaitExpression *awaitExpr )
 {
-	// Generate the operand — if it's a call to an async function, wrap it
-	// in __blang_async_call + __blang_await. For now, evaluate synchronously
-	// since async function codegen produces regular functions.
-	// When async functions use the task-based runtime, this will call
-	// __blang_await on the returned task handle.
-	return genExpression( awaitExpr->mOperand );
+	// Generate the operand — this should produce a task handle from an async call
+	llvm::Value *operand = genExpression( awaitExpr->mOperand );
+	if ( operand == nullptr )
+		return nullptr;
+
+	// If the operand is a pointer (task handle), call __blang_await
+	if ( operand->getType()->isPointerTy() )
+	{
+		// void* result = __blang_await(task)
+		llvm::Value *result = mBuilder->CreateCall(
+			getOrDeclareAwait(), { operand }, "await.result" );
+
+		// Destroy the task
+		mBuilder->CreateCall( getOrDeclareTaskDestroy(), { operand } );
+
+		return result;
+	}
+
+	// Non-pointer: return as-is (synchronous evaluation fallback)
+	return operand;
 }
 
 // ---- Phase 2: ForIn statement codegen ----
@@ -1833,11 +2361,16 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		mBuilder->CreateBr( bodyBB );
 		mBuilder->SetInsertPoint( bodyBB );
 
+		// Push loop targets: continue goes back to body, break goes to after
+		mLoopStack.push_back( { bodyBB, afterBB } );
+
 		if ( forInStmt->mBody != nullptr )
 			genStatement( forInStmt->mBody );
 
 		if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 			mBuilder->CreateBr( bodyBB );
+
+		mLoopStack.pop_back();
 
 		mBuilder->SetInsertPoint( afterBB );
 		return;
@@ -1888,12 +2421,17 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 			llvm::Value *cond = mBuilder->CreateICmpSLT( curVal, endVal, "forin.cmp" );
 			mBuilder->CreateCondBr( cond, bodyBB, afterBB );
 
+			// Push loop targets: continue goes to iter, break goes to after
+			mLoopStack.push_back( { iterBB, afterBB } );
+
 			// Body
 			mBuilder->SetInsertPoint( bodyBB );
 			if ( forInStmt->mBody != nullptr )
 				genStatement( forInStmt->mBody );
 			if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 				mBuilder->CreateBr( iterBB );
+
+			mLoopStack.pop_back();
 
 			// Iteration: i = i + 1
 			mBuilder->SetInsertPoint( iterBB );
@@ -1914,6 +2452,432 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		genExpression( forInStmt->mIterableExpression );
 	if ( forInStmt->mBody != nullptr )
 		genStatement( forInStmt->mBody );
+}
+
+// ---- Memory allocation helpers ----
+
+llvm::Function *CodeGen::getOrDeclareMalloc()
+{
+	llvm::Function *f = mModule->getFunction( "malloc" );
+	if ( f != nullptr )
+		return f;
+
+	// void *malloc(size_t size)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "malloc", mModule.get() );
+}
+
+// ---- String interpolation codegen ----
+
+llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
+{
+	if ( interp->mParts.empty() )
+		return mBuilder->CreateGlobalStringPtr( "", "empty.str" );
+
+	// Build a format string and collect argument values for snprintf
+	std::string fmtStr;
+	std::vector<llvm::Value*> fmtArgs;
+
+	for ( auto &part : interp->mParts )
+	{
+		if ( auto *cs = dynamic_cast<ConstString*>( (Expression*)part ) )
+		{
+			// Literal string segment — append to format string as-is
+			// Escape any % characters for printf
+			for ( char c : cs->mValue )
+			{
+				if ( c == '%' )
+					fmtStr += "%%";
+				else
+					fmtStr += c;
+			}
+		}
+		else
+		{
+			// Expression segment — generate value and add format specifier
+			llvm::Value *val = genExpression( part );
+			if ( val == nullptr )
+				continue;
+
+			if ( val->getType()->isIntegerTy() )
+			{
+				fmtStr += "%d";
+				// Extend to i32 if narrower (e.g., i1 for bool)
+				if ( !val->getType()->isIntegerTy( 32 ) )
+					val = mBuilder->CreateSExt( val,
+						llvm::Type::getInt32Ty( *mContext ), "ext" );
+				fmtArgs.push_back( val );
+			}
+			else if ( val->getType()->isFloatTy() || val->getType()->isDoubleTy() )
+			{
+				fmtStr += "%f";
+				if ( val->getType()->isFloatTy() )
+					val = mBuilder->CreateFPExt( val,
+						llvm::Type::getDoubleTy( *mContext ), "fpext" );
+				fmtArgs.push_back( val );
+			}
+			else if ( val->getType()->isPointerTy() )
+			{
+				fmtStr += "%s";
+				fmtArgs.push_back( val );
+			}
+			else
+			{
+				fmtStr += "<?>";
+			}
+		}
+	}
+
+	// Use snprintf to build the result string into a stack buffer
+	llvm::Function *snprintfFn = getOrDeclareSnprintf();
+
+	// Allocate a 256-byte buffer on the stack
+	llvm::Type *i8Ty = llvm::Type::getInt8Ty( *mContext );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::Value *bufSize = llvm::ConstantInt::get( i32Ty, 256 );
+	llvm::AllocaInst *buf = mBuilder->CreateAlloca( i8Ty, bufSize, "interp.buf" );
+
+	// Build snprintf call: snprintf(buf, 256, fmt, args...)
+	std::vector<llvm::Value*> snprintfArgs;
+	snprintfArgs.push_back( buf );
+	llvm::Value *sizeVal = llvm::ConstantInt::get(
+		llvm::Type::getInt64Ty( *mContext ), 256 );
+	snprintfArgs.push_back( sizeVal );
+	snprintfArgs.push_back( mBuilder->CreateGlobalStringPtr( fmtStr, "interp.fmt" ) );
+	for ( auto *arg : fmtArgs )
+		snprintfArgs.push_back( arg );
+
+	mBuilder->CreateCall( snprintfFn, snprintfArgs );
+
+	return buf;
+}
+
+llvm::Function *CodeGen::getOrDeclareSnprintf()
+{
+	llvm::Function *f = mModule->getFunction( "snprintf" );
+	if ( f != nullptr )
+		return f;
+
+	// int snprintf(char *buf, size_t size, const char *fmt, ...)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ),
+		  llvm::PointerType::get( *mContext, 0 ) },
+		true /* variadic */ );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "snprintf", mModule.get() );
+}
+
+// ---- Pipeline expression codegen ----
+
+llvm::Value *CodeGen::genPipelineExpression( PipelineExpression *pipeline )
+{
+	// Desugar: expr |> fn(args) becomes fn(expr, args)
+	// The mTransform should be a CallExpression
+	auto *call = dynamic_cast<CallExpression*>( (Expression*)pipeline->mTransform );
+	if ( call == nullptr )
+	{
+		cerr << "CodeGen: pipeline RHS is not a function call" << endl;
+		return nullptr;
+	}
+
+	FunctionDefinition *funcDef = call->mFunction;
+
+	// Look up the LLVM function
+	llvm::Function *llvmFunc = nullptr;
+	auto it = mFunctionMap.find( funcDef );
+	if ( it != mFunctionMap.end() )
+		llvmFunc = it->second;
+	else
+		llvmFunc = mModule->getFunction( funcDef->getName() );
+
+	if ( llvmFunc == nullptr )
+	{
+		cerr << "CodeGen: undefined function '" << funcDef->getName() << "' in pipeline" << endl;
+		return nullptr;
+	}
+
+	// Generate the pipeline input as the first argument
+	llvm::Value *inputVal = genExpression( pipeline->mInput );
+	if ( inputVal == nullptr )
+		return nullptr;
+
+	std::vector<llvm::Value*> args;
+	args.push_back( inputVal );
+
+	// Generate the remaining explicit arguments from the call
+	for ( auto &paramExpr : call->mParams )
+	{
+		llvm::Value *argVal = genExpression( paramExpr );
+		if ( argVal == nullptr )
+			return nullptr;
+		args.push_back( argVal );
+	}
+
+	if ( llvmFunc->getReturnType()->isVoidTy() )
+	{
+		mBuilder->CreateCall( llvmFunc, args );
+		return nullptr;
+	}
+
+	return mBuilder->CreateCall( llvmFunc, args, "pipe" );
+}
+
+// ---- Database query codegen ----
+
+llvm::Function *CodeGen::getOrDeclareDbQuery()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_query" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangDBResult* __blang_db_query(BlangDBConn*, const char* sql,
+	//     const char** params, int num_params, const char** error_msg)
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		ptrTy, { ptrTy, ptrTy, ptrTy, i32Ty, ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_query", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbExec()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_exec" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		i32Ty, { ptrTy, ptrTy, ptrTy, i32Ty, ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_exec", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbResultCount()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_result_count" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get( i32Ty, { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_result_count", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbResultGet()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_result_get" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy, i32Ty, i32Ty }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_result_get", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbResultGetInt()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_result_get_int" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::Type *i64Ty = llvm::Type::getInt64Ty( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get( i64Ty, { ptrTy, i32Ty, i32Ty }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_result_get_int", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbResultFree()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_result_free" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_result_free", mModule.get() );
+}
+
+llvm::Value *CodeGen::genQueryExpression( QueryExpression *query )
+{
+	// Generate SQL at compile time
+	SQLStatement sqlStmt = SQLGen::generateSelect( query, mQLangModule );
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+
+	// Create the SQL string constant
+	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "query.sql" );
+
+	// Create params array (NULL for now — parameter binding requires runtime values)
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+		llvm::PointerType::get( *mContext, 0 ) );
+	llvm::Value *numParams = llvm::ConstantInt::get( i32Ty, 0 );
+
+	// Error message pointer
+	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "query.err" );
+	mBuilder->CreateStore( nullPtr, errMsgAlloca );
+
+	// The first argument is the database connection — for now use NULL
+	// (real code would load from a global or parameter)
+	// Call __blang_db_query(conn, sql, params, num_params, &error_msg)
+	llvm::Value *result = mBuilder->CreateCall(
+		getOrDeclareDbQuery(),
+		{ nullPtr, sqlStr, nullPtr, numParams, errMsgAlloca },
+		"query.result" );
+
+	return result;
+}
+
+llvm::Value *CodeGen::genInsertExpression( InsertExpression *insert )
+{
+	SQLStatement sqlStmt = SQLGen::generateInsert( insert, mQLangModule );
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+
+	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "insert.sql" );
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+		llvm::PointerType::get( *mContext, 0 ) );
+
+	// Build parameter array from field values
+	int numParams = static_cast<int>( insert->mFieldValues.size() );
+	llvm::ArrayType *paramArrType = llvm::ArrayType::get( ptrTy, numParams );
+	llvm::AllocaInst *paramArr = mBuilder->CreateAlloca( paramArrType, nullptr, "insert.params" );
+
+	llvm::Value *idx0 = llvm::ConstantInt::get( i32Ty, 0 );
+	for ( int i = 0; i < numParams; i++ )
+	{
+		llvm::Value *val = genExpression( insert->mFieldValues[i] );
+		if ( val == nullptr )
+			continue;
+
+		// Convert to string representation using snprintf
+		llvm::Value *strVal = val;
+		if ( val->getType()->isIntegerTy() )
+		{
+			// Convert int to string via snprintf
+			llvm::Type *i8Ty = llvm::Type::getInt8Ty( *mContext );
+			llvm::AllocaInst *buf = mBuilder->CreateAlloca(
+				i8Ty, llvm::ConstantInt::get( i32Ty, 32 ), "param.buf" );
+			llvm::Value *fmt = mBuilder->CreateGlobalStringPtr( "%d", "int.fmt" );
+			if ( !val->getType()->isIntegerTy( 32 ) )
+				val = mBuilder->CreateSExt( val, i32Ty, "ext" );
+			mBuilder->CreateCall( getOrDeclareSnprintf(),
+				{ buf, llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 32 ),
+				  fmt, val } );
+			strVal = buf;
+		}
+
+		llvm::Value *idxVal = llvm::ConstantInt::get( i32Ty, i );
+		llvm::Value *elemPtr = mBuilder->CreateGEP(
+			paramArrType, paramArr, { idx0, idxVal }, "param.ptr" );
+		mBuilder->CreateStore( strVal, elemPtr );
+	}
+
+	// Get pointer to first element
+	llvm::Value *paramsPtr = mBuilder->CreateGEP(
+		paramArrType, paramArr, { idx0, idx0 }, "params.ptr" );
+
+	// Error message pointer
+	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "insert.err" );
+	mBuilder->CreateStore( nullPtr, errMsgAlloca );
+
+	// Call __blang_db_exec(conn, sql, params, num_params, &error_msg)
+	llvm::Value *result = mBuilder->CreateCall(
+		getOrDeclareDbExec(),
+		{ nullPtr, sqlStr, paramsPtr,
+		  llvm::ConstantInt::get( i32Ty, numParams ), errMsgAlloca },
+		"insert.result" );
+
+	return result;
+}
+
+llvm::Value *CodeGen::genUpdateExpression( UpdateExpression *update )
+{
+	SQLStatement sqlStmt = SQLGen::generateUpdate( update, mQLangModule );
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+
+	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "update.sql" );
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+		llvm::PointerType::get( *mContext, 0 ) );
+
+	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "update.err" );
+	mBuilder->CreateStore( nullPtr, errMsgAlloca );
+
+	llvm::Value *result = mBuilder->CreateCall(
+		getOrDeclareDbExec(),
+		{ nullPtr, sqlStr, nullPtr,
+		  llvm::ConstantInt::get( i32Ty, 0 ), errMsgAlloca },
+		"update.result" );
+
+	return result;
+}
+
+llvm::Value *CodeGen::genDeleteExpression( DeleteExpression *del )
+{
+	SQLStatement sqlStmt = SQLGen::generateDelete( del, mQLangModule );
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+
+	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "delete.sql" );
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+		llvm::PointerType::get( *mContext, 0 ) );
+
+	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "delete.err" );
+	mBuilder->CreateStore( nullPtr, errMsgAlloca );
+
+	llvm::Value *result = mBuilder->CreateCall(
+		getOrDeclareDbExec(),
+		{ nullPtr, sqlStr, nullPtr,
+		  llvm::ConstantInt::get( i32Ty, 0 ), errMsgAlloca },
+		"delete.result" );
+
+	return result;
+}
+
+// ---- Break/Continue codegen ----
+
+void CodeGen::genBreakStatement()
+{
+	if ( mLoopStack.empty() )
+	{
+		cerr << "CodeGen: break statement outside of loop" << endl;
+		return;
+	}
+
+	llvm::BasicBlock *exitBB = mLoopStack.back().second;
+	mBuilder->CreateBr( exitBB );
+}
+
+void CodeGen::genContinueStatement()
+{
+	if ( mLoopStack.empty() )
+	{
+		cerr << "CodeGen: continue statement outside of loop" << endl;
+		return;
+	}
+
+	llvm::BasicBlock *continueBB = mLoopStack.back().first;
+	mBuilder->CreateBr( continueBB );
 }
 
 // ---- Phase 2: Test block codegen ----

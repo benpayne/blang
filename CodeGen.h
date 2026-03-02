@@ -3,6 +3,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 #include <memory>
 
 #include "llvm/IR/LLVMContext.h"
@@ -11,6 +12,7 @@
 
 #include "Type.h"
 #include "Expression.h"
+#include "SQLGen.h"
 
 namespace QLang
 {
@@ -69,6 +71,16 @@ private:
 	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
 	llvm::Value *genIndexExpression( IndexExpression *expr );
 
+	// Break/continue codegen
+	void genBreakStatement();
+	void genContinueStatement();
+
+	// String interpolation codegen
+	llvm::Value *genStringInterpolation( StringInterpolation *interp );
+
+	// Pipeline expression codegen
+	llvm::Value *genPipelineExpression( PipelineExpression *pipeline );
+
 	// Phase 2 expression generators
 	llvm::Value *genAwaitExpression( AwaitExpression *await );
 
@@ -82,6 +94,12 @@ private:
 	llvm::Function *getOrDeclarePuts();
 	llvm::Function *getOrDeclareExit();
 	llvm::Function *getOrDeclarePrintf();
+
+	// String helper declarations
+	llvm::Function *getOrDeclareSnprintf();
+
+	// Memory allocation helpers
+	llvm::Function *getOrDeclareMalloc();
 
 	// BLang runtime library declarations
 	llvm::Function *getOrDeclareRcAlloc();
@@ -101,6 +119,20 @@ private:
 	llvm::Function *getOrDeclareAsyncCall();
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();
+
+	// Database query codegen
+	llvm::Value *genQueryExpression( QueryExpression *query );
+	llvm::Value *genInsertExpression( InsertExpression *insert );
+	llvm::Value *genUpdateExpression( UpdateExpression *update );
+	llvm::Value *genDeleteExpression( DeleteExpression *del );
+
+	// Database runtime declarations
+	llvm::Function *getOrDeclareDbQuery();
+	llvm::Function *getOrDeclareDbExec();
+	llvm::Function *getOrDeclareDbResultCount();
+	llvm::Function *getOrDeclareDbResultGet();
+	llvm::Function *getOrDeclareDbResultGetInt();
+	llvm::Function *getOrDeclareDbResultFree();
 
 	// ForIn codegen
 	void genForInStatement( ForInStatement *forInStmt );
@@ -127,10 +159,27 @@ private:
 
 	// Module scope for type resolution
 	Scope *mScope = nullptr;
+	QLang::Module *mQLangModule = nullptr;
+
+	// Loop break/continue target stack (for nested loops)
+	std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> mLoopStack;
+	// Each entry is (continueBB, exitBB)
+
+	// ARC tracking: shared/sync variables per scope depth
+	std::vector<std::vector<llvm::AllocaInst*>> mArcScopeStack;
+
+	// Flag indicating module uses concurrency features
+	bool mUsesConcurrency = false;
 
 	// Current function context (for contract support)
 	FunctionDefinition *mCurrentFunction = nullptr;
 	llvm::AllocaInst *mResultAlloca = nullptr;
+
+	// Async wrapper context: when non-null, return statements should
+	// store the value here and branch to mAsyncExitBB instead of ret
+	llvm::AllocaInst *mAsyncResultAlloca = nullptr;
+	llvm::BasicBlock *mAsyncExitBB = nullptr;
+	llvm::Type *mAsyncReturnType = nullptr;
 };
 
 } // namespace QLang

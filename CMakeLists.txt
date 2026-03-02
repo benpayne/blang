@@ -77,7 +77,7 @@ set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
-	target_link_libraries(qcc ${llvm_libs})
+	target_link_libraries(qcc ${llvm_libs} blang_sqlgen)
 endif()
 
 # BLang runtime library (ARC, thread pool, channels, async)
