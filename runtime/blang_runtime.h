@@ -90,7 +90,9 @@ typedef void *(*blang_async_fn)( void *arg );
 typedef struct BlangTask BlangTask;
 
 /* Schedule an async function to run.
-   Returns a task handle that can be awaited. */
+   Returns a task handle that can be awaited.
+   When built with libuv (BLANG_HAS_LIBUV), tasks are dispatched to the libuv
+   thread pool via uv_queue_work.  Otherwise, falls back to one pthread per call. */
 BlangTask *__blang_async_call( blang_async_fn fn, void *arg );
 
 /* Block until the task completes and return its result value. */

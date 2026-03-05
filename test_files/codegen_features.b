@@ -30,7 +30,12 @@ fn main() -> int
 	printf("hello\tworld\n");
 	printf("a=%d b=%d d=%d e=%d f=%d\n", a, b, d, e, f);
 
-	// Return: a=-5, b=5, d=1(from !0), e=-1(from ~0), f=10(from negate(negate(10)))
+	// a=-5, b=5, d=1(from !0), e=-1(from ~0), f=10(from negate(negate(10)))
 	// sum = -5 + 5 + 1 + -1 + 10 = 10
-	return a + b + d + e + f;
+	int sum = a + b + d + e + f;
+	printf("sum = %d\n", sum);
+	if sum == 10 {
+		return 0;
+	}
+	return 1;
 }

@@ -5,6 +5,15 @@
 #include <stdio.h>
 #include <pthread.h>
 
+#ifdef BLANG_HAS_LIBUV
+#include <uv.h>
+
+/* Global event loop state (used by async/await and shutdown). */
+static uv_loop_t *g_async_loop = NULL;
+static pthread_t g_loop_thread;
+static int g_loop_running = 0;
+#endif
+
 /* ========================================================================
    ARC (Automatic Reference Counting)
    ======================================================================== */
@@ -35,7 +44,15 @@ void *__blang_rc_alloc_sync( size_t data_size )
 	hdr->is_sync = 1;
 	hdr->mutex = malloc( sizeof( pthread_mutex_t ) );
 	if ( hdr->mutex != NULL )
-		pthread_mutex_init( (pthread_mutex_t *)hdr->mutex, NULL );
+	{
+		/* Use recursive mutex to prevent deadlocks when nested expressions
+		   read the same sync variable (e.g., counter = counter + counter). */
+		pthread_mutexattr_t attr;
+		pthread_mutexattr_init( &attr );
+		pthread_mutexattr_settype( &attr, PTHREAD_MUTEX_RECURSIVE );
+		pthread_mutex_init( (pthread_mutex_t *)hdr->mutex, &attr );
+		pthread_mutexattr_destroy( &attr );
+	}
 	return (char *)hdr + sizeof( BlangRefHeader );
 }
 
@@ -251,6 +268,18 @@ void __blang_runtime_shutdown( void )
 	pthread_cond_destroy( &g_pool->all_done );
 	free( g_pool );
 	g_pool = NULL;
+
+#ifdef BLANG_HAS_LIBUV
+	/* Shut down the libuv event loop if it was started. */
+	if ( g_async_loop != NULL && g_loop_running )
+	{
+		uv_stop( g_async_loop );
+		pthread_join( g_loop_thread, NULL );
+		uv_loop_close( g_async_loop );
+		g_async_loop = NULL;
+		g_loop_running = 0;
+	}
+#endif
 }
 
 /* ========================================================================
@@ -364,6 +393,96 @@ void __blang_chan_destroy( BlangChan *ch )
    Async / Tasks
    ======================================================================== */
 
+#ifdef BLANG_HAS_LIBUV
+
+struct BlangTask
+{
+	uv_work_t work_req;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	void *result;
+	int completed;
+	blang_async_fn fn;
+	void *arg;
+};
+
+static void async_work_cb( uv_work_t *req )
+{
+	BlangTask *task = (BlangTask *)req->data;
+	task->result = task->fn( task->arg );
+}
+
+static void async_after_cb( uv_work_t *req, int status )
+{
+	BlangTask *task = (BlangTask *)req->data;
+	(void)status;
+
+	pthread_mutex_lock( &task->mutex );
+	task->completed = 1;
+	pthread_cond_signal( &task->cond );
+	pthread_mutex_unlock( &task->mutex );
+}
+
+static void *loop_thread_fn( void *arg )
+{
+	uv_loop_t *loop = (uv_loop_t *)arg;
+	uv_run( loop, UV_RUN_DEFAULT );
+	return NULL;
+}
+
+/* Ensure the global event loop is running. */
+static void ensure_async_loop( void )
+{
+	if ( g_async_loop != NULL )
+		return;
+
+	g_async_loop = uv_default_loop();
+	g_loop_running = 1;
+	pthread_create( &g_loop_thread, NULL, loop_thread_fn, g_async_loop );
+}
+
+BlangTask *__blang_async_call( blang_async_fn fn, void *arg )
+{
+	ensure_async_loop();
+
+	BlangTask *task = (BlangTask *)calloc( 1, sizeof( BlangTask ) );
+	task->fn = fn;
+	task->arg = arg;
+	task->result = NULL;
+	task->completed = 0;
+	pthread_mutex_init( &task->mutex, NULL );
+	pthread_cond_init( &task->cond, NULL );
+
+	task->work_req.data = task;
+	uv_queue_work( g_async_loop, &task->work_req, async_work_cb, async_after_cb );
+	return task;
+}
+
+void *__blang_await( BlangTask *task )
+{
+	if ( task == NULL )
+		return NULL;
+
+	pthread_mutex_lock( &task->mutex );
+	while ( !task->completed )
+		pthread_cond_wait( &task->cond, &task->mutex );
+	pthread_mutex_unlock( &task->mutex );
+
+	return task->result;
+}
+
+void __blang_task_destroy( BlangTask *task )
+{
+	if ( task != NULL )
+	{
+		pthread_mutex_destroy( &task->mutex );
+		pthread_cond_destroy( &task->cond );
+		free( task );
+	}
+}
+
+#else /* !BLANG_HAS_LIBUV — pthread-per-call fallback */
+
 struct BlangTask
 {
 	pthread_t thread;
@@ -406,3 +525,5 @@ void __blang_task_destroy( BlangTask *task )
 	if ( task != NULL )
 		free( task );
 }
+
+#endif /* BLANG_HAS_LIBUV */

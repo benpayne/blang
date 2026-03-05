@@ -483,12 +483,20 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 			mVariableMap[resultVar] = mResultAlloca;
 	}
 
-	// Insert runtime init for main() if concurrency features are used
+	// Track whether this is main() — we may need to inject runtime init/shutdown
 	bool isMain = ( func->getName() == "main" );
-	if ( isMain && mUsesConcurrency )
+	bool concurrencyBefore = mUsesConcurrency;
+
+	// Reserve a basic block for runtime init (filled in after body generation
+	// so we know whether concurrency features are actually used)
+	llvm::BasicBlock *initBB = nullptr;
+	llvm::BasicBlock *bodyBB = nullptr;
+	if ( isMain )
 	{
-		mBuilder->CreateCall( getOrDeclareRuntimeInit(),
-			{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
+		initBB = mBuilder->GetInsertBlock(); // current entry block
+		bodyBB = llvm::BasicBlock::Create( *mContext, "body", llvmFunc );
+		mBuilder->CreateBr( bodyBB );
+		mBuilder->SetInsertPoint( bodyBB );
 	}
 
 	// Generate requires (precondition) checks at function entry
@@ -501,6 +509,19 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	if ( func->mFuncBody != nullptr )
 	{
 		genBlock( func->mFuncBody );
+	}
+
+	// Now that body is generated, inject runtime init if concurrency was discovered
+	if ( isMain && mUsesConcurrency && !concurrencyBefore )
+	{
+		// Insert the init call at the end of the entry block, before the branch
+		llvm::Instruction *brInst = initBB->getTerminator();
+		mBuilder->SetInsertPoint( brInst );
+		mBuilder->CreateCall( getOrDeclareRuntimeInit(),
+			{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
+		// Restore insert point to after the body
+		llvm::BasicBlock *afterBody = &llvmFunc->back();
+		mBuilder->SetInsertPoint( afterBody );
 	}
 
 	// If the function is void and the last block has no terminator, add ret void
@@ -755,6 +776,13 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 
 void CodeGen::genReturnStatement( ReturnStatement *ret )
 {
+	// Insert runtime shutdown before ARC releases in main() — threads must
+	// finish before we free shared/sync memory they may be using
+	if ( mCurrentFunction != nullptr && mCurrentFunction->getName() == "main" && mUsesConcurrency )
+	{
+		mBuilder->CreateCall( getOrDeclareRuntimeShutdown(), {} );
+	}
+
 	// Emit ARC releases for all in-scope shared/sync variables before returning
 	for ( auto it = mArcScopeStack.rbegin(); it != mArcScopeStack.rend(); ++it )
 	{
@@ -1092,15 +1120,27 @@ llvm::Value *CodeGen::genVariableExpression( VariableExpression *var )
 	llvm::AllocaInst *alloca = it->second;
 	OwnershipQualifier ownership = varDef->getOwnership();
 
-	if ( ownership == OwnershipQualifier::kOwnership_Shared ||
-		 ownership == OwnershipQualifier::kOwnership_Sync )
+	if ( ownership == OwnershipQualifier::kOwnership_Shared )
 	{
-		// Shared/sync: alloca holds a pointer to heap data.
+		// Shared: alloca holds a pointer to heap data (immutable, no lock needed).
 		// Load the pointer, then load the actual value through it.
 		llvm::Value *heapPtr = mBuilder->CreateLoad(
 			llvm::PointerType::get( *mContext, 0 ), alloca, varDef->getName() + ".ptr" );
 		llvm::Type *dataType = getLLVMType( varDef->getVariableType() );
 		return mBuilder->CreateLoad( dataType, heapPtr, varDef->getName() );
+	}
+
+	if ( ownership == OwnershipQualifier::kOwnership_Sync )
+	{
+		// Sync: alloca holds a pointer to heap data (mutex-protected).
+		// Lock before read, unlock after read to prevent data races.
+		llvm::Value *heapPtr = mBuilder->CreateLoad(
+			llvm::PointerType::get( *mContext, 0 ), alloca, varDef->getName() + ".ptr" );
+		llvm::Type *dataType = getLLVMType( varDef->getVariableType() );
+		mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
+		llvm::Value *val = mBuilder->CreateLoad( dataType, heapPtr, varDef->getName() );
+		mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
+		return val;
 	}
 
 	return mBuilder->CreateLoad( alloca->getAllocatedType(), alloca, varDef->getName() );
@@ -1213,34 +1253,47 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 	}
 
 	llvm::AllocaInst *alloca = it->second;
+	const string &op = assign->mOperation;
+	OwnershipQualifier ownership = varDef->getOwnership();
+
+	// Reject assignment to shared variables — shared values are immutable
+	if ( ownership == OwnershipQualifier::kOwnership_Shared )
+	{
+		cerr << "CodeGen error: cannot assign to shared variable '"
+			 << varDef->getName() << "' — shared values are immutable" << endl;
+		return nullptr;
+	}
+
+	// Sync `=` assignment: evaluate RHS inside the lock to prevent TOCTOU races.
+	// This ensures expressions like `counter = counter + 1` are atomic.
+	if ( ownership == OwnershipQualifier::kOwnership_Sync && op == "=" )
+	{
+		llvm::Value *heapPtr = mBuilder->CreateLoad(
+			llvm::PointerType::get( *mContext, 0 ), alloca, varDef->getName() + ".ptr" );
+		mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
+		llvm::Value *rhs = genExpression( assign->mValue );
+		if ( rhs == nullptr )
+		{
+			mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
+			return nullptr;
+		}
+		mBuilder->CreateStore( rhs, heapPtr );
+		mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
+		return rhs;
+	}
+
 	llvm::Value *rhs = genExpression( assign->mValue );
 	if ( rhs == nullptr )
 		return nullptr;
 
-	const string &op = assign->mOperation;
-	OwnershipQualifier ownership = varDef->getOwnership();
-
-	// For shared/sync: store through the heap pointer
-	if ( ownership == OwnershipQualifier::kOwnership_Shared ||
-		 ownership == OwnershipQualifier::kOwnership_Sync )
+	// Sync compound assignment: lock, read-modify-write, unlock
+	if ( ownership == OwnershipQualifier::kOwnership_Sync )
 	{
 		llvm::Value *heapPtr = mBuilder->CreateLoad(
 			llvm::PointerType::get( *mContext, 0 ), alloca, varDef->getName() + ".ptr" );
 
-		if ( op == "=" )
-		{
-			if ( ownership == OwnershipQualifier::kOwnership_Sync )
-				mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
-			mBuilder->CreateStore( rhs, heapPtr );
-			if ( ownership == OwnershipQualifier::kOwnership_Sync )
-				mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
-			return rhs;
-		}
-
-		// Compound assignment for shared/sync
 		llvm::Type *dataType = getLLVMType( varDef->getVariableType() );
-		if ( ownership == OwnershipQualifier::kOwnership_Sync )
-			mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
+		mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
 		llvm::Value *current = mBuilder->CreateLoad( dataType, heapPtr, "cur" );
 		llvm::Value *result = nullptr;
 		if ( op == "+=" )      result = mBuilder->CreateAdd( current, rhs, "addassign" );
@@ -1250,8 +1303,7 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 		else result = current;
 		if ( result != nullptr )
 			mBuilder->CreateStore( result, heapPtr );
-		if ( ownership == OwnershipQualifier::kOwnership_Sync )
-			mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
+		mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
 		return result;
 	}
 
@@ -2115,16 +2167,34 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	Block *bodyBlock = spawn->mBody;
 	std::vector<std::pair<VariableDefinition*, llvm::AllocaInst*>> captures;
 
-	// Collect outer variables used in this scope
+	// Collect outer variables used in this scope, enforcing ownership rules
 	if ( bodyBlock->mScope != nullptr )
 	{
-		Scope *bodyScope = bodyBlock->mScope;
-		// Check each statement in the body for variable references
-		// For simplicity, capture all variables visible from the outer scope
-		// that already have allocas (i.e., were declared before spawn)
 		for ( auto &entry : mVariableMap )
 		{
+			OwnershipQualifier capOwnership = entry.first->getOwnership();
+
+			// Reject own variables in spawn — own cannot cross spawn boundaries
+			if ( capOwnership == OwnershipQualifier::kOwnership_Own )
+			{
+				cerr << "CodeGen error: own variable '" << entry.first->getName()
+					 << "' cannot be captured in spawn block" << endl;
+				return;
+			}
+
 			captures.push_back( { entry.first, entry.second } );
+		}
+	}
+
+	// Track which captures are shared/sync for RC retain/release
+	std::vector<size_t> rcCaptureIndices;
+	for ( size_t i = 0; i < captures.size(); i++ )
+	{
+		OwnershipQualifier capOwnership = captures[i].first->getOwnership();
+		if ( capOwnership == OwnershipQualifier::kOwnership_Shared ||
+			 capOwnership == OwnershipQualifier::kOwnership_Sync )
+		{
+			rcCaptureIndices.push_back( i );
 		}
 	}
 
@@ -2185,6 +2255,18 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	// Generate the spawn body
 	genBlock( bodyBlock );
 
+	// Release RC for shared/sync captured variables before returning from spawn
+	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+	{
+		for ( size_t idx : rcCaptureIndices )
+		{
+			llvm::AllocaInst *localAlloca = mVariableMap[captures[idx].first];
+			llvm::Value *heapPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), localAlloca, "rc.spawn.rel" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
+		}
+	}
+
 	// Add implicit return
 	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 		mBuilder->CreateRetVoid();
@@ -2214,6 +2296,16 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
 			ctxType, ctxAlloc, static_cast<unsigned>( i ), "ctx.store" );
 		mBuilder->CreateStore( val, fieldPtr );
+	}
+
+	// Retain RC for shared/sync captures to prevent use-after-free
+	// (the main scope might release before the spawn completes)
+	for ( size_t idx : rcCaptureIndices )
+	{
+		llvm::AllocaInst *alloca = captures[idx].second;
+		llvm::Value *val = mBuilder->CreateLoad(
+			alloca->getAllocatedType(), alloca, "rc.spawn.ret" );
+		mBuilder->CreateCall( getOrDeclareRcRetain(), { val } );
 	}
 
 	// Call __blang_spawn(spawn_body, ctx)

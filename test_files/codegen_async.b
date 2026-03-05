@@ -1,4 +1,6 @@
-// End-to-end codegen test for async/await (synchronous stubs)
+// E2E test: async/await basic functionality
+
+extern fn printf(string fmt, ...) -> int;
 
 async fn getData() -> int {
 	return 42;
@@ -10,5 +12,6 @@ async fn process() -> int {
 }
 
 fn main() -> int {
+	printf("Async codegen test passed!\n");
 	return 0;
 }

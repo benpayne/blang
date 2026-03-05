@@ -1,5 +1,7 @@
 // Binary expression codegen test: arithmetic, comparisons, function calls in expressions
-// Expected: main returns 80 (5 + 15 * 5 = 80)
+// Expected: z == 80 (5 + 15 * 5 = 80)
+
+extern fn printf(string fmt, ...) -> int;
 
 fn multiply( int a, int b ) -> int
 {
@@ -16,5 +18,9 @@ fn main() -> int
 	int x = 5;
 	int y = 15;
 	int z = add( x, multiply( y, x ) );
-	return z;
+	printf("z = %d\n", z);
+	if z == 80 {
+		return 0;
+	}
+	return 1;
 }

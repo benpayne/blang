@@ -561,6 +561,9 @@ int main( int argc, char *argv[] )
 		cmd.push_back( outFile );
 		for ( const auto &flag : opts.linkerFlags )
 			cmd.push_back( flag );
+#ifdef BCC_HAS_LIBUV
+		cmd.push_back( "-luv" );
+#endif
 		int ret = runCommand( cmd, opts.verbose );
 		if ( ret != 0 )
 		{

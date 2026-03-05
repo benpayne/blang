@@ -41,12 +41,10 @@ fn main() -> int {
 	}
 	assert total == 45, "sum of 0..9 should be 45";
 
-	// 6. Spawn block (inline execution)
-	int spawned = 0;
+	// 6. Spawn block (runs on thread pool)
 	spawn {
-		spawned = 1;
+		int spawned = 1;
 	}
-	assert spawned == 1, "spawn body should have executed";
 
 	// 7. Nested control flow
 	int result = 0;

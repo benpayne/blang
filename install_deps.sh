@@ -6,7 +6,7 @@ echo "Installing BLang build dependencies..."
 
 if [ "$(uname)" = "Linux" ]; then
     sudo apt-get update
-    sudo apt-get install -y cmake build-essential
+    sudo apt-get install -y cmake build-essential libuv1-dev
 
     if [ "$1" = "--with-llvm" ]; then
         echo "Installing LLVM 18 development headers..."
