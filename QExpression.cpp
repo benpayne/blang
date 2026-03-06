@@ -230,6 +230,75 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 			}
 		}
 
+		// Check for enum variant construction: EnumName.variant or EnumName.variant(args)
+		if ( result == nullptr && structSym != nullptr )
+		{
+			EnumDefinition *enumDef = dynamic_cast<EnumDefinition*>( (Symbol*)structSym );
+			if ( enumDef != nullptr )
+			{
+				// We have an enum name. Peek ahead for '.variant'
+				l.getSymbol(); // consume SYMBOL (the enum name)
+				if ( l.peekSymbol() == '.' )
+				{
+					l.getSymbol(); // consume '.'
+					int fieldSym = l.getSymbol();
+					if ( fieldSym == Lexer::SYMBOL )
+					{
+						string variantName = l.getSymbolText();
+						// Find the variant index
+						int variantIdx = -1;
+						const auto &variants = enumDef->getVariants();
+						for ( size_t v = 0; v < variants.size(); v++ )
+						{
+							if ( variants[v].mName == variantName )
+							{
+								variantIdx = static_cast<int>( v );
+								break;
+							}
+						}
+						if ( variantIdx >= 0 )
+						{
+							EnumConstructExpression *enumExpr = new EnumConstructExpression( enumDef, variantIdx );
+							// Check for arguments: variant(args)
+							if ( l.peekSymbol() == '(' )
+							{
+								l.getSymbol(); // consume '('
+								if ( l.peekSymbol() != ')' )
+								{
+									do {
+										Expression *arg = ParseExpr( l, scope, 0 );
+										if ( arg == nullptr )
+											COMPILE_ERROR( l, "Expected expression in enum variant argument" );
+										enumExpr->addArg( arg );
+										sym = l.getSymbol();
+									} while ( sym == ',' );
+									if ( sym != ')' )
+										COMPILE_ERROR( l, "Expected ',' or ')' in enum variant arguments" );
+								}
+								else
+								{
+									l.getSymbol(); // consume ')'
+								}
+							}
+							result = enumExpr;
+						}
+						else
+						{
+							l.setCurrentPos( pos ); // restore, unknown variant
+						}
+					}
+					else
+					{
+						l.setCurrentPos( pos ); // restore
+					}
+				}
+				else
+				{
+					l.setCurrentPos( pos ); // restore, no dot after enum name
+				}
+			}
+		}
+
 		// Try function call first (save/restore position on failure)
 		if ( result == nullptr )
 		{

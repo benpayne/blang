@@ -342,6 +342,9 @@ namespace QLang
 
 		bool isGeneric() const { return !mGenericParams.empty(); }
 
+		const std::vector<Variant> &getVariants() const { return mVariants; }
+		int getNumVariants() const { return mVariants.size(); }
+
 		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
 		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 

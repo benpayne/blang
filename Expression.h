@@ -434,6 +434,21 @@ namespace QLang
 		friend class CodeGen;
 	};
 
+	class EnumConstructExpression : public Expression
+	{
+	public:
+		EnumConstructExpression( EnumDefinition *enumDef, int variantIndex )
+			: mEnumDef( enumDef ), mVariantIndex( variantIndex ) {}
+
+		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
+
+	private:
+		SmartPtr<EnumDefinition> mEnumDef;
+		int mVariantIndex;
+		std::vector<SmartPtr<Expression>> mArgs;
+		friend class CodeGen;
+	};
+
 	struct MatchArm
 	{
 		std::string mPattern;
