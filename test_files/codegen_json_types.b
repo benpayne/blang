@@ -23,6 +23,10 @@ fn main() -> int {
 	free(json);
 
 	if a2.i != 42 { return 1; }
+	if a2.b != true { return 2; }
+	if a2.c != 65 { return 3; }
+	if a2.sh != 100 { return 4; }
+	if a2.l != 999999 { return 5; }
 
 	puts("All types JSON test passed!");
 	return 0;

@@ -1430,6 +1430,17 @@ llvm::Value *CodeGen::genConstChar( ConstChar *cc )
 llvm::Value *CodeGen::genVariableExpression( VariableExpression *var )
 {
 	VariableDefinition *varDef = var->mVariable;
+
+	// Check for own variables crossing spawn boundaries (before variable lookup,
+	// because own variables are excluded from spawn captures)
+	if ( mSpawnOuterOwnVars.count( varDef ) )
+	{
+		cerr << "Error: own variable '" << varDef->getName()
+			 << "' cannot be captured by spawn block (use shared or sync instead)" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
 	auto it = mVariableMap.find( varDef );
 	if ( it == mVariableMap.end() )
 	{
@@ -1442,15 +1453,6 @@ llvm::Value *CodeGen::genVariableExpression( VariableExpression *var )
 		 mMovedVariables.count( varDef ) )
 	{
 		cerr << "Error: use of moved variable '" << varDef->getName() << "'" << endl;
-		mHasError = true;
-		return nullptr;
-	}
-
-	// Check for own variables crossing spawn boundaries
-	if ( mSpawnOuterOwnVars.count( varDef ) )
-	{
-		cerr << "Error: own variable '" << varDef->getName()
-			 << "' cannot be captured by spawn block (use shared or sync instead)" << endl;
 		mHasError = true;
 		return nullptr;
 	}
@@ -2813,20 +2815,19 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	Block *bodyBlock = spawn->mBody;
 	std::vector<std::pair<VariableDefinition*, llvm::AllocaInst*>> captures;
 
-	// Collect outer variables used in this scope, enforcing ownership rules
+	// Collect outer variables used in this scope, enforcing ownership rules.
+	// Skip own variables — they cannot cross spawn boundaries. If the spawn
+	// body actually references an own variable, genVariableExpression will
+	// catch it via mSpawnOuterOwnVars.
 	if ( bodyBlock->mScope != nullptr )
 	{
 		for ( auto &entry : mVariableMap )
 		{
 			OwnershipQualifier capOwnership = entry.first->getOwnership();
 
-			// Reject own variables in spawn — own cannot cross spawn boundaries
+			// Skip own variables — they will be checked at use-site
 			if ( capOwnership == OwnershipQualifier::kOwnership_Own )
-			{
-				cerr << "CodeGen error: own variable '" << entry.first->getName()
-					 << "' cannot be captured in spawn block" << endl;
-				return;
-			}
+				continue;
 
 			captures.push_back( { entry.first, entry.second } );
 		}
@@ -2884,12 +2885,14 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	mLoopStack.clear();
 	mArcScopeStack.clear();
 
-	// Track own variables from the outer scope for spawn boundary checks
+	// Track own variables from the outer scope for spawn boundary checks.
+	// These were excluded from captures but need to be tracked so that
+	// genVariableExpression can reject references to them inside the spawn body.
 	mSpawnOuterOwnVars.clear();
-	for ( auto &cap : captures )
+	for ( auto &entry : savedVarMap )
 	{
-		if ( cap.first->getOwnership() == OwnershipQualifier::kOwnership_Own )
-			mSpawnOuterOwnVars.insert( cap.first );
+		if ( entry.first->getOwnership() == OwnershipQualifier::kOwnership_Own )
+			mSpawnOuterOwnVars.insert( entry.first );
 	}
 
 	// Unpack the context struct into local allocas
