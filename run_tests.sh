@@ -138,6 +138,28 @@ if [ -n "$FAIL_FILES" ]; then
 	echo ""
 fi
 
+# --- Codegen fail tests (only when built with LLVM) ---
+# Detect LLVM support: run qcc --help and check for --emit-ir
+HAS_LLVM=0
+if "$QCC" --help 2>&1 | grep -q "emit-ir"; then
+	HAS_LLVM=1
+fi
+
+CGFAIL_FILES=$(find "$SCRIPT_DIR/test_files/cgfail" -name '*.b' 2>/dev/null | sort)
+if [ -n "$CGFAIL_FILES" ]; then
+	if [ "$HAS_LLVM" -eq 1 ]; then
+		echo -e "${CYAN}--- Tests expected to FAIL at codegen (requires LLVM) ---${NC}"
+		while IFS= read -r f; do
+			run_test "$f" "fail"
+		done <<< "$CGFAIL_FILES"
+		echo ""
+	else
+		SKIP_COUNT=$(echo "$CGFAIL_FILES" | wc -l)
+		echo -e "${YELLOW}--- Skipping $SKIP_COUNT codegen-fail tests (no LLVM) ---${NC}"
+		echo ""
+	fi
+fi
+
 # --- Expected failure tests ---
 XFAIL_FILES=$(find "$SCRIPT_DIR/test_files/xfail" -name '*.b' 2>/dev/null | sort)
 if [ -n "$XFAIL_FILES" ]; then
