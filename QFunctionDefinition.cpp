@@ -164,6 +164,11 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 
 		// Parse the return type
 		SmartPtr<Type> retType = Type::Parse( l, s, false );
+
+		// cstring and carray types are only allowed in extern fn declarations
+		if ( !isExtern && retType != nullptr && ( retType->getName() == "cstring" || retType->getName() == "carray" ) )
+			COMPILE_ERROR( l, "'" + retType->getName() + "' type can only be used in extern fn declarations" );
+
 		func->mReturnType = retType;
 	}
 	else

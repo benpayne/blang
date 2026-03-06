@@ -1,7 +1,7 @@
 // Binary expression codegen test: arithmetic, comparisons, function calls in expressions
 // Expected: z == 80 (5 + 15 * 5 = 80)
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn multiply( int a, int b ) -> int
 {

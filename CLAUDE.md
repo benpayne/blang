@@ -60,14 +60,16 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── LexerTest.cpp              # Basic lexer test program
 ├── LexerTest2.cpp             # Advanced lexer test with position save/restore
 ├── test.b                     # Comprehensive BLang test source file
-├── test_files/                # Test cases organized in pass/, fail/, xfail/ subdirectories
-├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/xfail test categories)
-├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> run)
+├── test_files/                # Test cases organized in pass/, fail/, cgfail/, xfail/ subdirectories
+├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/cgfail/xfail test categories)
+├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> link -> run)
 ├── docs/
 │   └── language_design.md     # BLang language design specification
 │   └── implementation_plan.md # Implementation task list and roadmap
 ├── runtime/
 │   ├── blang_runtime.h/c     # Core runtime (ARC, thread pool, channels, async event loop)
+│   ├── blang_string.h/c      # Safe string runtime (BlangString: refcounted, immutable, heap-allocated)
+│   ├── blang_array.h/c       # Safe array runtime (BlangArray: refcounted, bounds-checked, growable)
 │   ├── blang_json.h/c        # JSON encode/decode library (for @json annotation support)
 │   └── blang_db.h/c          # Database abstraction layer (connection, query, result; optional SQLite backend)
 ├── .github/
@@ -91,6 +93,8 @@ The project has **no external dependencies** for the active build targets. The j
 |-------------|------------------------------------|-------------------------------------------------------------------------------------|
 | `bcc`       | BLang compiler driver (user-facing)| bcc.cpp                                                                            |
 | `qcc`       | Parser + IR generator (internal)   | qcc.cpp, FileLexer.cpp, LexerReader.cpp, QBlock.cpp, QBreakContinue.cpp, QEnumDefinition.cpp, QExpression.cpp, QForInStatement.cpp, QFunctionDefinition.cpp, QReturnStatement.cpp, QStatement.cpp, QStructDefinition.cpp, QType.cpp, QVariableDefinition.cpp, QSpawnStatement.cpp, QEventHandler.cpp, QTestBlock.cpp, QAssertStatement.cpp, CodeGen.cpp (when LLVM available) |
+| `blang_string`| String runtime library (static)  | runtime/blang_string.c                                                             |
+| `blang_array`| Array runtime library (static)    | runtime/blang_array.c                                                              |
 | `blang_json`| JSON runtime library (static)      | runtime/blang_json.c                                                               |
 | `blang_db`  | Database runtime library (static)  | runtime/blang_db.c (optional SQLite via pkg-config)                                |
 | `blang_sqlgen`| SQL gen + migrations library     | SQLGen.cpp, SchemaMigration.cpp                                                    |
@@ -201,6 +205,7 @@ RefCount
 │   │   ├── RangeExpression      # Range expression (start..end)
 │   │   ├── StringInterpolation  # String interpolation "hello {name}"
 │   │   ├── MatchExpression      # Pattern matching (match expr { ... })
+│   │   ├── EnumConstructExpression # Enum variant construction (EnumName.variant(args))
 │   │   ├── AwaitExpression      # await expr (async value retrieval)
 │   │   ├── PipelineExpression   # expr |> fn(args) pipeline operator
 │   │   ├── QueryFieldExpression # .field references in query contexts
@@ -292,37 +297,40 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 ### Test source files
 
-Tests are organized into three categories under `test_files/`:
+Tests are organized into four categories under `test_files/`:
 
-- **`test_files/pass/`** (91 tests) — Should parse successfully. Includes:
+- **`test_files/pass/`** (99 tests) — Should parse successfully. Includes:
   - Basic function tests: `func_simple.b`, `func_call.b`, `multi_func.b`, `empty_func.b`
   - Control flow: `if_simple.b`, `if_nested.b`, `while_simple.b`, `while_block.b`
-  - Variables and expressions: `var_decl.b`, `var_infer.b`, `const_decl.b`, `arithmetic_stmt.b`, `assignment_stmt.b`, `binary_expr_return.b`, `comparison_expr.b`
+  - Variables and expressions: `var_decl.b`, `var_infer.b`, `const_decl.b`, `arithmetic_stmt.b`, `assignment_stmt.b`, `binary_expr_return.b`, `comparison_expr.b`, `mixed_type_expr.b`
   - Returns: `return_var.b`, `return_call.b`
   - Literals and comments: `string_literals.b`, `comments.b`, `float_literal.b`, `bool_type.b`
   - Function styles: `fn_simple.b`, `fn_void.b`, `arrow_fn.b`
   - Structs and methods: `struct_basic.b`, `struct_literal.b`, `field_access.b`, `method_call.b`, `impl_basic.b`, `impl_protocol.b`
   - Protocols: `protocol_basic.b`, `protocol_conformance.b`
-  - Enums: `enum_basic.b`, `enum_variants.b`, `enum_generic.b`
+  - Enums: `enum_basic.b`, `enum_variants.b`, `enum_generic.b`, `enum_payload_construct.b`
   - Generics: `generic_fn.b`, `generic_struct.b`, `generic_constraint.b`, `generic_protocol.b`, `generic_type_args.b`
   - For-in loops: `for_in_range.b`, `for_in_var.b`, `for_infinite.b`
   - Arrays: `array_literal.b`, `array_index.b`
   - Pattern matching: `match_basic.b`, `match_wildcard.b`, `match_destructure.b`, `match_enum_variants.b`
   - Result/Option: `result_option.b`, `try_operator.b`
   - Modules: `import_basic.b`, `import_dotted.b`, `pub_function.b`, `pub_struct.b`, `pub_enum.b`, `visibility_basic.b`
-  - Other: `break_continue.b`, `extern_unnamed.b`
-  - Ownership: `own_basic.b`, `shared_basic.b`, `sync_basic.b`, `ownership_all.b`
-  - Concurrency: `spawn_basic.b`, `spawn_nested.b`, `chan_decl.b`
+  - Other: `break_continue.b`, `extern_unnamed.b`, `extern_func_call.b`
+  - Ownership: `own_basic.b`, `shared_basic.b`, `sync_basic.b`, `ownership_all.b`, `own_move_valid.b`
+  - Concurrency: `spawn_basic.b`, `spawn_nested.b`, `spawn_expr.b`, `chan_decl.b`, `wait_basic.b`, `wait_all_basic.b`
   - Async/await: `async_fn.b`, `async_fn_void.b`, `await_expr.b`, `event_handler.b`
   - Contracts: `requires_basic.b`, `ensures_basic.b`, `contract_combined.b`
   - Testing: `test_basic.b`, `test_assert.b`, `test_assert_message.b`, `test_multiple.b`, `assert_in_function.b`
   - Pipeline operator: `pipeline_basic.b`, `pipeline_chained.b`, `pipeline_with_args.b`
   - Annotations: `annotation_json.b`, `annotation_multiple.b`, `annotation_with_args.b`
   - Table structs and queries: `table_struct.b`, `query_basic.b`, `query_insert.b`, `query_update.b`, `query_delete.b`, `query_join.b`
-- **`test_files/fail/`** (33 negative tests) — Should fail to parse (exit non-zero): `bad_type.b`, `c_style_func.b`, `const_no_init.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_c_style.b`, `for_c_style_block.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `spawn_missing_brace.b`, `assert_missing_semi.b`, `test_missing_name.b`, `test_missing_body.b`, `requires_missing_expr.b`, `async_missing_fn.b`, `annotation_missing_name.b`, `table_missing_struct.b`, `query_missing_table.b`, `insert_missing_brace.b`
-Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/codegen_simple.b`, `test_files/codegen_binexpr.b`, `test_files/codegen_features.b`, `test_files/multi_var_decl.b`
+  - FFI types: `cstring_extern.b`, `carray_extern.b`
+- **`test_files/fail/`** (40 negative tests) — Should fail to parse (exit non-zero): `annotation_missing_name.b`, `assert_missing_semi.b`, `async_missing_fn.b`, `bad_type.b`, `carray_in_fn.b`, `carray_in_var.b`, `const_no_init.b`, `cstring_in_fn.b`, `cstring_in_var.b`, `c_style_func.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_c_style.b`, `for_c_style_block.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `insert_missing_brace.b`, `json_generic_struct.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `query_missing_table.b`, `requires_missing_expr.b`, `spawn_missing_brace.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `table_missing_struct.b`, `test_missing_body.b`, `test_missing_name.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `wait_all_missing_semi.b`, `wait_missing_semi.b`
+- **`test_files/cgfail/`** (4 codegen-fail tests) — Should fail at code generation (only run when built with LLVM, skipped in parse-only mode): `json_unsupported_field.b`, `own_move_in_loop.b`, `own_spawn_capture.b`, `own_use_after_move.b`
+- **`test_files/codegen_*.b`** (35 end-to-end tests) — Full pipeline tests (parse → IR → compile → link → run) in `test_files/`: `codegen_array.b`, `codegen_array_methods.b`, `codegen_assert.b`, `codegen_async.b`, `codegen_async_multi.b`, `codegen_binexpr.b`, `codegen_break_continue.b`, `codegen_comprehensive.b`, `codegen_contracts.b`, `codegen_enum_payload.b`, `codegen_features.b`, `codegen_forin.b`, `codegen_generic_fn.b`, `codegen_generic_struct.b`, `codegen_json.b`, `codegen_json_nested.b`, `codegen_json_roundtrip.b`, `codegen_json_types.b`, `codegen_ownership.b`, `codegen_ownership_move.b`, `codegen_phase2.b`, `codegen_pipeline.b`, `codegen_result_type.b`, `codegen_shared_spawn.b`, `codegen_simple.b`, `codegen_spawn.b`, `codegen_spawn_threaded.b`, `codegen_string.b`, `codegen_string_interp.b`, `codegen_string_methods.b`, `codegen_sync_locking.b`, `codegen_sync_spawn.b`, `codegen_type_coercion.b`, `codegen_wait.b`, `codegen_wait_all.b`
+Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/multi_var_decl.b`
 
-**Total: 124 tests** (91 pass + 33 fail/negative)
+**Total: 143 pass/fail tests** (99 pass + 40 fail + 4 cgfail) **+ 35 codegen E2E tests**
 
 ### Running tests
 
@@ -332,6 +340,11 @@ Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `te
 ./run_tests.sh --build      # Build first, then run tests
 ./run_tests.sh --verbose    # Show detailed output for failures
 
+# End-to-end codegen tests (requires LLVM build)
+./test_codegen.sh           # Run all codegen_*.b tests (parse -> IR -> compile -> link -> run)
+./test_codegen.sh test_files/codegen_simple.b   # Run a single codegen test (shows IR)
+./test_codegen.sh --verbose # Show IR output for all tests
+
 # Manual testing
 cd build
 ./lexerTest ../test.b
@@ -340,7 +353,9 @@ cd build
 ./qcc ../test_files/pass/fn_simple.b
 ```
 
-The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/`, `test_files/fail/`, and `test_files/xfail/`, checking exit codes against expectations and printing a color-coded summary.
+The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/`, `test_files/fail/`, `test_files/cgfail/`, and `test_files/xfail/`, checking exit codes against expectations and printing a color-coded summary. The `cgfail/` tests are only run when qcc is built with LLVM; they are automatically skipped in parse-only builds.
+
+The `test_codegen.sh` script runs the full compilation pipeline (qcc → llc → cc → run) for each `test_files/codegen_*.b` file and checks that the resulting binary exits with code 0. It automatically links the runtime library (`libblang_runtime.a`) and JSON library (`libblang_json.a`) when available.
 
 ## Supported Language Features (BLang source)
 
@@ -384,7 +399,7 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 - Block scoping with `{` `}`
 - Single-line (`//`) and multi-line (`/* */`) comments
 - **Literals**: integers, floats/doubles (`3.14`, `0.001`), strings, characters
-- **Types**: `int`, `float`, `double`, `char`, `string`, `bool`, `long`, `short`, `void`, generic types (`Array<int>`, `Map<string, int>`)
+- **Types**: `int`, `float`, `double`, `char`, `string`, `bool`, `long`, `short`, `void`, generic types (`Array<int>`, `Map<string, int>`), FFI types (`cstring`, `carray<T>` — restricted to `extern fn` declarations only)
 - **Ownership qualifiers** — `own`, `shared`, `sync` on variable declarations
 - **Spawn blocks** — `spawn { ... }` for green thread creation
 - **Async functions** — `async fn name() { }` for event-loop scheduled functions
@@ -406,25 +421,25 @@ The `run_tests.sh` script runs `qcc` against all test files in `test_files/pass/
 
 This is an active work-in-progress. The recursive-descent parser can parse BLang source into an AST, and when built with LLVM, the `CodeGen` class generates LLVM IR for the parsed AST.
 
-**Parser features**: BLang `fn`-style function declarations (C-style syntax rejected), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, protocol definitions with generic parameters and conformance checking, generic functions with protocol constraints, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, `?` try operator for error propagation, `import` statements with dotted paths, `pub` visibility modifier, duplicate function detection, float/double literals, break/continue, extern declarations with unnamed parameters, multi-file compilation, ownership qualifiers (`own`, `shared`, `sync`), spawn blocks, async/await, event handlers (`on`), contract clauses (`requires`/`ensures`), test blocks, assert statements, pipeline operator (`|>`), annotations (`@name("arg")`), table structs (`table struct`), query/insert/update/delete expressions with pipeline steps, and boolean constants (`true`/`false`).
+**Parser features**: BLang `fn`-style function declarations (C-style syntax rejected), `extern fn` declarations, struct definitions with generic parameters, enum/sum type definitions with variants and associated types, enum variant construction (`EnumName.variant(args)`), protocol definitions with generic parameters and conformance checking, generic functions with protocol constraints, generic type arguments on struct literals and function calls, for-in loops (range iteration, collection iteration, infinite loops), array literals and indexing, method calls, field access, range expressions, pattern matching with wildcards and destructuring bindings, `?` try operator for error propagation, `import` statements with dotted paths, `pub` visibility modifier, duplicate function detection, float/double literals, break/continue, extern declarations with unnamed parameters, multi-file compilation, ownership qualifiers (`own`, `shared`, `sync`) on variable declarations and function parameters, spawn blocks, async/await, event handlers (`on`), contract clauses (`requires`/`ensures`), test blocks, assert statements, pipeline operator (`|>`), annotations (`@name("arg")`) with compile-time validation (e.g., `@json` rejected on generic structs), table structs (`table struct`), query/insert/update/delete expressions with pipeline steps, boolean constants (`true`/`false`), and FFI types (`cstring`, `carray<T>`) restricted to `extern fn` declarations with compile-time enforcement.
 
-**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`, `table`, `query`, `insert`, `update`, `delete`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), `|>` (pipeline), `@` (annotation), `true`/`false` (boolean constants), float constants.
+**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`, `table`, `query`, `insert`, `update`, `delete`, `cstring`, `carray`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), `|>` (pipeline), `@` (annotation), `true`/`false` (boolean constants), float constants.
 
 **CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--help` flags and multiple input files. `bcc test` subcommand discovers and runs test files. `bcc migrate` subcommand supports `--preview`, `--apply`, and `--generate` modes for schema migrations.
 
-**Runtime libraries**: `blang_json` (C library for JSON encode/decode), `blang_db` (database abstraction with optional SQLite backend). SQL generation (`SQLGen`) converts query AST nodes to parameterized SQL. Schema migration (`SchemaMigration`) diffs table struct definitions against stored schema and generates CREATE/ALTER TABLE statements.
+**Runtime libraries**: `blang_string` (safe immutable string type — `BlangString` with refcounting, heap allocation, and bounds-checked access), `blang_array` (safe generic array type — `BlangArray` with refcounting, bounds-checked access, and dynamic growth), `blang_json` (C library for JSON encode/decode), `blang_db` (database abstraction with optional SQLite backend). SQL generation (`SQLGen`) converts query AST nodes to parameterized SQL. Schema migration (`SchemaMigration`) diffs table struct definitions against stored schema and generates CREATE/ALTER TABLE statements.
 
-**Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else (no parentheses), while (no parentheses), for-in loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), constant expressions (int, float, string, char), break/continue in all loop types (while, for, for-in, infinite), string interpolation via `snprintf`, pipeline operator (`|>` desugaring), ARC retain/release at scope boundaries for shared/sync variables, runtime init/shutdown in `main()` for concurrency features, spawn blocks with closure extraction (captured variables packed into context struct, dispatched to thread pool via `__blang_spawn`), channel variable declarations (`chan<T>` → `__blang_chan_create`), async function wrappers (body extracted to `void*(void*)`, called via `__blang_async_call`), await expressions (`__blang_await` + `__blang_task_destroy`), event handler callback extraction, and database query/insert/update/delete codegen (SQL generated at compile time via `SQLGen`, emits `__blang_db_query`/`__blang_db_exec` calls). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end.
+**Codegen features** (requires LLVM): function definitions, extern function declarations, variadic function calls, variable declarations with initialization, return statements, if/else (no parentheses), while (no parentheses), for-in loops, function calls, binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence and automatic integer type coercion for mixed-width operands), assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`), constant expressions (int, float, string, char), break/continue in all loop types (while, for, for-in, infinite), safe string type (`BlangString` — literals via `__blang_string_create_static`, concatenation via `__blang_string_concat`, comparison via `__blang_string_equals`, interpolation via `__blang_string_concat_many` with per-type to_string helpers, refcount tracking at scope boundaries), safe array type (`BlangArray` — literals via `__blang_array_create`/`__blang_array_push`, bounds-checked indexing via `__blang_array_get`/`__blang_array_set`, for-in iteration, refcount tracking at scope boundaries), `cstring`/`carray<T>` FFI types with automatic conversion at extern fn boundaries (string→cstring extracts `.data` field, cstring→string wraps via `__blang_string_create`), builtin method calls on string (`.length`, `.is_empty`, `.to_upper()`, `.to_lower()`, `.trim()`, `.contains()`, `.starts_with()`, `.ends_with()`, `.index_of()`, `.substring()`, `.replace()`) and Array (`.length`, `.is_empty`, `.push()`, `.pop()`, `.clear()`), pipeline operator (`|>` desugaring), ARC retain/release at scope boundaries for shared/sync variables, runtime init/shutdown in `main()` for concurrency features, spawn blocks with closure extraction (captured variables packed into context struct, dispatched to thread pool via `__blang_spawn`, `own` variables cannot be captured across spawn boundaries), channel variable declarations (`chan<T>` → `__blang_chan_create`), async function wrappers (body extracted to `void*(void*)`, called via `__blang_async_call`), await expressions (`__blang_await` + `__blang_task_destroy`), event handler callback extraction, database query/insert/update/delete codegen (SQL generated at compile time via `SQLGen`, emits `__blang_db_query`/`__blang_db_exec` calls), enum/sum type tagged union layout (`{i32 tag, [N x i8] payload}` with variant construction and match-based payload extraction), generic struct/function monomorphization (stamps out concrete versions like `Box_int` with mangled names), ownership move semantics enforcement (use-after-move and move-in-loop detection), and `@json` annotation codegen (generates `StructName_to_json`/`StructName_from_json` functions supporting all primitive types, nested `@json` structs, with compile-time errors for unsupported field types). The full pipeline (parse → LLVM IR → native binary) is tested end-to-end with 35 codegen E2E tests.
 
 The long-term goals (from README.txt) include integrated threading, eventing, garbage collection, FPGA synthesis support, and networking in the standard library.
 
 ## Known Issues and Limitations
 
-- Codegen for generics (monomorphization or type erasure) is not yet implemented.
 - Channel send/receive operations lack parser syntax — only `chan<T>` variable declarations are codegen'd.
 - Async function return value boxing/unboxing is simplified (heap-allocated, not yet optimized).
 - Event handler registration requires runtime event loop API (currently executes inline as a fallback).
 - Database query codegen uses NULL connection pointer — needs global DB connection management.
 - Multi-module codegen (linking symbols across files) is not yet implemented.
-- Generic type instantiation (monomorphization or type erasure) is not yet implemented.
+- Generic monomorphization is basic — supports struct and function instantiation but not generic protocols or deeply nested generics.
+- Nested `@json` structs use an encode/decode round-trip (serialize inner struct to string, decode to JSON tree) — works correctly but adds overhead; direct subtree construction would be more efficient.
 - Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.

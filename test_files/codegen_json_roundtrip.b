@@ -1,5 +1,4 @@
-extern fn puts(string s) -> int;
-extern fn free(string s);
+extern fn puts(cstring s) -> int;
 
 @json
 struct Point {
@@ -13,7 +12,6 @@ fn main() -> int {
 	puts(s1);
 
 	Point p2 = Point_from_json(s1);
-	free(s1);
 	if p2.x != 0 { return 1; }
 	if p2.y != 0 { return 2; }
 
@@ -22,7 +20,6 @@ fn main() -> int {
 	puts(s3);
 
 	Point p4 = Point_from_json(s3);
-	free(s3);
 	if p4.x != -100 { return 3; }
 	if p4.y != 2147483647 { return 4; }
 

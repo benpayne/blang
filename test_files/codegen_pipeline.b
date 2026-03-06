@@ -1,7 +1,7 @@
 // E2E test: pipeline operator |>
 // Tests: expr |> fn(args) desugars to fn(expr, args)
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn add(int a, int b) -> int {
 	return a + b;

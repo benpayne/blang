@@ -1,5 +1,5 @@
-extern fn puts(string s) -> int;
-extern fn printf(string fmt, ...) -> int;
+extern fn puts(cstring s) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 struct Box<T> {
 	T value;

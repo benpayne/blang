@@ -92,6 +92,16 @@ add_library(blang_runtime_obj OBJECT runtime/blang_runtime.c)
 set_target_properties(blang_runtime_obj PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_include_directories(blang_runtime_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 
+# BLang string runtime library
+add_library(blang_string STATIC runtime/blang_string.c)
+set_target_properties(blang_string PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_string PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+# BLang array runtime library
+add_library(blang_array STATIC runtime/blang_array.c)
+set_target_properties(blang_array PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_array PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
 # BLang JSON runtime library
 add_library(blang_json STATIC runtime/blang_json.c)
 set_target_properties(blang_json PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)

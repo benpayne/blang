@@ -1,5 +1,5 @@
 // E2E test: integer type coercion in binary expressions
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int {
 	// char (i8) compared with int literal (i32)

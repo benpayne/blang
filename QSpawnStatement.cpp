@@ -44,3 +44,60 @@ SpawnStatement *SpawnStatement::Parse( Lexer &l, Scope *scope )
 
 	return statement;
 }
+
+WaitStatement *WaitStatement::Parse( Lexer &l, Scope *scope )
+{
+	TRACE_BEGIN( LOG_LVL_INFO );
+
+	// Consume 'wait' keyword
+	int sym = l.getSymbol();
+	if ( sym != Lexer::KEYWORD_WAIT )
+	{
+		COMPILE_ERROR( l, "Internal Error: expected 'wait' keyword" );
+	}
+
+	WaitStatement *statement = new WaitStatement;
+
+	// Parse the expression (Task variable to wait on)
+	statement->mExpr = Expression::ParseExpr( l, scope, 0 );
+	if ( statement->mExpr == nullptr )
+	{
+		COMPILE_ERROR( l, "Expected expression after 'wait'" );
+	}
+
+	// Expect semicolon
+	sym = l.getSymbol();
+	if ( sym != ';' )
+	{
+		COMPILE_ERROR( l, "Expected ';' after wait expression" );
+	}
+
+	cout << "Completed wait statement parse" << endl;
+
+	return statement;
+}
+
+WaitAllStatement *WaitAllStatement::Parse( Lexer &l, Scope *scope )
+{
+	TRACE_BEGIN( LOG_LVL_INFO );
+
+	// Consume 'wait_all' keyword
+	int sym = l.getSymbol();
+	if ( sym != Lexer::KEYWORD_WAIT_ALL )
+	{
+		COMPILE_ERROR( l, "Internal Error: expected 'wait_all' keyword" );
+	}
+
+	WaitAllStatement *statement = new WaitAllStatement;
+
+	// Expect semicolon
+	sym = l.getSymbol();
+	if ( sym != ';' )
+	{
+		COMPILE_ERROR( l, "Expected ';' after wait_all" );
+	}
+
+	cout << "Completed wait_all statement parse" << endl;
+
+	return statement;
+}

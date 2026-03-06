@@ -462,6 +462,8 @@ int main( int argc, char *argv[] )
 	gScope->addType( new Type( "double" ) );
 	gScope->addType( new Type( "long" ) );
 	gScope->addType( new Type( "short" ) );
+	gScope->addType( new Type( "Task" ) );
+	gScope->addType( new Type( "Array" ) );
 
 	// Parse each input file into its own Module. Each module gets its own
 	// module-level scope parented to the shared global scope so that built-in

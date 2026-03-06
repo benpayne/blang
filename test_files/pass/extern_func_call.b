@@ -1,6 +1,6 @@
 // Test calling external functions with proper extern declaration
 
-extern fn printf(string, ...) -> int;
+extern fn printf(cstring, ...) -> int;
 
 fn main()
 {

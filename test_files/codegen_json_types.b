@@ -1,6 +1,5 @@
-extern fn puts(string s) -> int;
-extern fn free(string s);
-extern fn printf(string fmt, ...) -> int;
+extern fn puts(cstring s) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 @json
 struct AllTypes {
@@ -20,7 +19,6 @@ fn main() -> int {
 	puts(json);
 
 	AllTypes a2 = AllTypes_from_json(json);
-	free(json);
 
 	if a2.i != 42 { return 1; }
 	if a2.b != true { return 2; }

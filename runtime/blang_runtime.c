@@ -110,7 +110,15 @@ typedef struct SpawnTask
 {
 	blang_spawn_fn fn;
 	void *ctx;
+	BlangSpawnTask *handle;
 } SpawnTask;
+
+struct BlangSpawnTask
+{
+	pthread_mutex_t mutex;
+	pthread_cond_t done_cond;
+	int completed;  /* 0 = running, 1 = done */
+};
 
 typedef struct TaskQueue
 {
@@ -164,6 +172,15 @@ static void *worker_thread( void *arg )
 		/* Execute the task with its context. */
 		task.fn( task.ctx );
 
+		/* Signal the task handle as completed. */
+		if ( task.handle != NULL )
+		{
+			pthread_mutex_lock( &task.handle->mutex );
+			task.handle->completed = 1;
+			pthread_cond_signal( &task.handle->done_cond );
+			pthread_mutex_unlock( &task.handle->mutex );
+		}
+
 		/* Free the context if it was heap-allocated. */
 		if ( task.ctx != NULL )
 			free( task.ctx );
@@ -208,10 +225,16 @@ void __blang_runtime_init( int num_threads )
 		pthread_create( &g_pool->threads[i], NULL, worker_thread, g_pool );
 }
 
-void __blang_spawn( blang_spawn_fn fn, void *ctx )
+BlangSpawnTask *__blang_spawn( blang_spawn_fn fn, void *ctx )
 {
 	if ( g_pool == NULL )
 		__blang_runtime_init( 0 );
+
+	/* Allocate the task handle. */
+	BlangSpawnTask *handle = (BlangSpawnTask *)calloc( 1, sizeof( BlangSpawnTask ) );
+	pthread_mutex_init( &handle->mutex, NULL );
+	pthread_cond_init( &handle->done_cond, NULL );
+	handle->completed = 0;
 
 	TaskQueue *q = &g_pool->queue;
 
@@ -228,15 +251,18 @@ void __blang_spawn( blang_spawn_fn fn, void *ctx )
 	if ( q->shutdown )
 	{
 		pthread_mutex_unlock( &q->mutex );
-		return;
+		return handle;
 	}
 
 	q->tasks[q->tail].fn = fn;
 	q->tasks[q->tail].ctx = ctx;
+	q->tasks[q->tail].handle = handle;
 	q->tail = ( q->tail + 1 ) % TASK_QUEUE_CAPACITY;
 	q->count++;
 	pthread_cond_signal( &q->not_empty );
 	pthread_mutex_unlock( &q->mutex );
+
+	return handle;
 }
 
 void __blang_runtime_shutdown( void )
@@ -280,6 +306,41 @@ void __blang_runtime_shutdown( void )
 		g_loop_running = 0;
 	}
 #endif
+}
+
+/* ========================================================================
+   Task Handles (spawn + wait)
+   ======================================================================== */
+
+void __blang_spawn_wait( BlangSpawnTask *task )
+{
+	if ( task == NULL )
+		return;
+
+	pthread_mutex_lock( &task->mutex );
+	while ( !task->completed )
+		pthread_cond_wait( &task->done_cond, &task->mutex );
+	pthread_mutex_unlock( &task->mutex );
+}
+
+void __blang_spawn_task_destroy( BlangSpawnTask *task )
+{
+	if ( task == NULL )
+		return;
+	pthread_mutex_destroy( &task->mutex );
+	pthread_cond_destroy( &task->done_cond );
+	free( task );
+}
+
+void __blang_wait_all( void )
+{
+	if ( g_pool == NULL )
+		return;
+
+	pthread_mutex_lock( &g_pool->flight_mutex );
+	while ( g_pool->tasks_in_flight > 0 )
+		pthread_cond_wait( &g_pool->all_done, &g_pool->flight_mutex );
+	pthread_mutex_unlock( &g_pool->flight_mutex );
 }
 
 /* ========================================================================

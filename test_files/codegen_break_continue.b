@@ -1,7 +1,7 @@
 // E2E test: break and continue statements in loops
 // Tests: break exits loop, continue skips to next iteration
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int {
 	// Test break in while loop

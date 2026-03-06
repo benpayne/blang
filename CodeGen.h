@@ -42,7 +42,9 @@ private:
 	void genForStatement( ForStatement *forStmt );
 
 	// Phase 2 statement generators
-	void genSpawnStatement( SpawnStatement *spawn );
+	llvm::Value *genSpawnStatement( SpawnStatement *spawn );
+	void genWaitStatement( WaitStatement *wait );
+	void genWaitAllStatement( WaitAllStatement *waitAll );
 	void genAssertStatement( AssertStatement *assertStmt );
 	void genEventHandler( EventHandler *handler );
 
@@ -73,6 +75,12 @@ private:
 	llvm::Value *genFieldAccess( FieldAccessExpression *expr );
 	llvm::Value *genMethodCall( MethodCallExpression *expr );
 
+	// Builtin type method/field codegen
+	llvm::Value *genStringMethodCall( MethodCallExpression *expr );
+	llvm::Value *genArrayMethodCall( MethodCallExpression *expr );
+	llvm::Value *genStringFieldAccess( FieldAccessExpression *expr );
+	llvm::Value *genArrayFieldAccess( FieldAccessExpression *expr );
+
 	// Enum tagged union codegen
 	llvm::StructType *getOrCreateEnumType( EnumDefinition *enumDef );
 	llvm::Value *genEnumConstruct( EnumConstructExpression *expr );
@@ -86,6 +94,25 @@ private:
 	// Array codegen
 	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
 	llvm::Value *genIndexExpression( IndexExpression *expr );
+
+	// Array runtime declarations
+	llvm::Function *getOrDeclareArrayCreate();
+	llvm::Function *getOrDeclareArrayCreateFromData();
+	llvm::Function *getOrDeclareArrayRetain();
+	llvm::Function *getOrDeclareArrayRelease();
+	llvm::Function *getOrDeclareArrayGet();
+	llvm::Function *getOrDeclareArraySet();
+	llvm::Function *getOrDeclareArrayPush();
+	llvm::Function *getOrDeclareArrayLength();
+	llvm::Function *getOrDeclareArrayConcat();
+	llvm::Function *getOrDeclareArrayCapacity();
+	llvm::Function *getOrDeclareArrayIsEmpty();
+	llvm::Function *getOrDeclareArrayPop();
+	llvm::Function *getOrDeclareArrayClear();
+
+	// Array type helper
+	bool isArrayType( Expression *expr );
+	int getElementSize( Type *elemType );
 
 	// Break/continue codegen
 	void genBreakStatement();
@@ -114,6 +141,36 @@ private:
 	// String helper declarations
 	llvm::Function *getOrDeclareSnprintf();
 
+	// String runtime declarations
+	llvm::Function *getOrDeclareStringCreate();
+	llvm::Function *getOrDeclareStringCreateStatic();
+	llvm::Function *getOrDeclareStringRetain();
+	llvm::Function *getOrDeclareStringRelease();
+	llvm::Function *getOrDeclareStringConcat();
+	llvm::Function *getOrDeclareStringConcatMany();
+	llvm::Function *getOrDeclareStringEquals();
+	llvm::Function *getOrDeclareStringLength();
+	llvm::Function *getOrDeclareStringCharAt();
+	llvm::Function *getOrDeclareIntToString();
+	llvm::Function *getOrDeclareFloatToString();
+	llvm::Function *getOrDeclareBoolToString();
+	llvm::Function *getOrDeclareStrlen();
+	llvm::Function *getOrDeclareStringIsEmpty();
+	llvm::Function *getOrDeclareStringContains();
+	llvm::Function *getOrDeclareStringStartsWith();
+	llvm::Function *getOrDeclareStringEndsWith();
+	llvm::Function *getOrDeclareStringIndexOf();
+	llvm::Function *getOrDeclareStringToUpper();
+	llvm::Function *getOrDeclareStringToLower();
+	llvm::Function *getOrDeclareStringTrim();
+	llvm::Function *getOrDeclareStringByteAt();
+	llvm::Function *getOrDeclareStringSubstring();
+	llvm::Function *getOrDeclareStringReplace();
+	llvm::Function *getOrDeclareStringToCstring();
+
+	// String type helper
+	bool isStringType( Expression *expr );
+
 	// Memory allocation helpers
 	llvm::Function *getOrDeclareMalloc();
 
@@ -126,6 +183,9 @@ private:
 	llvm::Function *getOrDeclareSyncUnlock();
 	llvm::Function *getOrDeclareRuntimeInit();
 	llvm::Function *getOrDeclareSpawn();
+	llvm::Function *getOrDeclareSpawnWait();
+	llvm::Function *getOrDeclareSpawnTaskDestroy();
+	llvm::Function *getOrDeclareWaitAll();
 	llvm::Function *getOrDeclareRuntimeShutdown();
 	llvm::Function *getOrDeclareChanCreate();
 	llvm::Function *getOrDeclareChanSend();
@@ -209,6 +269,13 @@ private:
 
 	// ARC tracking: shared/sync variables per scope depth
 	std::vector<std::vector<llvm::AllocaInst*>> mArcScopeStack;
+
+	// String refcount tracking: string variables per scope depth
+	// Each entry is (alloca, varDef) so we can skip moved variables
+	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mStringScopeStack;
+
+	// Array refcount tracking: array variables per scope depth
+	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mArrayScopeStack;
 
 	// Ownership move tracking: own variables that have been moved
 	std::set<VariableDefinition*> mMovedVariables;

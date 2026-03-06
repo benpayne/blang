@@ -294,7 +294,7 @@ namespace QLang
 		friend class CodeGen;
 	};
 
-	class SpawnStatement : public Statement
+	class SpawnStatement : public Expression
 	{
 	public:
 		static SpawnStatement *Parse( Lexer &l, Scope *scope );
@@ -304,6 +304,31 @@ namespace QLang
 
 	private:
 		SmartPtr<Block> mBody;
+		friend class CodeGen;
+	};
+
+	class WaitStatement : public Statement
+	{
+	public:
+		static WaitStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		WaitStatement() {}
+
+	private:
+		SmartPtr<Expression> mExpr;   // the Task expression to wait on
+		friend class CodeGen;
+	};
+
+	class WaitAllStatement : public Statement
+	{
+	public:
+		static WaitAllStatement *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		WaitAllStatement() {}
+
+	private:
 		friend class CodeGen;
 	};
 

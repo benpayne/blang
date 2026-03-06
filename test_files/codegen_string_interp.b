@@ -1,8 +1,8 @@
 // E2E test: string interpolation
 // Tests: "hello {name}" generates formatted string via snprintf
 
-extern fn printf(string fmt, ...) -> int;
-extern fn strcmp(string a, string b) -> int;
+extern fn printf(cstring fmt, ...) -> int;
+extern fn strcmp(cstring a, cstring b) -> int;
 
 fn main() -> int {
 	// Basic string interpolation with integer

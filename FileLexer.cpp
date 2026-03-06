@@ -355,6 +355,10 @@ int Lexer::getSymbolFromFile()
 			case 'c':
 				if ( matchKeyword( "continue" ) )
 					return KEYWORD_CONTINUE;
+				else if ( matchKeyword( "cstring" ) )
+					return KEYWORD_CSTRING;
+				else if ( matchKeyword( "carray" ) )
+					return KEYWORD_CARRAY;
 				else if ( matchKeyword( "char" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "const" ) )
@@ -475,6 +479,10 @@ int Lexer::getSymbolFromFile()
 			case 'w':
 				if ( matchKeyword( "while" ) )
 					return KEYWORD_WHILE;
+				else if ( matchKeyword( "wait_all" ) )
+					return KEYWORD_WAIT_ALL;
+				else if ( matchKeyword( "wait" ) )
+					return KEYWORD_WAIT;
 				break;
 		}
 		

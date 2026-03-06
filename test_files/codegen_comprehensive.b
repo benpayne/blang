@@ -1,7 +1,7 @@
 // Comprehensive E2E test: all Phase 2 features together
 // Tests: assert, contracts, ownership, spawn, for-in, async/await stubs
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn abs(int x) -> int requires x >= -1000 ensures result >= 0 {
 	if x < 0 {

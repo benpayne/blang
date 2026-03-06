@@ -1,7 +1,7 @@
 // E2E test: spawn blocks running on real threads
 // Tests: spawn body executes on thread pool, main waits for completion
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 extern fn usleep(int usec) -> int;
 
 fn main() -> int {

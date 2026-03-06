@@ -1,4 +1,4 @@
-extern fn puts(string s) -> int;
+extern fn puts(cstring s) -> int;
 
 fn take_string(own string s) -> int {
     puts(s);

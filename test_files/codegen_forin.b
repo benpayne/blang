@@ -1,7 +1,7 @@
 // E2E test: for-in loop with range expression
 // Tests: for x in 0..N range iteration
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int {
 	int sum = 0;

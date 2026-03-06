@@ -1,4 +1,4 @@
-extern fn puts(string s) -> int;
+extern fn puts(cstring s) -> int;
 
 enum Result {
     ok(int),

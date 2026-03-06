@@ -1,4 +1,4 @@
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int
 {

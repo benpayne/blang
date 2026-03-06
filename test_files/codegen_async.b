@@ -1,6 +1,6 @@
 // E2E test: async/await basic functionality
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 async fn getData() -> int {
 	return 42;

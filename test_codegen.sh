@@ -10,6 +10,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QCC="${SCRIPT_DIR}/build/qcc"
 RUNTIME_LIB="${SCRIPT_DIR}/build/libblang_runtime.a"
+STRING_LIB="${SCRIPT_DIR}/build/libblang_string.a"
+ARRAY_LIB="${SCRIPT_DIR}/build/libblang_array.a"
 JSON_LIB="${SCRIPT_DIR}/build/libblang_json.a"
 
 # Colors
@@ -119,10 +121,18 @@ run_one_test() {
 	if [ -f "${JSON_LIB}" ]; then
 		json_link="${JSON_LIB}"
 	fi
+	local string_link=""
+	if [ -f "${STRING_LIB}" ]; then
+		string_link="${STRING_LIB}"
+	fi
+	local array_link=""
+	if [ -f "${ARRAY_LIB}" ]; then
+		array_link="${ARRAY_LIB}"
+	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
-		cc_output=$(cc "${obj_file}" "${RUNTIME_LIB}" ${json_link} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
+		cc_output=$(cc "${obj_file}" "${RUNTIME_LIB}" ${string_link} ${array_link} ${json_link} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
 	else
-		cc_output=$(cc "${obj_file}" ${json_link} -o "${bin_file}" 2>&1)
+		cc_output=$(cc "${obj_file}" ${string_link} ${array_link} ${json_link} -o "${bin_file}" 2>&1)
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"

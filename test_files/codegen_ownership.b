@@ -1,7 +1,7 @@
 // E2E test: ownership qualifiers with ARC runtime
 // Tests: own, shared, sync variable declarations and access
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int {
 	// own: single owner, stack allocated (move semantics)

@@ -1,6 +1,6 @@
 // E2E test: multiple async calls, each awaited
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 async fn computeA() -> int {
 	return 10;

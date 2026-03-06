@@ -1,7 +1,7 @@
 // End-to-end codegen test for Phase 2 features
 // Tests: assert, ownership qualifiers, spawn, contracts
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn validate(int x) -> int requires x > 0 {
 	return x;

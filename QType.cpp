@@ -43,6 +43,26 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 	{
 		t = s->findType( l.getSymbolText() );
 	}
+	else if ( sym == Lexer::KEYWORD_CSTRING )
+	{
+		t = new Type( "cstring" );
+	}
+	else if ( sym == Lexer::KEYWORD_CARRAY )
+	{
+		// carray requires generic type argument: carray<T>
+		if ( l.peekSymbol() != '<' )
+			COMPILE_ERROR( l, "carray requires a type argument: carray<T>" );
+		l.getSymbol(); // consume '<'
+		Type *elemType = Type::Parse( l, s, false );
+		if ( elemType == nullptr )
+			COMPILE_ERROR( l, "Expected type argument for carray" );
+		t = new Type( "carray" );
+		t->addTypeParam( elemType );
+		int closeSym = l.getSymbol();
+		if ( closeSym != '>' )
+			COMPILE_ERROR( l, "Expected '>' after carray type argument" );
+		return t; // already parsed generic args, skip the generic check below
+	}
 	else if ( sym == Lexer::SYMBOL )
 	{
 		t = s->findType( l.getSymbolText() );

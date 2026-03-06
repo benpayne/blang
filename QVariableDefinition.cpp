@@ -55,6 +55,10 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool
 	if ( t == nullptr )
 		return nullptr;
 
+	// cstring and carray types are only allowed in extern fn declarations
+	if ( !isExtern && t != nullptr && ( t->getName() == "cstring" || t->getName() == "carray" ) )
+		COMPILE_ERROR( l, "'" + t->getName() + "' type can only be used in extern fn declarations" );
+
 	// Peek at the next token to determine if a parameter name follows
 	int sym = l.peekSymbol();
 	if ( sym == Lexer::SYMBOL )
@@ -137,6 +141,10 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 		// Normal type parse
 		t = Type::Parse( l, s, false );
 	}
+
+	// cstring and carray types are only allowed in extern fn declarations
+	if ( t != nullptr && ( t->getName() == "cstring" || t->getName() == "carray" ) )
+		COMPILE_ERROR( l, "'" + t->getName() + "' type can only be used in extern fn declarations" );
 
 	do {
 		VariableDeclaration::DeclData data;

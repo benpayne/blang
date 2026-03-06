@@ -49,6 +49,12 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 	case Lexer::KEYWORD_SPAWN:
 		statement = SpawnStatement::Parse( l, scope );
 		break;
+	case Lexer::KEYWORD_WAIT:
+		statement = WaitStatement::Parse( l, scope );
+		break;
+	case Lexer::KEYWORD_WAIT_ALL:
+		statement = WaitAllStatement::Parse( l, scope );
+		break;
 	case Lexer::KEYWORD_ASSERT:
 		statement = AssertStatement::Parse( l, scope );
 		break;

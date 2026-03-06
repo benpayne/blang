@@ -87,6 +87,12 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		return new AwaitExpression( operand );
 	}
 
+	// spawn expression: spawn { ... } returns a Task handle
+	if ( sym == Lexer::KEYWORD_SPAWN )
+	{
+		return SpawnStatement::Parse( l, scope );
+	}
+
 	// Query expressions: query T, insert T, update T, delete T
 	if ( sym == Lexer::KEYWORD_QUERY )
 	{

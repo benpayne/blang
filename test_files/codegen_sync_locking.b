@@ -1,7 +1,7 @@
 // E2E test: sync variable locking
 // Tests: sync read lock/unlock, sync = with self-reference (TOCTOU fix), sync +=
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int {
 	// sync variable with locked reads and writes

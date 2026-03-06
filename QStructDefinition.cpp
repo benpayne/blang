@@ -78,6 +78,10 @@ StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 			COMPILE_ERROR( l, "Expected field type in struct definition" );
 		}
 
+		// cstring and carray types are only allowed in extern fn declarations
+		if ( fieldType->getName() == "cstring" || fieldType->getName() == "carray" )
+			COMPILE_ERROR( l, "'" + fieldType->getName() + "' type can only be used in extern fn declarations" );
+
 		sym = l.getSymbol();
 		if ( sym != Lexer::SYMBOL )
 		{

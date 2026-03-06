@@ -360,18 +360,57 @@ fn sort<T: Comparable>(List<T> list) -> List<T> {
 
 ## Concurrency
 
-### Spawn
+### Spawn and Task Handles
 
-`spawn` creates a lightweight green thread scheduled by the BLang runtime.
+`spawn` creates a lightweight green thread scheduled by the BLang runtime. It returns a `Task` handle that can be waited on.
 
 ```
+// Fire-and-forget (Task handle discarded)
 spawn {
 	result = compute();
 	channel.send(result);
-}
+};
+
+// Capture the handle to wait on later
+Task t = spawn {
+	process(data);
+};
+wait t;    // block until the task completes
 ```
 
-The runtime uses a work-stealing scheduler over OS threads. Green threads are cheap (small initial stack, growable).
+The runtime uses a thread pool over OS threads. Green threads are cheap (small initial stack, growable).
+
+### Waiting for Tasks
+
+BLang provides two mechanisms for waiting on spawned tasks, both using the `wait` keyword. This is distinct from `await`, which is used for cooperative async/event-loop work.
+
+```
+// Wait for a single task
+Task t = spawn { compute(); };
+wait t;
+
+// Wait for all outstanding spawns
+spawn { task_a(); };
+spawn { task_b(); };
+spawn { task_c(); };
+wait_all;    // blocks until all three complete
+```
+
+**`wait` vs `await`**: These are intentionally different keywords for different concurrency models:
+- **`spawn` + `wait`** — preemptive threads, blocking wait
+- **`async` + `await`** — event loop, cooperative yield
+
+`wait_all` does not shut down the thread pool — you can spawn more work after it returns.
+
+When arrays are available, `wait` will also accept `Array<Task>`:
+
+```
+Array<Task> tasks = [];
+for i in 0..10 {
+	tasks.push(spawn { process(i); });
+}
+wait tasks;    // wait for all tasks in the array
+```
 
 ### Channels
 

@@ -45,17 +45,33 @@ void __blang_sync_unlock( void *ptr );
 /* Signature for a spawn body: void(*)(void*) with context pointer. */
 typedef void (*blang_spawn_fn)( void *ctx );
 
+/* ---- Task Handles (spawn + wait) ---- */
+
+/* Opaque handle returned by __blang_spawn. */
+typedef struct BlangSpawnTask BlangSpawnTask;
+
 /* Initialize the global thread pool with `num_threads` worker threads.
    If num_threads == 0, uses the number of CPU cores. */
 void __blang_runtime_init( int num_threads );
 
 /* Submit a task to the thread pool. The function `fn` will be executed
    asynchronously by one of the worker threads with the given context.
-   The context will be freed after the function returns. */
-void __blang_spawn( blang_spawn_fn fn, void *ctx );
+   The context will be freed after the function returns.
+   Returns a task handle that can be waited on, or ignored (fire-and-forget). */
+BlangSpawnTask *__blang_spawn( blang_spawn_fn fn, void *ctx );
 
 /* Block until all submitted tasks have completed, then destroy the pool. */
 void __blang_runtime_shutdown( void );
+
+/* Wait for a single spawned task to complete. Blocks until done. */
+void __blang_spawn_wait( BlangSpawnTask *task );
+
+/* Destroy a completed task handle and free resources. */
+void __blang_spawn_task_destroy( BlangSpawnTask *task );
+
+/* Wait for all currently in-flight spawned tasks to complete.
+   Does NOT shut down the thread pool (unlike __blang_runtime_shutdown). */
+void __blang_wait_all( void );
 
 /* ---- Channels ---- */
 

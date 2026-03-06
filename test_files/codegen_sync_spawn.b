@@ -1,7 +1,7 @@
 // E2E test: sync variable with spawn blocks
 // Tests: multiple spawns incrementing a sync counter via +=
 
-extern fn printf(string fmt, ...) -> int;
+extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int {
 	sync int counter = 0;
