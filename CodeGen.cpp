@@ -187,6 +187,22 @@ bool CodeGen::generate( Module *mod )
 		}
 	}
 
+	// Generate to_json/from_json for @json annotated structs
+	for ( auto &structDef : mod->mStructList )
+	{
+		for ( const auto &ann : structDef->getAnnotations() )
+		{
+			if ( ann.mName == "json" )
+			{
+				if ( !genJsonToJson( structDef ) )
+					return false;
+				if ( !genJsonFromJson( structDef ) )
+					return false;
+				break;
+			}
+		}
+	}
+
 	// Scan module for concurrency features to determine if runtime init/shutdown is needed
 	for ( auto &func : mod->mFunctionList )
 	{
@@ -3038,4 +3054,469 @@ void CodeGen::genTestRunner( const std::vector<llvm::Function*> &testFunctions,
 	}
 
 	mBuilder->CreateRetVoid();
+}
+
+// ---- JSON codegen (@json annotation) ----
+
+bool CodeGen::genJsonToJson( StructDefinition *structDef )
+{
+	llvm::StructType *structType = getOrCreateStructType( structDef );
+	std::string funcName = structDef->getName() + "_to_json";
+
+	// StructName_to_json(StructType self) -> char*
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { structType }, false );
+	llvm::Function *func = llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, funcName, mModule.get() );
+	func->getArg( 0 )->setName( "self" );
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", func );
+	mBuilder->SetInsertPoint( entryBB );
+
+	// Store struct arg to alloca for GEP access
+	llvm::AllocaInst *selfAlloca = mBuilder->CreateAlloca( structType, nullptr, "self.addr" );
+	mBuilder->CreateStore( func->getArg( 0 ), selfAlloca );
+
+	// Create JSON object
+	llvm::Value *jsonObj = mBuilder->CreateCall( getOrDeclareJsonObject(), {}, "json.obj" );
+
+	// For each field: extract, wrap in JSON value, set on object
+	for ( unsigned i = 0; i < structDef->mFields.size(); i++ )
+	{
+		VariableDefinition *field = structDef->mFields[i];
+		std::string fieldName = field->getName();
+		Type *fieldType = field->getVariableType();
+		std::string typeName = fieldType ? fieldType->getName() : "int";
+
+		// GEP to field
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, selfAlloca, i, fieldName + ".ptr" );
+		llvm::Value *fieldVal = mBuilder->CreateLoad( getLLVMType( fieldType ), fieldPtr, fieldName + ".val" );
+
+		// Create JSON value based on type
+		llvm::Value *jsonVal = nullptr;
+		if ( typeName == "int" || typeName == "short" || typeName == "long" )
+		{
+			// Extend to i64 for the JSON runtime
+			llvm::Value *i64Val = fieldVal;
+			if ( !fieldVal->getType()->isIntegerTy( 64 ) )
+				i64Val = mBuilder->CreateSExt( fieldVal, llvm::Type::getInt64Ty( *mContext ), fieldName + ".ext" );
+			jsonVal = mBuilder->CreateCall( getOrDeclareJsonInt(), { i64Val }, fieldName + ".json" );
+		}
+		else if ( typeName == "char" )
+		{
+			// Extend i8 to i64 and use JSON int
+			llvm::Value *i64Val = mBuilder->CreateSExt( fieldVal, llvm::Type::getInt64Ty( *mContext ), fieldName + ".ext" );
+			jsonVal = mBuilder->CreateCall( getOrDeclareJsonInt(), { i64Val }, fieldName + ".json" );
+		}
+		else if ( typeName == "float" || typeName == "double" )
+		{
+			llvm::Value *dblVal = fieldVal;
+			if ( fieldVal->getType()->isFloatTy() )
+				dblVal = mBuilder->CreateFPExt( fieldVal, llvm::Type::getDoubleTy( *mContext ), fieldName + ".fpext" );
+			jsonVal = mBuilder->CreateCall( getOrDeclareJsonFloat(), { dblVal }, fieldName + ".json" );
+		}
+		else if ( typeName == "string" )
+		{
+			jsonVal = mBuilder->CreateCall( getOrDeclareJsonString(), { fieldVal }, fieldName + ".json" );
+		}
+		else if ( typeName == "bool" )
+		{
+			// Extend i1 to i32
+			llvm::Value *i32Val = mBuilder->CreateZExt( fieldVal, llvm::Type::getInt32Ty( *mContext ), fieldName + ".zext" );
+			jsonVal = mBuilder->CreateCall( getOrDeclareJsonBool(), { i32Val }, fieldName + ".json" );
+		}
+		else
+		{
+			// Check if this is a nested @json struct
+			auto it = mStructDefMap.find( typeName );
+			if ( it != mStructDefMap.end() )
+			{
+				StructDefinition *nestedDef = it->second;
+				bool hasJson = false;
+				for ( const auto &ann : nestedDef->getAnnotations() )
+				{
+					if ( ann.mName == "json" )
+					{
+						hasJson = true;
+						break;
+					}
+				}
+				if ( hasJson )
+				{
+					// Call NestedStruct_to_json(fieldVal) -> char*
+					std::string nestedToJson = typeName + "_to_json";
+					llvm::Function *nestedFn = mModule->getFunction( nestedToJson );
+					if ( !nestedFn )
+					{
+						// Forward declare if not yet generated
+						llvm::StructType *nestedStructType = getOrCreateStructType( nestedDef );
+						llvm::FunctionType *nestedFt = llvm::FunctionType::get( ptrTy, { nestedStructType }, false );
+						nestedFn = llvm::Function::Create(
+							nestedFt, llvm::Function::ExternalLinkage, nestedToJson, mModule.get() );
+					}
+					llvm::Value *nestedStr = mBuilder->CreateCall( nestedFn, { fieldVal }, fieldName + ".str" );
+
+					// Decode the JSON string back to a value tree
+					llvm::Value *nullErrPtr = llvm::ConstantPointerNull::get(
+						llvm::PointerType::get( *mContext, 0 ) );
+					jsonVal = mBuilder->CreateCall(
+						getOrDeclareJsonDecode(), { nestedStr, nullErrPtr }, fieldName + ".json" );
+
+					// Free the intermediate string
+					llvm::Function *freeFn = mModule->getFunction( "free" );
+					if ( !freeFn )
+					{
+						llvm::FunctionType *freeFt = llvm::FunctionType::get(
+							llvm::Type::getVoidTy( *mContext ), { ptrTy }, false );
+						freeFn = llvm::Function::Create(
+							freeFt, llvm::Function::ExternalLinkage, "free", mModule.get() );
+					}
+					mBuilder->CreateCall( freeFn, { nestedStr } );
+				}
+				else
+				{
+					cerr << "Error: @json struct '" << structDef->getName()
+						<< "' has field '" << fieldName << "' of struct type '" << typeName
+						<< "' which does not have @json annotation" << endl;
+					return false;
+				}
+			}
+			else
+			{
+				cerr << "Error: @json struct '" << structDef->getName()
+					<< "' has field '" << fieldName << "' of unsupported type '" << typeName << "'" << endl;
+				return false;
+			}
+		}
+
+		llvm::Value *keyStr = mBuilder->CreateGlobalStringPtr( fieldName, fieldName + ".key" );
+		mBuilder->CreateCall( getOrDeclareJsonObjectSet(), { jsonObj, keyStr, jsonVal } );
+	}
+
+	// Encode to string
+	llvm::Value *result = mBuilder->CreateCall( getOrDeclareJsonEncode(), { jsonObj }, "json.str" );
+
+	// Free the JSON tree
+	mBuilder->CreateCall( getOrDeclareJsonFree(), { jsonObj } );
+
+	mBuilder->CreateRet( result );
+	return true;
+}
+
+bool CodeGen::genJsonFromJson( StructDefinition *structDef )
+{
+	llvm::StructType *structType = getOrCreateStructType( structDef );
+	std::string funcName = structDef->getName() + "_from_json";
+
+	// StructName_from_json(char*) -> StructType
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( structType, { ptrTy }, false );
+	llvm::Function *func = llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, funcName, mModule.get() );
+	func->getArg( 0 )->setName( "input" );
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", func );
+	mBuilder->SetInsertPoint( entryBB );
+
+	// Decode JSON string
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+		llvm::PointerType::get( *mContext, 0 ) );
+	llvm::Value *jsonObj = mBuilder->CreateCall(
+		getOrDeclareJsonDecode(), { func->getArg( 0 ), nullPtr }, "json.obj" );
+
+	// Alloca for result struct
+	llvm::AllocaInst *resultAlloca = mBuilder->CreateAlloca( structType, nullptr, "result" );
+	// Zero-initialize
+	mBuilder->CreateStore( llvm::Constant::getNullValue( structType ), resultAlloca );
+
+	// For each field: look up in JSON, extract, store
+	for ( unsigned i = 0; i < structDef->mFields.size(); i++ )
+	{
+		VariableDefinition *field = structDef->mFields[i];
+		std::string fieldName = field->getName();
+		Type *fieldType = field->getVariableType();
+		std::string typeName = fieldType ? fieldType->getName() : "int";
+
+		// Get the field node from JSON
+		llvm::Value *keyStr = mBuilder->CreateGlobalStringPtr( fieldName, fieldName + ".key" );
+		llvm::Value *fieldNode = mBuilder->CreateCall(
+			getOrDeclareJsonObjectGet(), { jsonObj, keyStr }, fieldName + ".node" );
+
+		// Extract typed value
+		llvm::Value *fieldVal = nullptr;
+		if ( typeName == "int" || typeName == "short" || typeName == "long" )
+		{
+			llvm::Value *i64Val = mBuilder->CreateCall(
+				getOrDeclareJsonGetInt(), { fieldNode }, fieldName + ".i64" );
+			if ( typeName == "int" )
+				fieldVal = mBuilder->CreateTrunc( i64Val, llvm::Type::getInt32Ty( *mContext ), fieldName + ".val" );
+			else if ( typeName == "short" )
+				fieldVal = mBuilder->CreateTrunc( i64Val, llvm::Type::getInt16Ty( *mContext ), fieldName + ".val" );
+			else
+				fieldVal = i64Val;
+		}
+		else if ( typeName == "char" )
+		{
+			llvm::Value *i64Val = mBuilder->CreateCall(
+				getOrDeclareJsonGetInt(), { fieldNode }, fieldName + ".i64" );
+			fieldVal = mBuilder->CreateTrunc( i64Val, llvm::Type::getInt8Ty( *mContext ), fieldName + ".val" );
+		}
+		else if ( typeName == "float" || typeName == "double" )
+		{
+			llvm::Value *dblVal = mBuilder->CreateCall(
+				getOrDeclareJsonGetFloat(), { fieldNode }, fieldName + ".dbl" );
+			if ( typeName == "float" )
+				fieldVal = mBuilder->CreateFPTrunc( dblVal, llvm::Type::getFloatTy( *mContext ), fieldName + ".val" );
+			else
+				fieldVal = dblVal;
+		}
+		else if ( typeName == "string" )
+		{
+			fieldVal = mBuilder->CreateCall(
+				getOrDeclareJsonGetString(), { fieldNode }, fieldName + ".val" );
+		}
+		else if ( typeName == "bool" )
+		{
+			llvm::Value *i32Val = mBuilder->CreateCall(
+				getOrDeclareJsonGetBool(), { fieldNode }, fieldName + ".i32" );
+			fieldVal = mBuilder->CreateTrunc( i32Val, llvm::Type::getInt1Ty( *mContext ), fieldName + ".val" );
+		}
+		else
+		{
+			// Check if this is a nested @json struct
+			auto it = mStructDefMap.find( typeName );
+			if ( it != mStructDefMap.end() )
+			{
+				StructDefinition *nestedDef = it->second;
+				bool hasJson = false;
+				for ( const auto &ann : nestedDef->getAnnotations() )
+				{
+					if ( ann.mName == "json" )
+					{
+						hasJson = true;
+						break;
+					}
+				}
+				if ( hasJson )
+				{
+					// Encode the nested JSON node back to a string
+					llvm::Value *nestedStr = mBuilder->CreateCall(
+						getOrDeclareJsonEncode(), { fieldNode }, fieldName + ".str" );
+
+					// Call NestedStruct_from_json(str) -> StructType
+					std::string nestedFromJson = typeName + "_from_json";
+					llvm::StructType *nestedStructType = getOrCreateStructType( nestedDef );
+					llvm::Function *nestedFn = mModule->getFunction( nestedFromJson );
+					if ( !nestedFn )
+					{
+						llvm::FunctionType *nestedFt = llvm::FunctionType::get( nestedStructType, { ptrTy }, false );
+						nestedFn = llvm::Function::Create(
+							nestedFt, llvm::Function::ExternalLinkage, nestedFromJson, mModule.get() );
+					}
+					fieldVal = mBuilder->CreateCall( nestedFn, { nestedStr }, fieldName + ".val" );
+
+					// Free the intermediate string
+					llvm::Function *freeFn = mModule->getFunction( "free" );
+					if ( !freeFn )
+					{
+						llvm::FunctionType *freeFt = llvm::FunctionType::get(
+							llvm::Type::getVoidTy( *mContext ), { ptrTy }, false );
+						freeFn = llvm::Function::Create(
+							freeFt, llvm::Function::ExternalLinkage, "free", mModule.get() );
+					}
+					mBuilder->CreateCall( freeFn, { nestedStr } );
+				}
+				else
+				{
+					cerr << "Error: @json struct '" << structDef->getName()
+						<< "' has field '" << fieldName << "' of struct type '" << typeName
+						<< "' which does not have @json annotation" << endl;
+					return false;
+				}
+			}
+			else
+			{
+				cerr << "Error: @json struct '" << structDef->getName()
+					<< "' has field '" << fieldName << "' of unsupported type '" << typeName << "'" << endl;
+				return false;
+			}
+		}
+
+		// Store to result struct
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, resultAlloca, i, fieldName + ".ptr" );
+		mBuilder->CreateStore( fieldVal, fieldPtr );
+	}
+
+	// Free JSON tree
+	mBuilder->CreateCall( getOrDeclareJsonFree(), { jsonObj } );
+
+	// Load and return result
+	llvm::Value *result = mBuilder->CreateLoad( structType, resultAlloca, "result.val" );
+	mBuilder->CreateRet( result );
+	return true;
+}
+
+// ---- JSON runtime declarations ----
+
+llvm::Function *CodeGen::getOrDeclareJsonObject()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_object" );
+	if ( f ) return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ), {}, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_object", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonInt()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_int" );
+	if ( f ) return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ) }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_int", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonFloat()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_float" );
+	if ( f ) return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getDoubleTy( *mContext ) }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_float", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonString()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_string" );
+	if ( f ) return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::PointerType::get( *mContext, 0 ) }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_string", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonBool()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_bool" );
+	if ( f ) return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt32Ty( *mContext ) }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_bool", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonObjectSet()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_object_set" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), { ptrTy, ptrTy, ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_object_set", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonObjectGet()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_object_get" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy, ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_object_get", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonEncode()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_encode" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_encode", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonDecode()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_decode" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy, ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_decode", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonFree()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_free" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_free", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonGetInt()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_get_int" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt64Ty( *mContext ), { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_get_int", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonGetFloat()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_get_float" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getDoubleTy( *mContext ), { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_get_float", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonGetString()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_get_string" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_get_string", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareJsonGetBool()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_json_get_bool" );
+	if ( f ) return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ), { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_json_get_bool", mModule.get() );
 }

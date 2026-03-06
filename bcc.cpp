@@ -557,6 +557,37 @@ int main( int argc, char *argv[] )
 		cmd.push_back( BCC_HOST_ARCH );
 #endif
 		cmd.push_back( objFile );
+
+		// Link BLang runtime library (ARC, thread pool, channels, async)
+		string runtimeLib;
+#ifdef BCC_RUNTIME_LIB
+		runtimeLib = BCC_RUNTIME_LIB;
+#endif
+		if ( runtimeLib.empty() || access( runtimeLib.c_str(), F_OK ) != 0 )
+		{
+			string fallback = exeDir + "/libblang_runtime.a";
+			if ( access( fallback.c_str(), F_OK ) == 0 )
+				runtimeLib = fallback;
+		}
+		if ( !runtimeLib.empty() )
+			cmd.push_back( runtimeLib );
+
+		// Link BLang JSON library (@json annotation support)
+		string jsonLib;
+#ifdef BCC_JSON_LIB
+		jsonLib = BCC_JSON_LIB;
+#endif
+		if ( jsonLib.empty() || access( jsonLib.c_str(), F_OK ) != 0 )
+		{
+			string fallback = exeDir + "/libblang_json.a";
+			if ( access( fallback.c_str(), F_OK ) == 0 )
+				jsonLib = fallback;
+		}
+		if ( !jsonLib.empty() )
+			cmd.push_back( jsonLib );
+
+		cmd.push_back( "-lpthread" );
+
 		cmd.push_back( "-o" );
 		cmd.push_back( outFile );
 		for ( const auto &flag : opts.linkerFlags )

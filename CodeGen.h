@@ -120,6 +120,26 @@ private:
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();
 
+	// JSON codegen (@json annotation)
+	bool genJsonToJson( StructDefinition *structDef );
+	bool genJsonFromJson( StructDefinition *structDef );
+
+	// JSON runtime declarations
+	llvm::Function *getOrDeclareJsonObject();
+	llvm::Function *getOrDeclareJsonInt();
+	llvm::Function *getOrDeclareJsonFloat();
+	llvm::Function *getOrDeclareJsonString();
+	llvm::Function *getOrDeclareJsonBool();
+	llvm::Function *getOrDeclareJsonObjectSet();
+	llvm::Function *getOrDeclareJsonObjectGet();
+	llvm::Function *getOrDeclareJsonEncode();
+	llvm::Function *getOrDeclareJsonDecode();
+	llvm::Function *getOrDeclareJsonFree();
+	llvm::Function *getOrDeclareJsonGetInt();
+	llvm::Function *getOrDeclareJsonGetFloat();
+	llvm::Function *getOrDeclareJsonGetString();
+	llvm::Function *getOrDeclareJsonGetBool();
+
 	// Database query codegen
 	llvm::Value *genQueryExpression( QueryExpression *query );
 	llvm::Value *genInsertExpression( InsertExpression *insert );

@@ -234,6 +234,7 @@ namespace QLang
 		std::vector<AnnotationNode> mAnnotations;
 
 		friend class CodeGen;
+		friend class Module;
 	};
 
 	enum class OwnershipQualifier {

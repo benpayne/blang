@@ -10,6 +10,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QCC="${SCRIPT_DIR}/build/qcc"
 RUNTIME_LIB="${SCRIPT_DIR}/build/libblang_runtime.a"
+JSON_LIB="${SCRIPT_DIR}/build/libblang_json.a"
 
 # Colors
 RED='\033[0;31m'
@@ -114,10 +115,14 @@ run_one_test() {
 	if pkg-config --exists libuv 2>/dev/null; then
 		extra_libs="-luv"
 	fi
+	local json_link=""
+	if [ -f "${JSON_LIB}" ]; then
+		json_link="${JSON_LIB}"
+	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
-		cc_output=$(cc "${obj_file}" "${RUNTIME_LIB}" -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
+		cc_output=$(cc "${obj_file}" "${RUNTIME_LIB}" ${json_link} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
 	else
-		cc_output=$(cc "${obj_file}" -o "${bin_file}" 2>&1)
+		cc_output=$(cc "${obj_file}" ${json_link} -o "${bin_file}" 2>&1)
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"

@@ -75,6 +75,17 @@ char *__blang_json_encode( BlangJsonValue *val );
    Returns NULL on parse error. Sets *error_msg on failure. */
 BlangJsonValue *__blang_json_decode( const char *input, const char **error_msg );
 
+/* ---- Accessors ---- */
+
+/* Lookup a field by name (returns NULL if missing or not an object) */
+BlangJsonValue *__blang_json_object_get( BlangJsonValue *obj, const char *key );
+
+/* Type-safe value accessors (return 0/NULL on type mismatch) */
+int64_t __blang_json_get_int( BlangJsonValue *val );
+double __blang_json_get_float( BlangJsonValue *val );
+const char *__blang_json_get_string( BlangJsonValue *val );
+int __blang_json_get_bool( BlangJsonValue *val );
+
 /* ---- Cleanup ---- */
 
 void __blang_json_free( BlangJsonValue *val );

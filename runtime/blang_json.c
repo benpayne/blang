@@ -500,6 +500,51 @@ BlangJsonValue *__blang_json_decode( const char *input, const char **error_msg )
 	return result;
 }
 
+/* ---- Accessors ---- */
+
+BlangJsonValue *__blang_json_object_get( BlangJsonValue *obj, const char *key )
+{
+	if ( !obj || obj->type != BLANG_JSON_OBJECT || !key )
+		return NULL;
+
+	for ( int i = 0; i < obj->data.object.count; i++ )
+	{
+		if ( strcmp( obj->data.object.pairs[i].key, key ) == 0 )
+			return obj->data.object.pairs[i].value;
+	}
+	return NULL;
+}
+
+int64_t __blang_json_get_int( BlangJsonValue *val )
+{
+	if ( !val ) return 0;
+	if ( val->type == BLANG_JSON_INT ) return val->data.int_val;
+	if ( val->type == BLANG_JSON_FLOAT ) return (int64_t)val->data.float_val;
+	return 0;
+}
+
+double __blang_json_get_float( BlangJsonValue *val )
+{
+	if ( !val ) return 0.0;
+	if ( val->type == BLANG_JSON_FLOAT ) return val->data.float_val;
+	if ( val->type == BLANG_JSON_INT ) return (double)val->data.int_val;
+	return 0.0;
+}
+
+const char *__blang_json_get_string( BlangJsonValue *val )
+{
+	if ( !val || val->type != BLANG_JSON_STRING ) return "";
+	return val->data.string_val;
+}
+
+int __blang_json_get_bool( BlangJsonValue *val )
+{
+	if ( !val ) return 0;
+	if ( val->type == BLANG_JSON_BOOL ) return val->data.bool_val;
+	if ( val->type == BLANG_JSON_INT ) return val->data.int_val != 0;
+	return 0;
+}
+
 /* ---- Cleanup ---- */
 
 void __blang_json_free( BlangJsonValue *val )
