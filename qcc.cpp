@@ -387,10 +387,12 @@ static void printUsage( const char *progName )
 {
 	std::cerr << "Usage: " << progName << " [options] <filename> [<filename> ...]" << std::endl;
 	std::cerr << "Options:" << std::endl;
+#ifdef BLANG_HAS_LLVM
 	std::cerr << "  -S, --emit-ir     Emit LLVM IR (.ll file)" << std::endl;
 	std::cerr << "  -c, --emit-obj    Emit object file (.o file)" << std::endl;
 	std::cerr << "  -o, --output FILE Output file name" << std::endl;
 	std::cerr << "  --parse-only      Parse only, no code generation" << std::endl;
+#endif
 	std::cerr << "  -h, --help        Show this help" << std::endl;
 }
 
