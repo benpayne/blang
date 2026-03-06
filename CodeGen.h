@@ -63,6 +63,12 @@ private:
 	llvm::Value *genFieldAccess( FieldAccessExpression *expr );
 	llvm::Value *genMethodCall( MethodCallExpression *expr );
 
+	// Enum tagged union codegen
+	llvm::StructType *getOrCreateEnumType( EnumDefinition *enumDef );
+	llvm::Value *genEnumConstruct( EnumConstructExpression *expr );
+	bool enumHasPayload( EnumDefinition *enumDef );
+	uint64_t getEnumMaxPayloadSize( EnumDefinition *enumDef );
+
 	// Match and error handling codegen
 	llvm::Value *genMatchExpression( MatchExpression *expr );
 	llvm::Value *genTryExpression( TryExpression *expr );
@@ -156,6 +162,7 @@ private:
 	std::map<std::string, llvm::StructType*> mStructTypeMap;
 	std::map<std::string, StructDefinition*> mStructDefMap;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
+	std::map<std::string, llvm::StructType*> mEnumTypeMap;
 
 	// Module scope for type resolution
 	Scope *mScope = nullptr;

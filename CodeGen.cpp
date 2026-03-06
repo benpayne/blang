@@ -57,10 +57,15 @@ llvm::Type *CodeGen::getLLVMType( Type *type )
 	if ( defIt != mStructDefMap.end() )
 		return getOrCreateStructType( defIt->second );
 
-	// Check for known enum types — represented as i32 tag
+	// Check for known enum types
 	auto enumIt = mEnumDefMap.find( name );
 	if ( enumIt != mEnumDefMap.end() )
-		return llvm::Type::getInt32Ty( *mContext );
+	{
+		if ( enumHasPayload( enumIt->second ) )
+			return getOrCreateEnumType( enumIt->second );
+		else
+			return llvm::Type::getInt32Ty( *mContext );
+	}
 
 	// Fallback for unknown types (generics, unresolved)
 	return llvm::Type::getInt32Ty( *mContext );
@@ -85,6 +90,71 @@ llvm::StructType *CodeGen::getOrCreateStructType( StructDefinition *structDef )
 	llvm::StructType *st = llvm::StructType::create(
 		*mContext, fieldTypes, structDef->getName() );
 	mStructTypeMap[structDef->getName()] = st;
+	return st;
+}
+
+bool CodeGen::enumHasPayload( EnumDefinition *enumDef )
+{
+	for ( auto &variant : enumDef->mVariants )
+	{
+		if ( !variant.mAssociatedTypes.empty() )
+			return true;
+	}
+	return false;
+}
+
+uint64_t CodeGen::getEnumMaxPayloadSize( EnumDefinition *enumDef )
+{
+	uint64_t maxSize = 0;
+	llvm::DataLayout dl( mModule.get() );
+
+	for ( auto &variant : enumDef->mVariants )
+	{
+		uint64_t variantSize = 0;
+		for ( auto &assocType : variant.mAssociatedTypes )
+		{
+			llvm::Type *llvmType = getLLVMType( assocType );
+			uint64_t typeSize = dl.getTypeAllocSize( llvmType );
+			// Fallback for zero-sized types
+			if ( typeSize == 0 )
+			{
+				if ( llvmType->isIntegerTy( 32 ) ) typeSize = 4;
+				else if ( llvmType->isIntegerTy( 64 ) ) typeSize = 8;
+				else if ( llvmType->isPointerTy() ) typeSize = 8;
+				else if ( llvmType->isFloatTy() ) typeSize = 4;
+				else if ( llvmType->isDoubleTy() ) typeSize = 8;
+				else typeSize = 4;
+			}
+			variantSize += typeSize;
+		}
+		if ( variantSize > maxSize )
+			maxSize = variantSize;
+	}
+
+	// Minimum payload of 1 byte to avoid zero-sized arrays
+	if ( maxSize == 0 )
+		maxSize = 1;
+
+	return maxSize;
+}
+
+llvm::StructType *CodeGen::getOrCreateEnumType( EnumDefinition *enumDef )
+{
+	auto it = mEnumTypeMap.find( enumDef->getName() );
+	if ( it != mEnumTypeMap.end() )
+		return it->second;
+
+	uint64_t payloadSize = getEnumMaxPayloadSize( enumDef );
+
+	// Layout: { i32 tag, [N x i8] payload }
+	std::vector<llvm::Type*> fields;
+	fields.push_back( llvm::Type::getInt32Ty( *mContext ) );
+	fields.push_back( llvm::ArrayType::get(
+		llvm::Type::getInt8Ty( *mContext ), payloadSize ) );
+
+	llvm::StructType *st = llvm::StructType::create(
+		*mContext, fields, "enum." + enumDef->getName() );
+	mEnumTypeMap[enumDef->getName()] = st;
 	return st;
 }
 
@@ -1027,6 +1097,8 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 		return genMethodCall( method );
 	else if ( auto *slit = dynamic_cast<StructLiteralExpression*>( expr ) )
 		return genStructLiteral( slit );
+	else if ( auto *enumCons = dynamic_cast<EnumConstructExpression*>( expr ) )
+		return genEnumConstruct( enumCons );
 	else if ( auto *matchExpr = dynamic_cast<MatchExpression*>( expr ) )
 		return genMatchExpression( matchExpr );
 	else if ( auto *tryExpr = dynamic_cast<TryExpression*>( expr ) )
@@ -1498,6 +1570,73 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 	return mBuilder->CreateCall( llvmFunc, args, "methodcall" );
 }
 
+// ---- Enum construction codegen ----
+
+llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
+{
+	EnumDefinition *enumDef = expr->mEnumDef;
+	int variantIdx = expr->mVariantIndex;
+
+	if ( !enumHasPayload( enumDef ) )
+	{
+		// Plain enum without payload — just return the tag as i32
+		return llvm::ConstantInt::get(
+			llvm::Type::getInt32Ty( *mContext ), variantIdx );
+	}
+
+	// Tagged union enum: { i32 tag, [N x i8] payload }
+	llvm::StructType *enumType = getOrCreateEnumType( enumDef );
+
+	// Alloca the enum struct
+	llvm::AllocaInst *alloca = mBuilder->CreateAlloca( enumType, nullptr, "enum.tmp" );
+
+	// Store the tag
+	llvm::Value *tagPtr = mBuilder->CreateStructGEP( enumType, alloca, 0, "enum.tag.ptr" );
+	mBuilder->CreateStore(
+		llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), variantIdx ),
+		tagPtr );
+
+	// Store the payload (if this variant has associated types)
+	auto &variant = enumDef->mVariants[variantIdx];
+	if ( !variant.mAssociatedTypes.empty() && !expr->mArgs.empty() )
+	{
+		llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+			enumType, alloca, 1, "enum.payload.ptr" );
+
+		// For each associated type, store the argument into the payload area
+		uint64_t offset = 0;
+		llvm::DataLayout dl( mModule.get() );
+
+		for ( size_t i = 0; i < variant.mAssociatedTypes.size() && i < expr->mArgs.size(); i++ )
+		{
+			llvm::Value *argVal = genExpression( expr->mArgs[i] );
+			if ( argVal == nullptr )
+				continue;
+
+			llvm::Type *argType = argVal->getType();
+
+			// GEP into the payload byte array at the current offset
+			llvm::Value *offsetVal = llvm::ConstantInt::get(
+				llvm::Type::getInt64Ty( *mContext ), offset );
+			llvm::Type *payloadArrType = enumType->getElementType( 1 );
+			llvm::Value *bytePtr = mBuilder->CreateGEP(
+				payloadArrType, payloadPtr,
+				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ), offsetVal },
+				"enum.payload.byte" );
+
+			// Store the value through the byte pointer
+			mBuilder->CreateStore( argVal, bytePtr );
+
+			uint64_t typeSize = dl.getTypeAllocSize( argType );
+			if ( typeSize == 0 ) typeSize = 4; // fallback
+			offset += typeSize;
+		}
+	}
+
+	// Load and return the enum value
+	return mBuilder->CreateLoad( enumType, alloca, "enum.val" );
+}
+
 // ---- Match codegen (Task 53) ----
 
 llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
@@ -1508,6 +1647,41 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 
 	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
 	llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create( *mContext, "matchend", func );
+
+	// Determine if this is a tagged union enum match
+	bool isEnumStruct = false;
+	EnumDefinition *matchedEnum = nullptr;
+	llvm::StructType *enumStructType = nullptr;
+	llvm::Value *tagVal = nullptr;
+	llvm::AllocaInst *subjectAlloca = nullptr;
+
+	if ( auto *st = llvm::dyn_cast<llvm::StructType>( subject->getType() ) )
+	{
+		// Check if this struct type corresponds to a known enum
+		string stName = st->hasName() ? st->getName().str() : "";
+		// Enum types are named "enum.EnumName"
+		if ( stName.substr( 0, 5 ) == "enum." )
+		{
+			string enumName = stName.substr( 5 );
+			auto enumIt = mEnumDefMap.find( enumName );
+			if ( enumIt != mEnumDefMap.end() )
+			{
+				isEnumStruct = true;
+				matchedEnum = enumIt->second;
+				enumStructType = st;
+
+				// Store the subject in an alloca so we can GEP into it
+				subjectAlloca = mBuilder->CreateAlloca( st, nullptr, "match.enum" );
+				mBuilder->CreateStore( subject, subjectAlloca );
+
+				// Extract the tag: GEP to field 0, load i32
+				llvm::Value *tagPtr = mBuilder->CreateStructGEP(
+					st, subjectAlloca, 0, "match.tag.ptr" );
+				tagVal = mBuilder->CreateLoad(
+					llvm::Type::getInt32Ty( *mContext ), tagPtr, "match.tag" );
+			}
+		}
+	}
 
 	// Find the default (wildcard) arm, or create a default that falls through
 	int wildcardIdx = -1;
@@ -1531,8 +1705,11 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 	// Default block: either the wildcard arm or the merge block
 	llvm::BasicBlock *defaultBB = ( wildcardIdx >= 0 ) ? armBBs[wildcardIdx] : mergeBB;
 
-	// Build switch for integer subjects
-	if ( subject->getType()->isIntegerTy() )
+	// Determine the switch value: either the subject itself (i32) or the extracted tag
+	llvm::Value *switchVal = isEnumStruct ? tagVal : subject;
+
+	// Build switch for integer/tag subjects
+	if ( switchVal != nullptr && switchVal->getType()->isIntegerTy() )
 	{
 		// Count actual cases for the switch
 		int numCases = 0;
@@ -1543,7 +1720,7 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 		}
 
 		llvm::SwitchInst *switchInst = mBuilder->CreateSwitch(
-			subject, defaultBB, numCases );
+			switchVal, defaultBB, numCases );
 
 		for ( size_t i = 0; i < expr->mArms.size(); i++ )
 		{
@@ -1564,19 +1741,38 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 			{
 				// Named pattern (e.g., "ok", "err", "none") — use variant index
 				bool found = false;
-				for ( auto &ep : mEnumDefMap )
+
+				// If we know the specific enum, search only in it
+				if ( matchedEnum != nullptr )
 				{
-					for ( size_t v = 0; v < ep.second->mVariants.size(); v++ )
+					for ( size_t v = 0; v < matchedEnum->mVariants.size(); v++ )
 					{
-						if ( ep.second->mVariants[v].mName == pattern )
+						if ( matchedEnum->mVariants[v].mName == pattern )
 						{
 							patternVal = static_cast<int64_t>( v );
 							found = true;
 							break;
 						}
 					}
-					if ( found )
-						break;
+				}
+
+				if ( !found )
+				{
+					// Search all registered enums
+					for ( auto &ep : mEnumDefMap )
+					{
+						for ( size_t v = 0; v < ep.second->mVariants.size(); v++ )
+						{
+							if ( ep.second->mVariants[v].mName == pattern )
+							{
+								patternVal = static_cast<int64_t>( v );
+								found = true;
+								break;
+							}
+						}
+						if ( found )
+							break;
+					}
 				}
 				if ( !found )
 				{
@@ -1587,7 +1783,7 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 
 			switchInst->addCase(
 				llvm::ConstantInt::get(
-					llvm::cast<llvm::IntegerType>( subject->getType() ),
+					llvm::cast<llvm::IntegerType>( switchVal->getType() ),
 					patternVal ),
 				armBBs[i] );
 		}
@@ -1603,25 +1799,76 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 	{
 		mBuilder->SetInsertPoint( armBBs[i] );
 
-		// If the arm has a binding, create a variable for it
+		// If the arm has a binding, extract the payload from the enum struct
 		if ( !expr->mArms[i].mBindingName.empty() )
 		{
-			// Create an alloca for the bound variable and store the subject value
-			llvm::Type *bindType = subject->getType();
-			llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
-				bindType, nullptr, expr->mArms[i].mBindingName );
-			mBuilder->CreateStore( subject, bindAlloca );
-
-			// Register in variable map — look up the VariableDefinition from the
-			// arm body's scope. For now, we create a temporary mapping by scanning
-			// the block's scope for the binding name.
-			if ( expr->mArms[i].mBody != nullptr &&
-				 expr->mArms[i].mBody->mScope != nullptr )
+			if ( isEnumStruct && matchedEnum != nullptr && subjectAlloca != nullptr )
 			{
-				Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
-					expr->mArms[i].mBindingName );
-				if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
-					mVariableMap[bindVar] = bindAlloca;
+				// Find the variant for this arm's pattern
+				int variantIdx = -1;
+				for ( size_t v = 0; v < matchedEnum->mVariants.size(); v++ )
+				{
+					if ( matchedEnum->mVariants[v].mName == expr->mArms[i].mPattern )
+					{
+						variantIdx = static_cast<int>( v );
+						break;
+					}
+				}
+
+				llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
+				if ( variantIdx >= 0 &&
+					 !matchedEnum->mVariants[variantIdx].mAssociatedTypes.empty() )
+				{
+					bindType = getLLVMType( matchedEnum->mVariants[variantIdx].mAssociatedTypes[0] );
+				}
+
+				// GEP to the payload area (field 1) and load the value
+				llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+					enumStructType, subjectAlloca, 1, "match.payload.ptr" );
+
+				// The payload is [N x i8]; GEP to byte 0 and load as the expected type
+				llvm::Type *payloadArrType = enumStructType->getElementType( 1 );
+				llvm::Value *bytePtr = mBuilder->CreateGEP(
+					payloadArrType, payloadPtr,
+					{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+					  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+					"match.payload.byte" );
+
+				llvm::Value *payloadVal = mBuilder->CreateLoad(
+					bindType, bytePtr, "match.payload.val" );
+
+				// Create alloca for the binding variable
+				llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
+					bindType, nullptr, expr->mArms[i].mBindingName );
+				mBuilder->CreateStore( payloadVal, bindAlloca );
+
+				// Register in variable map
+				if ( expr->mArms[i].mBody != nullptr &&
+					 expr->mArms[i].mBody->mScope != nullptr )
+				{
+					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
+						expr->mArms[i].mBindingName );
+					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
+						mVariableMap[bindVar] = bindAlloca;
+				}
+			}
+			else
+			{
+				// Non-enum binding: store the subject value directly
+				llvm::Type *bindType = subject->getType();
+				llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
+					bindType, nullptr, expr->mArms[i].mBindingName );
+				mBuilder->CreateStore( subject, bindAlloca );
+
+				// Register in variable map
+				if ( expr->mArms[i].mBody != nullptr &&
+					 expr->mArms[i].mBody->mScope != nullptr )
+				{
+					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
+						expr->mArms[i].mBindingName );
+					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
+						mVariableMap[bindVar] = bindAlloca;
+				}
 			}
 		}
 
