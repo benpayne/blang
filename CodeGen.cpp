@@ -1156,16 +1156,57 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 	if ( left == nullptr || right == nullptr )
 		return nullptr;
 
+	// Type promotion for mixed-width operands
+	if ( left->getType() != right->getType() )
+	{
+		if ( left->getType()->isIntegerTy() && right->getType()->isIntegerTy() )
+		{
+			unsigned leftBits = left->getType()->getIntegerBitWidth();
+			unsigned rightBits = right->getType()->getIntegerBitWidth();
+			if ( leftBits < rightBits )
+			{
+				if ( leftBits == 1 )
+					left = mBuilder->CreateZExt( left, right->getType(), "bpromote" );
+				else
+					left = mBuilder->CreateSExt( left, right->getType(), "promote" );
+			}
+			else
+			{
+				if ( rightBits == 1 )
+					right = mBuilder->CreateZExt( right, left->getType(), "bpromote" );
+				else
+					right = mBuilder->CreateSExt( right, left->getType(), "promote" );
+			}
+		}
+		else if ( left->getType()->isFloatingPointTy() && right->getType()->isFloatingPointTy() )
+		{
+			if ( left->getType()->isFloatTy() && right->getType()->isDoubleTy() )
+				left = mBuilder->CreateFPExt( left, right->getType(), "fpromote" );
+			else if ( left->getType()->isDoubleTy() && right->getType()->isFloatTy() )
+				right = mBuilder->CreateFPExt( right, left->getType(), "fpromote" );
+		}
+		else if ( left->getType()->isIntegerTy() && right->getType()->isFloatingPointTy() )
+		{
+			left = mBuilder->CreateSIToFP( left, right->getType(), "itofp" );
+		}
+		else if ( left->getType()->isFloatingPointTy() && right->getType()->isIntegerTy() )
+		{
+			right = mBuilder->CreateSIToFP( right, left->getType(), "itofp" );
+		}
+	}
+
+	bool isFloat = left->getType()->isFloatingPointTy();
+
 	const string &op = ops->mOperation;
 
-	// Integer arithmetic
-	if ( op == "+" )  return mBuilder->CreateAdd( left, right, "addtmp" );
-	if ( op == "-" )  return mBuilder->CreateSub( left, right, "subtmp" );
-	if ( op == "*" )  return mBuilder->CreateMul( left, right, "multmp" );
-	if ( op == "/" )  return mBuilder->CreateSDiv( left, right, "divtmp" );
-	if ( op == "%" )  return mBuilder->CreateSRem( left, right, "modtmp" );
+	// Arithmetic
+	if ( op == "+" )  return isFloat ? mBuilder->CreateFAdd( left, right, "addtmp" ) : mBuilder->CreateAdd( left, right, "addtmp" );
+	if ( op == "-" )  return isFloat ? mBuilder->CreateFSub( left, right, "subtmp" ) : mBuilder->CreateSub( left, right, "subtmp" );
+	if ( op == "*" )  return isFloat ? mBuilder->CreateFMul( left, right, "multmp" ) : mBuilder->CreateMul( left, right, "multmp" );
+	if ( op == "/" )  return isFloat ? mBuilder->CreateFDiv( left, right, "divtmp" ) : mBuilder->CreateSDiv( left, right, "divtmp" );
+	if ( op == "%" )  return isFloat ? mBuilder->CreateFRem( left, right, "modtmp" ) : mBuilder->CreateSRem( left, right, "modtmp" );
 
-	// Bitwise
+	// Bitwise (integer only)
 	if ( op == "&" )  return mBuilder->CreateAnd( left, right, "andtmp" );
 	if ( op == "|" )  return mBuilder->CreateOr( left, right, "ortmp" );
 	if ( op == "^" )  return mBuilder->CreateXor( left, right, "xortmp" );
@@ -1173,28 +1214,32 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 	if ( op == ">>" ) return mBuilder->CreateAShr( left, right, "shrtmp" );
 
 	// Comparisons (produce i1)
-	if ( op == "==" ) return mBuilder->CreateICmpEQ( left, right, "eqtmp" );
-	if ( op == "!=" ) return mBuilder->CreateICmpNE( left, right, "netmp" );
-	if ( op == "<" )  return mBuilder->CreateICmpSLT( left, right, "lttmp" );
-	if ( op == ">" )  return mBuilder->CreateICmpSGT( left, right, "gttmp" );
-	if ( op == "<=" ) return mBuilder->CreateICmpSLE( left, right, "letmp" );
-	if ( op == ">=" ) return mBuilder->CreateICmpSGE( left, right, "getmp" );
+	if ( op == "==" ) return isFloat ? mBuilder->CreateFCmpOEQ( left, right, "eqtmp" ) : mBuilder->CreateICmpEQ( left, right, "eqtmp" );
+	if ( op == "!=" ) return isFloat ? mBuilder->CreateFCmpONE( left, right, "netmp" ) : mBuilder->CreateICmpNE( left, right, "netmp" );
+	if ( op == "<" )  return isFloat ? mBuilder->CreateFCmpOLT( left, right, "lttmp" ) : mBuilder->CreateICmpSLT( left, right, "lttmp" );
+	if ( op == ">" )  return isFloat ? mBuilder->CreateFCmpOGT( left, right, "gttmp" ) : mBuilder->CreateICmpSGT( left, right, "gttmp" );
+	if ( op == "<=" ) return isFloat ? mBuilder->CreateFCmpOLE( left, right, "letmp" ) : mBuilder->CreateICmpSLE( left, right, "letmp" );
+	if ( op == ">=" ) return isFloat ? mBuilder->CreateFCmpOGE( left, right, "getmp" ) : mBuilder->CreateICmpSGE( left, right, "getmp" );
 
 	// Logical (treat operands as booleans via != 0)
 	if ( op == "&&" )
 	{
-		llvm::Value *lBool = mBuilder->CreateICmpNE(
-			left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
-		llvm::Value *rBool = mBuilder->CreateICmpNE(
-			right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
+		llvm::Value *lBool = isFloat
+			? mBuilder->CreateFCmpONE( left, llvm::ConstantFP::get( left->getType(), 0.0 ), "lbool" )
+			: mBuilder->CreateICmpNE( left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
+		llvm::Value *rBool = isFloat
+			? mBuilder->CreateFCmpONE( right, llvm::ConstantFP::get( right->getType(), 0.0 ), "rbool" )
+			: mBuilder->CreateICmpNE( right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
 		return mBuilder->CreateAnd( lBool, rBool, "landtmp" );
 	}
 	if ( op == "||" )
 	{
-		llvm::Value *lBool = mBuilder->CreateICmpNE(
-			left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
-		llvm::Value *rBool = mBuilder->CreateICmpNE(
-			right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
+		llvm::Value *lBool = isFloat
+			? mBuilder->CreateFCmpONE( left, llvm::ConstantFP::get( left->getType(), 0.0 ), "lbool" )
+			: mBuilder->CreateICmpNE( left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
+		llvm::Value *rBool = isFloat
+			? mBuilder->CreateFCmpONE( right, llvm::ConstantFP::get( right->getType(), 0.0 ), "rbool" )
+			: mBuilder->CreateICmpNE( right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
 		return mBuilder->CreateOr( lBool, rBool, "lortmp" );
 	}
 
