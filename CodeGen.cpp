@@ -1143,6 +1143,19 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 
 void CodeGen::genReturnStatement( ReturnStatement *ret )
 {
+	// Generate the return value FIRST, before releasing scope variables.
+	// This prevents use-after-free when returning a string/array variable
+	// that would be released by the scope cleanup below.
+	llvm::Value *retVal = nullptr;
+	if ( ret->mExpression != nullptr )
+	{
+		retVal = genExpression( ret->mExpression );
+
+		// If returning a string, retain it so scope release doesn't free it
+		if ( retVal != nullptr && isStringType( ret->mExpression ) )
+			mBuilder->CreateCall( getOrDeclareStringRetain(), { retVal } );
+	}
+
 	// Insert runtime shutdown before ARC releases in main() — threads must
 	// finish before we free shared/sync memory they may be using
 	if ( mCurrentFunction != nullptr && mCurrentFunction->getName() == "main" && mUsesConcurrency )
@@ -1190,19 +1203,15 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 	// In an async wrapper, return statements store the value and branch to exit
 	if ( mAsyncExitBB != nullptr )
 	{
-		if ( ret->mExpression != nullptr && mAsyncResultAlloca != nullptr )
+		if ( retVal != nullptr && mAsyncResultAlloca != nullptr )
 		{
-			llvm::Value *retVal = genExpression( ret->mExpression );
-			if ( retVal != nullptr )
+			// Cast if needed
+			if ( retVal->getType() != mAsyncReturnType )
 			{
-				// Cast if needed
-				if ( retVal->getType() != mAsyncReturnType )
-				{
-					if ( mAsyncReturnType->isIntegerTy() && retVal->getType()->isIntegerTy() )
-						retVal = mBuilder->CreateIntCast( retVal, mAsyncReturnType, true, "icast" );
-				}
-				mBuilder->CreateStore( retVal, mAsyncResultAlloca );
+				if ( mAsyncReturnType->isIntegerTy() && retVal->getType()->isIntegerTy() )
+					retVal = mBuilder->CreateIntCast( retVal, mAsyncReturnType, true, "icast" );
 			}
+			mBuilder->CreateStore( retVal, mAsyncResultAlloca );
 		}
 		mBuilder->CreateBr( mAsyncExitBB );
 		return;
@@ -1211,58 +1220,50 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
 	llvm::Type *expectedType = func->getReturnType();
 
-	if ( ret->mExpression != nullptr )
+	if ( retVal != nullptr )
 	{
-		llvm::Value *retVal = genExpression( ret->mExpression );
-		if ( retVal != nullptr )
+		// Cast if the value type doesn't match the function return type
+		if ( retVal->getType() != expectedType )
 		{
-			// Cast if the value type doesn't match the function return type
-			if ( retVal->getType() != expectedType )
+			if ( expectedType->isFloatTy() && retVal->getType()->isDoubleTy() )
+				retVal = mBuilder->CreateFPTrunc( retVal, expectedType, "fptrunc" );
+			else if ( expectedType->isDoubleTy() && retVal->getType()->isFloatTy() )
+				retVal = mBuilder->CreateFPExt( retVal, expectedType, "fpext" );
+			else if ( expectedType->isIntegerTy() && retVal->getType()->isIntegerTy() )
+				retVal = mBuilder->CreateIntCast( retVal, expectedType, true, "icast" );
+			else if ( expectedType->isStructTy() && retVal->getType()->isIntegerTy() )
 			{
-				if ( expectedType->isFloatTy() && retVal->getType()->isDoubleTy() )
-					retVal = mBuilder->CreateFPTrunc( retVal, expectedType, "fptrunc" );
-				else if ( expectedType->isDoubleTy() && retVal->getType()->isFloatTy() )
-					retVal = mBuilder->CreateFPExt( retVal, expectedType, "fpext" );
-				else if ( expectedType->isIntegerTy() && retVal->getType()->isIntegerTy() )
-					retVal = mBuilder->CreateIntCast( retVal, expectedType, true, "icast" );
-				else if ( expectedType->isStructTy() && retVal->getType()->isIntegerTy() )
-				{
-					// Returning a primitive for a struct-typed function — create a
-					// zero-initialized struct (semantic mismatch, but valid IR)
-					retVal = llvm::Constant::getNullValue( expectedType );
-				}
-				else if ( expectedType->isIntegerTy() && retVal->getType()->isPointerTy() )
-				{
-					// Pointer to integer conversion (e.g., query result as int)
-					retVal = mBuilder->CreatePtrToInt( retVal, expectedType, "ptrtoint" );
-				}
-				else if ( expectedType->isPointerTy() && retVal->getType()->isIntegerTy() )
-				{
-					retVal = mBuilder->CreateIntToPtr( retVal, expectedType, "inttoptr" );
-				}
+				retVal = llvm::Constant::getNullValue( expectedType );
 			}
-
-			// Store return value and check ensures (postcondition) clauses
-			if ( mResultAlloca != nullptr && mCurrentFunction != nullptr )
+			else if ( expectedType->isIntegerTy() && retVal->getType()->isPointerTy() )
 			{
-				mBuilder->CreateStore( retVal, mResultAlloca );
-				for ( auto &clause : mCurrentFunction->mEnsuresClauses )
-				{
-					genContractCheck( clause, "Postcondition violated" );
-				}
+				retVal = mBuilder->CreatePtrToInt( retVal, expectedType, "ptrtoint" );
 			}
-
-			mBuilder->CreateRet( retVal );
+			else if ( expectedType->isPointerTy() && retVal->getType()->isIntegerTy() )
+			{
+				retVal = mBuilder->CreateIntToPtr( retVal, expectedType, "inttoptr" );
+			}
 		}
-		else if ( expectedType->isVoidTy() )
+
+		// Store return value and check ensures (postcondition) clauses
+		if ( mResultAlloca != nullptr && mCurrentFunction != nullptr )
 		{
+			mBuilder->CreateStore( retVal, mResultAlloca );
+			for ( auto &clause : mCurrentFunction->mEnsuresClauses )
+			{
+				genContractCheck( clause, "Postcondition violated" );
+			}
+		}
+
+		mBuilder->CreateRet( retVal );
+	}
+	else if ( ret->mExpression != nullptr )
+	{
+		// Expression was present but genExpression returned null
+		if ( expectedType->isVoidTy() )
 			mBuilder->CreateRetVoid();
-		}
 		else
-		{
-			// Expression generation failed — emit a default return value
 			mBuilder->CreateRet( llvm::Constant::getNullValue( expectedType ) );
-		}
 	}
 	else
 	{
@@ -3980,6 +3981,38 @@ bool CodeGen::isStringType( Expression *expr )
 	{
 		// String concat produces a string
 		if ( ops->mOperation == "+" && isStringType( ops->mOp1 ) )
+			return true;
+	}
+	if ( auto *fa = dynamic_cast<FieldAccessExpression*>( expr ) )
+	{
+		// Check if the field type is string (e.g., structVar.stringField)
+		if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)fa->mObject ) )
+		{
+			Type *varType = ve->mVariable->getVariableType();
+			if ( varType != nullptr )
+			{
+				string typeName = varType->getName();
+				auto defIt = mStructDefMap.find( typeName );
+				if ( defIt != mStructDefMap.end() )
+				{
+					for ( auto &field : defIt->second->mFields )
+					{
+						if ( field->getName() == fa->mFieldName &&
+							 field->getVariableType() != nullptr &&
+							 field->getVariableType()->getName() == "string" )
+							return true;
+					}
+				}
+			}
+		}
+	}
+	if ( auto *mc = dynamic_cast<MethodCallExpression*>( expr ) )
+	{
+		// String methods that return strings
+		const string &method = mc->mMethodName;
+		if ( isStringType( mc->mObject ) &&
+			 ( method == "to_upper" || method == "to_lower" || method == "trim" ||
+			   method == "substring" || method == "replace" || method == "concat" ) )
 			return true;
 	}
 	return false;

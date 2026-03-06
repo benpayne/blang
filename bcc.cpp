@@ -572,6 +572,34 @@ int main( int argc, char *argv[] )
 		if ( !runtimeLib.empty() )
 			cmd.push_back( runtimeLib );
 
+		// Link BLang string library (safe string type)
+		string stringLib;
+#ifdef BCC_STRING_LIB
+		stringLib = BCC_STRING_LIB;
+#endif
+		if ( stringLib.empty() || access( stringLib.c_str(), F_OK ) != 0 )
+		{
+			string fallback = exeDir + "/libblang_string.a";
+			if ( access( fallback.c_str(), F_OK ) == 0 )
+				stringLib = fallback;
+		}
+		if ( !stringLib.empty() )
+			cmd.push_back( stringLib );
+
+		// Link BLang array library (safe array type)
+		string arrayLib;
+#ifdef BCC_ARRAY_LIB
+		arrayLib = BCC_ARRAY_LIB;
+#endif
+		if ( arrayLib.empty() || access( arrayLib.c_str(), F_OK ) != 0 )
+		{
+			string fallback = exeDir + "/libblang_array.a";
+			if ( access( fallback.c_str(), F_OK ) == 0 )
+				arrayLib = fallback;
+		}
+		if ( !arrayLib.empty() )
+			cmd.push_back( arrayLib );
+
 		// Link BLang JSON library (@json annotation support)
 		string jsonLib;
 #ifdef BCC_JSON_LIB
