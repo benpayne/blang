@@ -209,9 +209,11 @@ namespace QLang
 		static CallExpression *Parse( Lexer &l, Scope *scope );
 
 		void addParam( Expression *param ) { mParams.push_back( param ); }
+		void addTypeArg( Type *typeArg ) { mTypeArgs.push_back( typeArg ); }
 
 	private:
 		SmartPtr<FunctionDefinition> mFunction;
+		std::vector<SmartPtr<Type>> mTypeArgs;
 		std::vector<SmartPtr<Expression> > mParams;
 		friend class CodeGen;
 	};
@@ -358,10 +360,13 @@ namespace QLang
 			mFieldValues.push_back( value );
 		}
 
+		void addTypeArg( Type *typeArg ) { mTypeArgs.push_back( typeArg ); }
+
 		static StructLiteralExpression *Parse( Lexer &l, Scope *scope, const std::string &typeName );
 
 	private:
 		std::string mTypeName;
+		std::vector<SmartPtr<Type>> mTypeArgs;
 		std::vector<std::string> mFieldNames;
 		std::vector<SmartPtr<Expression>> mFieldValues;
 		friend class CodeGen;

@@ -21,12 +21,29 @@ CodeGen::~CodeGen()
 {
 }
 
+std::string CodeGen::mangleGenericName(
+	const std::string &baseName,
+	const std::vector<SmartPtr<Type>> &typeArgs )
+{
+	std::string mangled = baseName;
+	for ( auto &arg : typeArgs )
+	{
+		mangled += "_" + arg->getName();
+	}
+	return mangled;
+}
+
 llvm::Type *CodeGen::getLLVMType( Type *type )
 {
 	if ( type == nullptr )
 		return llvm::Type::getVoidTy( *mContext );
 
 	const std::string &name = type->getName();
+
+	// Check type substitution first (active during generic instantiation)
+	auto subIt = mTypeSubstitution.find( name );
+	if ( subIt != mTypeSubstitution.end() )
+		return getLLVMType( subIt->second );
 
 	if ( name == "int" )
 		return llvm::Type::getInt32Ty( *mContext );
@@ -46,6 +63,28 @@ llvm::Type *CodeGen::getLLVMType( Type *type )
 		return llvm::Type::getVoidTy( *mContext );
 	else if ( name == "bool" )
 		return llvm::Type::getInt1Ty( *mContext );
+
+	// Check for generic type with type arguments (e.g., Box<int>)
+	if ( type->getNumTypeParams() > 0 )
+	{
+		std::vector<SmartPtr<Type>> typeArgs;
+		for ( int i = 0; i < type->getNumTypeParams(); i++ )
+			typeArgs.push_back( type->getTypeParam( i ) );
+
+		std::string mangledName = mangleGenericName( name, typeArgs );
+
+		// Check if already instantiated
+		auto instIt = mGenericInstanceMap.find( mangledName );
+		if ( instIt != mGenericInstanceMap.end() )
+			return instIt->second;
+
+		// Look up the generic struct definition and instantiate
+		auto defIt = mStructDefMap.find( name );
+		if ( defIt != mStructDefMap.end() && defIt->second->isGeneric() )
+		{
+			return instantiateGenericStruct( defIt->second, typeArgs );
+		}
+	}
 
 	// Check for known struct types
 	auto structIt = mStructTypeMap.find( name );
@@ -156,6 +195,153 @@ llvm::StructType *CodeGen::getOrCreateEnumType( EnumDefinition *enumDef )
 		*mContext, fields, "enum." + enumDef->getName() );
 	mEnumTypeMap[enumDef->getName()] = st;
 	return st;
+}
+
+llvm::StructType *CodeGen::instantiateGenericStruct(
+	StructDefinition *genericDef,
+	const std::vector<SmartPtr<Type>> &typeArgs )
+{
+	std::string mangledName = mangleGenericName( genericDef->getName(), typeArgs );
+
+	// Check if already instantiated
+	auto it = mGenericInstanceMap.find( mangledName );
+	if ( it != mGenericInstanceMap.end() )
+		return it->second;
+
+	// Build substitution map: generic param name -> concrete type
+	std::map<std::string, Type*> savedSub = mTypeSubstitution;
+	for ( size_t i = 0; i < genericDef->mGenericParams.size() && i < typeArgs.size(); i++ )
+	{
+		SmartPtr<Type> arg = typeArgs[i];
+		mTypeSubstitution[genericDef->mGenericParams[i].mName] = (Type*)arg;
+	}
+
+	// Create concrete field types by resolving through substitution
+	std::vector<llvm::Type*> fieldTypes;
+	for ( auto &field : genericDef->mFields )
+	{
+		fieldTypes.push_back( getLLVMType( field->getVariableType() ) );
+	}
+
+	// Handle empty structs
+	if ( fieldTypes.empty() )
+		fieldTypes.push_back( llvm::Type::getInt8Ty( *mContext ) );
+
+	llvm::StructType *st = llvm::StructType::create(
+		*mContext, fieldTypes, mangledName );
+	mGenericInstanceMap[mangledName] = st;
+
+	// Also register in mStructTypeMap so field access can find it
+	mStructTypeMap[mangledName] = st;
+	// Register the generic def under the mangled name so field lookups work
+	mStructDefMap[mangledName] = genericDef;
+
+	// Restore substitution map
+	mTypeSubstitution = savedSub;
+
+	return st;
+}
+
+llvm::Function *CodeGen::instantiateGenericFunction(
+	FunctionDefinition *genericDef,
+	const std::vector<SmartPtr<Type>> &typeArgs )
+{
+	std::string mangledName = mangleGenericName( genericDef->getName(), typeArgs );
+
+	// Check if already instantiated
+	auto it = mGenericFunctionMap.find( mangledName );
+	if ( it != mGenericFunctionMap.end() )
+		return it->second;
+
+	// Build substitution map
+	std::map<std::string, Type*> savedSub = mTypeSubstitution;
+	for ( size_t i = 0; i < genericDef->mGenericParams.size() && i < typeArgs.size(); i++ )
+	{
+		SmartPtr<Type> arg = typeArgs[i];
+		mTypeSubstitution[genericDef->mGenericParams[i].mName] = (Type*)arg;
+	}
+
+	// Build the concrete function type
+	llvm::Type *retType = getLLVMType( genericDef->mReturnType );
+
+	std::vector<llvm::Type*> paramTypes;
+	for ( auto &param : genericDef->mParameters )
+	{
+		paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+	}
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		retType, paramTypes, genericDef->isVariadic() );
+	llvm::Function *llvmFunc = llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, mangledName, mModule.get() );
+
+	mGenericFunctionMap[mangledName] = llvmFunc;
+
+	// Name the parameters
+	unsigned idx = 0;
+	for ( auto &arg : llvmFunc->args() )
+	{
+		arg.setName( genericDef->mParameters[idx]->getName() );
+		idx++;
+	}
+
+	// Generate the function body
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+		*mContext, "entry", llvmFunc );
+
+	// Save and restore builder insert point
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	llvm::BasicBlock::iterator savedPt;
+	bool hadInsertPoint = ( savedBB != nullptr );
+	if ( hadInsertPoint )
+		savedPt = mBuilder->GetInsertPoint();
+
+	mBuilder->SetInsertPoint( entryBB );
+
+	// Save and restore variable map
+	auto savedVarMap = mVariableMap;
+	auto savedCurrentFunc = mCurrentFunction;
+	auto savedResultAlloca = mResultAlloca;
+
+	mCurrentFunction = genericDef;
+	mResultAlloca = nullptr;
+
+	// Create allocas for parameters
+	idx = 0;
+	for ( auto &arg : llvmFunc->args() )
+	{
+		VariableDefinition *paramDef = genericDef->mParameters[idx];
+		llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+			arg.getType(), nullptr, paramDef->getName() );
+		mBuilder->CreateStore( &arg, alloca );
+		mVariableMap[paramDef] = alloca;
+		idx++;
+	}
+
+	// Generate the body
+	if ( genericDef->mFuncBody != nullptr )
+		genBlock( genericDef->mFuncBody );
+
+	// Add implicit return if needed
+	llvm::BasicBlock *currentBB = mBuilder->GetInsertBlock();
+	if ( currentBB->getTerminator() == nullptr )
+	{
+		if ( retType->isVoidTy() )
+			mBuilder->CreateRetVoid();
+		else
+			mBuilder->CreateRet( llvm::Constant::getNullValue( retType ) );
+	}
+
+	// Restore state
+	mVariableMap = savedVarMap;
+	mCurrentFunction = savedCurrentFunc;
+	mResultAlloca = savedResultAlloca;
+	mTypeSubstitution = savedSub;
+
+	if ( hadInsertPoint )
+		mBuilder->SetInsertPoint( savedBB, savedPt );
+
+	return llvmFunc;
 }
 
 bool CodeGen::generate( Module *mod )
@@ -1238,6 +1424,36 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 {
 	FunctionDefinition *funcDef = call->mFunction;
 
+	// Handle generic function instantiation
+	if ( !call->mTypeArgs.empty() && funcDef->isGeneric() )
+	{
+		llvm::Function *genFunc = instantiateGenericFunction( funcDef, call->mTypeArgs );
+		if ( genFunc == nullptr )
+		{
+			cerr << "CodeGen: failed to instantiate generic function '"
+				<< funcDef->getName() << "'" << endl;
+			return nullptr;
+		}
+
+		// Generate argument values
+		std::vector<llvm::Value*> args;
+		for ( auto &paramExpr : call->mParams )
+		{
+			llvm::Value *argVal = genExpression( paramExpr );
+			if ( argVal == nullptr )
+				return nullptr;
+			args.push_back( argVal );
+		}
+
+		if ( genFunc->getReturnType()->isVoidTy() )
+		{
+			mBuilder->CreateCall( genFunc, args );
+			return nullptr;
+		}
+
+		return mBuilder->CreateCall( genFunc, args, "calltmp" );
+	}
+
 	// Look up the LLVM function
 	llvm::Function *llvmFunc = nullptr;
 	auto it = mFunctionMap.find( funcDef );
@@ -1518,7 +1734,17 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 		return nullptr;
 
 	StructDefinition *structDef = defIt->second;
-	llvm::StructType *structType = getOrCreateStructType( structDef );
+	llvm::StructType *structType = nullptr;
+
+	// Handle generic struct instantiation
+	if ( !expr->mTypeArgs.empty() && structDef->isGeneric() )
+	{
+		structType = instantiateGenericStruct( structDef, expr->mTypeArgs );
+	}
+	else
+	{
+		structType = getOrCreateStructType( structDef );
+	}
 
 	// Allocate the struct on the stack
 	llvm::AllocaInst *alloca = mBuilder->CreateAlloca( structType, nullptr, "structlit" );
