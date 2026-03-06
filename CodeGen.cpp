@@ -440,6 +440,7 @@ bool CodeGen::generate( Module *mod )
 			}
 
 			mVariableMap.clear();
+			mMovedVariables.clear();
 		}
 	}
 
@@ -495,6 +496,10 @@ bool CodeGen::generate( Module *mod )
 	{
 		genTestRunner( testFunctions, mod->mTestBlocks );
 	}
+
+	// Return false if any ownership or other codegen errors occurred
+	if ( mHasError )
+		return false;
 
 	return true;
 }
@@ -647,6 +652,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		mBuilder->SetInsertPoint( entryBB );
 
 		mVariableMap.clear();
+		mMovedVariables.clear();
 
 		// Create parameter allocas for the public function
 		unsigned idx = 0;
@@ -711,6 +717,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		mCurrentFunction = nullptr;
 		mResultAlloca = nullptr;
 		mVariableMap.clear();
+		mMovedVariables.clear();
 		return llvmFunc;
 	}
 
@@ -830,6 +837,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	mCurrentFunction = nullptr;
 	mResultAlloca = nullptr;
 	mVariableMap.clear();
+	mMovedVariables.clear();
 
 	return llvmFunc;
 }
@@ -1041,6 +1049,28 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 					if ( initVal != nullptr )
 						mBuilder->CreateStore( initVal, alloca );
 				}
+
+				// Move semantics: if this is an own variable initialized from
+				// another own variable, mark the source as moved
+				if ( ownership == OwnershipQualifier::kOwnership_Own )
+				{
+					auto *srcVarExpr = dynamic_cast<VariableExpression*>( (Expression*)data.mInitialValue );
+					if ( srcVarExpr != nullptr )
+					{
+						VariableDefinition *srcDef = srcVarExpr->getVariable();
+						if ( srcDef->getOwnership() == OwnershipQualifier::kOwnership_Own )
+						{
+							if ( mInsideLoop )
+							{
+								cerr << "Error: cannot move own variable '" << srcDef->getName()
+									 << "' inside a loop (would move on each iteration)" << endl;
+								mHasError = true;
+								return;
+							}
+							mMovedVariables.insert( srcDef );
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1180,6 +1210,9 @@ void CodeGen::genIfStatement( IfStatement *ifStmt )
 
 	mBuilder->CreateCondBr( condVal, thenBB, elseBB );
 
+	// Save moved set before branches for conservative union
+	auto savedMoved = mMovedVariables;
+
 	// Then block
 	mBuilder->SetInsertPoint( thenBB );
 	if ( ifStmt->mStatement != nullptr )
@@ -1187,12 +1220,22 @@ void CodeGen::genIfStatement( IfStatement *ifStmt )
 	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 		mBuilder->CreateBr( mergeBB );
 
+	// Capture moves from then branch
+	auto thenMoved = mMovedVariables;
+
+	// Restore to pre-branch state for else
+	mMovedVariables = savedMoved;
+
 	// Else block
 	mBuilder->SetInsertPoint( elseBB );
 	if ( ifStmt->mElseStatement != nullptr )
 		genStatement( ifStmt->mElseStatement );
 	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 		mBuilder->CreateBr( mergeBB );
+
+	// Conservative: union moves from both branches
+	// If moved in either branch, consider moved after the if/else
+	mMovedVariables.insert( thenMoved.begin(), thenMoved.end() );
 
 	// Continue at merge
 	mBuilder->SetInsertPoint( mergeBB );
@@ -1228,8 +1271,11 @@ void CodeGen::genWhileStatement( WhileStatement *whileStmt )
 
 	// Body block
 	mBuilder->SetInsertPoint( bodyBB );
+	bool savedInsideLoop = mInsideLoop;
+	mInsideLoop = true;
 	if ( whileStmt->mLoopStatement != nullptr )
 		genStatement( whileStmt->mLoopStatement );
+	mInsideLoop = savedInsideLoop;
 	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 		mBuilder->CreateBr( condBB );
 
@@ -1391,6 +1437,24 @@ llvm::Value *CodeGen::genVariableExpression( VariableExpression *var )
 		return nullptr;
 	}
 
+	// Check for use-after-move on own variables
+	if ( varDef->getOwnership() == OwnershipQualifier::kOwnership_Own &&
+		 mMovedVariables.count( varDef ) )
+	{
+		cerr << "Error: use of moved variable '" << varDef->getName() << "'" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	// Check for own variables crossing spawn boundaries
+	if ( mSpawnOuterOwnVars.count( varDef ) )
+	{
+		cerr << "Error: own variable '" << varDef->getName()
+			 << "' cannot be captured by spawn block (use shared or sync instead)" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
 	llvm::AllocaInst *alloca = it->second;
 	OwnershipQualifier ownership = varDef->getOwnership();
 
@@ -1481,6 +1545,31 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		if ( argVal == nullptr )
 			return nullptr;
 		args.push_back( argVal );
+	}
+
+	// Move semantics: mark own variables as moved when passed to own parameters
+	for ( size_t i = 0; i < call->mParams.size() && i < (size_t)funcDef->getNumberParams(); i++ )
+	{
+		VariableDefinition *paramDef = funcDef->getParam( i );
+		if ( paramDef != nullptr && paramDef->getOwnership() == OwnershipQualifier::kOwnership_Own )
+		{
+			auto *argVarExpr = dynamic_cast<VariableExpression*>( (Expression*)call->mParams[i] );
+			if ( argVarExpr != nullptr )
+			{
+				VariableDefinition *srcDef = argVarExpr->getVariable();
+				if ( srcDef->getOwnership() == OwnershipQualifier::kOwnership_Own )
+				{
+					if ( mInsideLoop )
+					{
+						cerr << "Error: cannot move own variable '" << srcDef->getName()
+							 << "' inside a loop (would move on each iteration)" << endl;
+						mHasError = true;
+						return nullptr;
+					}
+					mMovedVariables.insert( srcDef );
+				}
+			}
+		}
 	}
 
 	if ( llvmFunc->getReturnType()->isVoidTy() )
@@ -1659,6 +1748,29 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 	if ( op == "=" )
 	{
 		mBuilder->CreateStore( rhs, alloca );
+
+		// Move semantics: if assigning an own variable from another own variable,
+		// mark the source as moved
+		if ( ownership == OwnershipQualifier::kOwnership_Own )
+		{
+			auto *srcVarExpr = dynamic_cast<VariableExpression*>( (Expression*)assign->mValue );
+			if ( srcVarExpr != nullptr )
+			{
+				VariableDefinition *srcDef = srcVarExpr->getVariable();
+				if ( srcDef->getOwnership() == OwnershipQualifier::kOwnership_Own )
+				{
+					if ( mInsideLoop )
+					{
+						cerr << "Error: cannot move own variable '" << srcDef->getName()
+							 << "' inside a loop (would move on each iteration)" << endl;
+						mHasError = true;
+						return nullptr;
+					}
+					mMovedVariables.insert( srcDef );
+				}
+			}
+		}
+
 		return rhs;
 	}
 
@@ -2760,6 +2872,7 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	auto savedVarMap = mVariableMap;
 	auto savedLoopStack = mLoopStack;
 	auto savedArcStack = mArcScopeStack;
+	auto savedSpawnOwnVars = mSpawnOuterOwnVars;
 
 	// Generate the spawn function body
 	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
@@ -2767,8 +2880,17 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	mBuilder->SetInsertPoint( entryBB );
 
 	mVariableMap.clear();
+	mMovedVariables.clear();
 	mLoopStack.clear();
 	mArcScopeStack.clear();
+
+	// Track own variables from the outer scope for spawn boundary checks
+	mSpawnOuterOwnVars.clear();
+	for ( auto &cap : captures )
+	{
+		if ( cap.first->getOwnership() == OwnershipQualifier::kOwnership_Own )
+			mSpawnOuterOwnVars.insert( cap.first );
+	}
 
 	// Unpack the context struct into local allocas
 	llvm::Value *ctxPtr = spawnFn->getArg( 0 );
@@ -2810,6 +2932,7 @@ void CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	mVariableMap = savedVarMap;
 	mLoopStack = savedLoopStack;
 	mArcScopeStack = savedArcStack;
+	mSpawnOuterOwnVars = savedSpawnOwnVars;
 
 	// Back in the caller: allocate context, populate, and call __blang_spawn
 	llvm::DataLayout dl( mModule.get() );
@@ -2891,6 +3014,7 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	mBuilder->SetInsertPoint( entryBB );
 
 	mVariableMap.clear();
+	mMovedVariables.clear();
 	mLoopStack.clear();
 	mArcScopeStack.clear();
 
@@ -2990,8 +3114,11 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		// Push loop targets: continue goes back to body, break goes to after
 		mLoopStack.push_back( { bodyBB, afterBB } );
 
+		bool savedInsideLoop = mInsideLoop;
+		mInsideLoop = true;
 		if ( forInStmt->mBody != nullptr )
 			genStatement( forInStmt->mBody );
+		mInsideLoop = savedInsideLoop;
 
 		if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 			mBuilder->CreateBr( bodyBB );
@@ -3052,8 +3179,11 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 
 			// Body
 			mBuilder->SetInsertPoint( bodyBB );
+			bool savedInsideLoop = mInsideLoop;
+			mInsideLoop = true;
 			if ( forInStmt->mBody != nullptr )
 				genStatement( forInStmt->mBody );
+			mInsideLoop = savedInsideLoop;
 			if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 				mBuilder->CreateBr( iterBB );
 
@@ -3538,6 +3668,7 @@ llvm::Function *CodeGen::genTestBlock( TestBlock *testBlock )
 		mBuilder->CreateRetVoid();
 
 	mVariableMap.clear();
+	mMovedVariables.clear();
 	return testFunc;
 }
 

@@ -32,6 +32,24 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool
 		return def;
 	}
 
+	// Check for ownership qualifier before type: own, shared, sync
+	OwnershipQualifier ownership = OwnershipQualifier::kOwnership_Value;
+	if ( l.peekSymbol() == Lexer::KEYWORD_OWN )
+	{
+		l.getSymbol(); // consume 'own'
+		ownership = OwnershipQualifier::kOwnership_Own;
+	}
+	else if ( l.peekSymbol() == Lexer::KEYWORD_SHARED )
+	{
+		l.getSymbol(); // consume 'shared'
+		ownership = OwnershipQualifier::kOwnership_Shared;
+	}
+	else if ( l.peekSymbol() == Lexer::KEYWORD_SYNC )
+	{
+		l.getSymbol(); // consume 'sync'
+		ownership = OwnershipQualifier::kOwnership_Sync;
+	}
+
 	SmartPtr<Type> t = Type::Parse( l, s, false );
 
 	if ( t == nullptr )
@@ -58,6 +76,10 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool
 		// Non-extern function requires named parameters
 		COMPILE_ERROR( l, "Expected parameter name" );
 	}
+
+	// Apply ownership qualifier if specified
+	if ( def != nullptr && ownership != OwnershipQualifier::kOwnership_Value )
+		def->setOwnership( ownership );
 
 	return def;
 }

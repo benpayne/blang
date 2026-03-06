@@ -210,8 +210,20 @@ private:
 	// ARC tracking: shared/sync variables per scope depth
 	std::vector<std::vector<llvm::AllocaInst*>> mArcScopeStack;
 
+	// Ownership move tracking: own variables that have been moved
+	std::set<VariableDefinition*> mMovedVariables;
+
+	// Flag set when inside a loop body (for move-in-loop detection)
+	bool mInsideLoop = false;
+
+	// Set of own variables from outer scope when inside a spawn body
+	std::set<VariableDefinition*> mSpawnOuterOwnVars;
+
 	// Flag indicating module uses concurrency features
 	bool mUsesConcurrency = false;
+
+	// Flag indicating a codegen error occurred (e.g., ownership violation)
+	bool mHasError = false;
 
 	// Current function context (for contract support)
 	FunctionDefinition *mCurrentFunction = nullptr;
