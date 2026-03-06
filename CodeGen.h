@@ -3,6 +3,7 @@
 
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 #include <memory>
 
@@ -59,6 +60,15 @@ private:
 
 	// Struct and field codegen
 	llvm::StructType *getOrCreateStructType( StructDefinition *structDef );
+	llvm::StructType *instantiateGenericStruct(
+		StructDefinition *genericDef,
+		const std::vector<SmartPtr<Type>> &typeArgs );
+	std::string mangleGenericName(
+		const std::string &baseName,
+		const std::vector<SmartPtr<Type>> &typeArgs );
+	llvm::Function *instantiateGenericFunction(
+		FunctionDefinition *genericDef,
+		const std::vector<SmartPtr<Type>> &typeArgs );
 	llvm::Value *genStructLiteral( StructLiteralExpression *expr );
 	llvm::Value *genFieldAccess( FieldAccessExpression *expr );
 	llvm::Value *genMethodCall( MethodCallExpression *expr );
@@ -156,6 +166,11 @@ private:
 	std::map<std::string, llvm::StructType*> mStructTypeMap;
 	std::map<std::string, StructDefinition*> mStructDefMap;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
+
+	// Generic instantiation tracking
+	std::map<std::string, llvm::StructType*> mGenericInstanceMap; // "Box_int" -> LLVM type
+	std::map<std::string, llvm::Function*> mGenericFunctionMap;   // "identity_int" -> LLVM func
+	std::map<std::string, Type*> mTypeSubstitution; // active during generic instantiation
 
 	// Module scope for type resolution
 	Scope *mScope = nullptr;

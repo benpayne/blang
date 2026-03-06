@@ -219,10 +219,54 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		{
 			// Save position again to peek past the identifier
 			l.getSymbol(); // consume SYMBOL
-			if ( l.peekSymbol() == '{' )
+			int nextSym = l.peekSymbol();
+			if ( nextSym == '{' )
 			{
 				l.setCurrentPos( pos ); // restore for Parse method
 				result = StructLiteralExpression::Parse( l, scope, identName );
+			}
+			else if ( nextSym == '<' )
+			{
+				// Generic struct literal: Box<int> { ... }
+				// Save position in case this isn't actually a generic struct literal
+				int genericPos = l.getCurrentPos();
+				l.getSymbol(); // consume '<'
+
+				// Parse type arguments
+				std::vector<SmartPtr<Type>> typeArgs;
+				do {
+					Type *param = Type::Parse( l, scope, false );
+					if ( param == nullptr )
+					{
+						// Not a valid type — restore and fall through
+						l.setCurrentPos( pos );
+						typeArgs.clear();
+						break;
+					}
+					typeArgs.push_back( param );
+					int next = l.getSymbol();
+					if ( next == '>' )
+						break;
+					if ( next != ',' )
+					{
+						l.setCurrentPos( pos );
+						typeArgs.clear();
+						break;
+					}
+				} while ( true );
+
+				if ( !typeArgs.empty() && l.peekSymbol() == '{' )
+				{
+					// We have Box<int> { ... } — parse as struct literal with type args
+					l.setCurrentPos( pos ); // restore for Parse method
+					result = StructLiteralExpression::Parse( l, scope, identName );
+				}
+				else if ( !typeArgs.empty() )
+				{
+					// Had type args but no '{' — restore
+					l.setCurrentPos( pos );
+				}
+				// else already restored above
 			}
 			else
 			{
@@ -529,6 +573,23 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 			FunctionDefinition *def = dynamic_cast<FunctionDefinition*>( (Symbol*)s );
 			exp = new CallExpression( def );
 
+			// Check for generic type arguments: fn<int>(args)
+			if ( l.peekSymbol() == '<' )
+			{
+				l.getSymbol(); // consume '<'
+				do {
+					Type *param = Type::Parse( l, scope, false );
+					if ( param == nullptr )
+						COMPILE_ERROR( l, "Expected type argument in generic function call" );
+					exp->addTypeArg( param );
+					int next = l.getSymbol();
+					if ( next == '>' )
+						break;
+					if ( next != ',' )
+						COMPILE_ERROR( l, "Expected ',' or '>' in generic type arguments" );
+				} while ( true );
+			}
+
 			sym = l.getSymbol();
 			if ( sym != '(' )
 				return nullptr;
@@ -658,12 +719,34 @@ StructLiteralExpression *StructLiteralExpression::Parse( Lexer &l, Scope *scope,
 	if ( sym != Lexer::SYMBOL )
 		COMPILE_ERROR( l, "Expected struct type name" );
 
+	// Check for generic type arguments: StructName<T1, T2>
+	std::vector<SmartPtr<Type>> typeArgs;
+	if ( l.peekSymbol() == '<' )
+	{
+		l.getSymbol(); // consume '<'
+		do {
+			Type *param = Type::Parse( l, scope, false );
+			if ( param == nullptr )
+				COMPILE_ERROR( l, "Expected type argument in generic struct literal" );
+			typeArgs.push_back( param );
+			int next = l.getSymbol();
+			if ( next == '>' )
+				break;
+			if ( next != ',' )
+				COMPILE_ERROR( l, "Expected ',' or '>' in generic type arguments" );
+		} while ( true );
+	}
+
 	// Consume '{'
 	sym = l.getSymbol();
 	if ( sym != '{' )
 		COMPILE_ERROR( l, "Expected '{' in struct literal" );
 
 	StructLiteralExpression *expr = new StructLiteralExpression( typeName );
+
+	// Store generic type arguments if present
+	for ( auto &arg : typeArgs )
+		expr->addTypeArg( arg );
 
 	// Parse field initializers: fieldName: expression, ...
 	if ( l.peekSymbol() != '}' )
