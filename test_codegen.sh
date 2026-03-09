@@ -12,7 +12,12 @@ QCC="${SCRIPT_DIR}/build/qcc"
 RUNTIME_LIB="${SCRIPT_DIR}/build/libblang_runtime.a"
 STRING_LIB="${SCRIPT_DIR}/build/libblang_string.a"
 ARRAY_LIB="${SCRIPT_DIR}/build/libblang_array.a"
+BUFFER_LIB="${SCRIPT_DIR}/build/libblang_buffer.a"
 JSON_LIB="${SCRIPT_DIR}/build/libblang_json.a"
+NET_LIB="${SCRIPT_DIR}/build/libblang_net.a"
+SYS_LIB="${SCRIPT_DIR}/build/libblang_sys.a"
+STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
+STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
 
 # Colors
 RED='\033[0;31m'
@@ -23,14 +28,17 @@ NC='\033[0m'
 
 VERBOSE=0
 SINGLE_FILE=""
+LEAK_CHECK=0
 
 for arg in "$@"; do
 	case "$arg" in
 		--verbose) VERBOSE=1 ;;
+		--leak-check) LEAK_CHECK=1 ;;
 		--help)
-			echo "Usage: $0 [--verbose] [test_file]"
-			echo "  --verbose    Show IR output for each test"
-			echo "  test_file    Run only the specified test file"
+			echo "Usage: $0 [--verbose] [--leak-check] [test_file]"
+			echo "  --verbose     Show IR output for each test"
+			echo "  --leak-check  Link with AddressSanitizer and report memory leaks"
+			echo "  test_file     Run only the specified test file"
 			echo ""
 			echo "With no arguments, runs all test_files/codegen_*.b tests."
 			exit 0
@@ -47,6 +55,7 @@ fi
 
 PASS_COUNT=0
 FAIL_COUNT=0
+LEAK_TOTAL=0
 TOTAL=0
 
 # Run one test through the full pipeline: qcc -> llc -> cc -> run
@@ -63,8 +72,25 @@ run_one_test() {
 	TOTAL=$((TOTAL + 1))
 
 	# Step 1: Parse and generate IR
+	# Use --combine to include stdlib files (sys.b always, net.b for networking tests)
+	local qcc_args=()
+	local need_combine=0
+	local stdlib_files=()
+	if [ -f "${STDLIB_SYS}" ]; then
+		stdlib_files+=("${STDLIB_SYS}")
+		need_combine=1
+	fi
+	if [[ "${base_name}" == *"tcp"* ]] || [[ "${base_name}" == *"selector"* ]] || [[ "${base_name}" == *"net"* ]] || [[ "${base_name}" == *"sys_args"* ]] || [[ "${base_name}" == *"http"* ]]; then
+		if [ -f "${STDLIB_NET}" ]; then
+			stdlib_files+=("${STDLIB_NET}")
+			need_combine=1
+		fi
+	fi
+	if [ $need_combine -eq 1 ]; then
+		qcc_args+=("--combine" "${stdlib_files[@]}")
+	fi
 	local qcc_output
-	qcc_output=$("${QCC}" "${test_file}" 2>&1)
+	qcc_output=$("${QCC}" "${qcc_args[@]}" "${test_file}" 2>&1)
 	local qcc_exit=$?
 	if [ $qcc_exit -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (qcc failed, exit $qcc_exit)"
@@ -113,9 +139,13 @@ run_one_test() {
 	# Step 3: Link to native binary
 	local cc_output
 	local extra_libs=""
+	local sanitize_flags=""
 	# Detect libuv for async/await event loop support
 	if pkg-config --exists libuv 2>/dev/null; then
 		extra_libs="-luv"
+	fi
+	if [ "$LEAK_CHECK" -eq 1 ]; then
+		sanitize_flags="-fsanitize=address,leak"
 	fi
 	local json_link=""
 	if [ -f "${JSON_LIB}" ]; then
@@ -129,10 +159,22 @@ run_one_test() {
 	if [ -f "${ARRAY_LIB}" ]; then
 		array_link="${ARRAY_LIB}"
 	fi
+	local buffer_link=""
+	if [ -f "${BUFFER_LIB}" ]; then
+		buffer_link="${BUFFER_LIB}"
+	fi
+	local net_link=""
+	if [ -f "${NET_LIB}" ]; then
+		net_link="${NET_LIB}"
+	fi
+	local sys_link=""
+	if [ -f "${SYS_LIB}" ]; then
+		sys_link="${SYS_LIB}"
+	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
-		cc_output=$(cc "${obj_file}" "${RUNTIME_LIB}" ${string_link} ${array_link} ${json_link} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
 	else
-		cc_output=$(cc "${obj_file}" ${string_link} ${array_link} ${json_link} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} -o "${bin_file}" 2>&1)
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"
@@ -146,8 +188,33 @@ run_one_test() {
 
 	# Step 4: Run with timeout (catches hangs from missing runtime shutdown, etc.)
 	local run_output
-	run_output=$(timeout 10 "${bin_file}" 2>&1)
+	local run_env=""
+	if [ "$LEAK_CHECK" -eq 1 ]; then
+		run_env="ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=exitcode=23"
+	fi
+	run_output=$(timeout 10 env ${run_env} "${bin_file}" 2>&1)
 	local exit_code=$?
+
+	# With leak check, LSan returns exit code 23 (forced via LSAN_OPTIONS=exitcode=23)
+	local leak_count=0
+	if [ "$LEAK_CHECK" -eq 1 ]; then
+		leak_count=$(echo "$run_output" | grep -c 'SUMMARY: AddressSanitizer:' 2>/dev/null || true)
+		# If the program logic passed but leaks detected (exit 23)
+		if [ $exit_code -eq 23 ]; then
+			# Leaks detected but program logic passed
+			local leak_summary
+			leak_summary=$(echo "$run_output" | grep 'SUMMARY:' | head -1)
+			echo -e "  ${YELLOW}LEAK${NC}  ${test_file}  ($leak_summary)"
+			if [ "$VERBOSE" -eq 1 ]; then
+				echo "$run_output" | grep -A1 'Direct leak\|Indirect leak' | sed 's/^/    /'
+			fi
+			PASS_COUNT=$((PASS_COUNT + 1))
+			LEAK_TOTAL=$((LEAK_TOTAL + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}"
+			return 0
+		fi
+	fi
+
 	if [ $exit_code -eq 124 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (timeout — binary hung)"
 		FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -163,7 +230,11 @@ run_one_test() {
 		return 1
 	fi
 
-	echo -e "  ${GREEN}PASS${NC}  ${test_file}"
+	if [ "$LEAK_CHECK" -eq 1 ]; then
+		echo -e "  ${GREEN}CLEAN${NC} ${test_file}"
+	else
+		echo -e "  ${GREEN}PASS${NC}  ${test_file}"
+	fi
 	PASS_COUNT=$((PASS_COUNT + 1))
 
 	# Cleanup
@@ -200,6 +271,9 @@ echo " Results"
 echo "==========================================="
 echo -e "  ${GREEN}Passed:${NC}  $PASS_COUNT"
 echo -e "  ${RED}Failed:${NC}  $FAIL_COUNT"
+if [ "$LEAK_CHECK" -eq 1 ]; then
+echo -e "  ${YELLOW}Leaks:${NC}   $LEAK_TOTAL"
+fi
 echo "  Total:   $TOTAL"
 echo "==========================================="
 

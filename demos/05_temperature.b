@@ -1,8 +1,6 @@
 // Demo 5: Temperature Converter with Pipeline
 // Features: pipeline operator (|>), float/double arithmetic, function chaining
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn celsius_to_fahrenheit(double c) -> double {
 	return c * 1.8 + 32.0;
 }
@@ -20,46 +18,44 @@ fn kelvin_to_celsius(double k) -> double {
 }
 
 fn main() -> int {
-	printf("=== Temperature Converter ===\n\n");
+	println("=== Temperature Converter ===");
+	println();
 
 	// Water freezing point
 	double water_freeze_c = 0.0;
 	double water_freeze_f = water_freeze_c |> celsius_to_fahrenheit();
 	double water_freeze_k = water_freeze_c |> celsius_to_kelvin();
-	printf("Water freezing point:\n");
-	printf("  %.1f C = %.1f F = %.2f K\n",
-		water_freeze_c, water_freeze_f, water_freeze_k);
+	println("Water freezing point:");
+	println("  {} C = {} F = {} K", water_freeze_c, water_freeze_f, water_freeze_k);
 
 	// Water boiling point
 	double water_boil_c = 100.0;
 	double water_boil_f = water_boil_c |> celsius_to_fahrenheit();
 	double water_boil_k = water_boil_c |> celsius_to_kelvin();
-	printf("Water boiling point:\n");
-	printf("  %.1f C = %.1f F = %.2f K\n",
-		water_boil_c, water_boil_f, water_boil_k);
+	println("Water boiling point:");
+	println("  {} C = {} F = {} K", water_boil_c, water_boil_f, water_boil_k);
 
 	// Body temperature
 	double body_f = 98.6;
 	double body_c = body_f |> fahrenheit_to_celsius();
 	double body_k = body_c |> celsius_to_kelvin();
-	printf("Body temperature:\n");
-	printf("  %.1f F = %.1f C = %.2f K\n",
-		body_f, body_c, body_k);
+	println("Body temperature:");
+	println("  {} F = {} C = {} K", body_f, body_c, body_k);
 
 	// Absolute zero
 	double abs_zero_k = 0.0;
 	double abs_zero_c = abs_zero_k |> kelvin_to_celsius();
 	double abs_zero_f = abs_zero_c |> celsius_to_fahrenheit();
-	printf("Absolute zero:\n");
-	printf("  %.1f K = %.1f C = %.1f F\n",
-		abs_zero_k, abs_zero_c, abs_zero_f);
+	println("Absolute zero:");
+	println("  {} K = {} C = {} F", abs_zero_k, abs_zero_c, abs_zero_f);
 
-	printf("\nPipeline chaining — Celsius through all scales:\n");
+	println();
+	println("Pipeline chaining — Celsius through all scales:");
 	double c = 0.0;
 	for i in 0..11 {
 		double f = c |> celsius_to_fahrenheit();
 		double k = c |> celsius_to_kelvin();
-		printf("  %6.1f C = %6.1f F = %6.2f K\n", c, f, k);
+		println("  {} C = {} F = {} K", c, f, k);
 		c = c + 10.0;
 	}
 
@@ -73,9 +69,10 @@ fn main() -> int {
 	assert diff < threshold, "roundtrip should preserve value";
 	assert diff * diff < threshold, "roundtrip should preserve value";
 
-	printf("\nRoundtrip: %.1f C -> F -> C = %.6f C (diff = %.10f)\n",
-		test_c, roundtrip, diff);
+	println();
+	println("Roundtrip: {} C -> F -> C = {} C (diff = {})", test_c, roundtrip, diff);
 
-	printf("\nTemperature converter demo passed!\n");
+	println();
+	println("Temperature converter demo passed!");
 	return 0;
 }

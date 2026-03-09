@@ -32,6 +32,19 @@ void *__blang_rc_alloc( size_t data_size )
 	hdr->ref_count = 1;
 	hdr->is_sync = 0;
 	hdr->mutex = NULL;
+	hdr->destructor = NULL;
+	return (char *)hdr + sizeof( BlangRefHeader );
+}
+
+void *__blang_rc_alloc_dtor( size_t data_size, blang_dtor_fn dtor )
+{
+	BlangRefHeader *hdr = (BlangRefHeader *)calloc( 1, sizeof( BlangRefHeader ) + data_size );
+	if ( hdr == NULL )
+		return NULL;
+	hdr->ref_count = 1;
+	hdr->is_sync = 0;
+	hdr->mutex = NULL;
+	hdr->destructor = dtor;
 	return (char *)hdr + sizeof( BlangRefHeader );
 }
 
@@ -42,6 +55,7 @@ void *__blang_rc_alloc_sync( size_t data_size )
 		return NULL;
 	hdr->ref_count = 1;
 	hdr->is_sync = 1;
+	hdr->destructor = NULL;
 	hdr->mutex = malloc( sizeof( pthread_mutex_t ) );
 	if ( hdr->mutex != NULL )
 	{
@@ -72,6 +86,8 @@ void __blang_rc_release( void *ptr )
 	int32_t new_count = __atomic_sub_fetch( &hdr->ref_count, 1, __ATOMIC_SEQ_CST );
 	if ( new_count <= 0 )
 	{
+		if ( hdr->destructor != NULL )
+			hdr->destructor( ptr );
 		if ( hdr->mutex != NULL )
 		{
 			pthread_mutex_destroy( (pthread_mutex_t *)hdr->mutex );
@@ -100,212 +116,169 @@ void __blang_sync_unlock( void *ptr )
 }
 
 /* ========================================================================
-   Green Thread Pool (spawn)
+   Lambda Context Lifetime
    ======================================================================== */
 
-/* Simple fixed-size task queue. */
-#define TASK_QUEUE_CAPACITY 4096
-
-typedef struct SpawnTask
+void __blang_lambda_ctx_retain( void *ctx )
 {
-	blang_spawn_fn fn;
-	void *ctx;
-	BlangSpawnTask *handle;
-} SpawnTask;
+	if ( ctx == NULL )
+		return;
+	int64_t *rc = (int64_t *)ctx;
+	__atomic_add_fetch( rc, 1, __ATOMIC_SEQ_CST );
+}
+
+void __blang_lambda_ctx_release( void *ctx )
+{
+	if ( ctx == NULL )
+		return;
+	int64_t *rc = (int64_t *)ctx;
+	if ( __atomic_sub_fetch( rc, 1, __ATOMIC_SEQ_CST ) <= 0 )
+	{
+		/* Destructor is stored at offset 8 (after the i64 refcount) */
+		void (**dtor)(void *) = (void (**)(void *))( (char *)ctx + sizeof( int64_t ) );
+		if ( *dtor != NULL )
+			(*dtor)( ctx );
+		free( ctx );
+	}
+}
+
+/* ========================================================================
+   Spawn — detached threads (one pthread per spawn)
+   ======================================================================== */
 
 struct BlangSpawnTask
 {
+	pthread_t thread;
 	pthread_mutex_t mutex;
 	pthread_cond_t done_cond;
 	int completed;  /* 0 = running, 1 = done */
+	blang_spawn_fn fn;
+	void *ctx;
 };
 
-typedef struct TaskQueue
+/* Global tracker for in-flight tasks and wait_all support. */
+typedef struct SpawnTracker
 {
-	SpawnTask tasks[TASK_QUEUE_CAPACITY];
-	int head;
-	int tail;
-	int count;
 	pthread_mutex_t mutex;
-	pthread_cond_t not_empty;
-	pthread_cond_t not_full;
-	int shutdown;
-} TaskQueue;
-
-typedef struct ThreadPool
-{
-	pthread_t *threads;
-	int num_threads;
-	TaskQueue queue;
-	int tasks_in_flight;  /* tasks submitted but not yet completed */
-	pthread_mutex_t flight_mutex;
 	pthread_cond_t all_done;
-} ThreadPool;
+	int tasks_in_flight;
+	BlangSpawnTask **handles;
+	int handle_count;
+	int handle_capacity;
+	int initialized;
+} SpawnTracker;
 
-/* Global thread pool instance. */
-static ThreadPool *g_pool = NULL;
+static SpawnTracker g_tracker = { .initialized = 0 };
 
-static void *worker_thread( void *arg )
+static void tracker_init( void )
 {
-	ThreadPool *pool = (ThreadPool *)arg;
-	TaskQueue *q = &pool->queue;
+	if ( g_tracker.initialized )
+		return;
+	pthread_mutex_init( &g_tracker.mutex, NULL );
+	pthread_cond_init( &g_tracker.all_done, NULL );
+	g_tracker.tasks_in_flight = 0;
+	g_tracker.handle_capacity = 64;
+	g_tracker.handle_count = 0;
+	g_tracker.handles = (BlangSpawnTask **)calloc(
+		g_tracker.handle_capacity, sizeof( BlangSpawnTask * ) );
+	g_tracker.initialized = 1;
+}
 
-	for ( ;; )
-	{
-		pthread_mutex_lock( &q->mutex );
+static void *spawn_thread_fn( void *arg )
+{
+	BlangSpawnTask *task = (BlangSpawnTask *)arg;
 
-		while ( q->count == 0 && !q->shutdown )
-			pthread_cond_wait( &q->not_empty, &q->mutex );
+	/* Execute the spawn body. */
+	task->fn( task->ctx );
 
-		if ( q->shutdown && q->count == 0 )
-		{
-			pthread_mutex_unlock( &q->mutex );
-			break;
-		}
+	/* Free the context (heap-allocated by codegen). */
+	if ( task->ctx != NULL )
+		free( task->ctx );
 
-		SpawnTask task = q->tasks[q->head];
-		q->head = ( q->head + 1 ) % TASK_QUEUE_CAPACITY;
-		q->count--;
-		pthread_cond_signal( &q->not_full );
-		pthread_mutex_unlock( &q->mutex );
+	/* Mark completed and signal waiters. */
+	pthread_mutex_lock( &task->mutex );
+	task->completed = 1;
+	pthread_cond_signal( &task->done_cond );
+	pthread_mutex_unlock( &task->mutex );
 
-		/* Execute the task with its context. */
-		task.fn( task.ctx );
-
-		/* Signal the task handle as completed. */
-		if ( task.handle != NULL )
-		{
-			pthread_mutex_lock( &task.handle->mutex );
-			task.handle->completed = 1;
-			pthread_cond_signal( &task.handle->done_cond );
-			pthread_mutex_unlock( &task.handle->mutex );
-		}
-
-		/* Free the context if it was heap-allocated. */
-		if ( task.ctx != NULL )
-			free( task.ctx );
-
-		/* Decrement in-flight counter. */
-		pthread_mutex_lock( &pool->flight_mutex );
-		pool->tasks_in_flight--;
-		if ( pool->tasks_in_flight == 0 )
-			pthread_cond_signal( &pool->all_done );
-		pthread_mutex_unlock( &pool->flight_mutex );
-	}
+	/* Decrement in-flight counter. */
+	pthread_mutex_lock( &g_tracker.mutex );
+	g_tracker.tasks_in_flight--;
+	if ( g_tracker.tasks_in_flight == 0 )
+		pthread_cond_signal( &g_tracker.all_done );
+	pthread_mutex_unlock( &g_tracker.mutex );
 
 	return NULL;
 }
 
 void __blang_runtime_init( int num_threads )
 {
-	if ( g_pool != NULL )
-		return;
-
-	if ( num_threads <= 0 )
-		num_threads = 4;  /* default */
-
-	g_pool = (ThreadPool *)calloc( 1, sizeof( ThreadPool ) );
-	g_pool->num_threads = num_threads;
-	g_pool->tasks_in_flight = 0;
-
-	TaskQueue *q = &g_pool->queue;
-	q->head = 0;
-	q->tail = 0;
-	q->count = 0;
-	q->shutdown = 0;
-	pthread_mutex_init( &q->mutex, NULL );
-	pthread_cond_init( &q->not_empty, NULL );
-	pthread_cond_init( &q->not_full, NULL );
-
-	pthread_mutex_init( &g_pool->flight_mutex, NULL );
-	pthread_cond_init( &g_pool->all_done, NULL );
-
-	g_pool->threads = (pthread_t *)calloc( num_threads, sizeof( pthread_t ) );
-	for ( int i = 0; i < num_threads; i++ )
-		pthread_create( &g_pool->threads[i], NULL, worker_thread, g_pool );
+	(void)num_threads;
+	tracker_init();
 }
 
 BlangSpawnTask *__blang_spawn( blang_spawn_fn fn, void *ctx )
 {
-	if ( g_pool == NULL )
-		__blang_runtime_init( 0 );
+	tracker_init();
 
-	/* Allocate the task handle. */
-	BlangSpawnTask *handle = (BlangSpawnTask *)calloc( 1, sizeof( BlangSpawnTask ) );
-	pthread_mutex_init( &handle->mutex, NULL );
-	pthread_cond_init( &handle->done_cond, NULL );
-	handle->completed = 0;
+	BlangSpawnTask *task = (BlangSpawnTask *)calloc( 1, sizeof( BlangSpawnTask ) );
+	pthread_mutex_init( &task->mutex, NULL );
+	pthread_cond_init( &task->done_cond, NULL );
+	task->completed = 0;
+	task->fn = fn;
+	task->ctx = ctx;
 
-	TaskQueue *q = &g_pool->queue;
-
-	/* Increment in-flight count before enqueuing. */
-	pthread_mutex_lock( &g_pool->flight_mutex );
-	g_pool->tasks_in_flight++;
-	pthread_mutex_unlock( &g_pool->flight_mutex );
-
-	pthread_mutex_lock( &q->mutex );
-
-	while ( q->count == TASK_QUEUE_CAPACITY && !q->shutdown )
-		pthread_cond_wait( &q->not_full, &q->mutex );
-
-	if ( q->shutdown )
+	/* Track the handle. */
+	pthread_mutex_lock( &g_tracker.mutex );
+	g_tracker.tasks_in_flight++;
+	if ( g_tracker.handle_count >= g_tracker.handle_capacity )
 	{
-		pthread_mutex_unlock( &q->mutex );
-		return handle;
+		g_tracker.handle_capacity *= 2;
+		g_tracker.handles = (BlangSpawnTask **)realloc(
+			g_tracker.handles,
+			g_tracker.handle_capacity * sizeof( BlangSpawnTask * ) );
 	}
+	g_tracker.handles[g_tracker.handle_count++] = task;
+	pthread_mutex_unlock( &g_tracker.mutex );
 
-	q->tasks[q->tail].fn = fn;
-	q->tasks[q->tail].ctx = ctx;
-	q->tasks[q->tail].handle = handle;
-	q->tail = ( q->tail + 1 ) % TASK_QUEUE_CAPACITY;
-	q->count++;
-	pthread_cond_signal( &q->not_empty );
-	pthread_mutex_unlock( &q->mutex );
+	/* Create a detached thread for this spawn. */
+	pthread_attr_t attr;
+	pthread_attr_init( &attr );
+	pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_JOINABLE );
+	pthread_create( &task->thread, &attr, spawn_thread_fn, task );
+	pthread_attr_destroy( &attr );
 
-	return handle;
+	return task;
 }
 
 void __blang_runtime_shutdown( void )
 {
-	if ( g_pool == NULL )
+	if ( !g_tracker.initialized )
 		return;
 
 	/* Wait for all in-flight tasks to complete. */
-	pthread_mutex_lock( &g_pool->flight_mutex );
-	while ( g_pool->tasks_in_flight > 0 )
-		pthread_cond_wait( &g_pool->all_done, &g_pool->flight_mutex );
-	pthread_mutex_unlock( &g_pool->flight_mutex );
+	pthread_mutex_lock( &g_tracker.mutex );
+	while ( g_tracker.tasks_in_flight > 0 )
+		pthread_cond_wait( &g_tracker.all_done, &g_tracker.mutex );
+	pthread_mutex_unlock( &g_tracker.mutex );
 
-	/* Signal workers to shut down. */
-	TaskQueue *q = &g_pool->queue;
-	pthread_mutex_lock( &q->mutex );
-	q->shutdown = 1;
-	pthread_cond_broadcast( &q->not_empty );
-	pthread_mutex_unlock( &q->mutex );
-
-	for ( int i = 0; i < g_pool->num_threads; i++ )
-		pthread_join( g_pool->threads[i], NULL );
-
-	free( g_pool->threads );
-	pthread_mutex_destroy( &q->mutex );
-	pthread_cond_destroy( &q->not_empty );
-	pthread_cond_destroy( &q->not_full );
-	pthread_mutex_destroy( &g_pool->flight_mutex );
-	pthread_cond_destroy( &g_pool->all_done );
-	free( g_pool );
-	g_pool = NULL;
-
-#ifdef BLANG_HAS_LIBUV
-	/* Shut down the libuv event loop if it was started. */
-	if ( g_async_loop != NULL && g_loop_running )
+	/* Join and free all tracked task handles. */
+	for ( int i = 0; i < g_tracker.handle_count; i++ )
 	{
-		uv_stop( g_async_loop );
-		pthread_join( g_loop_thread, NULL );
-		uv_loop_close( g_async_loop );
-		g_async_loop = NULL;
-		g_loop_running = 0;
+		if ( g_tracker.handles[i] != NULL )
+		{
+			pthread_join( g_tracker.handles[i]->thread, NULL );
+			__blang_spawn_task_destroy( g_tracker.handles[i] );
+		}
 	}
-#endif
+	free( g_tracker.handles );
+
+	pthread_mutex_destroy( &g_tracker.mutex );
+	pthread_cond_destroy( &g_tracker.all_done );
+	g_tracker.handles = NULL;
+	g_tracker.handle_count = 0;
+	g_tracker.handle_capacity = 0;
+	g_tracker.initialized = 0;
 }
 
 /* ========================================================================
@@ -327,6 +300,20 @@ void __blang_spawn_task_destroy( BlangSpawnTask *task )
 {
 	if ( task == NULL )
 		return;
+
+	/* Remove from tracker to prevent double-free. */
+	if ( g_tracker.initialized )
+	{
+		for ( int i = 0; i < g_tracker.handle_count; i++ )
+		{
+			if ( g_tracker.handles[i] == task )
+			{
+				g_tracker.handles[i] = NULL;
+				break;
+			}
+		}
+	}
+
 	pthread_mutex_destroy( &task->mutex );
 	pthread_cond_destroy( &task->done_cond );
 	free( task );
@@ -334,13 +321,13 @@ void __blang_spawn_task_destroy( BlangSpawnTask *task )
 
 void __blang_wait_all( void )
 {
-	if ( g_pool == NULL )
+	if ( !g_tracker.initialized )
 		return;
 
-	pthread_mutex_lock( &g_pool->flight_mutex );
-	while ( g_pool->tasks_in_flight > 0 )
-		pthread_cond_wait( &g_pool->all_done, &g_pool->flight_mutex );
-	pthread_mutex_unlock( &g_pool->flight_mutex );
+	pthread_mutex_lock( &g_tracker.mutex );
+	while ( g_tracker.tasks_in_flight > 0 )
+		pthread_cond_wait( &g_tracker.all_done, &g_tracker.mutex );
+	pthread_mutex_unlock( &g_tracker.mutex );
 }
 
 /* ========================================================================

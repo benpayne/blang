@@ -64,7 +64,10 @@ set(QCC_SOURCES
 	QEventHandler.cpp
 	QTestBlock.cpp
 	QAssertStatement.cpp
-	QQueryExpression.cpp)
+	QQueryExpression.cpp
+	QLambdaExpression.cpp
+	BmodEmitter.cpp
+	FormatString.cpp)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
@@ -102,10 +105,27 @@ add_library(blang_array STATIC runtime/blang_array.c)
 set_target_properties(blang_array PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_array PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 
+# BLang buffer runtime library (byte buffer for I/O)
+add_library(blang_buffer STATIC runtime/blang_buffer.c)
+set_target_properties(blang_buffer PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_buffer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
 # BLang JSON runtime library
 add_library(blang_json STATIC runtime/blang_json.c)
 set_target_properties(blang_json PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_json PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+# BLang networking runtime library (TCP sockets + poll-based Selector)
+add_library(blang_net STATIC runtime/blang_net.c)
+set_target_properties(blang_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_net blang_string blang_buffer)
+
+# BLang sys runtime library (argc/argv capture for sys.args)
+add_library(blang_sys STATIC runtime/blang_sys.c)
+set_target_properties(blang_sys PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_sys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_sys blang_string blang_array)
 
 # BLang database runtime library
 add_library(blang_db STATIC runtime/blang_db.c)
@@ -141,13 +161,22 @@ else()
 	message(STATUS "SQLite3 not found -- database runtime will use stubs")
 endif()
 
+# SHA-256 library (standalone C, used by BuildCache)
+add_library(blang_sha256 STATIC sha256.c)
+set_target_properties(blang_sha256 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+# Build cache (artifact caching for incremental builds)
+add_library(blang_buildcache STATIC BuildCache.cpp)
+set_target_properties(blang_buildcache PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_link_libraries(blang_buildcache blang_sha256)
+
 # SQL generation and schema migration (C++ library for qcc/bcc)
 add_library(blang_sqlgen STATIC SQLGen.cpp SchemaMigration.cpp)
 set_target_properties(blang_sqlgen PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(blang_sqlgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # bcc - BLang compiler driver (orchestrates qcc -> llc -> cc pipeline)
-add_executable(bcc bcc.cpp)
+add_executable(bcc bcc.cpp ProjectConfig.cpp BuildCache.cpp sha256.c)
 set_target_properties(bcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # Bake tool paths into bcc at build time so it works regardless of runtime PATH/arch
@@ -156,9 +185,17 @@ target_compile_definitions(bcc PRIVATE BCC_HOST_ARCH="${CMAKE_SYSTEM_PROCESSOR}"
 target_compile_definitions(bcc PRIVATE BCC_RUNTIME_LIB="${CMAKE_BINARY_DIR}/libblang_runtime.a")
 target_compile_definitions(bcc PRIVATE BCC_STRING_LIB="${CMAKE_BINARY_DIR}/libblang_string.a")
 target_compile_definitions(bcc PRIVATE BCC_ARRAY_LIB="${CMAKE_BINARY_DIR}/libblang_array.a")
+target_compile_definitions(bcc PRIVATE BCC_BUFFER_LIB="${CMAKE_BINARY_DIR}/libblang_buffer.a")
 target_compile_definitions(bcc PRIVATE BCC_JSON_LIB="${CMAKE_BINARY_DIR}/libblang_json.a")
+target_compile_definitions(bcc PRIVATE BCC_NET_LIB="${CMAKE_BINARY_DIR}/libblang_net.a")
+target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang_sys.a")
 message(STATUS "bcc: C compiler = ${CMAKE_C_COMPILER}")
 message(STATUS "bcc: host arch = ${CMAKE_SYSTEM_PROCESSOR}")
+
+# Copy stdlib .b files alongside executables for --combine auto-include
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/stdlib)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/net.b ${CMAKE_BINARY_DIR}/stdlib/net.b COPYONLY)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/sys.b ${CMAKE_BINARY_DIR}/stdlib/sys.b COPYONLY)
 
 if(LIBUV_FOUND)
 	target_compile_definitions(bcc PRIVATE BCC_HAS_LIBUV)

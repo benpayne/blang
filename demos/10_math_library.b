@@ -1,8 +1,6 @@
 // Demo 10: Mini Math Library with Contracts
 // Features: contracts (requires/ensures), pipeline (|>), assert, multiple functions
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn abs(int x) -> int ensures result >= 0 {
 	if x < 0 {
 		return 0 - x;
@@ -90,27 +88,30 @@ fn multiply(int x, int y) -> int {
 }
 
 fn main() -> int {
-	printf("=== Mini Math Library ===\n\n");
+	println("=== Mini Math Library ===");
+	println();
 
 	// abs
-	printf("abs(-42) = %d\n", abs(-42));
-	printf("abs(17) = %d\n", abs(17));
+	println("abs(-42) = {}", abs(-42));
+	println("abs(17) = {}", abs(17));
 	assert abs(-42) == 42;
 	assert abs(0) == 0;
 	assert abs(17) == 17;
 
 	// clamp
-	printf("\nclamp(150, 0, 100) = %d\n", clamp(150, 0, 100));
-	printf("clamp(-10, 0, 100) = %d\n", clamp(-10, 0, 100));
-	printf("clamp(50, 0, 100) = %d\n", clamp(50, 0, 100));
+	println();
+	println("clamp(150, 0, 100) = {}", clamp(150, 0, 100));
+	println("clamp(-10, 0, 100) = {}", clamp(-10, 0, 100));
+	println("clamp(50, 0, 100) = {}", clamp(50, 0, 100));
 	assert clamp(150, 0, 100) == 100;
 	assert clamp(-10, 0, 100) == 0;
 	assert clamp(50, 0, 100) == 50;
 
 	// factorial
-	printf("\nFactorials:\n");
+	println();
+	println("Factorials:");
 	for i in 0..11 {
-		printf("  %d! = %d\n", i, factorial(i));
+		println("  {}! = {}", i, factorial(i));
 	}
 	assert factorial(0) == 1;
 	assert factorial(1) == 1;
@@ -118,8 +119,9 @@ fn main() -> int {
 	assert factorial(10) == 3628800;
 
 	// gcd and lcm
-	printf("\ngcd(12, 8) = %d\n", gcd(12, 8));
-	printf("lcm(12, 8) = %d\n", lcm(12, 8));
+	println();
+	println("gcd(12, 8) = {}", gcd(12, 8));
+	println("lcm(12, 8) = {}", lcm(12, 8));
 	assert gcd(12, 8) == 4;
 	assert gcd(17, 13) == 1;
 	assert gcd(100, 75) == 25;
@@ -127,38 +129,43 @@ fn main() -> int {
 	assert lcm(7, 5) == 35;
 
 	// is_prime
-	printf("\nPrimes in 1..30: ");
+	println();
+	print("Primes in 1..30: ");
 	for n in 1..31 {
 		if is_prime(n) == 1 {
-			printf("%d ", n);
+			print("{} ", n);
 		}
 	}
-	printf("\n");
+	println();
 	assert is_prime(2) == 1;
 	assert is_prime(13) == 1;
 	assert is_prime(4) == 0;
 	assert is_prime(1) == 0;
 
 	// power
-	printf("\n2^10 = %d\n", power(2, 10));
-	printf("3^5 = %d\n", power(3, 5));
+	println();
+	println("2^10 = {}", power(2, 10));
+	println("3^5 = {}", power(3, 5));
 	assert power(2, 10) == 1024;
 	assert power(3, 5) == 243;
 	assert power(5, 0) == 1;
 
 	// Pipeline composition: 12 |> gcd(8) |> factorial()
-	printf("\nPipeline: 12 |> gcd(8) |> factorial()\n");
+	println();
+	println("Pipeline: 12 |> gcd(8) |> factorial()");
 	int piped = 12 |> gcd(8) |> factorial();
-	printf("  = gcd(12,8) = 4, then 4! = %d\n", piped);
+	println("  = gcd(12,8) = 4, then 4! = {}", piped);
 	assert piped == 24, "gcd(12,8)=4, 4!=24";
 
 	// Another pipeline: sum_range then clamp
 	int total = sum_range(1, 10);
 	int clamped = total |> clamp(0, 50);
-	printf("\nsum(1..10) = %d, clamped to [0,50] = %d\n", total, clamped);
+	println();
+	println("sum(1..10) = {}, clamped to [0,50] = {}", total, clamped);
 	assert total == 55;
 	assert clamped == 50;
 
-	printf("\nMini math library demo passed!\n");
+	println();
+	println("Mini math library demo passed!");
 	return 0;
 }

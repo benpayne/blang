@@ -1,29 +1,18 @@
 # BLang Implementation Plan
 
-## Current State (as of February 2026)
+## Current State (as of March 2026)
 
 ### What Works Today
 
-**Lexer**: Hand-written lexer recognizes types (`int`, `char`, `string`, `void`, `float`, `double`), control flow keywords (`if`, `else`, `while`, `for`, `return`), `extern`, identifiers, integer/float/string/char literals, all arithmetic/comparison/logical/bitwise operators, assignment operators (`=`, `+=`, `-=`, `*=`, `/=`), braces, parens, commas, semicolons, single-line and multi-line comments.
+**Lexer**: Hand-written lexer recognizes types (`int`, `char`, `string`, `void`, `float`, `double`), control flow keywords (`if`, `else`, `while`, `for`, `return`), `extern`, identifiers, integer/float/string/char literals, all arithmetic/comparison/logical/bitwise operators, assignment operators (`=`, `+=`, `-=`, `*=`, `/=`), braces, parens, commas, semicolons, single-line and multi-line comments. Additional keywords: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`, `table`, `query`, `insert`, `update`, `delete`, `cstring`, `carray`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), `|>` (pipeline), `@` (annotation), `true`/`false` (boolean constants), float constants.
 
-**Parser (AST)**: Recursive-descent parser builds AST with these node types:
-- `Module` (top-level container of functions)
-- `FunctionDefinition` (with parameters, return type, body; includes `extern` declarations and variadic `...`)
-- `Block` (scoped statement list)
-- `VariableDeclaration` (with optional initializer expression)
-- `IfStatement`, `WhileStatement`, `ForStatement`
-- `ReturnStatement`
-- `Expression` hierarchy: `ConstInteger`, `ConstFloat`, `ConstString`, `ConstChar`, `VariableExpression`, `CallExpression`, `AssignmentExpression`, `OperationsExpression` (binary ops with precedence), `UnaryExpression` (`-`, `!`)
+**Parser (AST)**: Recursive-descent parser builds a complete AST supporting all Phase 1, Phase 2, and Phase 3 syntax constructs. See CLAUDE.md for full list.
 
-**Codegen (LLVM 18+, conditional)**: When built with `llvm-18-dev`, `CodeGen` class generates LLVM IR for all of the above. Full pipeline tested: parse → `.ll` → `llc` → native binary.
+**Codegen (LLVM 18+, conditional)**: When built with `llvm-18-dev`, `CodeGen` class generates LLVM IR for: functions, extern declarations, variables, control flow (if/else, while, for-in, break/continue), expressions (arithmetic, comparison, logical, bitwise with type coercion), strings (safe BlangString type with interpolation and methods), arrays (safe BlangArray with bounds checking), structs (literal construction, field access, method calls), enums (tagged union layout with match/destructure), generics (monomorphization), Result/Option `?` operator (tag check, payload extraction, early error return), pipeline operator, ownership (move semantics, use-after-move detection), ARC for shared/sync, spawn (closure extraction, thread pool dispatch), async/await, channels, contracts (requires/ensures), test blocks, assert, `@json` annotation codegen, database query/insert/update/delete codegen, and multi-module type sharing.
 
-**Tests**: 108 tests in `run_tests.sh` — 81 pass, 27 fail (negative tests), 0 xfails. All tests use `.b` extension. Two lexer test programs. End-to-end codegen test script. GitHub Actions CI configured.
+**Tests**: 143 tests in `run_tests.sh` — 99 pass, 40 fail (negative), 4 cgfail. 36 end-to-end codegen tests via `test_codegen.sh`. GitHub Actions CI configured.
 
-**Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`.
-
-### What the Language Design Spec Describes but Does NOT Exist Yet
-
-The remaining gaps are primarily in codegen (requires LLVM) and Phase 2/3 features (ownership, concurrency, data services). The parser now covers nearly all Phase 1 language constructs.
+**Runtime Libraries**: `blang_string` (safe immutable string), `blang_array` (safe growable array), `blang_json` (JSON encode/decode), `blang_db` (database abstraction with optional SQLite), `blang_runtime` (ARC, thread pool, channels, async event loop). SQL generation (`SQLGen`) and schema migration (`SchemaMigration`) libraries.
 
 ---
 
@@ -70,8 +59,8 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 23 | Add `impl` keyword to lexer | impl | YES | `impl` is a recognized keyword token |
 | 24 | Parse `impl` blocks | impl | YES | `QImplBlock.cpp` — `impl Protocol for Struct { ... }` |
 | 25 | Add `self` keyword | impl | YES | Lexer + parser support for `self` in method params |
-| 26 | Codegen for struct types | impl | — | No LLVM struct type mapping yet |
-| 27 | Codegen for method calls | impl | — | No method dispatch codegen yet |
+| 26 | Codegen for struct types | impl | YES | LLVM struct type mapping (`getOrCreateStructType`), field access (`genFieldAccess`), struct literal (`genStructLiteral`), generic struct instantiation |
+| 27 | Codegen for method calls | impl | YES | Method dispatch (`genMethodCall`), impl block methods emitted as `StructName_methodName`, self passed as first arg; builtin string/array methods also supported |
 | 28 | Add pass tests for structs | test | YES | `struct_basic.c`, `struct_literal.c`, `field_access.c`, `method_call.c`, `impl_basic.c`, `impl_protocol.c` |
 | 29 | Add fail tests for structs | test | YES | `struct_bad_field.c`, `struct_missing_brace.c` |
 | 30 | Document struct and impl syntax | docs | YES | Documented in CLAUDE.md |
@@ -96,8 +85,8 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 39 | Parse `<T>` type parameters on functions | impl | YES | `fn first<T>(List<T> list) -> Option<T>` |
 | 40 | Parse `<T>` type parameters on structs | impl | YES | `struct List<T> { ... }` with `GenericParam` |
 | 41 | Parse protocol constraints `<T: Comparable>` | impl | YES | Constraint syntax on functions, structs, protocols, enums |
-| 42 | Implement generic type instantiation | impl | — | No monomorphization or type erasure yet |
-| 43 | Codegen for generic functions | impl | — | No generic codegen yet |
+| 42 | Implement generic type instantiation | impl | YES | Monomorphization via `instantiateGenericStruct()` — stamps out concrete types like `Box_int`; cached in `mGenericInstanceMap` |
+| 43 | Codegen for generic functions | impl | YES | Monomorphization via `instantiateGenericFunction()` — stamps out concrete functions; explicit type args required (no inference); generic methods/protocols not yet supported |
 | 44 | Add pass tests for generics | test | YES | `generic_fn.c`, `generic_struct.c`, `generic_constraint.c`, `generic_protocol.c`, `generic_type_args.c` |
 | 45 | Add fail tests for generics | test | YES | `generic_unknown_constraint.b`, `generic_duplicate_param.b` |
 | 46 | Document generics | docs | YES | Documented in CLAUDE.md |
@@ -106,14 +95,14 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 47 | Implement `Result<T, E>` as built-in generic type | impl | PARTIAL | Parseable as user-defined enum; no special compiler treatment |
-| 48 | Implement `Option<T>` as built-in generic type | impl | PARTIAL | Parseable as user-defined enum; no special compiler treatment |
+| 47 | Implement `Result<T, E>` as built-in generic type | impl | DEFERRED | User-defined enums work as Result; built-in treatment deferred until generic monomorphization matures |
+| 48 | Implement `Option<T>` as built-in generic type | impl | DEFERRED | User-defined enums work as Option; built-in treatment deferred until generic monomorphization matures |
 | 49 | Add `match` keyword to lexer | impl | YES | `match` is a recognized keyword token |
 | 50 | Parse `match` expressions | impl | YES | `QMatchExpression.cpp` — literal, wildcard `_`, destructuring patterns |
 | 51 | Parse `?` operator | impl | YES | `QUESTION_MARK` token in lexer; `TryExpression` AST node; postfix parsing in `ParsePrimary` |
-| 52 | Codegen for Result/Option | impl | — | No tagged union representation |
-| 53 | Codegen for match | impl | — | No `genMatchExpression` in CodeGen |
-| 54 | Codegen for `?` operator | impl | — | Depends on task 51 |
+| 52 | Codegen for Result/Option | impl | YES | Enum tagged union layout `{i32 tag, [N x i8] payload}` via `genEnumConstruct`; tested in `codegen_result_type.b` and `codegen_enum_payload.b` |
+| 53 | Codegen for match | impl | YES | `genMatchExpression` — tag extraction, switch dispatch, variant pattern matching with payload extraction and binding, wildcard arms |
+| 54 | Codegen for `?` operator | impl | YES | `genTryExpression` — resolves operand's enum type, extracts tag, branches on success (ok/some) vs error (err/none), unwraps payload on success, propagates error via early return on failure; tested in `codegen_try_operator.b` |
 | 55 | Add pass tests for Result/Option | test | YES | `result_option.b`, `match_enum_variants.b`, `try_operator.b` |
 | 56 | Add fail test: unhandled Result | test | YES | `match_missing_brace.b` — match arm without block braces rejected |
 | 57 | Document error handling | docs | YES | Error handling documented in language_design.md and CLAUDE.md |
@@ -127,11 +116,11 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 60 | Parse `import` statements | impl | YES | `ImportStatement` AST node; dotted paths supported (`import std.io;`) |
 | 61 | Parse `pub` visibility modifier | impl | YES | `mIsPublic` flag on functions, structs; `pub fn`, `pub struct`, `pub enum` |
 | 62 | Implement multi-file compilation | impl | YES | qcc accepts multiple source files; each parsed into own Module with shared global scope |
-| 63 | Implement symbol visibility checking | impl | PARTIAL | `isPublic()` tracked on symbols; cross-module enforcement pending |
+| 63 | Implement symbol visibility checking | impl | DEFERRED | `isPublic()` tracked on symbols; cross-module enforcement deferred until cross-module name resolution exists |
 | 64 | Enforce flat namespace rule | impl | YES | Enforced by parser — no module-qualified names in expressions |
 | 65 | Enforce no function overloading | impl | YES | `Scope::addSymbol` returns false for duplicates; compile error on redefinition |
 | 66 | Enforce mandatory pub type signatures | impl | YES | Already enforced by grammar — fn syntax always requires explicit parameter types |
-| 67 | Codegen for multi-module | impl | — | Requires LLVM; pending |
+| 67 | Codegen for multi-module | impl | YES | `registerExternalTypes()` shares struct/enum type definitions across CodeGen instances; type-level cross-module support works, function-level symbol linking pending |
 | 68 | Add pass tests for modules | test | YES | `import_basic.b`, `import_dotted.b`, `pub_function.b`, `pub_struct.b`, `pub_enum.b`, `visibility_basic.b` |
 | 69 | Add fail tests for modules | test | YES | `import_missing_semi.b`, `import_missing_name.b` |
 | 70 | Document module system | docs | YES | Module system documented in language_design.md and CLAUDE.md |
@@ -160,12 +149,12 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 78 | Add `shared` keyword to lexer | impl | YES | Shared reference-counted qualifier |
 | 79 | Add `sync` keyword to lexer | impl | YES | Synchronized mutable qualifier |
 | 80 | Parse ownership qualifiers on variable declarations | impl | YES | `own Buffer buf = Buffer.new(1024);` syntax parsed |
-| 81 | Implement move semantics for `own` | impl | PARTIAL | Ownership qualifiers parsed and tracked; move semantics enforcement pending codegen |
-| 82 | Implement use-after-move detection | impl | PARTIAL | `mIsMoved` flag tracked on VariableDefinition; compile-time enforcement pending |
-| 83 | Implement ARC for `shared` types | impl | — | Reference counting in codegen, deterministic deallocation |
-| 84 | Implement auto-locking for `sync` types | impl | — | Mutex wrapper generated in codegen |
-| 85 | Add pass tests for ownership | test | YES | own_basic.b, shared_basic.b, sync_basic.b, ownership_all.b |
-| 86 | Add fail tests for ownership | test | PARTIAL | Basic ownership parsing validated; use-after-move fail tests pending |
+| 81 | Implement move semantics for `own` | impl | YES | Move semantics enforced in codegen: use-after-move detection, move-in-loop prevention, own variables cannot be captured across spawn boundaries |
+| 82 | Implement use-after-move detection | impl | YES | `mMovedVariables` set tracked during codegen; use-after-move and move-in-loop emit compile errors; tested in `codegen_ownership_move.b` and cgfail tests |
+| 83 | Implement ARC for `shared` types | impl | YES | `__blang_rc_alloc`/`__blang_rc_retain`/`__blang_rc_release` emitted at scope boundaries; tested in `codegen_shared_spawn.b` |
+| 84 | Implement auto-locking for `sync` types | impl | YES | `__blang_sync_lock`/`__blang_sync_unlock` emitted around sync variable access; tested in `codegen_sync_locking.b` and `codegen_sync_spawn.b` |
+| 85 | Add pass tests for ownership | test | YES | own_basic.b, shared_basic.b, sync_basic.b, ownership_all.b, own_move_valid.b |
+| 86 | Add fail tests for ownership | test | YES | cgfail/own_use_after_move.b, cgfail/own_move_in_loop.b, cgfail/own_spawn_capture.b |
 | 87 | Document ownership model | docs | YES | Update CLAUDE.md with ownership support |
 
 ### 2.2 Concurrency: spawn/chan
@@ -175,15 +164,15 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 88 | Add `spawn` keyword to lexer | impl | YES | Green thread creation |
 | 89 | Add `chan` keyword to lexer | impl | YES | Channel type |
 | 90 | Parse `spawn { ... }` blocks | impl | YES | `spawn { ... }` parsed into SpawnStatement AST node |
-| 91 | Parse channel declarations | impl | PARTIAL | `chan` is a keyword; channel type declarations pending |
-| 92 | Parse channel operations | impl | — | `.send()` and `.recv()` method calls (depends on runtime) |
-| 93 | Implement BLang runtime: green thread scheduler | impl | — | Work-stealing scheduler over OS threads (C/C++ runtime library) |
-| 94 | Implement BLang runtime: channel implementation | impl | — | Typed, buffered, thread-safe channels |
-| 95 | Codegen for spawn | impl | — | Emit calls to runtime scheduler API |
-| 96 | Codegen for channel operations | impl | — | Emit calls to runtime channel API |
-| 97 | Enforce thread safety rules | impl | PARTIAL | Ownership qualifiers track own/shared/sync; enforcement pending |
-| 98 | Add pass tests for spawn/chan | test | YES | spawn_basic.b, spawn_nested.b, chan_decl.b |
-| 99 | Add fail tests for concurrency | test | YES | spawn_missing_brace.b |
+| 91 | Parse channel declarations | impl | YES | `chan<T>` variable declarations parsed and codegen'd via `__blang_chan_create` |
+| 92 | Parse channel operations | impl | PARTIAL | `.send()` and `.recv()` lack parser syntax — only `chan<T>` declarations codegen'd |
+| 93 | Implement BLang runtime: green thread scheduler | impl | YES | Thread pool with `__blang_spawn`, `__blang_spawn_wait`, `__blang_wait_all` in `blang_runtime.c` |
+| 94 | Implement BLang runtime: channel implementation | impl | YES | `__blang_chan_create`/`__blang_chan_send`/`__blang_chan_recv`/`__blang_chan_close`/`__blang_chan_destroy` in `blang_runtime.c` |
+| 95 | Codegen for spawn | impl | YES | Closure extraction: captured variables packed into context struct, dispatched to thread pool; tested in `codegen_spawn.b`, `codegen_spawn_threaded.b`, `codegen_shared_spawn.b` |
+| 96 | Codegen for channel operations | impl | PARTIAL | Channel creation codegen'd; send/recv pending parser syntax |
+| 97 | Enforce thread safety rules | impl | YES | Own variables cannot be captured across spawn boundaries (compile error); shared/sync enforced via ARC and locking |
+| 98 | Add pass tests for spawn/chan | test | YES | spawn_basic.b, spawn_nested.b, spawn_expr.b, chan_decl.b, wait_basic.b, wait_all_basic.b |
+| 99 | Add fail tests for concurrency | test | YES | spawn_missing_brace.b, cgfail/own_spawn_capture.b |
 | 100 | Document concurrency | docs | YES | Update CLAUDE.md |
 
 ### 2.3 Async/Await and Event Loop
@@ -194,12 +183,12 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 102 | Add `await` keyword to lexer | impl | YES | Await expression |
 | 103 | Parse `async fn` declarations | impl | YES | `async fn` declarations set mIsAsync flag on FunctionDefinition |
 | 104 | Parse `await` expressions | impl | YES | `await expr` parsed into AwaitExpression AST node |
-| 105 | Implement BLang runtime: event loop | impl | — | libuv-style event loop (or integrate libuv directly) |
-| 106 | Codegen for async functions | impl | — | State machine transformation or coroutine lowering |
-| 107 | Codegen for await | impl | — | Yield point in state machine |
+| 105 | Implement BLang runtime: event loop | impl | YES | `__blang_async_call`/`__blang_await`/`__blang_task_destroy` in `blang_runtime.c` |
+| 106 | Codegen for async functions | impl | YES | Async body extracted to `void*(void*)` wrapper, called via `__blang_async_call`; tested in `codegen_async.b`, `codegen_async_multi.b` |
+| 107 | Codegen for await | impl | YES | `__blang_await` + `__blang_task_destroy`; tested in `codegen_wait.b`, `codegen_wait_all.b` |
 | 108 | Add `on` keyword for event handlers | impl | YES | `on timer.every(1000) { ... }` |
 | 109 | Parse event handler syntax | impl | YES | `on expr { body }` parsed into EventHandler AST node |
-| 110 | Codegen for event handlers | impl | — | Register callback with event loop |
+| 110 | Codegen for event handlers | impl | PARTIAL | Callback extraction works; full event loop registration is a runtime fallback (executes inline) |
 | 111 | Add pass tests for async/await | test | YES | async_fn.b, async_fn_void.b, await_expr.b, event_handler.b |
 | 112 | Document async model | docs | YES | Update CLAUDE.md |
 
@@ -211,8 +200,8 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 114 | Add `ensures` keyword to lexer | impl | YES | Postcondition keyword |
 | 115 | Parse `requires` clauses on functions | impl | YES | `requires expr` parsed after return type on functions |
 | 116 | Parse `ensures` clauses on functions | impl | YES | `ensures expr` parsed after return type on functions |
-| 117 | Implement runtime contract checks | impl | — | Insert assertion code at function entry/exit (needs codegen) |
-| 118 | Implement compile-time contract checking (basic) | impl | — | Detect constant violations like `divide(x, 0)` (needs codegen) |
+| 117 | Implement runtime contract checks | impl | YES | `genContractCheck` inserts assertion code at function entry (requires) and before return (ensures); tested in `codegen_contracts.b` |
+| 118 | Implement compile-time contract checking (basic) | impl | — | Detect constant violations like `divide(x, 0)` (future optimization) |
 | 119 | Add pass tests for contracts | test | YES | requires_basic.b, ensures_basic.b, contract_combined.b |
 | 120 | Add fail tests for contracts | test | YES | requires_missing_expr.b |
 | 121 | Document contracts | docs | YES | Update CLAUDE.md |
@@ -226,9 +215,9 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 124 | Create `TestBlock` AST node | impl | YES | Named test block containing statements |
 | 125 | Parse `test "name" { ... }` blocks | impl | YES | `test "name" { body }` parsed into TestBlock |
 | 126 | Parse `assert expr` statements | impl | YES | `assert expr;` and `assert expr, "msg";` parsed into AssertStatement |
-| 127 | Implement `blang test` command | impl | — | Discover all test blocks, compile, run, report pass/fail (needs codegen) |
-| 128 | Strip test blocks from release builds | impl | — | `--release` flag omits test code from binary (needs codegen) |
-| 129 | Test output formatting | impl | — | Clear pass/fail reporting with file:line on failure (needs runtime) |
+| 127 | Implement `blang test` command | impl | YES | `bcc test` discovers test files, compiles, and runs; test runner codegen emits `genTestRunner` |
+| 128 | Strip test blocks from release builds | impl | — | `--release` flag omits test code from binary (future) |
+| 129 | Test output formatting | impl | PARTIAL | Test runner reports pass/fail with names; file:line on failure pending |
 | 130 | Add pass tests for test blocks | test | YES | test_basic.b, test_assert.b, test_assert_message.b, test_multiple.b, assert_in_function.b |
 | 131 | Add fail tests for test blocks | test | YES | test_missing_name.b, test_missing_body.b, assert_missing_semi.b |
 | 132 | Self-hosting milestone: BLang tests in BLang | test | — | Write compiler test suite using built-in `test` blocks (future milestone) |
@@ -242,64 +231,64 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 134 | Add `|>` operator to lexer | impl | — | Two-character operator token |
-| 135 | Parse pipeline expressions | impl | — | `expr |> fn(args)` desugars to `fn(expr, args)` |
-| 136 | Codegen for pipeline | impl | — | Same as function call after desugaring |
-| 137 | Add pass tests for pipeline | test | — | Chained pipelines, pipeline with methods |
-| 138 | Document pipeline operator | docs | — | Update CLAUDE.md |
+| 134 | Add `|>` operator to lexer | impl | YES | `PIPELINE` two-character operator token |
+| 135 | Parse pipeline expressions | impl | YES | `expr |> fn(args)` desugars to `fn(expr, args)` via `PipelineExpression` AST node |
+| 136 | Codegen for pipeline | impl | YES | `genPipelineExpression` desugars to function call; tested in `codegen_pipeline.b` |
+| 137 | Add pass tests for pipeline | test | YES | pipeline_basic.b, pipeline_chained.b, pipeline_with_args.b |
+| 138 | Document pipeline operator | docs | YES | Documented in CLAUDE.md |
 
 ### 3.2 Table Structs and Query Expressions
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 139 | Add `table` keyword to lexer | impl | — | Table struct qualifier |
-| 140 | Parse `table struct` definitions | impl | — | `table struct User { int id; string name; }` |
-| 141 | Implement schema metadata storage | impl | — | Compiler tracks table schemas for validation |
-| 142 | Add `query` keyword to lexer | impl | — | Query expression keyword |
-| 143 | Add `insert` keyword to lexer | impl | — | Insert expression keyword |
-| 144 | Add `update` keyword to lexer | impl | — | Update expression keyword |
-| 145 | Add `delete` keyword to lexer | impl | — | Delete expression keyword |
-| 146 | Parse `query T |> where { } |> order_by { } |> limit()` | impl | — | Full query expression pipeline |
-| 147 | Parse `insert T { field: value }` | impl | — | Insert expression |
-| 148 | Parse `update T |> where { } |> set { }` | impl | — | Update expression |
-| 149 | Parse `delete T |> where { }` | impl | — | Delete expression |
-| 150 | Compile-time field validation | impl | — | `.nonexistent_field` is a compile error |
-| 151 | SQL generation backend | impl | — | Translate query AST to parameterized SQL strings |
-| 152 | Implement database runtime library | impl | — | Connection pooling, prepared statements, result mapping |
-| 153 | Support `@db("name")` annotation for named connections | impl | — | Multi-database support |
-| 154 | Add pass tests for queries | test | — | Select, insert, update, delete, joins, pipelines |
-| 155 | Add fail tests for queries | test | — | Wrong field name, type mismatch in where clause |
+| 139 | Add `table` keyword to lexer | impl | YES | `table` keyword token |
+| 140 | Parse `table struct` definitions | impl | YES | `table struct User { int id; string name; }` with `setIsTable(true)` |
+| 141 | Implement schema metadata storage | impl | YES | `SchemaMigration` engine stores and diffs schema snapshots |
+| 142 | Add `query` keyword to lexer | impl | YES | `query` keyword token |
+| 143 | Add `insert` keyword to lexer | impl | YES | `insert` keyword token |
+| 144 | Add `update` keyword to lexer | impl | YES | `update` keyword token |
+| 145 | Add `delete` keyword to lexer | impl | YES | `delete` keyword token |
+| 146 | Parse `query T |> where { } |> order_by { } |> limit()` | impl | YES | Full query pipeline with `QueryExpression` AST node |
+| 147 | Parse `insert T { field: value }` | impl | YES | `InsertExpression` AST node |
+| 148 | Parse `update T |> where { } |> set { }` | impl | YES | `UpdateExpression` AST node |
+| 149 | Parse `delete T |> where { }` | impl | YES | `DeleteExpression` AST node |
+| 150 | Compile-time field validation | impl | PARTIAL | Query field references parsed; full compile-time field existence checking pending |
+| 151 | SQL generation backend | impl | YES | `SQLGen` translates query AST to parameterized SQL (SELECT/INSERT/UPDATE/DELETE, CREATE TABLE) |
+| 152 | Implement database runtime library | impl | YES | `blang_db` library with connection, query, result APIs; optional SQLite backend |
+| 153 | Support `@db("name")` annotation for named connections | impl | PARTIAL | Annotation parsing works; runtime multi-database dispatch pending |
+| 154 | Add pass tests for queries | test | YES | table_struct.b, query_basic.b, query_insert.b, query_update.b, query_delete.b, query_join.b |
+| 155 | Add fail tests for queries | test | YES | query_missing_table.b, insert_missing_brace.b, table_missing_struct.b |
 | 156 | Add end-to-end test with SQLite | test | — | Parse → SQL → execute against real database |
-| 157 | Document query system | docs | — | Update CLAUDE.md |
+| 157 | Document query system | docs | YES | Documented in CLAUDE.md |
 
 ### 3.3 Automatic Migrations
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 158 | Implement schema snapshot storage | impl | — | Compiler persists known schema state (JSON or binary in `.blang/` dir) |
-| 159 | Implement schema diff engine | impl | — | Compare current table structs against stored snapshot |
-| 160 | Generate `CREATE TABLE` for new tables | impl | — | Initial migration from nothing |
-| 161 | Generate `ALTER TABLE ADD COLUMN` for new fields | impl | — | Additive migration |
-| 162 | Detect and flag destructive changes | impl | — | Dropping columns/tables requires `@drop` annotation |
-| 163 | Implement `blang migrate --preview` | impl | — | Show pending migration SQL without applying |
-| 164 | Implement `blang migrate --apply` | impl | — | Execute migration against configured database |
-| 165 | Implement `blang migrate --generate` | impl | — | Write migration SQL to file for CI review |
-| 166 | Add `@drop` annotation for confirmed removals | impl | — | `@drop string old_field;` permits column removal |
-| 167 | Add tests for migration generation | test | — | Add field, add table, remove with @drop, rename detection |
-| 168 | Document migration system | docs | — | Update CLAUDE.md |
+| 158 | Implement schema snapshot storage | impl | YES | `SchemaMigration` persists schema state in `.blang/` directory |
+| 159 | Implement schema diff engine | impl | YES | Compares current table structs against stored snapshot |
+| 160 | Generate `CREATE TABLE` for new tables | impl | YES | `SchemaMigration` generates CREATE TABLE SQL |
+| 161 | Generate `ALTER TABLE ADD COLUMN` for new fields | impl | YES | `SchemaMigration` generates ALTER TABLE ADD COLUMN |
+| 162 | Detect and flag destructive changes | impl | PARTIAL | Detection implemented; `@drop` annotation enforcement pending |
+| 163 | Implement `blang migrate --preview` | impl | YES | `bcc migrate --preview` shows pending SQL |
+| 164 | Implement `blang migrate --apply` | impl | YES | `bcc migrate --apply` executes migrations |
+| 165 | Implement `blang migrate --generate` | impl | YES | `bcc migrate --generate` writes SQL to file |
+| 166 | Add `@drop` annotation for confirmed removals | impl | — | Not yet implemented |
+| 167 | Add tests for migration generation | test | — | Pending |
+| 168 | Document migration system | docs | YES | Documented in CLAUDE.md |
 
 ### 3.4 Serialization Annotations
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 169 | Add `@` annotation syntax to lexer/parser | impl | — | General-purpose annotation parsing (`@name` before declarations) |
-| 170 | Implement `@json` annotation | impl | — | Generate `to_json()`/`from_json()` methods on annotated structs |
-| 171 | Implement JSON serializer in standard library | impl | — | Runtime JSON encoding/decoding |
+| 169 | Add `@` annotation syntax to lexer/parser | impl | YES | `@name` and `@name("arg")` parsed before declarations |
+| 170 | Implement `@json` annotation | impl | YES | Generates `StructName_to_json`/`StructName_from_json` functions; supports all primitive types and nested `@json` structs; tested in codegen_json*.b |
+| 171 | Implement JSON serializer in standard library | impl | YES | `blang_json` runtime library with `blang_json_encode`/`blang_json_decode` |
 | 172 | Implement `@msgpack` annotation | impl | — | Generate msgpack serialization methods |
 | 173 | Implement `@csv` annotation | impl | — | Generate CSV serialization methods |
-| 174 | Add pass tests for @json | test | — | Serialize/deserialize structs, nested structs, lists |
-| 175 | Add fail tests for serialization | test | — | Malformed JSON input returns `Result::err` |
-| 176 | Document serialization | docs | — | Update CLAUDE.md |
+| 174 | Add pass tests for @json | test | YES | annotation_json.b, codegen_json.b, codegen_json_nested.b, codegen_json_roundtrip.b, codegen_json_types.b |
+| 175 | Add fail tests for serialization | test | YES | cgfail/json_unsupported_field.b, fail/json_generic_struct.b |
+| 176 | Document serialization | docs | YES | Documented in CLAUDE.md |
 
 ### 3.5 gRPC and Protocol Buffers
 
@@ -341,7 +330,7 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 198 | Implement `blang.toml` project configuration | impl | — | Parse TOML config for database URL, driver, build options |
+| 198 | Implement `blang.toml` project configuration | impl | YES | `ProjectConfig` class parses blang.toml for project metadata, type (bin/lib), and dependencies |
 | 199 | Implement Postgres driver in stdlib | impl | — | libpq-based or native protocol |
 | 200 | Implement SQLite driver in stdlib | impl | — | For local development and testing |
 | 201 | Implement connection pooling | impl | — | Shared connection pool with configurable size |
@@ -360,7 +349,7 @@ These tasks span multiple phases and should be addressed incrementally.
 |---|------|------|------|-------------|
 | 204 | Keep CLAUDE.md in sync with implementation | docs | YES | CLAUDE.md is comprehensive and current |
 | 205 | Keep language_design.md implementation status current | docs | PARTIAL | CLAUDE.md is more current; language_design.md needs update |
-| 206 | Add examples/ directory | docs | — | No examples/ directory yet |
+| 206 | Add examples/ directory | docs | YES | demos/ directory with example programs |
 | 207 | Write tutorial: "Your first BLang program" | docs | — | |
 | 208 | Write tutorial: "BLang for Rust developers" | docs | — | |
 
@@ -369,8 +358,8 @@ These tasks span multiple phases and should be addressed incrementally.
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
 | 209 | Add `--verbose` output to `run_tests.sh` showing compiler stderr | test | YES | `--verbose` flag shows stderr on failure |
-| 210 | Add codegen-specific tests (require LLVM) | test | PARTIAL | `test_codegen.sh` exists; no LLVM-conditional category in run_tests.sh |
-| 211 | Add end-to-end execution tests | test | — | run_tests.sh only checks qcc exit codes, not compiled output |
+| 210 | Add codegen-specific tests (require LLVM) | test | YES | `test_codegen.sh` with 36 E2E tests; cgfail/ category in run_tests.sh |
+| 211 | Add end-to-end execution tests | test | YES | `test_codegen.sh` runs full pipeline (parse → IR → compile → link → run) and checks exit codes |
 | 212 | Add regression test for each bug fix | test | — | No systematic regression test policy |
 | 213 | Implement test timeout handling | test | YES | `timeout 10` in run_tests.sh |
 
@@ -385,25 +374,96 @@ These tasks span multiple phases and should be addressed incrementally.
 
 ---
 
+## Phase 4 — Build System and Dependencies
+
+### 4.1 AST Prerequisites for .bmod Emission
+
+| # | Task | Type | Done | Description |
+|---|------|------|------|-------------|
+| 218 | Add `isPublic` to `EnumDefinition` | impl | YES | `mIsPublic` flag and `isPublic()` getter, `isPublic` param on `Parse()` |
+| 219 | Add `isPublic` to `ProtocolDefinition` | impl | YES | `mIsPublic` flag and `isPublic()` getter, `isPublic` param on `Parse()` |
+| 220 | Pass `isPublic` from Module::Parse | impl | YES | `pub enum` and `pub protocol` now correctly set visibility |
+| 221 | Add `mProtocolList` to Module | impl | YES | Protocols stored on Module; `getProtocolList()` getter added |
+| 222 | Add public getters to Module | impl | YES | `getFunctionList()`, `getImports()`, `getStructList()`, `getEnumList()`, `getProtocolList()` |
+| 223 | Add `mIsExtern` to Module | impl | YES | `isExtern()`/`setExtern()` to mark .bmod-loaded modules as extern-only |
+
+### 4.2 .bmod Interface File Emission
+
+| # | Task | Type | Done | Description |
+|---|------|------|------|-------------|
+| 224 | Create `BmodEmitter` class | impl | YES | `BmodEmitter.h/cpp` — walks Module AST, emits only `pub` symbols in BLang syntax |
+| 225 | Emit pub functions as signature-only | impl | YES | `pub fn name(type param, ...) -> rettype;` (no body) |
+| 226 | Emit pub structs with full fields | impl | YES | `pub struct Name { fields }` with annotations and generics |
+| 227 | Emit pub enums with full variants | impl | YES | `pub enum Name { variants }` with associated types |
+| 228 | Emit pub protocols with method sigs | impl | YES | `pub protocol Name { fn method(...) -> type; }` |
+| 229 | Preserve annotations on emission | impl | YES | `@json`, `@db("name")` etc. preserved in .bmod output |
+| 230 | Add `--emit-bmod <file>` flag to qcc | impl | YES | Runs after parsing, emits .bmod file |
+
+### 4.3 .bmod Consumption
+
+| # | Task | Type | Done | Description |
+|---|------|------|------|-------------|
+| 231 | Detect `.bmod` extension in qcc | impl | YES | .bmod files parsed first in two-phase parsing |
+| 232 | Mark .bmod modules as extern-only | impl | YES | Module `setExtern(true)` for .bmod-loaded modules |
+| 233 | Skip codegen for extern modules | impl | YES | Extern modules provide types only, no IR generated |
+| 234 | Flat-merge pub symbols into scope | impl | YES | All pub symbols from .bmod injected into global scope; `import mathlib;` resolves by name |
+| 235 | Auto-declare extern functions from .bmod | impl | YES | Functions marked extern via `setFunctionExtern(true)`; auto-declared in LLVM module on first use |
+
+### 4.4 blang.toml and `bcc build`
+
+| # | Task | Type | Done | Description |
+|---|------|------|------|-------------|
+| 236 | Create minimal TOML parser | impl | YES | `ProjectConfig.cpp` — handles `[section]`, `key = "value"`, inline tables, comments |
+| 237 | Create `ProjectConfig` class | impl | YES | `ProjectConfig.h/cpp` — parses blang.toml into name, version, type, dependencies |
+| 238 | Add `bcc build` subcommand | impl | YES | Discovers blang.toml, auto-discovers .b sources, builds lib (.a+.bmod) or bin (executable) |
+| 239 | Add `bcc clean` subcommand | impl | YES | Removes `~/.cache/blang/` build cache directory |
+
+### 4.5 Dependency Resolution
+
+| # | Task | Type | Done | Description |
+|---|------|------|------|-------------|
+| 240 | Implement dependency graph traversal | impl | YES | Topological sort of deps from blang.toml |
+| 241 | Recursive dependency building | impl | YES | Each dep built recursively; .bmod and .a collected |
+| 242 | Pass dep .bmod files to qcc | impl | YES | Dependency .bmod files passed as additional input |
+| 243 | Pass dep .a files to linker | impl | YES | Dependency .a files linked into final binary |
+| 244 | Detect circular dependencies | impl | YES | Error with clear message on circular dep chains |
+
+### 4.6 Content-Addressable Build Cache
+
+| # | Task | Type | Done | Description |
+|---|------|------|------|-------------|
+| 245 | Bundle standalone SHA-256 | impl | YES | `sha256.h/c` — public domain C implementation |
+| 246 | Create `BuildCache` class | impl | YES | `BuildCache.h/cpp` — `computeKey()`, `lookup()`, `store()`, `clean()` |
+| 247 | Hash-based cache key computation | impl | YES | SHA-256 of source files + blang.toml + dep hashes |
+| 248 | Cache lookup and store | impl | YES | `~/.cache/blang/objects/<hash>/` with .a and .bmod artifacts |
+| 249 | Integrate cache into `bcc build` | impl | YES | Cache checked before building each dependency; second build skips unchanged deps |
+| 250 | Add `test_build/` integration test | test | YES | mathlib (lib) + myapp (bin) project pair; verifies full bcc build flow |
+
+---
+
 ## Summary
 
-| Phase | Tasks | Focus | Done | Partial | Remaining |
-|-------|-------|-------|------|---------|-----------|
-| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 66 | 3 | 8 |
-| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | ~36 | ~5 | ~16 |
-| Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 0 | 0 | 70 |
-| Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 6 | 4 | 4 |
-| **Total** | **217** | | **~108** | **~12** | **~98** |
+| Phase | Tasks | Focus | Done | Partial | Deferred | Remaining |
+|-------|-------|-------|------|---------|----------|-----------|
+| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 74 | 0 | 2 | 0 |
+| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 47 | 4 | 0 | 6 |
+| Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 36 | 3 | 0 | 31 |
+| Phase 4 | 218–250 | Build system: .bmod, blang.toml, deps, cache | 33 | 0 | 0 | 0 |
+| Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 9 | 3 | 0 | 2 |
+| **Total** | **250** | | **199** | **10** | **2** | **39** |
 
-### Recommended Execution Order within Phase 1
+### Phase 1 Complete
 
-The most impactful first steps (unblock the most downstream work):
+All Phase 1 tasks are done or explicitly deferred:
+- **Task 47/48** (built-in Result/Option): Deferred — user-defined enums work correctly as Result/Option types. Built-in treatment will be added when generic monomorphization matures.
+- **Task 63** (visibility checking): Deferred — requires cross-module name resolution which depends on multi-module function linking (not just type sharing).
 
-1. **Tasks 9–11**: Housekeeping — move fixed xfails to pass, fix last extern issue
-2. **Tasks 1–8**: `fn` syntax transition — establishes BLang identity
-3. **Tasks 17–30**: Structs + impl — required by everything else (protocols, generics, Result, queries)
-4. **Tasks 47–57**: Result/Option + match + `?` — unlocks error handling throughout
-5. **Tasks 31–38**: Protocols — needed for generics constraints and serialization
-6. **Tasks 39–46**: Generics — needed for `List<T>`, `Result<T,E>`, etc.
-7. **Tasks 58–70**: Modules — needed once we have multi-file programs
-8. **Tasks 71–76**: Tooling — CI, file extension, CLI flags
+### Phase 4 Complete
+
+All Phase 4 tasks are done:
+- **blang.toml** project manifest with `[project]` (name, version, type) and `[deps]` (local path dependencies)
+- **.bmod interface files** emitted via `qcc --emit-bmod` and consumed via two-phase parsing with flat symbol merge
+- **`bcc build`** recursively builds dependency graph, produces .a+.bmod for libraries and executables for binaries
+- **`bcc clean`** removes the build cache
+- **Content-addressable cache** at `~/.cache/blang/objects/<hash>/` skips rebuilding unchanged dependencies
+- **Integration test** in `test_build/` verifies the full lib→bin build flow

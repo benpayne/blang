@@ -1,7 +1,6 @@
 // E2E test: spawn blocks running on real threads
 // Tests: spawn body executes on thread pool, main waits for completion
 
-extern fn printf(cstring fmt, ...) -> int;
 extern fn usleep(int usec) -> int;
 
 fn main() -> int {
@@ -23,6 +22,6 @@ fn main() -> int {
 
 	// Runtime shutdown (called automatically) waits for all spawned tasks
 
-	printf("Spawn threaded test completed!\n");
+	println("Spawn threaded test completed!");
 	return 0;
 }

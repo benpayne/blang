@@ -1,7 +1,5 @@
 // Demo 1: Fibonacci Sequence
-// Features: recursion, for-in range, if/else, string interpolation, printf
-
-extern fn printf(cstring fmt, ...) -> int;
+// Features: recursion, for-in range, if/else, string interpolation, print/println
 
 // Recursive fibonacci
 fn fib(int n) -> int {
@@ -29,25 +27,26 @@ fn fib_iter(int n) -> int {
 }
 
 fn main() -> int {
-	printf("=== Fibonacci Sequence ===\n\n");
+	println("=== Fibonacci Sequence ===");
+	println();
 
 	// Print first 20 fibonacci numbers using recursion
-	printf("Recursive fibonacci (0..20):\n");
+	println("Recursive fibonacci (0..20):");
 	for i in 0..20 {
 		int val = fib(i);
-		printf("  fib(%d) = %d\n", i, val);
+		println("  fib({}) = {}", i, val);
 	}
 
-	printf("\n");
+	println();
 
 	// Verify iterative matches recursive
-	printf("Verifying iterative matches recursive...\n");
+	println("Verifying iterative matches recursive...");
 	for i in 0..20 {
 		int r = fib(i);
 		int it = fib_iter(i);
 		assert r == it, "iterative should match recursive";
 	}
-	printf("  All 20 values match!\n");
+	println("  All 20 values match!");
 
 	// Some specific checks
 	assert fib(0) == 0;
@@ -55,6 +54,7 @@ fn main() -> int {
 	assert fib(10) == 55;
 	assert fib(15) == 610;
 
-	printf("\nFibonacci demo passed!\n");
+	println();
+	println("Fibonacci demo passed!");
 	return 0;
 }

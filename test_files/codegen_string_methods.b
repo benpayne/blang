@@ -1,11 +1,9 @@
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
     string hello = "Hello, World!";
 
     // Test length property
     int len = hello.length;
-    printf("length=%d\n", len);
+    println("length={}", len);
     if len != 13 {
         return 1;
     }
@@ -41,31 +39,31 @@ fn main() -> int {
 
     // Test index_of
     int idx = hello.index_of("World");
-    printf("index_of=%d\n", idx);
+    println("index_of={}", idx);
     if idx != 7 {
         return 7;
     }
 
     // Test to_upper
     string upper = hello.to_upper();
-    printf("upper=%s\n", upper);
+    println("upper={}", upper);
 
     // Test to_lower
     string lower = hello.to_lower();
-    printf("lower=%s\n", lower);
+    println("lower={}", lower);
 
     // Test trim
     string padded = "  hi  ";
     string trimmed = padded.trim();
-    printf("trimmed='%s'\n", trimmed);
+    println("trimmed='{}'", trimmed);
 
     // Test substring
     string sub = hello.substring(0, 5);
-    printf("sub='%s'\n", sub);
+    println("sub='{}'", sub);
 
     // Test replace
     string replaced = hello.replace("World", "BLang");
-    printf("replaced='%s'\n", replaced);
+    println("replaced='{}'", replaced);
 
     return 0;
 }

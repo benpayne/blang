@@ -1,8 +1,6 @@
 // E2E test: ownership qualifiers with ARC runtime
 // Tests: own, shared, sync variable declarations and access
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
 	// own: single owner, stack allocated (move semantics)
 	own int a = 10;
@@ -21,6 +19,6 @@ fn main() -> int {
 	assert a == 10, "own variable should be 10";
 	assert d == 40, "value variable should be 40";
 
-	printf("Ownership codegen test passed!\n");
+	println("Ownership codegen test passed!");
 	return 0;
 }

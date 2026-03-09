@@ -1,8 +1,6 @@
 // E2E test: shared variable readable in spawn with RC retain/release
 // Tests: shared var captured in spawn, RC properly retained across threads
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
 	shared int value = 42;
 
@@ -11,6 +9,6 @@ fn main() -> int {
 		int local = value;
 	}
 
-	printf("Shared spawn codegen test passed!\n");
+	println("Shared spawn codegen test passed!");
 	return 0;
 }

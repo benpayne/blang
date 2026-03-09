@@ -1,7 +1,5 @@
 // Demo 3: Collatz Conjecture
-// Features: while loops, if/else, contracts (requires), assert, printf
-
-extern fn printf(cstring fmt, ...) -> int;
+// Features: while loops, if/else, contracts (requires), assert, print/println
 
 // Compute the Collatz sequence length for a starting number.
 // The conjecture says every positive integer eventually reaches 1.
@@ -36,16 +34,17 @@ fn longest_collatz(int from, int to) -> int requires from > 0 {
 }
 
 fn main() -> int {
-	printf("=== Collatz Conjecture ===\n\n");
+	println("=== Collatz Conjecture ===");
+	println();
 
 	// Show the sequence for a few starting values
-	printf("Collatz sequence lengths:\n");
+	println("Collatz sequence lengths:");
 	for i in 1..21 {
 		int steps = collatz_steps(i);
-		printf("  collatz(%d) = %d steps\n", i, steps);
+		println("  collatz({}) = {} steps", i, steps);
 	}
 
-	printf("\n");
+	println();
 
 	// Known values
 	assert collatz_steps(1) == 0;
@@ -55,27 +54,29 @@ fn main() -> int {
 	assert collatz_steps(7) == 16;
 	assert collatz_steps(27) == 111;
 
-	printf("Known values verified.\n\n");
+	println("Known values verified.");
+	println();
 
 	// Find the number with the longest sequence in 1..100
 	int winner = longest_collatz(1, 100);
 	int winner_steps = collatz_steps(winner);
-	printf("Longest Collatz sequence in 1..100:\n");
-	printf("  n = %d with %d steps\n", winner, winner_steps);
+	println("Longest Collatz sequence in 1..100:");
+	println("  n = {} with {} steps", winner, winner_steps);
 
 	// 97 has the longest sequence in 1..100 (118 steps)
 	assert winner == 97;
 	assert winner_steps == 118;
 
 	// Trace the full sequence for n=27 (a famously long one)
-	printf("\nFull sequence for n=27 (%d steps):\n  ", collatz_steps(27));
+	println();
+	print("Full sequence for n=27 ({} steps):\n  ", collatz_steps(27));
 	int current = 27;
 	int printed = 0;
 	while current != 1 {
-		printf("%d -> ", current);
+		print("{} -> ", current);
 		printed = printed + 1;
 		if printed % 8 == 0 {
-			printf("\n  ");
+			print("\n  ");
 		}
 		if current % 2 == 0 {
 			current = current / 2;
@@ -83,8 +84,9 @@ fn main() -> int {
 			current = current * 3 + 1;
 		}
 	}
-	printf("1\n");
+	println("1");
 
-	printf("\nCollatz conjecture demo passed!\n");
+	println();
+	println("Collatz conjecture demo passed!");
 	return 0;
 }

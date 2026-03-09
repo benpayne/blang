@@ -1,9 +1,6 @@
 // Demo 9: Enum State Machine — Traffic Light
 // Features: enums with payloads, match expressions, while loop, state transitions
 
-extern fn printf(cstring fmt, ...) -> int;
-extern fn puts(cstring s) -> int;
-
 // Traffic light states with duration (in seconds)
 enum Light {
 	red(int),
@@ -51,26 +48,27 @@ fn light_duration(Light l) -> int {
 }
 
 fn main() -> int {
-	printf("=== Traffic Light State Machine ===\n\n");
+	println("=== Traffic Light State Machine ===");
+	println();
 
 	// Start at red
 	Light state = Light.red(30);
-	printf("Initial state: %s (%d sec)\n\n", light_name(state).to_cstring(), light_duration(state));
+	println("Initial state: {} ({} sec)", light_name(state), light_duration(state));
+	println();
 
 	// Run through 9 transitions (3 full cycles)
-	printf("State transitions:\n");
+	println("State transitions:");
 	int total_time = light_duration(state);
 	for cycle in 0..9 {
 		Light prev = state;
 		state = next_light(state);
 		int dur = light_duration(state);
 		total_time = total_time + dur;
-		printf("  %s (%d sec) -> %s (%d sec)\n",
-			light_name(prev).to_cstring(), light_duration(prev),
-			light_name(state).to_cstring(), dur);
+		println("  {} ({} sec) -> {} ({} sec)", light_name(prev), light_duration(prev), light_name(state), dur);
 	}
 
-	printf("\nTotal simulated time: %d seconds\n", total_time);
+	println();
+	println("Total simulated time: {} seconds", total_time);
 
 	// Verify the cycle: red -> green -> yellow -> red -> ...
 	// Starting at red(30), 9 transitions = 3 full cycles, back to red
@@ -84,8 +82,9 @@ fn main() -> int {
 	assert light_duration(check) == 30, "after yellow should be red(30)";
 
 	// One full cycle = 30 + 25 + 5 = 60 seconds
-	printf("One full cycle = 60 seconds (30 + 25 + 5)\n");
+	println("One full cycle = 60 seconds (30 + 25 + 5)");
 
-	printf("\nTraffic light demo passed!\n");
+	println();
+	println("Traffic light demo passed!");
 	return 0;
 }

@@ -518,3 +518,135 @@ BlangString *__blang_bool_to_string( bool value )
 	else
 		return __blang_string_create_static( "false", 5 );
 }
+
+/* ========================================================================
+   Formatted Conversion (with format specifier)
+   ======================================================================== */
+
+BlangString *__blang_int_to_string_fmt( int64_t value, const char *spec, int spec_len )
+{
+	char buf[128];
+	int len = 0;
+
+	if ( spec_len == 0 )
+		return __blang_int_to_string( value );
+
+	/* Parse the specifier: x, X, o, b */
+	char fmt_char = spec[spec_len - 1];
+	switch ( fmt_char )
+	{
+		case 'x':
+			len = snprintf( buf, sizeof( buf ), "%llx", (unsigned long long)value );
+			break;
+		case 'X':
+			len = snprintf( buf, sizeof( buf ), "%llX", (unsigned long long)value );
+			break;
+		case 'o':
+			len = snprintf( buf, sizeof( buf ), "%llo", (unsigned long long)value );
+			break;
+		case 'b':
+		{
+			/* Binary format */
+			uint64_t uval = (uint64_t)value;
+			if ( uval == 0 )
+			{
+				buf[0] = '0';
+				len = 1;
+			}
+			else
+			{
+				char tmp[65];
+				int pos = 0;
+				while ( uval > 0 && pos < 64 )
+				{
+					tmp[pos++] = ( uval & 1 ) ? '1' : '0';
+					uval >>= 1;
+				}
+				/* Reverse */
+				for ( int i = 0; i < pos; i++ )
+					buf[i] = tmp[pos - 1 - i];
+				len = pos;
+			}
+			buf[len] = '\0';
+			break;
+		}
+		default:
+			return __blang_int_to_string( value );
+	}
+
+	return __blang_string_create( buf, len );
+}
+
+BlangString *__blang_float_to_string_fmt( double value, const char *spec, int spec_len )
+{
+	char buf[128];
+	int len = 0;
+
+	if ( spec_len == 0 )
+		return __blang_float_to_string( value );
+
+	char fmt_char = spec[spec_len - 1];
+	if ( fmt_char == 'e' )
+	{
+		len = snprintf( buf, sizeof( buf ), "%e", value );
+	}
+	else if ( fmt_char == 'f' )
+	{
+		/* Parse precision: .Nf */
+		int precision = 6; /* default */
+		if ( spec_len >= 2 && spec[0] == '.' )
+		{
+			precision = 0;
+			for ( int i = 1; i < spec_len - 1; i++ )
+				precision = precision * 10 + ( spec[i] - '0' );
+		}
+		len = snprintf( buf, sizeof( buf ), "%.*f", precision, value );
+	}
+	else
+	{
+		return __blang_float_to_string( value );
+	}
+
+	return __blang_string_create( buf, len );
+}
+
+BlangString *__blang_char_to_string( int32_t c )
+{
+	char buf[5]; /* max 4 bytes for UTF-8 + null */
+	if ( c < 0x80 )
+	{
+		buf[0] = (char)c;
+		return __blang_string_create( buf, 1 );
+	}
+	/* Simple ASCII fallback for now */
+	buf[0] = (char)( c & 0x7F );
+	return __blang_string_create( buf, 1 );
+}
+
+/* ========================================================================
+   Output to stdout
+   ======================================================================== */
+
+void __blang_print( BlangString *s )
+{
+	if ( s == NULL || s->data == NULL )
+		return;
+	fwrite( s->data, 1, (size_t)s->length, stdout );
+}
+
+void __blang_print_cstr( const char *s )
+{
+	if ( s != NULL )
+		fputs( s, stdout );
+}
+
+void __blang_print_newline( void )
+{
+	fputc( '\n', stdout );
+	fflush( stdout );
+}
+
+void __blang_print_flush( void )
+{
+	fflush( stdout );
+}

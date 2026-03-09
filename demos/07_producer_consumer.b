@@ -1,13 +1,12 @@
 // Demo 7: Producer-Consumer with Spawn and Wait
 // Features: spawn returning Task, wait, wait_all, sync variables
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
-	printf("=== Producer-Consumer with Spawn and Wait ===\n\n");
+	println("=== Producer-Consumer with Spawn and Wait ===");
+	println();
 
 	// --- Part 1: wait on individual tasks ---
-	printf("Part 1: Individual task waiting\n");
+	println("Part 1: Individual task waiting");
 	sync int counter = 0;
 
 	Task t1 = spawn { counter += 10; };
@@ -19,15 +18,16 @@ fn main() -> int {
 	wait t2;
 	wait t3;
 
-	printf("  counter after 3 tasks: %d (expected 60)\n", counter);
+	println("  counter after 3 tasks: {} (expected 60)", counter);
 	assert counter == 60, "counter should be 60";
 
 	// --- Part 2: wait_all for a batch of fire-and-forget spawns ---
-	printf("\nPart 2: wait_all for batch processing\n");
+	println();
+	println("Part 2: wait_all for batch processing");
 	sync int total = 0;
 
 	// Spawn 10 producers, each adding their index
-	printf("  Spawning 10 producers...\n");
+	println("  Spawning 10 producers...");
 	spawn { total += 1; }
 	spawn { total += 2; }
 	spawn { total += 3; }
@@ -42,18 +42,20 @@ fn main() -> int {
 	// Wait for all to complete
 	wait_all;
 
-	printf("  total after 10 producers: %d (expected 55)\n", total);
+	println("  total after 10 producers: {} (expected 55)", total);
 	assert total == 55, "total should be 1+2+...+10 = 55";
 
 	// --- Part 3: spawn more after wait_all (pool stays alive) ---
-	printf("\nPart 3: Spawning after wait_all\n");
+	println();
+	println("Part 3: Spawning after wait_all");
 
 	Task t4 = spawn { total += 100; };
 	wait t4;
 
-	printf("  total after additional spawn: %d (expected 155)\n", total);
+	println("  total after additional spawn: {} (expected 155)", total);
 	assert total == 155, "total should be 155 after adding 100";
 
-	printf("\nProducer-consumer demo passed!\n");
+	println();
+	println("Producer-consumer demo passed!");
 	return 0;
 }

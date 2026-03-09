@@ -1,8 +1,6 @@
 // E2E test: break and continue statements in loops
 // Tests: break exits loop, continue skips to next iteration
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
 	// Test break in while loop
 	int i = 0;
@@ -47,6 +45,6 @@ fn main() -> int {
 	}
 	assert inf_count == 7, "break in infinite loop: should be 7";
 
-	printf("Break/continue codegen test passed!\n");
+	println("Break/continue codegen test passed!");
 	return 0;
 }

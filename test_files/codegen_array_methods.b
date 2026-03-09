@@ -1,11 +1,9 @@
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
     Array<int> nums = [10, 20, 30];
 
     // Test length property
     int len = nums.length;
-    printf("length=%d\n", len);
+    println("length={}", len);
     if len != 3 {
         return 1;
     }
@@ -19,20 +17,20 @@ fn main() -> int {
     // Test push
     nums.push(40);
     int len2 = nums.length;
-    printf("after push length=%d\n", len2);
+    println("after push length={}", len2);
     if len2 != 4 {
         return 3;
     }
 
     int fourth = nums[3];
-    printf("fourth=%d\n", fourth);
+    println("fourth={}", fourth);
     if fourth != 40 {
         return 4;
     }
 
     // Test pop
     int popped = nums.pop();
-    printf("popped=%d\n", popped);
+    println("popped={}", popped);
     if popped != 40 {
         return 5;
     }

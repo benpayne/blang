@@ -68,8 +68,19 @@ llvm::Type *CodeGen::getLLVMType( Type *type )
 	else if ( name == "Task" )
 		return llvm::PointerType::get( *mContext, 0 );
 
-	// Built-in Array<T> and carray types — opaque pointers
+	// Function type: {ptr fn_ptr, ptr ctx_ptr} callback pair
+	if ( type->isFunctionType() )
+	{
+		return llvm::StructType::get( *mContext, {
+			llvm::PointerType::get( *mContext, 0 ),
+			llvm::PointerType::get( *mContext, 0 )
+		} );
+	}
+
+	// Built-in Array<T>, Buffer, and carray types — opaque pointers
 	if ( name == "Array" )
+		return llvm::PointerType::get( *mContext, 0 );
+	if ( name == "Buffer" )
 		return llvm::PointerType::get( *mContext, 0 );
 	if ( name == "carray" )
 		return llvm::PointerType::get( *mContext, 0 );
@@ -83,28 +94,32 @@ llvm::Type *CodeGen::getLLVMType( Type *type )
 
 		std::string mangledName = mangleGenericName( name, typeArgs );
 
-		// Check if already instantiated
+		// Check if already instantiated — ensure layout is created
 		auto instIt = mGenericInstanceMap.find( mangledName );
 		if ( instIt != mGenericInstanceMap.end() )
-			return instIt->second;
+			return llvm::PointerType::get( *mContext, 0 );
 
 		// Look up the generic struct definition and instantiate
 		auto defIt = mStructDefMap.find( name );
 		if ( defIt != mStructDefMap.end() && defIt->second->isGeneric() )
 		{
-			return instantiateGenericStruct( defIt->second, typeArgs );
+			instantiateGenericStruct( defIt->second, typeArgs );
+			return llvm::PointerType::get( *mContext, 0 );
 		}
 	}
 
-	// Check for known struct types
+	// Check for known struct types — return ptr (structs are heap-allocated)
 	auto structIt = mStructTypeMap.find( name );
 	if ( structIt != mStructTypeMap.end() )
-		return structIt->second;
+		return llvm::PointerType::get( *mContext, 0 );
 
 	// Look up struct definitions registered during generate()
 	auto defIt = mStructDefMap.find( name );
 	if ( defIt != mStructDefMap.end() )
-		return getOrCreateStructType( defIt->second );
+	{
+		getOrCreateStructType( defIt->second );
+		return llvm::PointerType::get( *mContext, 0 );
+	}
 
 	// Check for known enum types
 	auto enumIt = mEnumDefMap.find( name );
@@ -246,6 +261,146 @@ llvm::StructType *CodeGen::instantiateGenericStruct(
 	// Register the generic def under the mangled name so field lookups work
 	mStructDefMap[mangledName] = genericDef;
 
+	// Monomorphize methods for this generic struct instantiation
+	// The substitution map is still active, so type params resolve correctly
+	for ( auto &method : genericDef->mMethods )
+	{
+		// Build mangled method name: e.g. Box_int_get
+		string methodMangledName = mangledName + "_" + method->getName();
+
+		// Check if already generated
+		if ( mModule->getFunction( methodMangledName ) != nullptr )
+			continue;
+
+		// Build concrete method type with substituted types
+		llvm::Type *retType = getLLVMType( method->mReturnType );
+		std::vector<llvm::Type*> paramTypes;
+		for ( auto &param : method->mParameters )
+		{
+			if ( param->getVariableType() != nullptr &&
+				 param->getVariableType()->getName() == "self" )
+			{
+				// self parameter is passed as opaque pointer
+				paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) );
+			}
+			else
+			{
+				paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+			}
+		}
+
+		llvm::FunctionType *ft = llvm::FunctionType::get(
+			retType, paramTypes, method->isVariadic() );
+		llvm::Function *llvmFunc = llvm::Function::Create(
+			ft, llvm::Function::ExternalLinkage, methodMangledName, mModule.get() );
+
+		mGenericFunctionMap[methodMangledName] = llvmFunc;
+
+		// Name parameters
+		unsigned idx = 0;
+		for ( auto &arg : llvmFunc->args() )
+		{
+			arg.setName( method->mParameters[idx]->getName() );
+			idx++;
+		}
+
+		// Save and restore builder insert point
+		llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+		llvm::BasicBlock::iterator savedPt;
+		bool hadInsertPoint = ( savedBB != nullptr );
+		if ( hadInsertPoint )
+			savedPt = mBuilder->GetInsertPoint();
+
+		// Save and restore variable map and scope stacks
+		auto savedVarMap = mVariableMap;
+		auto savedCurrentFunc = mCurrentFunction;
+		auto savedResultAlloca = mResultAlloca;
+		auto savedArcStack = mArcScopeStack;
+		auto savedStringStack = mStringScopeStack;
+		auto savedArrayStack = mArrayScopeStack;
+		auto savedBufferStack = mBufferScopeStack;
+		auto savedLambdaStack = mLambdaScopeStack;
+		auto savedStructStack = mStructScopeStack;
+		auto savedEnumStack = mEnumScopeStack;
+		auto savedTempStrings = mTempStrings;
+		auto savedTempLambdaCtxs = mTempLambdaCtxs;
+		auto savedSelfStructMap = mSelfStructMap;
+		auto savedSelfMangledName = mSelfStructMangledName;
+
+		mCurrentFunction = method;
+		mResultAlloca = nullptr;
+		mArcScopeStack.clear();
+		mStringScopeStack.clear();
+		mArrayScopeStack.clear();
+		mBufferScopeStack.clear();
+		mLambdaScopeStack.clear();
+		mStructScopeStack.clear();
+		mEnumScopeStack.clear();
+		mTempStrings.clear();
+		mTempLambdaCtxs.clear();
+
+		// Create entry block and generate body
+		llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+			*mContext, "entry", llvmFunc );
+		mBuilder->SetInsertPoint( entryBB );
+
+		// Record self → struct mapping for field access
+		for ( auto &param : method->mParameters )
+		{
+			if ( param->getVariableType() &&
+				 param->getVariableType()->getName() == "self" )
+			{
+				mSelfStructMap[param] = genericDef;
+				mSelfStructMangledName[param] = mangledName;
+			}
+		}
+
+		// Create parameter allocas
+		idx = 0;
+		for ( auto &arg : llvmFunc->args() )
+		{
+			VariableDefinition *paramDef = method->mParameters[idx];
+			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+				arg.getType(), nullptr, paramDef->getName() );
+			mBuilder->CreateStore( &arg, alloca );
+			mVariableMap[paramDef] = alloca;
+			idx++;
+		}
+
+		// Generate method body
+		if ( method->mFuncBody != nullptr )
+			genBlock( method->mFuncBody );
+
+		// Add implicit return
+		llvm::BasicBlock *currentBB = mBuilder->GetInsertBlock();
+		if ( currentBB->getTerminator() == nullptr )
+		{
+			if ( retType->isVoidTy() )
+				mBuilder->CreateRetVoid();
+			else
+				mBuilder->CreateRet( llvm::Constant::getNullValue( retType ) );
+		}
+
+		// Restore state
+		mVariableMap = savedVarMap;
+		mCurrentFunction = savedCurrentFunc;
+		mResultAlloca = savedResultAlloca;
+		mArcScopeStack = savedArcStack;
+		mStringScopeStack = savedStringStack;
+		mArrayScopeStack = savedArrayStack;
+		mBufferScopeStack = savedBufferStack;
+		mLambdaScopeStack = savedLambdaStack;
+		mStructScopeStack = savedStructStack;
+		mEnumScopeStack = savedEnumStack;
+		mTempStrings = savedTempStrings;
+		mTempLambdaCtxs = savedTempLambdaCtxs;
+		mSelfStructMap = savedSelfStructMap;
+		mSelfStructMangledName = savedSelfMangledName;
+
+		if ( hadInsertPoint )
+			mBuilder->SetInsertPoint( savedBB, savedPt );
+	}
+
 	// Restore substitution map
 	mTypeSubstitution = savedSub;
 
@@ -315,12 +470,24 @@ llvm::Function *CodeGen::instantiateGenericFunction(
 	auto savedArcStack = mArcScopeStack;
 	auto savedStringStack = mStringScopeStack;
 	auto savedArrayStack = mArrayScopeStack;
+	auto savedBufferStack = mBufferScopeStack;
+	auto savedLambdaStack = mLambdaScopeStack;
+	auto savedStructStack = mStructScopeStack;
+	auto savedEnumStack = mEnumScopeStack;
+	auto savedTempStrings = mTempStrings;
+	auto savedTempLambdaCtxs = mTempLambdaCtxs;
 
 	mCurrentFunction = genericDef;
 	mResultAlloca = nullptr;
 	mArcScopeStack.clear();
 	mStringScopeStack.clear();
 	mArrayScopeStack.clear();
+	mBufferScopeStack.clear();
+	mLambdaScopeStack.clear();
+	mStructScopeStack.clear();
+	mEnumScopeStack.clear();
+	mTempStrings.clear();
+	mTempLambdaCtxs.clear();
 
 	// Create allocas for parameters
 	idx = 0;
@@ -355,6 +522,12 @@ llvm::Function *CodeGen::instantiateGenericFunction(
 	mArcScopeStack = savedArcStack;
 	mStringScopeStack = savedStringStack;
 	mArrayScopeStack = savedArrayStack;
+	mBufferScopeStack = savedBufferStack;
+	mLambdaScopeStack = savedLambdaStack;
+	mStructScopeStack = savedStructStack;
+	mEnumScopeStack = savedEnumStack;
+	mTempStrings = savedTempStrings;
+	mTempLambdaCtxs = savedTempLambdaCtxs;
 	mTypeSubstitution = savedSub;
 
 	if ( hadInsertPoint )
@@ -383,9 +556,62 @@ bool CodeGen::generate( Module *mod )
 		mEnumDefMap[enumDef->getName()] = enumDef;
 	}
 
+	// Forward-declare all module-level functions so that methods/lambdas
+	// can reference them before they are fully generated below.
+	for ( auto &func : mod->mFunctionList )
+	{
+		if ( func->isGeneric() )
+			continue;
+
+		// Build LLVM function type — must expand fn-typed params into
+		// (fn_ptr, ctx_ptr) pairs, matching genFunction's ABI.
+		llvm::Type *retType = getLLVMType( func->mReturnType );
+		std::vector<llvm::Type*> paramTypes;
+		for ( auto &param : func->mParameters )
+		{
+			if ( param->getVariableType()->isFunctionType() )
+			{
+				paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) );
+				paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) );
+			}
+			else
+			{
+				paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+			}
+		}
+
+		bool isMainFunc = ( func->getName() == "main" );
+		if ( isMainFunc && paramTypes.empty() )
+		{
+			paramTypes.push_back( llvm::Type::getInt32Ty( *mContext ) );
+			paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) );
+		}
+
+		llvm::FunctionType *ft = llvm::FunctionType::get(
+			retType, paramTypes, func->isVariadic() );
+
+		std::string llvmFuncName = func->getName();
+		if ( !mModulePrefix.empty() && !isMainFunc && !func->isExtern() )
+			llvmFuncName = mModulePrefix + "__" + func->getName();
+
+		llvm::Function *llvmFunc = mModule->getFunction( llvmFuncName );
+		if ( llvmFunc == nullptr )
+		{
+			llvmFunc = llvm::Function::Create(
+				ft, llvm::Function::ExternalLinkage, llvmFuncName, mModule.get() );
+		}
+
+		mFunctionMap[func] = llvmFunc;
+	}
+
 	// Generate methods from impl blocks as regular LLVM functions
 	for ( auto &structDef : mod->mStructList )
 	{
+		// Skip generic structs — their methods are monomorphized
+		// lazily during instantiateGenericStruct()
+		if ( structDef->isGeneric() )
+			continue;
+
 		for ( auto &method : structDef->mMethods )
 		{
 			// Skip generic methods
@@ -393,18 +619,24 @@ bool CodeGen::generate( Module *mod )
 				continue;
 
 			// Generate the method with a mangled name: StructName_methodName
-			string mangledName = structDef->getName() + "_" + method->getName();
+			// Apply module prefix if set (e.g. "net__Socket_read")
+			string mangledName;
+			if ( !mModulePrefix.empty() )
+				mangledName = mModulePrefix + "__" + structDef->getName() + "_" + method->getName();
+			else
+				mangledName = structDef->getName() + "_" + method->getName();
 
 			// Build the function type
 			llvm::Type *retType = getLLVMType( method->mReturnType );
 			std::vector<llvm::Type*> paramTypes;
 			for ( auto &param : method->mParameters )
 			{
-				// Handle 'self' parameter — use the struct type
+				// Handle 'self' parameter — pass as pointer to struct
 				if ( param->getVariableType() != nullptr &&
 					 param->getVariableType()->getName() == "self" )
 				{
-					paramTypes.push_back( getOrCreateStructType( structDef ) );
+					paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) );
+					mSelfStructMap[param] = structDef;
 				}
 				else
 				{
@@ -414,8 +646,14 @@ bool CodeGen::generate( Module *mod )
 
 			llvm::FunctionType *ft = llvm::FunctionType::get(
 				retType, paramTypes, method->isVariadic() );
-			llvm::Function *llvmFunc = llvm::Function::Create(
-				ft, llvm::Function::ExternalLinkage, mangledName, mModule.get() );
+
+			// Reuse existing function if already declared (combine mode)
+			llvm::Function *llvmFunc = mModule->getFunction( mangledName );
+			if ( llvmFunc == nullptr )
+			{
+				llvmFunc = llvm::Function::Create(
+					ft, llvm::Function::ExternalLinkage, mangledName, mModule.get() );
+			}
 
 			mFunctionMap[method] = llvmFunc;
 
@@ -523,6 +761,29 @@ bool CodeGen::generate( Module *mod )
 	return true;
 }
 
+void CodeGen::registerExternalTypes(
+	const std::vector<SmartPtr<StructDefinition>> &structs,
+	const std::vector<SmartPtr<EnumDefinition>> &enums )
+{
+	for ( auto &structDef : structs )
+	{
+		StructDefinition *sd = const_cast<StructDefinition*>( (const StructDefinition*)structDef );
+		if ( mStructDefMap.find( sd->getName() ) == mStructDefMap.end() )
+		{
+			mStructDefMap[sd->getName()] = sd;
+			if ( !sd->isGeneric() )
+				getOrCreateStructType( sd );
+		}
+	}
+
+	for ( auto &enumDef : enums )
+	{
+		EnumDefinition *ed = const_cast<EnumDefinition*>( (const EnumDefinition*)enumDef );
+		if ( mEnumDefMap.find( ed->getName() ) == mEnumDefMap.end() )
+			mEnumDefMap[ed->getName()] = ed;
+	}
+}
+
 void CodeGen::print( llvm::raw_ostream &os )
 {
 	mModule->print( os, nullptr );
@@ -547,15 +808,57 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	// Build the function type
 	llvm::Type *retType = getLLVMType( func->mReturnType );
 
+	// Track which BLang params expand to two LLVM params (fn-typed callbacks)
+	std::vector<int> fnTypeParamIndices;
 	std::vector<llvm::Type*> paramTypes;
-	for ( auto &param : func->mParameters )
+	for ( int pi = 0; pi < (int)func->mParameters.size(); pi++ )
 	{
-		paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+		auto &param = func->mParameters[pi];
+		if ( param->getVariableType()->isFunctionType() )
+		{
+			// Expand to (fn_ptr, ctx_ptr) pair
+			paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) );
+			paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) );
+			fnTypeParamIndices.push_back( pi );
+		}
+		else
+		{
+			paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+		}
+	}
+
+	// For main(): override LLVM signature to main(i32 argc, i8** argv) so
+	// the C runtime receives command-line arguments for sys.args support.
+	bool isMainFunc = ( func->getName() == "main" );
+	if ( isMainFunc && paramTypes.empty() )
+	{
+		paramTypes.push_back( llvm::Type::getInt32Ty( *mContext ) );   // argc
+		paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) ); // argv
 	}
 
 	llvm::FunctionType *ft = llvm::FunctionType::get( retType, paramTypes, func->isVariadic() );
-	llvm::Function *llvmFunc = llvm::Function::Create(
-		ft, llvm::Function::ExternalLinkage, func->getName(), mModule.get() );
+
+	// Apply module prefix for namespace mangling (e.g. "sys" → "sys__funcName")
+	// Extern functions keep their original names (they reference C runtime symbols)
+	std::string llvmFuncName = func->getName();
+	if ( !mModulePrefix.empty() && !isMainFunc && !func->isExtern() )
+		llvmFuncName = mModulePrefix + "__" + func->getName();
+
+	// In combine mode, a function may already exist from a previous module.
+	// Reuse the existing declaration instead of creating a duplicate.
+	llvm::Function *llvmFunc = mModule->getFunction( llvmFuncName );
+	if ( llvmFunc == nullptr )
+	{
+		llvmFunc = llvm::Function::Create(
+			ft, llvm::Function::ExternalLinkage, llvmFuncName, mModule.get() );
+	}
+
+	// Name the argc/argv args for main
+	if ( isMainFunc && llvmFunc->arg_size() >= 2 )
+	{
+		llvmFunc->getArg( llvmFunc->arg_size() - 2 )->setName( "argc" );
+		llvmFunc->getArg( llvmFunc->arg_size() - 1 )->setName( "argv" );
+	}
 
 	// Store the mapping
 	mFunctionMap[func] = llvmFunc;
@@ -740,12 +1043,23 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		return llvmFunc;
 	}
 
-	// Name the parameters
-	unsigned idx = 0;
-	for ( auto &arg : llvmFunc->args() )
+	// Name the LLVM arguments (fn-type params expand to two args)
 	{
-		arg.setName( func->mParameters[idx]->getName() );
-		idx++;
+		unsigned llvmArgIdx = 0;
+		for ( int pi = 0; pi < (int)func->mParameters.size(); pi++ )
+		{
+			if ( func->mParameters[pi]->getVariableType()->isFunctionType() )
+			{
+				llvmFunc->getArg( llvmArgIdx )->setName( func->mParameters[pi]->getName() + ".fn" );
+				llvmFunc->getArg( llvmArgIdx + 1 )->setName( func->mParameters[pi]->getName() + ".ctx" );
+				llvmArgIdx += 2;
+			}
+			else
+			{
+				llvmFunc->getArg( llvmArgIdx )->setName( func->mParameters[pi]->getName() );
+				llvmArgIdx++;
+			}
+		}
 	}
 
 	// Create the entry basic block
@@ -758,15 +1072,64 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	mResultAlloca = nullptr;
 
 	// Create allocas for parameters and store the argument values
-	idx = 0;
-	for ( auto &arg : llvmFunc->args() )
+	// fn-type params: combine two LLVM args into a {ptr, ptr} alloca
 	{
-		VariableDefinition *paramDef = func->mParameters[idx];
-		llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
-			arg.getType(), nullptr, paramDef->getName() );
-		mBuilder->CreateStore( &arg, alloca );
-		mVariableMap[paramDef] = alloca;
-		idx++;
+		unsigned llvmArgIdx = 0;
+		for ( int pi = 0; pi < (int)func->mParameters.size(); pi++ )
+		{
+			VariableDefinition *paramDef = func->mParameters[pi];
+			if ( paramDef->getVariableType()->isFunctionType() )
+			{
+				llvm::Type *pairType = getLLVMType( paramDef->getVariableType() );
+				llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+					pairType, nullptr, paramDef->getName() );
+				llvm::Value *fnPtr = llvmFunc->getArg( llvmArgIdx );
+				llvm::Value *ctxPtr = llvmFunc->getArg( llvmArgIdx + 1 );
+				llvm::Value *pair = llvm::UndefValue::get( pairType );
+				pair = mBuilder->CreateInsertValue( pair, fnPtr, 0 );
+				pair = mBuilder->CreateInsertValue( pair, ctxPtr, 1 );
+				mBuilder->CreateStore( pair, alloca );
+				mVariableMap[paramDef] = alloca;
+				llvmArgIdx += 2;
+			}
+			else
+			{
+				llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+					llvmFunc->getArg( llvmArgIdx )->getType(), nullptr, paramDef->getName() );
+				mBuilder->CreateStore( llvmFunc->getArg( llvmArgIdx ), alloca );
+				mVariableMap[paramDef] = alloca;
+				llvmArgIdx++;
+			}
+		}
+	}
+
+	// Push a function-level scope for parameter tracking. This scope is
+	// released in genReturnStatement and popped after genBlock returns.
+	mStringScopeStack.push_back( {} );
+	mArrayScopeStack.push_back( {} );
+	mBufferScopeStack.push_back( {} );
+
+	// Track own-qualified refcounted parameters for release at function exit.
+	// own parameters transfer ownership to the function, which must release them.
+	for ( int pi = 0; pi < (int)func->mParameters.size(); pi++ )
+	{
+		VariableDefinition *paramDef = func->mParameters[pi];
+		if ( paramDef->getOwnership() != OwnershipQualifier::kOwnership_Own )
+			continue;
+		Type *pType = paramDef->getVariableType();
+		if ( pType == nullptr )
+			continue;
+		auto it = mVariableMap.find( paramDef );
+		if ( it == mVariableMap.end() )
+			continue;
+		llvm::AllocaInst *alloca = it->second;
+		string ptName = pType->getName();
+		if ( ptName == "string" && !mStringScopeStack.empty() )
+			mStringScopeStack.back().push_back( { alloca, paramDef } );
+		else if ( ptName == "Array" && !mArrayScopeStack.empty() )
+			mArrayScopeStack.back().push_back( { alloca, paramDef } );
+		else if ( ptName == "Buffer" && !mBufferScopeStack.empty() )
+			mBufferScopeStack.back().push_back( { alloca, paramDef } );
 	}
 
 	// If function has ensures clauses and a return value, create result alloca
@@ -809,14 +1172,24 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		genBlock( func->mFuncBody );
 	}
 
-	// Now that body is generated, inject runtime init if concurrency was discovered
-	if ( isMain && mUsesConcurrency && !concurrencyBefore )
+	// Inject init calls into main's entry block (before the branch to body)
+	if ( isMain )
 	{
-		// Insert the init call at the end of the entry block, before the branch
 		llvm::Instruction *brInst = initBB->getTerminator();
 		mBuilder->SetInsertPoint( brInst );
-		mBuilder->CreateCall( getOrDeclareRuntimeInit(),
-			{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
+
+		// Always capture argc/argv for sys.args
+		mBuilder->CreateCall( getOrDeclareSysInit(),
+			{ llvmFunc->getArg( llvmFunc->arg_size() - 2 ),
+			  llvmFunc->getArg( llvmFunc->arg_size() - 1 ) } );
+
+		// Runtime init only if concurrency features were discovered
+		if ( mUsesConcurrency && !concurrencyBefore )
+		{
+			mBuilder->CreateCall( getOrDeclareRuntimeInit(),
+				{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
+		}
+
 		// Restore insert point to after the body
 		llvm::BasicBlock *afterBody = &llvmFunc->back();
 		mBuilder->SetInsertPoint( afterBody );
@@ -852,6 +1225,11 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		}
 	}
 
+	// Pop function-level parameter scope
+	if ( !mStringScopeStack.empty() ) mStringScopeStack.pop_back();
+	if ( !mArrayScopeStack.empty() ) mArrayScopeStack.pop_back();
+	if ( !mBufferScopeStack.empty() ) mBufferScopeStack.pop_back();
+
 	// Clear function context
 	mCurrentFunction = nullptr;
 	mResultAlloca = nullptr;
@@ -867,6 +1245,10 @@ void CodeGen::genBlock( Block *block )
 	mArcScopeStack.push_back( {} );
 	mStringScopeStack.push_back( {} );
 	mArrayScopeStack.push_back( {} );
+	mBufferScopeStack.push_back( {} );
+	mLambdaScopeStack.push_back( {} );
+	mStructScopeStack.push_back( {} );
+	mEnumScopeStack.push_back( {} );
 
 	for ( auto &stmt : block->mStatementList )
 	{
@@ -876,6 +1258,10 @@ void CodeGen::genBlock( Block *block )
 			if ( mBuilder->GetInsertBlock()->getTerminator() != nullptr )
 				break;
 			genStatement( stmt );
+			// Release any temporary strings created during this statement
+			releaseTempStrings();
+			// Release any inline lambda contexts created during this statement
+			releaseTempLambdaCtxs();
 		}
 	}
 
@@ -908,11 +1294,403 @@ void CodeGen::genBlock( Block *block )
 				llvm::PointerType::get( *mContext, 0 ), entry.first, "arr.rel.ptr" );
 			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrPtr } );
 		}
+
+		// Release buffer variables declared in this scope (skip moved vars)
+		for ( auto &entry : mBufferScopeStack.back() )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *bufPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "buf.rel.ptr" );
+			mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufPtr } );
+		}
+
+		// Release lambda/fn-typed variable contexts declared in this scope
+		for ( auto &entry : mLambdaScopeStack.back() )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			// Load the {fn_ptr, ctx_ptr} pair, extract ctx, release it
+			llvm::Type *pairType = llvm::StructType::get( *mContext, {
+				llvm::PointerType::get( *mContext, 0 ),
+				llvm::PointerType::get( *mContext, 0 )
+			} );
+			llvm::Value *pairVal = mBuilder->CreateLoad(
+				pairType, entry.first, "fn.rel.pair" );
+			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+				pairVal, 1, "fn.rel.ctx" );
+			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { ctxPtr } );
+		}
+
+		// Release heap-allocated struct variables declared in this scope.
+		// The destructor (set at allocation time) releases refcounted fields
+		// when the refcount reaches zero.
+		for ( auto *structAlloca : mStructScopeStack.back() )
+		{
+			llvm::Value *structPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), structAlloca, "struct.rel.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { structPtr } );
+		}
+
+		// Release refcounted payloads in enum variables declared in this scope
+		for ( auto &entry : mEnumScopeStack.back() )
+		{
+			emitEnumPayloadRelease( entry.first, entry.second );
+		}
 	}
 
 	mArcScopeStack.pop_back();
 	mStringScopeStack.pop_back();
 	mArrayScopeStack.pop_back();
+	mBufferScopeStack.pop_back();
+	mLambdaScopeStack.pop_back();
+	mStructScopeStack.pop_back();
+	mEnumScopeStack.pop_back();
+}
+
+bool CodeGen::isUserStructType( const std::string &typeName )
+{
+	if ( typeName == "int" || typeName == "float" || typeName == "double" ||
+		 typeName == "char" || typeName == "short" || typeName == "long" ||
+		 typeName == "bool" || typeName == "void" || typeName == "string" ||
+		 typeName == "cstring" || typeName == "Array" || typeName == "Buffer" ||
+		 typeName == "carray" || typeName == "Task" || typeName == "self" )
+		return false;
+	return mStructDefMap.find( typeName ) != mStructDefMap.end();
+}
+
+void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef )
+{
+	if ( enumDef == nullptr )
+		return;
+
+	llvm::StructType *enumType = getOrCreateEnumType( enumDef );
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+
+	// Load the enum value from the alloca
+	llvm::Value *enumVal = mBuilder->CreateLoad( enumType, alloca, "enum.cleanup" );
+	llvm::AllocaInst *enumTmp = mBuilder->CreateAlloca( enumType, nullptr, "enum.cleanup.tmp" );
+	mBuilder->CreateStore( enumVal, enumTmp );
+
+	// Load the tag
+	llvm::Value *tagPtr = mBuilder->CreateStructGEP( enumType, enumTmp, 0, "enum.cleanup.tag.ptr" );
+	llvm::Value *tag = mBuilder->CreateLoad(
+		llvm::Type::getInt32Ty( *mContext ), tagPtr, "enum.cleanup.tag" );
+
+	// Create basic blocks for the switch
+	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+	llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create( *mContext, "enum.cleanup.done", func );
+
+	// Build switch for variants with refcounted payloads
+	llvm::SwitchInst *sw = mBuilder->CreateSwitch( tag, mergeBB, enumDef->mVariants.size() );
+
+	for ( size_t vi = 0; vi < enumDef->mVariants.size(); vi++ )
+	{
+		auto &variant = enumDef->mVariants[vi];
+		bool hasRef = false;
+		for ( auto &at : variant.mAssociatedTypes )
+		{
+			string atn = at->getName();
+			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+				 isUserStructType( atn ) )
+			{
+				hasRef = true;
+				break;
+			}
+		}
+		if ( !hasRef )
+			continue;
+
+		llvm::BasicBlock *variantBB = llvm::BasicBlock::Create(
+			*mContext, "enum.cleanup." + variant.mName, func );
+		sw->addCase(
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), vi ),
+			variantBB );
+
+		mBuilder->SetInsertPoint( variantBB );
+
+		// Get payload pointer
+		llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+			enumType, enumTmp, 1, "enum.cleanup.payload" );
+		llvm::Value *payloadBytePtr = mBuilder->CreateConstInBoundsGEP2_32(
+			llvm::ArrayType::get( llvm::Type::getInt8Ty( *mContext ),
+				enumType->getElementType( 1 )->getArrayNumElements() ),
+			payloadPtr, 0, 0, "enum.cleanup.payload.byte" );
+
+		// Release each refcounted payload field
+		for ( auto &at : variant.mAssociatedTypes )
+		{
+			string atn = at->getName();
+			if ( atn == "string" )
+			{
+				llvm::Value *strVal = mBuilder->CreateLoad(
+					ptrType, payloadBytePtr, "enum.cleanup.str" );
+				mBuilder->CreateCall( getOrDeclareStringRelease(), { strVal } );
+			}
+			else if ( atn == "Array" )
+			{
+				llvm::Value *arrVal = mBuilder->CreateLoad(
+					ptrType, payloadBytePtr, "enum.cleanup.arr" );
+				mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrVal } );
+			}
+			else if ( atn == "Buffer" )
+			{
+				llvm::Value *bufVal = mBuilder->CreateLoad(
+					ptrType, payloadBytePtr, "enum.cleanup.buf" );
+				mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufVal } );
+			}
+			else if ( isUserStructType( atn ) )
+			{
+				llvm::Value *structVal = mBuilder->CreateLoad(
+					ptrType, payloadBytePtr, "enum.cleanup.struct" );
+				mBuilder->CreateCall( getOrDeclareRcRelease(), { structVal } );
+			}
+		}
+
+		mBuilder->CreateBr( mergeBB );
+	}
+
+	mBuilder->SetInsertPoint( mergeBB );
+}
+
+llvm::Function *CodeGen::getOrGenStructDestructor( StructDefinition *sd,
+	const std::map<std::string, std::string> &typeSub )
+{
+	if ( sd == nullptr )
+		return nullptr;
+
+	// Determine the mangled name for this destructor (include type args for generics)
+	string dtorName = "__" + sd->getName();
+	if ( !typeSub.empty() )
+	{
+		for ( auto &gp : sd->mGenericParams )
+		{
+			auto it2 = typeSub.find( gp.mName );
+			if ( it2 != typeSub.end() )
+				dtorName += "_" + it2->second;
+		}
+	}
+	dtorName += "_dtor";
+
+	// Check cache
+	auto it = mStructDtorMap.find( dtorName );
+	if ( it != mStructDtorMap.end() )
+		return it->second;
+
+	// Check if the struct has any refcounted fields that need cleanup
+	// For generic structs, look up the mangled instantiation name (e.g., "Box_string")
+	llvm::StructType *structType = nullptr;
+	string structTypeName = sd->getName();
+	if ( !typeSub.empty() )
+	{
+		for ( auto &gp : sd->mGenericParams )
+		{
+			auto it2 = typeSub.find( gp.mName );
+			if ( it2 != typeSub.end() )
+				structTypeName += "_" + it2->second;
+		}
+	}
+	auto stIt = mStructTypeMap.find( structTypeName );
+	if ( stIt != mStructTypeMap.end() )
+		structType = stIt->second;
+	else
+		structType = getOrCreateStructType( sd );
+
+	const auto &fields = sd->getFields();
+	bool hasRefField = false;
+	for ( auto &f : fields )
+	{
+		if ( f->getVariableType() == nullptr )
+			continue;
+		string fName = f->getVariableType()->getName();
+		auto subIt = typeSub.find( fName );
+		if ( subIt != typeSub.end() )
+			fName = subIt->second;
+		if ( fName == "string" || fName == "Array" || fName == "Buffer" ||
+			 f->getVariableType()->isFunctionType() ||
+			 isUserStructType( fName ) )
+		{
+			hasRefField = true;
+			break;
+		}
+	}
+
+	if ( !hasRefField )
+	{
+		mStructDtorMap[dtorName] = nullptr;
+		return nullptr;
+	}
+
+	// Generate the destructor function: void __StructName_dtor(void *ptr)
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *dtorFT = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), { ptrType }, false );
+
+	// Check if already declared (e.g., from combine mode)
+	llvm::Function *dtorFn = mModule->getFunction( dtorName );
+	if ( dtorFn == nullptr )
+	{
+		dtorFn = llvm::Function::Create(
+			dtorFT, llvm::Function::InternalLinkage, dtorName, mModule.get() );
+	}
+
+	// Save and restore builder state
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	llvm::BasicBlock::iterator savedPt;
+	bool hadInsertPoint = ( savedBB != nullptr );
+	if ( hadInsertPoint )
+		savedPt = mBuilder->GetInsertPoint();
+
+	// Create the destructor body
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+		*mContext, "entry", dtorFn );
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::Value *selfPtr = dtorFn->getArg( 0 );
+
+	// Release each refcounted field
+	for ( size_t fi = 0; fi < fields.size(); fi++ )
+	{
+		if ( fields[fi]->getVariableType() == nullptr )
+			continue;
+		string fieldTypeName = fields[fi]->getVariableType()->getName();
+		auto subIt = typeSub.find( fieldTypeName );
+		if ( subIt != typeSub.end() )
+			fieldTypeName = subIt->second;
+
+		if ( fieldTypeName == "string" )
+		{
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				structType, selfPtr, fi, "dtor.str.ptr" );
+			llvm::Value *strVal = mBuilder->CreateLoad( ptrType, fieldPtr, "dtor.str" );
+			mBuilder->CreateCall( getOrDeclareStringRelease(), { strVal } );
+		}
+		else if ( fieldTypeName == "Array" )
+		{
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				structType, selfPtr, fi, "dtor.arr.ptr" );
+			llvm::Value *arrVal = mBuilder->CreateLoad( ptrType, fieldPtr, "dtor.arr" );
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrVal } );
+		}
+		else if ( fieldTypeName == "Buffer" )
+		{
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				structType, selfPtr, fi, "dtor.buf.ptr" );
+			llvm::Value *bufVal = mBuilder->CreateLoad( ptrType, fieldPtr, "dtor.buf" );
+			mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufVal } );
+		}
+		else if ( isUserStructType( fieldTypeName ) )
+		{
+			// Nested struct: release via __blang_rc_release (its own destructor runs)
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				structType, selfPtr, fi, "dtor.struct.ptr" );
+			llvm::Value *structVal = mBuilder->CreateLoad( ptrType, fieldPtr, "dtor.struct" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { structVal } );
+		}
+		else if ( fields[fi]->getVariableType()->isFunctionType() )
+		{
+			// Release fn-typed field's lambda context
+			llvm::Type *pairType = llvm::StructType::get( *mContext, { ptrType, ptrType } );
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				structType, selfPtr, fi, "dtor.fn.ptr" );
+			llvm::Value *pairVal = mBuilder->CreateLoad(
+				pairType, fieldPtr, "dtor.fn.pair" );
+			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+				pairVal, 1, "dtor.fn.ctx" );
+			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { ctxPtr } );
+		}
+	}
+
+	mBuilder->CreateRetVoid();
+
+	// Restore builder state
+	if ( hadInsertPoint )
+		mBuilder->SetInsertPoint( savedBB, savedPt );
+	else if ( savedBB != nullptr )
+		mBuilder->SetInsertPoint( savedBB );
+
+	mStructDtorMap[dtorName] = dtorFn;
+	return dtorFn;
+}
+
+llvm::Function *CodeGen::getOrDeclareRcAllocDtor()
+{
+	llvm::Function *fn = mModule->getFunction( "__blang_rc_alloc_dtor" );
+	if ( fn != nullptr )
+		return fn;
+
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+	// void *__blang_rc_alloc_dtor(size_t data_size, void (*dtor)(void*))
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		ptrType,
+		{ llvm::Type::getInt64Ty( *mContext ), ptrType },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_rc_alloc_dtor", mModule.get() );
+}
+
+void CodeGen::trackTempString( llvm::Value *val )
+{
+	if ( val != nullptr )
+		mTempStrings.push_back( val );
+}
+
+void CodeGen::releaseTempStrings()
+{
+	if ( mTempStrings.empty() )
+		return;
+	if ( mBuilder->GetInsertBlock()->getTerminator() != nullptr )
+	{
+		mTempStrings.clear();
+		return;
+	}
+	for ( auto *val : mTempStrings )
+		mBuilder->CreateCall( getOrDeclareStringRelease(), { val } );
+	mTempStrings.clear();
+}
+
+void CodeGen::untrackTempString( llvm::Value *val )
+{
+	for ( auto it = mTempStrings.begin(); it != mTempStrings.end(); ++it )
+	{
+		if ( *it == val )
+		{
+			mTempStrings.erase( it );
+			return;
+		}
+	}
+}
+
+void CodeGen::trackTempLambdaCtx( llvm::Value *ctxPtr )
+{
+	if ( ctxPtr != nullptr )
+		mTempLambdaCtxs.push_back( ctxPtr );
+}
+
+void CodeGen::releaseTempLambdaCtxs()
+{
+	if ( mTempLambdaCtxs.empty() )
+		return;
+	if ( mBuilder->GetInsertBlock()->getTerminator() != nullptr )
+	{
+		mTempLambdaCtxs.clear();
+		return;
+	}
+	for ( auto *val : mTempLambdaCtxs )
+		mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { val } );
+	mTempLambdaCtxs.clear();
+}
+
+void CodeGen::untrackTempLambdaCtx( llvm::Value *ctxPtr )
+{
+	for ( auto it = mTempLambdaCtxs.begin(); it != mTempLambdaCtxs.end(); ++it )
+	{
+		if ( *it == ctxPtr )
+		{
+			mTempLambdaCtxs.erase( it );
+			return;
+		}
+	}
 }
 
 void CodeGen::genStatement( Statement *stmt )
@@ -1030,44 +1808,86 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 		if ( ownership == OwnershipQualifier::kOwnership_Shared ||
 			 ownership == OwnershipQualifier::kOwnership_Sync )
 		{
-			// Heap-allocate via runtime ARC.
-			// The alloca stores a pointer (opaque ptr) to the heap data.
-			llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
-			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
-				ptrType, nullptr, varDef->getName() );
-			mVariableMap[varDef] = alloca;
-
-			// Track for ARC release at scope exit
-			if ( !mArcScopeStack.empty() )
-				mArcScopeStack.back().push_back( alloca );
-
-			// Determine data size
-			llvm::DataLayout dl( mModule.get() );
-			uint64_t dataSize = dl.getTypeAllocSize( llvmType );
-			llvm::Value *sizeVal = llvm::ConstantInt::get(
-				llvm::Type::getInt64Ty( *mContext ), dataSize );
-
-			// Call __blang_rc_alloc or __blang_rc_alloc_sync
-			llvm::Function *allocFn = ( ownership == OwnershipQualifier::kOwnership_Sync )
-				? getOrDeclareRcAllocSync() : getOrDeclareRcAlloc();
-			llvm::Value *heapPtr = mBuilder->CreateCall( allocFn, { sizeVal }, "rc.ptr" );
-			mBuilder->CreateStore( heapPtr, alloca );
-
-			// If there's an initializer, generate and store through the heap pointer
-			if ( data.mInitialValue != nullptr )
+			// Check if this is a user-defined struct type — structs are already
+			// heap-allocated with ARC, so we just store the struct ptr directly.
+			bool isStructOwnership = false;
+			if ( varType != nullptr )
 			{
-				llvm::Value *initVal = genExpression( data.mInitialValue );
-				if ( initVal != nullptr )
+				string stn = varType->getName();
+				auto sub2 = mTypeSubstitution.find( stn );
+				if ( sub2 != mTypeSubstitution.end() )
+					stn = sub2->second->getName();
+				isStructOwnership = isUserStructType( stn );
+				if ( !isStructOwnership && varType->getNumTypeParams() > 0 )
 				{
-					if ( initVal->getType() != llvmType )
-					{
-						if ( llvmType->isIntegerTy() && initVal->getType()->isIntegerTy() )
-							initVal = mBuilder->CreateIntCast( initVal, llvmType, true, "icast" );
-					}
+					std::vector<SmartPtr<Type>> ta;
+					for ( int i = 0; i < varType->getNumTypeParams(); i++ )
+						ta.push_back( varType->getTypeParam( i ) );
+					string mangledStn = mangleGenericName( stn, ta );
+					isStructOwnership = ( mStructDefMap.find( mangledStn ) != mStructDefMap.end() );
+				}
+			}
+
+			if ( isStructOwnership )
+			{
+				// Struct types are already heap-allocated with their own ARC.
+				// Just store the struct ptr in the alloca and track for release.
+				llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+				llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+					ptrType, nullptr, varDef->getName() );
+				mVariableMap[varDef] = alloca;
+
+				if ( !mStructScopeStack.empty() )
+					mStructScopeStack.back().push_back( alloca );
+
+				if ( data.mInitialValue != nullptr )
+				{
+					llvm::Value *initVal = genExpression( data.mInitialValue );
+					if ( initVal != nullptr )
+						mBuilder->CreateStore( initVal, alloca );
+				}
+			}
+			else
+			{
+				// Non-struct types: heap-allocate via runtime ARC.
+				// The alloca stores a pointer (opaque ptr) to the heap data.
+				llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+				llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+					ptrType, nullptr, varDef->getName() );
+				mVariableMap[varDef] = alloca;
+
+				// Track for ARC release at scope exit
+				if ( !mArcScopeStack.empty() )
+					mArcScopeStack.back().push_back( alloca );
+
+				// Determine data size
+				llvm::DataLayout dl( mModule.get() );
+				uint64_t dataSize = dl.getTypeAllocSize( llvmType );
+				llvm::Value *sizeVal = llvm::ConstantInt::get(
+					llvm::Type::getInt64Ty( *mContext ), dataSize );
+
+				// Call __blang_rc_alloc or __blang_rc_alloc_sync
+				llvm::Function *allocFn = ( ownership == OwnershipQualifier::kOwnership_Sync )
+					? getOrDeclareRcAllocSync() : getOrDeclareRcAlloc();
+				llvm::Value *heapPtr = mBuilder->CreateCall( allocFn, { sizeVal }, "rc.ptr" );
+				mBuilder->CreateStore( heapPtr, alloca );
+
+				// If there's an initializer, generate and store through the heap pointer
+				if ( data.mInitialValue != nullptr )
+				{
+					llvm::Value *initVal = genExpression( data.mInitialValue );
 					if ( initVal != nullptr )
 					{
-						// Store through the heap pointer
-						mBuilder->CreateStore( initVal, heapPtr );
+						if ( initVal->getType() != llvmType )
+						{
+							if ( llvmType->isIntegerTy() && initVal->getType()->isIntegerTy() )
+								initVal = mBuilder->CreateIntCast( initVal, llvmType, true, "icast" );
+						}
+						if ( initVal != nullptr )
+						{
+							// Store through the heap pointer
+							mBuilder->CreateStore( initVal, heapPtr );
+						}
 					}
 				}
 			}
@@ -1075,9 +1895,36 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 		else
 		{
 			// Value type or own: stack allocation (same as before)
+			// For user-defined struct types, the alloca stores a heap pointer (ptr)
+			// since getLLVMType returns ptr for structs.
 			llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
 				llvmType, nullptr, varDef->getName() );
 			mVariableMap[varDef] = alloca;
+
+			// Check if this is a user-defined struct type (heap-allocated by reference)
+			bool isStructVar = false;
+			if ( varType != nullptr )
+			{
+				string sTypeName = varType->getName();
+				auto subIt2 = mTypeSubstitution.find( sTypeName );
+				if ( subIt2 != mTypeSubstitution.end() )
+					sTypeName = subIt2->second->getName();
+				isStructVar = isUserStructType( sTypeName );
+				if ( !isStructVar && varType->getNumTypeParams() > 0 )
+				{
+					std::vector<SmartPtr<Type>> typeArgs;
+					for ( int tpi = 0; tpi < varType->getNumTypeParams(); tpi++ )
+						typeArgs.push_back( varType->getTypeParam( tpi ) );
+					string mangledTypeName = mangleGenericName( sTypeName, typeArgs );
+					isStructVar = ( mStructDefMap.find( mangledTypeName ) != mStructDefMap.end() );
+				}
+			}
+
+			// Track struct variables for __blang_rc_release at scope exit
+			if ( isStructVar && !mStructScopeStack.empty() )
+			{
+				mStructScopeStack.back().push_back( alloca );
+			}
 
 			// Track string variables for release at scope exit
 			if ( varType != nullptr && varType->getName() == "string" &&
@@ -1093,14 +1940,89 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 				mArrayScopeStack.back().push_back( { alloca, varDef } );
 			}
 
+			// Track buffer variables for release at scope exit
+			if ( varType != nullptr && varType->getName() == "Buffer" &&
+				 !mBufferScopeStack.empty() )
+			{
+				mBufferScopeStack.back().push_back( { alloca, varDef } );
+			}
+
+			// Track fn-typed variables for lambda context release at scope exit
+			if ( varType != nullptr && varType->isFunctionType() &&
+				 !mLambdaScopeStack.empty() )
+			{
+				mLambdaScopeStack.back().push_back( { alloca, varDef } );
+			}
+
+			// Track enum variables with refcounted payloads for cleanup at scope exit
+			if ( varType != nullptr && !mEnumScopeStack.empty() )
+			{
+				string enumTypeName = varType->getName();
+				auto enumIt = mEnumDefMap.find( enumTypeName );
+				if ( enumIt != mEnumDefMap.end() )
+				{
+					// Check if any variant has a refcounted payload
+					EnumDefinition *ed = enumIt->second;
+					bool hasRefPayload = false;
+					for ( auto &variant : ed->mVariants )
+					{
+						for ( auto &assocType : variant.mAssociatedTypes )
+						{
+							string atn = assocType->getName();
+							if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+								 isUserStructType( atn ) )
+							{
+								hasRefPayload = true;
+								break;
+							}
+						}
+						if ( hasRefPayload ) break;
+					}
+					if ( hasRefPayload )
+						mEnumScopeStack.back().push_back( { alloca, ed } );
+				}
+			}
+
 			// If there's an initializer, generate it and store
 			if ( data.mInitialValue != nullptr )
 			{
+				// For Array<T> declarations with empty literal initializer [],
+				// set the element type hint so genArrayLiteral uses the correct
+				// element size (e.g. 8 bytes for string/pointer types, not default 4)
+				if ( varType != nullptr && varType->getName() == "Array" &&
+					 varType->getNumTypeParams() > 0 &&
+					 dynamic_cast<ArrayLiteralExpression*>( (Expression*)data.mInitialValue ) != nullptr )
+				{
+					Type *elemType = varType->getTypeParam( 0 );
+					mArrayElemTypeHint = getLLVMType( elemType );
+					string etn = elemType->getName();
+					auto subEtn = mTypeSubstitution.find( etn );
+					if ( subEtn != mTypeSubstitution.end() )
+						etn = subEtn->second->getName();
+					mArrayElemTypeNameHint = etn;
+				}
+
 				llvm::Value *initVal = genExpression( data.mInitialValue );
 				if ( initVal != nullptr )
 				{
-					// Cast if types don't match
-					if ( initVal->getType() != llvmType )
+					// For struct variables initialized from another variable or field
+					// access, retain the reference (the source keeps its own reference).
+					// For new allocations (struct literal, function return), the refcount
+					// is already 1 (ownership transfer, no retain needed).
+					if ( isStructVar )
+					{
+						auto *srcVarExpr = dynamic_cast<VariableExpression*>(
+							(Expression*)data.mInitialValue );
+						auto *srcFieldExpr = dynamic_cast<FieldAccessExpression*>(
+							(Expression*)data.mInitialValue );
+						if ( srcVarExpr != nullptr || srcFieldExpr != nullptr )
+						{
+							mBuilder->CreateCall( getOrDeclareRcRetain(), { initVal } );
+						}
+					}
+
+					// Cast if types don't match (skip for struct ptrs which are already ptr)
+					if ( !isStructVar && initVal->getType() != llvmType )
 					{
 						if ( llvmType->isIntegerTy() && initVal->getType()->isIntegerTy() )
 							initVal = mBuilder->CreateIntCast( initVal, llvmType, true, "icast" );
@@ -1112,7 +2034,21 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 							initVal = nullptr;
 					}
 					if ( initVal != nullptr )
+					{
 						mBuilder->CreateStore( initVal, alloca );
+
+						// If storing a string, untrack it from temps — the variable now owns it
+						if ( varType != nullptr && varType->getName() == "string" )
+							untrackTempString( initVal );
+
+						// If storing a fn-typed value, untrack its lambda context from temps.
+						// The variable now owns the context via mLambdaScopeStack.
+						if ( varType != nullptr && varType->isFunctionType() &&
+							 !mTempLambdaCtxs.empty() )
+						{
+							mTempLambdaCtxs.pop_back();
+						}
+					}
 				}
 
 				// Move semantics: if this is an own variable initialized from
@@ -1154,7 +2090,48 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 		// If returning a string, retain it so scope release doesn't free it
 		if ( retVal != nullptr && isStringType( ret->mExpression ) )
 			mBuilder->CreateCall( getOrDeclareStringRetain(), { retVal } );
+
+		// If returning an array, retain it so scope release doesn't free it
+		if ( retVal != nullptr && isArrayType( ret->mExpression ) )
+			mBuilder->CreateCall( getOrDeclareArrayRetain(), { retVal } );
+
+		// If returning a fn-typed value (lambda/callback pair), retain the
+		// context so scope cleanup doesn't free it before the caller gets it
+		if ( retVal != nullptr && mCurrentFunction != nullptr &&
+			 mCurrentFunction->getReturnType() != nullptr &&
+			 mCurrentFunction->getReturnType()->isFunctionType() )
+		{
+			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+				retVal, 1, "ret.fn.ctx" );
+			mBuilder->CreateCall( getOrDeclareLambdaCtxRetain(), { ctxPtr } );
+		}
+
+		// If returning a heap-allocated struct, retain the pointer so it
+		// survives the scope cleanup below (which will release the local reference).
+		// Only retain when the source expression is a variable or field access —
+		// those are tracked in scope stacks and will be released at scope exit.
+		// New allocations (struct literals, function call results) already have
+		// refcount=1 and transfer ownership directly to the caller.
+		if ( retVal != nullptr && mCurrentFunction != nullptr &&
+			 mCurrentFunction->getReturnType() != nullptr )
+		{
+			string retTypeName = mCurrentFunction->getReturnType()->getName();
+			if ( isUserStructType( retTypeName ) )
+			{
+				bool needsRetain = false;
+				Expression *retRawExpr = (Expression *)ret->mExpression;
+				auto *retExpr = dynamic_cast<VariableExpression*>( retRawExpr );
+				auto *retField = dynamic_cast<FieldAccessExpression*>( retRawExpr );
+				if ( retExpr != nullptr || retField != nullptr )
+					needsRetain = true;
+				if ( needsRetain )
+					mBuilder->CreateCall( getOrDeclareRcRetain(), { retVal } );
+			}
+		}
 	}
+
+	// Release temporary strings created during expression evaluation
+	releaseTempStrings();
 
 	// Insert runtime shutdown before ARC releases in main() — threads must
 	// finish before we free shared/sync memory they may be using
@@ -1197,6 +2174,58 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 			llvm::Value *arrPtr = mBuilder->CreateLoad(
 				llvm::PointerType::get( *mContext, 0 ), entry.first, "arr.ret.ptr" );
 			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrPtr } );
+		}
+	}
+
+	// Release buffer variables before returning (skip moved vars)
+	for ( auto it = mBufferScopeStack.rbegin(); it != mBufferScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *bufPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "buf.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufPtr } );
+		}
+	}
+
+	// Release lambda/fn-typed variable contexts before returning (skip moved vars)
+	for ( auto it = mLambdaScopeStack.rbegin(); it != mLambdaScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Type *pairType = llvm::StructType::get( *mContext, {
+				llvm::PointerType::get( *mContext, 0 ),
+				llvm::PointerType::get( *mContext, 0 )
+			} );
+			llvm::Value *pairVal = mBuilder->CreateLoad(
+				pairType, entry.first, "fn.ret.pair" );
+			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+				pairVal, 1, "fn.ret.ctx" );
+			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { ctxPtr } );
+		}
+	}
+
+	// Release heap-allocated struct variables before returning
+	for ( auto it = mStructScopeStack.rbegin(); it != mStructScopeStack.rend(); ++it )
+	{
+		for ( auto *structAlloca : *it )
+		{
+			llvm::Value *structPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), structAlloca, "struct.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { structPtr } );
+		}
+	}
+
+	// Release enum variables with refcounted payloads before returning
+	for ( auto it = mEnumScopeStack.rbegin(); it != mEnumScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			emitEnumPayloadRelease( entry.first, entry.second );
 		}
 	}
 
@@ -1294,6 +2323,11 @@ void CodeGen::genIfStatement( IfStatement *ifStmt )
 			"ifcond" );
 	}
 
+	// Release any temps created during condition evaluation (e.g., string
+	// comparison literals) before branching.  Both branches may diverge
+	// (early return, etc.) so we must release before the split.
+	releaseTempStrings();
+
 	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
 
 	llvm::BasicBlock *thenBB = llvm::BasicBlock::Create( *mContext, "then", func );
@@ -1355,6 +2389,8 @@ void CodeGen::genWhileStatement( WhileStatement *whileStmt )
 				llvm::ConstantInt::get( condVal->getType(), 0 ),
 				"whilecond" );
 		}
+		// Release condition temps before branching
+		releaseTempStrings();
 		mBuilder->CreateCondBr( condVal, bodyBB, afterBB );
 	}
 
@@ -1457,6 +2493,10 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 		return genOperationsExpression( ops );
 	else if ( auto *assign = dynamic_cast<AssignmentExpression*>( expr ) )
 		return genAssignmentExpression( assign );
+	else if ( auto *fieldAssign = dynamic_cast<FieldAssignmentExpression*>( expr ) )
+		return genFieldAssignment( fieldAssign );
+	else if ( auto *indexAssign = dynamic_cast<IndexAssignmentExpression*>( expr ) )
+		return genIndexAssignment( indexAssign );
 	else if ( auto *unary = dynamic_cast<UnaryExpression*>( expr ) )
 		return genUnaryExpression( unary );
 	else if ( auto *field = dynamic_cast<FieldAccessExpression*>( expr ) )
@@ -1491,6 +2531,12 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 		return genDeleteExpression( deleteExpr );
 	else if ( auto *spawn = dynamic_cast<SpawnStatement*>( expr ) )
 		return genSpawnStatement( spawn );
+	else if ( auto *lambda = dynamic_cast<LambdaExpression*>( expr ) )
+		return genLambdaExpression( lambda );
+	else if ( auto *funcRef = dynamic_cast<FunctionRefExpression*>( expr ) )
+		return genFunctionRefExpression( funcRef );
+	else if ( auto *indCall = dynamic_cast<IndirectCallExpression*>( expr ) )
+		return genIndirectCallExpression( indCall );
 
 	return nullptr;
 }
@@ -1516,7 +2562,9 @@ llvm::Value *CodeGen::genConstString( ConstString *cs )
 	llvm::Function *createStatic = getOrDeclareStringCreateStatic();
 	llvm::Value *lenVal = llvm::ConstantInt::get(
 		llvm::Type::getInt64Ty( *mContext ), cs->mValue.size() );
-	return mBuilder->CreateCall( createStatic, { strData, lenVal }, "str" );
+	llvm::Value *result = mBuilder->CreateCall( createStatic, { strData, lenVal }, "str" );
+	trackTempString( result );
+	return result;
 }
 
 llvm::Value *CodeGen::genConstChar( ConstChar *cc )
@@ -1591,6 +2639,53 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 {
 	FunctionDefinition *funcDef = call->mFunction;
 
+	// Handle builtin functions (print/println)
+	if ( funcDef->isBuiltin() )
+	{
+		if ( funcDef->getName() == "print" )
+		{
+			genPrintCall( call, false );
+			return nullptr;
+		}
+		if ( funcDef->getName() == "println" )
+		{
+			genPrintCall( call, true );
+			return nullptr;
+		}
+	}
+
+	// Handle @format annotation: validate format string at call site
+	for ( const auto &ann : funcDef->getAnnotations() )
+	{
+		if ( ann.mName == "format" && !call->mParams.empty() )
+		{
+			auto *fmtConst = dynamic_cast<ConstString*>( (Expression*)call->mParams[0] );
+			if ( fmtConst != nullptr )
+			{
+				// Parse format string and validate arg count
+				int phCount = 0;
+				const std::string &fmt = fmtConst->mValue;
+				for ( size_t fi = 0; fi < fmt.size(); fi++ )
+				{
+					if ( fmt[fi] == '{' && fi + 1 < fmt.size() && fmt[fi + 1] == '{' )
+					{ fi++; continue; }
+					if ( fmt[fi] == '{' )
+						phCount++;
+				}
+				int extraArgs = (int)call->mParams.size() - funcDef->getNumberParams();
+				if ( phCount != extraArgs )
+				{
+					cerr << "CodeGen error: @format function '" << funcDef->getName()
+						 << "': format string has " << phCount
+						 << " placeholder(s) but " << extraArgs << " extra argument(s) provided" << endl;
+					mHasError = true;
+					return nullptr;
+				}
+			}
+			break;
+		}
+	}
+
 	// Handle generic function instantiation
 	if ( !call->mTypeArgs.empty() && funcDef->isGeneric() )
 	{
@@ -1618,7 +2713,11 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			return nullptr;
 		}
 
-		return mBuilder->CreateCall( genFunc, args, "calltmp" );
+		llvm::Value *callResult = mBuilder->CreateCall( genFunc, args, "calltmp" );
+		if ( funcDef->getReturnType() != nullptr &&
+			 funcDef->getReturnType()->getName() == "string" )
+			trackTempString( callResult );
+		return callResult;
 	}
 
 	// Look up the LLVM function
@@ -1630,13 +2729,24 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 	}
 	else
 	{
-		// Try by name in the module
-		llvmFunc = mModule->getFunction( funcDef->getName() );
+		// Try by name in the module — check mangled name first, then original
+		if ( !call->mMangledName.empty() )
+			llvmFunc = mModule->getFunction( call->mMangledName );
+		if ( llvmFunc == nullptr )
+			llvmFunc = mModule->getFunction( funcDef->getName() );
+	}
+
+	// If still not found, auto-declare extern functions (e.g. from .bmod imports)
+	if ( llvmFunc == nullptr && funcDef->isExtern() )
+	{
+		llvmFunc = genFunction( funcDef );
 	}
 
 	if ( llvmFunc == nullptr )
 	{
-		cerr << "CodeGen: undefined function '" << funcDef->getName() << "'" << endl;
+		cerr << "CodeGen: undefined function '" << funcDef->getName() << "'"
+			<< ( !call->mMangledName.empty() ? " (mangled: " + call->mMangledName + ")" : "" )
+			<< endl;
 		return nullptr;
 	}
 
@@ -1690,6 +2800,40 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			}
 		}
 
+		// Fn-type argument: split {ptr, ptr} into two separate LLVM args
+		if ( argIdx < (size_t)funcDef->getNumberParams() )
+		{
+			VariableDefinition *paramDef = funcDef->getParam( argIdx );
+			if ( paramDef != nullptr && paramDef->getVariableType()->isFunctionType() )
+			{
+				// Check if argVal is a named function reference (needs thunk wrapping)
+				auto *argVarExpr = dynamic_cast<VariableExpression*>( (Expression*)call->mParams[argIdx] );
+				if ( argVarExpr == nullptr )
+				{
+					// It's a lambda or other expression that already produces {ptr, ptr}
+					// Check if it's a named function being passed by name
+					auto *argCallExpr = dynamic_cast<CallExpression*>( (Expression*)call->mParams[argIdx] );
+					(void)argCallExpr;
+				}
+				llvm::Value *fnPtr = mBuilder->CreateExtractValue( argVal, 0, "cb.fn" );
+				llvm::Value *ctxPtr = mBuilder->CreateExtractValue( argVal, 1, "cb.ctx" );
+				args.push_back( fnPtr );
+				args.push_back( ctxPtr );
+				continue;
+			}
+		}
+
+		// Integer type promotion: widen i32 to i64 if the function parameter expects it
+		if ( llvmFunc != nullptr && argIdx < llvmFunc->arg_size() )
+		{
+			llvm::Type *paramType = llvmFunc->getFunctionType()->getParamType( argIdx );
+			if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
+				 paramType->getIntegerBitWidth() > argVal->getType()->getIntegerBitWidth() )
+			{
+				argVal = mBuilder->CreateSExt( argVal, paramType, "arg.ext" );
+			}
+		}
+
 		args.push_back( argVal );
 	}
 
@@ -1724,7 +2868,16 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		return nullptr;
 	}
 
-	return mBuilder->CreateCall( llvmFunc, args, "calltmp" );
+	llvm::Value *callResult = mBuilder->CreateCall( llvmFunc, args, "calltmp" );
+
+	// Track string-returning function calls as temps
+	if ( funcDef->getReturnType() != nullptr &&
+		 funcDef->getReturnType()->getName() == "string" )
+	{
+		trackTempString( callResult );
+	}
+
+	return callResult;
 }
 
 llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
@@ -1790,7 +2943,11 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 
 	// String concatenation
 	if ( isString && op == "+" )
-		return mBuilder->CreateCall( getOrDeclareStringConcat(), { left, right }, "strcat" );
+	{
+		llvm::Value *result = mBuilder->CreateCall( getOrDeclareStringConcat(), { left, right }, "strcat" );
+		trackTempString( result );
+		return result;
+	}
 
 	// String comparison
 	if ( isString && op == "==" )
@@ -1916,6 +3073,17 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 
 	if ( op == "=" )
 	{
+		// If reassigning a string variable, release the old value first
+		if ( varDef->getVariableType() != nullptr &&
+			 varDef->getVariableType()->getName() == "string" )
+		{
+			llvm::Value *oldVal = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), alloca, "str.old" );
+			mBuilder->CreateCall( getOrDeclareStringRelease(), { oldVal } );
+			// The RHS is now owned by this variable — untrack from temps
+			untrackTempString( rhs );
+		}
+
 		mBuilder->CreateStore( rhs, alloca );
 
 		// Move semantics: if assigning an own variable from another own variable,
@@ -2018,17 +3186,55 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 	llvm::StructType *structType = nullptr;
 
 	// Handle generic struct instantiation
+	std::map<std::string, Type*> savedSub = mTypeSubstitution;
 	if ( !expr->mTypeArgs.empty() && structDef->isGeneric() )
 	{
 		structType = instantiateGenericStruct( structDef, expr->mTypeArgs );
+		// Re-establish substitution map for field value generation
+		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < expr->mTypeArgs.size(); i++ )
+		{
+			SmartPtr<Type> arg = expr->mTypeArgs[i];
+			mTypeSubstitution[structDef->mGenericParams[i].mName] = (Type*)arg;
+		}
 	}
 	else
 	{
 		structType = getOrCreateStructType( structDef );
 	}
 
-	// Allocate the struct on the stack
-	llvm::AllocaInst *alloca = mBuilder->CreateAlloca( structType, nullptr, "structlit" );
+	// Heap-allocate the struct via ARC with a destructor for refcounted field cleanup
+	llvm::DataLayout dl( mModule.get() );
+	uint64_t dataSize = dl.getTypeAllocSize( structType );
+	llvm::Value *sizeVal = llvm::ConstantInt::get(
+		llvm::Type::getInt64Ty( *mContext ), dataSize );
+
+	// Build type substitution map for destructor generation
+	std::map<std::string, std::string> dtorSub;
+	if ( !expr->mTypeArgs.empty() && structDef->isGeneric() )
+	{
+		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < expr->mTypeArgs.size(); i++ )
+		{
+			SmartPtr<Type> arg = expr->mTypeArgs[i];
+			string resolvedName = arg->getName();
+			auto sIt2 = mTypeSubstitution.find( resolvedName );
+			if ( sIt2 != mTypeSubstitution.end() )
+				resolvedName = sIt2->second->getName();
+			dtorSub[structDef->mGenericParams[i].mName] = resolvedName;
+		}
+	}
+
+	llvm::Function *dtorFn = getOrGenStructDestructor( structDef, dtorSub );
+	llvm::Value *heapPtr = nullptr;
+	if ( dtorFn != nullptr )
+	{
+		heapPtr = mBuilder->CreateCall(
+			getOrDeclareRcAllocDtor(), { sizeVal, dtorFn }, "struct.ptr" );
+	}
+	else
+	{
+		heapPtr = mBuilder->CreateCall(
+			getOrDeclareRcAlloc(), { sizeVal }, "struct.ptr" );
+	}
 
 	// Store each field value
 	for ( size_t i = 0; i < expr->mFieldNames.size(); i++ )
@@ -2047,16 +3253,108 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 		if ( fieldIdx < 0 )
 			continue;
 
-		llvm::Value *fieldVal = genExpression( expr->mFieldValues[i] );
+		llvm::Value *fieldVal = nullptr;
+
+		// For empty array literals assigned to Array<T> fields, use the correct
+		// element size from the field's type parameter instead of the default 4
+		auto *arrLit = dynamic_cast<ArrayLiteralExpression*>( (Expression*)expr->mFieldValues[i] );
+		if ( arrLit != nullptr && arrLit->mElements.empty() )
+		{
+			Type *fieldType = structDef->mFields[fieldIdx]->getVariableType();
+			if ( fieldType != nullptr && fieldType->getName() == "Array" &&
+				 fieldType->getNumTypeParams() > 0 )
+			{
+				Type *elemType = fieldType->getTypeParam( 0 );
+				string elemTypeName = elemType->getName();
+				auto subIt = mTypeSubstitution.find( elemTypeName );
+				if ( subIt != mTypeSubstitution.end() )
+					elemType = subIt->second;
+				llvm::Type *llvmElemType = getLLVMType( elemType );
+				llvm::DataLayout dl( mModule.get() );
+				int elemSize = dl.getTypeAllocSize( llvmElemType );
+				llvm::Value *elemSizeVal = llvm::ConstantInt::get(
+					llvm::Type::getInt32Ty( *mContext ), elemSize );
+				llvm::Value *capVal = llvm::ConstantInt::get(
+					llvm::Type::getInt64Ty( *mContext ), 8 );
+				fieldVal = mBuilder->CreateCall(
+					getOrDeclareArrayCreate(), { elemSizeVal, capVal }, "arr" );
+
+				// Set element destructor for refcounted element types
+				string resolvedElemName = elemType->getName();
+				auto subIt2 = mTypeSubstitution.find( resolvedElemName );
+				if ( subIt2 != mTypeSubstitution.end() )
+					resolvedElemName = subIt2->second->getName();
+				emitArrayElemDtor( fieldVal, resolvedElemName );
+			}
+		}
+
+		if ( fieldVal == nullptr )
+			fieldVal = genExpression( expr->mFieldValues[i] );
 		if ( fieldVal == nullptr )
 			continue;
 
-		llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, alloca, fieldIdx, "field" );
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, heapPtr, fieldIdx, "field" );
+
+		// Coerce value type to match field type (e.g., double literal → float field)
+		llvm::Type *fieldType = structType->getElementType( fieldIdx );
+		if ( fieldVal->getType() != fieldType )
+		{
+			if ( fieldType->isFloatTy() && fieldVal->getType()->isDoubleTy() )
+				fieldVal = mBuilder->CreateFPTrunc( fieldVal, fieldType, "fptrunc" );
+			else if ( fieldType->isDoubleTy() && fieldVal->getType()->isFloatTy() )
+				fieldVal = mBuilder->CreateFPExt( fieldVal, fieldType, "fpext" );
+			else if ( fieldType->isIntegerTy() && fieldVal->getType()->isIntegerTy() )
+				fieldVal = mBuilder->CreateIntCast( fieldVal, fieldType,
+					true, "icast" );
+		}
+
 		mBuilder->CreateStore( fieldVal, fieldPtr );
+
+		// Retain refcounted fields stored into the struct.
+		// For strings: always retain (temp string release balances the extra refcount).
+		// For arrays/buffers/structs from variables/field accesses: retain (source keeps ref).
+		// For arrays/buffers/structs from literals/calls: skip retain (ownership transfers).
+		if ( fieldIdx >= 0 && (size_t)fieldIdx < structDef->mFields.size() )
+		{
+			Type *fType = structDef->mFields[fieldIdx]->getVariableType();
+			if ( fType != nullptr )
+			{
+				string fTypeName = fType->getName();
+				// Resolve generic type params (e.g., T -> string)
+				auto subIt = mTypeSubstitution.find( fTypeName );
+				if ( subIt != mTypeSubstitution.end() )
+					fTypeName = subIt->second->getName();
+				// Check if source is an existing owner (variable/field access)
+				bool srcIsExistingOwner = false;
+				{
+					auto *se = (Expression*)expr->mFieldValues[i];
+					srcIsExistingOwner = ( dynamic_cast<VariableExpression*>( se ) != nullptr ||
+										   dynamic_cast<FieldAccessExpression*>( se ) != nullptr );
+				}
+
+				if ( fTypeName == "string" )
+					mBuilder->CreateCall( getOrDeclareStringRetain(), { fieldVal } );
+				else if ( fTypeName == "Array" && srcIsExistingOwner )
+					mBuilder->CreateCall( getOrDeclareArrayRetain(), { fieldVal } );
+				else if ( fTypeName == "Buffer" && srcIsExistingOwner )
+					mBuilder->CreateCall( getOrDeclareBufferRetain(), { fieldVal } );
+				else if ( isUserStructType( fTypeName ) && srcIsExistingOwner )
+					mBuilder->CreateCall( getOrDeclareRcRetain(), { fieldVal } );
+				else if ( fType->isFunctionType() )
+				{
+					llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+						fieldVal, 1, "sl.fn.ctx" );
+					mBuilder->CreateCall( getOrDeclareLambdaCtxRetain(), { ctxPtr } );
+				}
+			}
+		}
 	}
 
-	// Load and return the struct value
-	return mBuilder->CreateLoad( structType, alloca, "structval" );
+	// Restore substitution map
+	mTypeSubstitution = savedSub;
+
+	// Return the heap pointer (struct is by-reference)
+	return heapPtr;
 }
 
 // ---- Builtin string/array field and method codegen ----
@@ -2099,15 +3397,51 @@ llvm::Value *CodeGen::genStringMethodCall( MethodCallExpression *expr )
 
 	const string &method = expr->mMethodName;
 
-	// No-arg methods: to_upper, to_lower, trim, to_cstring, concat
+	// No-arg methods: to_upper, to_lower, trim, to_cstring, is_empty, length
 	if ( method == "to_upper" )
-		return mBuilder->CreateCall( getOrDeclareStringToUpper(), { strVal }, "str.upper" );
+	{
+		llvm::Value *r = mBuilder->CreateCall( getOrDeclareStringToUpper(), { strVal }, "str.upper" );
+		trackTempString( r );
+		return r;
+	}
 	if ( method == "to_lower" )
-		return mBuilder->CreateCall( getOrDeclareStringToLower(), { strVal }, "str.lower" );
+	{
+		llvm::Value *r = mBuilder->CreateCall( getOrDeclareStringToLower(), { strVal }, "str.lower" );
+		trackTempString( r );
+		return r;
+	}
 	if ( method == "trim" )
-		return mBuilder->CreateCall( getOrDeclareStringTrim(), { strVal }, "str.trim" );
+	{
+		llvm::Value *r = mBuilder->CreateCall( getOrDeclareStringTrim(), { strVal }, "str.trim" );
+		trackTempString( r );
+		return r;
+	}
 	if ( method == "to_cstring" )
 		return mBuilder->CreateCall( getOrDeclareStringToCstring(), { strVal }, "str.cstr" );
+	if ( method == "is_empty" )
+		return mBuilder->CreateCall( getOrDeclareStringIsEmpty(), { strVal }, "str.empty" );
+	if ( method == "length" )
+		return mBuilder->CreateCall( getOrDeclareStringLength(), { strVal }, "str.len" );
+	if ( method == "to_int" )
+	{
+		// int64_t __blang_string_to_int( BlangString *s, bool *ok )
+		// For simplicity, pass NULL for the ok pointer (ignore parse errors)
+		llvm::Function *toIntFn = mModule->getFunction( "__blang_string_to_int" );
+		if ( toIntFn == nullptr )
+		{
+			llvm::FunctionType *ft = llvm::FunctionType::get(
+				llvm::Type::getInt64Ty( *mContext ),
+				{ llvm::PointerType::get( *mContext, 0 ),
+				  llvm::PointerType::get( *mContext, 0 ) },
+				false );
+			toIntFn = llvm::Function::Create(
+				ft, llvm::Function::ExternalLinkage, "__blang_string_to_int", mModule.get() );
+		}
+		llvm::Value *nullPtr = llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
+		llvm::Value *result = mBuilder->CreateCall( toIntFn, { strVal, nullPtr }, "str.toint" );
+		// Truncate i64 to i32 for BLang int type
+		return mBuilder->CreateTrunc( result, llvm::Type::getInt32Ty( *mContext ), "str.toint.i32" );
+	}
 
 	// Single string arg: contains, starts_with, ends_with, index_of, concat
 	if ( method == "concat" && expr->mArgs.size() == 1 )
@@ -2115,7 +3449,9 @@ llvm::Value *CodeGen::genStringMethodCall( MethodCallExpression *expr )
 		llvm::Value *argVal = genExpression( expr->mArgs[0] );
 		if ( argVal == nullptr )
 			return nullptr;
-		return mBuilder->CreateCall( getOrDeclareStringConcat(), { strVal, argVal }, "str.concat" );
+		llvm::Value *r = mBuilder->CreateCall( getOrDeclareStringConcat(), { strVal, argVal }, "str.concat" );
+		trackTempString( r );
+		return r;
 	}
 
 	// Single int arg: char_at, byte_at
@@ -2169,8 +3505,10 @@ llvm::Value *CodeGen::genStringMethodCall( MethodCallExpression *expr )
 			endVal = mBuilder->CreateSExt( endVal,
 				llvm::Type::getInt64Ty( *mContext ), "end.ext" );
 
-		return mBuilder->CreateCall(
+		llvm::Value *r = mBuilder->CreateCall(
 			getOrDeclareStringSubstring(), { strVal, startVal, endVal }, "str.sub" );
+		trackTempString( r );
+		return r;
 	}
 
 	// Three string args: replace(old, new)
@@ -2181,8 +3519,10 @@ llvm::Value *CodeGen::genStringMethodCall( MethodCallExpression *expr )
 		if ( oldVal == nullptr || newVal == nullptr )
 			return nullptr;
 
-		return mBuilder->CreateCall(
+		llvm::Value *r = mBuilder->CreateCall(
 			getOrDeclareStringReplace(), { strVal, oldVal, newVal }, "str.replace" );
+		trackTempString( r );
+		return r;
 	}
 
 	return nullptr;
@@ -2196,12 +3536,26 @@ llvm::Value *CodeGen::genArrayMethodCall( MethodCallExpression *expr )
 
 	const string &method = expr->mMethodName;
 
+	// No-arg property-like methods: is_empty(), length(), capacity()
+	if ( method == "is_empty" && expr->mArgs.empty() )
+		return mBuilder->CreateCall( getOrDeclareArrayIsEmpty(), { arrVal }, "arr.empty" );
+	if ( method == "length" && expr->mArgs.empty() )
+		return mBuilder->CreateCall( getOrDeclareArrayLength(), { arrVal }, "arr.len" );
+	if ( method == "capacity" && expr->mArgs.empty() )
+		return mBuilder->CreateCall( getOrDeclareArrayCapacity(), { arrVal }, "arr.cap" );
+
 	// push(value): store value to temp alloca, pass its address
 	if ( method == "push" && expr->mArgs.size() == 1 )
 	{
 		llvm::Value *elemVal = genExpression( expr->mArgs[0] );
 		if ( elemVal == nullptr )
 			return nullptr;
+
+		// Retain strings pushed into arrays so they survive scope cleanup.
+		// The array takes ownership; the scope would otherwise release the
+		// original variable, leaving a dangling pointer in the array.
+		if ( isStringType( expr->mArgs[0] ) )
+			mBuilder->CreateCall( getOrDeclareStringRetain(), { elemVal } );
 
 		llvm::AllocaInst *tmpAlloca = mBuilder->CreateAlloca(
 			elemVal->getType(), nullptr, "push.tmp" );
@@ -2219,7 +3573,29 @@ llvm::Value *CodeGen::genArrayMethodCall( MethodCallExpression *expr )
 		{
 			Type *varType = ve->mVariable->getVariableType();
 			if ( varType != nullptr && varType->getNumTypeParams() > 0 )
-				elemType = getLLVMType( varType->getTypeParam( 0 ) );
+			{
+				Type *ep = varType->getTypeParam( 0 );
+				string en = ep->getName();
+				auto subIt = mTypeSubstitution.find( en );
+				if ( subIt != mTypeSubstitution.end() )
+					elemType = getLLVMType( subIt->second );
+				else
+					elemType = getLLVMType( ep );
+			}
+		}
+		else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mObject ) )
+		{
+			Type *fieldType = getFieldType( fa );
+			if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
+			{
+				Type *ep = fieldType->getTypeParam( 0 );
+				string en = ep->getName();
+				auto subIt = mTypeSubstitution.find( en );
+				if ( subIt != mTypeSubstitution.end() )
+					elemType = getLLVMType( subIt->second );
+				else
+					elemType = getLLVMType( ep );
+			}
 		}
 
 		llvm::AllocaInst *outAlloca = mBuilder->CreateAlloca(
@@ -2256,6 +3632,14 @@ llvm::Value *CodeGen::genFieldAccess( FieldAccessExpression *expr )
 			return result;
 	}
 
+	// Built-in buffer property access
+	if ( isBufferType( expr->mObject ) )
+	{
+		llvm::Value *result = genBufferFieldAccess( expr );
+		if ( result != nullptr )
+			return result;
+	}
+
 	// Get the address of the object so we can GEP into it
 	llvm::AllocaInst *objAddr = getExpressionAddress( expr->mObject );
 
@@ -2273,6 +3657,69 @@ llvm::Value *CodeGen::genFieldAccess( FieldAccessExpression *expr )
 	// Determine the struct type from the alloca
 	llvm::Type *allocType = objAddr->getAllocatedType();
 	llvm::StructType *structType = llvm::dyn_cast<llvm::StructType>( allocType );
+	llvm::Value *gepBase = objAddr;
+
+	// If allocType is a pointer (self parameter or shared variable), load the pointer and find the struct type
+	if ( structType == nullptr && allocType->isPointerTy() )
+	{
+		// Load the pointer to get the actual struct address
+		gepBase = mBuilder->CreateLoad( allocType, objAddr, "self.ptr" );
+
+		// Find the struct type from the BLang variable definition
+		if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
+		{
+			auto selfIt = mSelfStructMap.find( ve->mVariable );
+			if ( selfIt != mSelfStructMap.end() )
+			{
+				StructDefinition *sd = selfIt->second;
+
+				// For generic struct methods, use the mangled name (e.g. "Box_int")
+				auto mangledIt = mSelfStructMangledName.find( ve->mVariable );
+				if ( mangledIt != mSelfStructMangledName.end() )
+				{
+					auto stIt = mStructTypeMap.find( mangledIt->second );
+					if ( stIt != mStructTypeMap.end() )
+						structType = stIt->second;
+				}
+
+				if ( structType == nullptr )
+				{
+					auto stIt = mStructTypeMap.find( sd->getName() );
+					if ( stIt != mStructTypeMap.end() )
+						structType = stIt->second;
+					else
+						structType = getOrCreateStructType( sd );
+				}
+			}
+
+			// Fallback: resolve struct type from BLang variable type
+			// (handles shared/sync variables whose alloca is a pointer)
+			if ( structType == nullptr )
+			{
+				Type *varType = ve->mVariable->getVariableType();
+				if ( varType != nullptr )
+				{
+					string typeName = varType->getName();
+					if ( varType->getNumTypeParams() > 0 )
+					{
+						std::vector<SmartPtr<Type>> typeArgs;
+						for ( int i = 0; i < varType->getNumTypeParams(); i++ )
+							typeArgs.push_back( varType->getTypeParam( i ) );
+						typeName = mangleGenericName( varType->getName(), typeArgs );
+					}
+					auto stIt = mStructTypeMap.find( typeName );
+					if ( stIt != mStructTypeMap.end() )
+						structType = stIt->second;
+					else
+					{
+						auto defIt = mStructDefMap.find( typeName );
+						if ( defIt != mStructDefMap.end() )
+							structType = getOrCreateStructType( defIt->second );
+					}
+				}
+			}
+		}
+	}
 
 	if ( structType == nullptr )
 		return nullptr;
@@ -2303,9 +3750,220 @@ llvm::Value *CodeGen::genFieldAccess( FieldAccessExpression *expr )
 	if ( fieldIdx < 0 )
 		return nullptr;
 
-	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, objAddr, fieldIdx, expr->mFieldName );
-	return mBuilder->CreateLoad(
+	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName );
+	llvm::Value *fieldVal = mBuilder->CreateLoad(
 		structType->getElementType( fieldIdx ), fieldPtr, expr->mFieldName + ".val" );
+
+	// Retain refcounted fields so the loaded value survives independently of the struct.
+	// The struct will release its reference at scope exit (emitStructFieldRelease),
+	// and this retain ensures the loaded value stays valid until it is released
+	// (either as a temp string or when the variable storing it goes out of scope).
+	if ( structDef != nullptr && fieldIdx < (int)structDef->mFields.size() )
+	{
+		Type *fType = structDef->mFields[fieldIdx]->getVariableType();
+		if ( fType != nullptr )
+		{
+			string fName = fType->getName();
+			auto subIt = mTypeSubstitution.find( fName );
+			if ( subIt != mTypeSubstitution.end() )
+				fName = subIt->second->getName();
+
+			if ( fName == "string" )
+			{
+				mBuilder->CreateCall( getOrDeclareStringRetain(), { fieldVal } );
+				trackTempString( fieldVal );
+			}
+			// Note: Array and Buffer fields are NOT retained on field access.
+			// The struct owns them and won't release during the statement.
+			// If stored to a variable, genVariableDeclaration handles retain.
+			else if ( fType->isFunctionType() )
+			{
+				llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+					fieldVal, 1, "fa.fn.ctx" );
+				mBuilder->CreateCall( getOrDeclareLambdaCtxRetain(), { ctxPtr } );
+			}
+		}
+	}
+
+	return fieldVal;
+}
+
+llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
+{
+	// Get the object address
+	llvm::AllocaInst *objAddr = getExpressionAddress( expr->mObject );
+	if ( objAddr == nullptr )
+		return nullptr;
+
+	// Determine struct type from the alloca
+	llvm::Type *allocType = objAddr->getAllocatedType();
+	llvm::StructType *structType = llvm::dyn_cast<llvm::StructType>( allocType );
+	llvm::Value *gepBase = objAddr;
+
+	// If allocType is a pointer (self parameter or shared variable), load the pointer and find the struct type
+	if ( structType == nullptr && allocType->isPointerTy() )
+	{
+		gepBase = mBuilder->CreateLoad( allocType, objAddr, "self.ptr" );
+
+		if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
+		{
+			auto selfIt = mSelfStructMap.find( ve->mVariable );
+			if ( selfIt != mSelfStructMap.end() )
+			{
+				StructDefinition *sd = selfIt->second;
+
+				// For generic struct methods, use the mangled name (e.g. "Box_int")
+				auto mangledIt = mSelfStructMangledName.find( ve->mVariable );
+				if ( mangledIt != mSelfStructMangledName.end() )
+				{
+					auto stIt = mStructTypeMap.find( mangledIt->second );
+					if ( stIt != mStructTypeMap.end() )
+						structType = stIt->second;
+				}
+
+				if ( structType == nullptr )
+				{
+					auto stIt = mStructTypeMap.find( sd->getName() );
+					if ( stIt != mStructTypeMap.end() )
+						structType = stIt->second;
+					else
+						structType = getOrCreateStructType( sd );
+				}
+			}
+
+			// Fallback: resolve struct type from BLang variable type
+			// (handles shared/sync variables whose alloca is a pointer)
+			if ( structType == nullptr )
+			{
+				Type *varType = ve->mVariable->getVariableType();
+				if ( varType != nullptr )
+				{
+					string typeName = varType->getName();
+					if ( varType->getNumTypeParams() > 0 )
+					{
+						std::vector<SmartPtr<Type>> typeArgs;
+						for ( int i = 0; i < varType->getNumTypeParams(); i++ )
+							typeArgs.push_back( varType->getTypeParam( i ) );
+						typeName = mangleGenericName( varType->getName(), typeArgs );
+					}
+					auto stIt = mStructTypeMap.find( typeName );
+					if ( stIt != mStructTypeMap.end() )
+						structType = stIt->second;
+					else
+					{
+						auto defIt = mStructDefMap.find( typeName );
+						if ( defIt != mStructDefMap.end() )
+							structType = getOrCreateStructType( defIt->second );
+					}
+				}
+			}
+		}
+	}
+
+	if ( structType == nullptr )
+		return nullptr;
+
+	// Find the struct definition to get the field index
+	StructDefinition *structDef = nullptr;
+	if ( structType->hasName() )
+	{
+		auto defIt = mStructDefMap.find( structType->getName().str() );
+		if ( defIt != mStructDefMap.end() )
+			structDef = defIt->second;
+	}
+
+	if ( structDef == nullptr )
+		return nullptr;
+
+	// Find the field index
+	int fieldIdx = -1;
+	for ( size_t i = 0; i < structDef->mFields.size(); i++ )
+	{
+		if ( structDef->mFields[i]->getName() == expr->mFieldName )
+		{
+			fieldIdx = static_cast<int>( i );
+			break;
+		}
+	}
+
+	if ( fieldIdx < 0 )
+		return nullptr;
+
+	// Generate the value to assign
+	llvm::Value *val = genExpression( expr->mValue );
+	if ( val == nullptr )
+		return nullptr;
+
+	// Handle compound assignment operators (+=, -=, etc.)
+	if ( expr->mOperation != "=" )
+	{
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName );
+		llvm::Value *currentVal = mBuilder->CreateLoad(
+			structType->getElementType( fieldIdx ), fieldPtr, expr->mFieldName + ".cur" );
+
+		if ( expr->mOperation == "+=" )
+			val = mBuilder->CreateAdd( currentVal, val, "addtmp" );
+		else if ( expr->mOperation == "-=" )
+			val = mBuilder->CreateSub( currentVal, val, "subtmp" );
+		else if ( expr->mOperation == "*=" )
+			val = mBuilder->CreateMul( currentVal, val, "multmp" );
+		else if ( expr->mOperation == "/=" )
+			val = mBuilder->CreateSDiv( currentVal, val, "divtmp" );
+		else if ( expr->mOperation == "%=" )
+			val = mBuilder->CreateSRem( currentVal, val, "modtmp" );
+	}
+
+	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName + ".ptr" );
+	mBuilder->CreateStore( val, fieldPtr );
+	return val;
+}
+
+llvm::Value *CodeGen::genIndexAssignment( IndexAssignmentExpression *expr )
+{
+	// Check if the object is an array
+	if ( isArrayType( expr->mObject ) )
+	{
+		llvm::Value *arrVal = genExpression( expr->mObject );
+		llvm::Value *idxVal = genExpression( expr->mIndex );
+		llvm::Value *val = genExpression( expr->mValue );
+		if ( arrVal == nullptr || idxVal == nullptr || val == nullptr )
+			return nullptr;
+
+		// Extend index to i64 if needed
+		if ( !idxVal->getType()->isIntegerTy( 64 ) )
+			idxVal = mBuilder->CreateSExt( idxVal,
+				llvm::Type::getInt64Ty( *mContext ), "idx.ext" );
+
+		// For compound assignments, load current value first
+		if ( expr->mOperation != "=" )
+		{
+			llvm::Function *getFn = getOrDeclareArrayGet();
+			llvm::AllocaInst *tmpAlloca = mBuilder->CreateAlloca(
+				val->getType(), nullptr, "getval" );
+			mBuilder->CreateCall( getFn, { arrVal, idxVal, tmpAlloca } );
+			llvm::Value *currentVal = mBuilder->CreateLoad( val->getType(), tmpAlloca, "curval" );
+
+			if ( expr->mOperation == "+=" )
+				val = mBuilder->CreateAdd( currentVal, val, "addtmp" );
+			else if ( expr->mOperation == "-=" )
+				val = mBuilder->CreateSub( currentVal, val, "subtmp" );
+			else if ( expr->mOperation == "*=" )
+				val = mBuilder->CreateMul( currentVal, val, "multmp" );
+			else if ( expr->mOperation == "/=" )
+				val = mBuilder->CreateSDiv( currentVal, val, "divtmp" );
+		}
+
+		// Call __blang_array_set(arr, index, &value)
+		llvm::Function *setFn = getOrDeclareArraySet();
+		llvm::AllocaInst *valAlloca = mBuilder->CreateAlloca( val->getType(), nullptr, "setval" );
+		mBuilder->CreateStore( val, valAlloca );
+
+		mBuilder->CreateCall( setFn, { arrVal, idxVal, valAlloca } );
+
+		return val;
+	}
+
+	return nullptr;
 }
 
 llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
@@ -2326,6 +3984,14 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 			return result;
 	}
 
+	// Built-in buffer method calls
+	if ( isBufferType( expr->mObject ) )
+	{
+		llvm::Value *result = genBufferMethodCall( expr );
+		if ( result != nullptr )
+			return result;
+	}
+
 	// Determine the struct type from the object
 	StructDefinition *structDef = nullptr;
 	string structName;
@@ -2336,6 +4002,16 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		if ( varType != nullptr )
 		{
 			structName = varType->getName();
+
+			// Handle generic struct types: Box<int> -> structName = "Box_int"
+			if ( varType->getNumTypeParams() > 0 )
+			{
+				std::vector<SmartPtr<Type>> typeArgs;
+				for ( int i = 0; i < varType->getNumTypeParams(); i++ )
+					typeArgs.push_back( varType->getTypeParam( i ) );
+				structName = mangleGenericName( varType->getName(), typeArgs );
+			}
+
 			auto defIt = mStructDefMap.find( structName );
 			if ( defIt != mStructDefMap.end() )
 				structDef = defIt->second;
@@ -2356,6 +4032,94 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		}
 	}
 
+	// Fallback: check if this is a fn-typed field call
+	if ( methodDef == nullptr && structDef != nullptr )
+	{
+		// Find field with matching name
+		int fieldIdx = -1;
+		VariableDefinition *fieldDef = nullptr;
+		for ( size_t i = 0; i < structDef->mFields.size(); i++ )
+		{
+			if ( structDef->mFields[i]->getName() == expr->mMethodName )
+			{
+				fieldIdx = static_cast<int>( i );
+				fieldDef = structDef->mFields[i];
+				break;
+			}
+		}
+
+		if ( fieldDef != nullptr && fieldDef->getVariableType()->isFunctionType() )
+		{
+			// Load the {fn_ptr, ctx_ptr} from the struct field
+			llvm::StructType *structType = nullptr;
+			auto stIt = mStructTypeMap.find( structName );
+			if ( stIt != mStructTypeMap.end() )
+				structType = stIt->second;
+			else
+				structType = getOrCreateStructType( structDef );
+
+			if ( structType == nullptr )
+				return nullptr;
+
+			llvm::AllocaInst *objAddr = getExpressionAddress( expr->mObject );
+			llvm::Value *gepBase = (llvm::Value*)objAddr;
+
+			if ( objAddr == nullptr )
+			{
+				llvm::Value *objVal = genExpression( expr->mObject );
+				if ( objVal == nullptr )
+					return nullptr;
+				objAddr = mBuilder->CreateAlloca( objVal->getType(), nullptr, "tmp.fn" );
+				mBuilder->CreateStore( objVal, objAddr );
+				gepBase = objAddr;
+			}
+
+			// Handle self-by-pointer case (shared or self parameter)
+			llvm::Type *allocType = objAddr->getAllocatedType();
+			if ( allocType->isPointerTy() && !llvm::isa<llvm::StructType>( allocType ) )
+			{
+				gepBase = mBuilder->CreateLoad( allocType, objAddr, "self.ptr" );
+			}
+
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, "fn.field" );
+			llvm::Value *fnPair = mBuilder->CreateLoad( structType->getElementType( fieldIdx ), fieldPtr, "fn.pair" );
+
+			// Extract fn_ptr and ctx_ptr
+			llvm::Value *fnPtr = mBuilder->CreateExtractValue( fnPair, 0, "fn.ptr" );
+			llvm::Value *ctxPtr = mBuilder->CreateExtractValue( fnPair, 1, "fn.ctx" );
+
+			// Build call: fn_ptr(ctx_ptr, args...)
+			std::vector<llvm::Value*> callArgs;
+			callArgs.push_back( ctxPtr );
+			for ( auto &argExpr : expr->mArgs )
+			{
+				llvm::Value *argVal = genExpression( argExpr );
+				if ( argVal == nullptr )
+					return nullptr;
+				callArgs.push_back( argVal );
+			}
+
+			// Build function type for the indirect call
+			FunctionType *fnTypeDef = dynamic_cast<FunctionType*>( (Type*)fieldDef->getVariableType() );
+			llvm::Type *retType = fnTypeDef->getReturnType() != nullptr
+				? getLLVMType( fnTypeDef->getReturnType() )
+				: llvm::Type::getVoidTy( *mContext );
+			std::vector<llvm::Type*> paramTypes;
+			paramTypes.push_back( llvm::PointerType::get( *mContext, 0 ) ); // ctx
+			for ( int i = 0; i < fnTypeDef->getNumParamTypes(); i++ )
+				paramTypes.push_back( getLLVMType( fnTypeDef->getParamType( i ) ) );
+
+			llvm::FunctionType *callFnType = llvm::FunctionType::get( retType, paramTypes, false );
+
+			if ( retType->isVoidTy() )
+			{
+				mBuilder->CreateCall( callFnType, fnPtr, callArgs );
+				return nullptr;
+			}
+			return mBuilder->CreateCall( callFnType, fnPtr, callArgs, "fn.field.call" );
+		}
+	}
+
 	if ( methodDef == nullptr )
 		return nullptr;
 
@@ -2367,21 +4131,69 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 
 	if ( llvmFunc == nullptr )
 	{
-		// Try by mangled name
+		// Try by mangled name: StructName_methodName
 		string mangledName = structName + "_" + expr->mMethodName;
 		llvmFunc = mModule->getFunction( mangledName );
+
+		// Try in generic function map (for monomorphized generic struct methods)
+		if ( llvmFunc == nullptr )
+		{
+			auto gIt = mGenericFunctionMap.find( mangledName );
+			if ( gIt != mGenericFunctionMap.end() )
+				llvmFunc = gIt->second;
+		}
+
+		// Also try with module namespace prefix: mod__StructName_methodName
+		if ( llvmFunc == nullptr )
+		{
+			for ( auto &fn : *mModule )
+			{
+				string fname = fn.getName().str();
+				if ( fname.size() > mangledName.size() + 2 &&
+					 fname.substr( fname.size() - mangledName.size() ) == mangledName &&
+					 fname[fname.size() - mangledName.size() - 1] == '_' &&
+					 fname[fname.size() - mangledName.size() - 2] == '_' )
+				{
+					llvmFunc = &fn;
+					break;
+				}
+			}
+		}
 	}
 
 	if ( llvmFunc == nullptr )
 		return nullptr;
 
-	// Build arguments: self first, then explicit args
+	// Build arguments: self first (pass by pointer), then explicit args
 	std::vector<llvm::Value*> args;
 
-	// Generate self (the object value)
-	llvm::Value *selfVal = genExpression( expr->mObject );
-	if ( selfVal != nullptr )
+	// Generate self (pass pointer to struct data)
+	llvm::AllocaInst *selfAddr = getExpressionAddress( expr->mObject );
+	if ( selfAddr != nullptr )
+	{
+		if ( selfAddr->getAllocatedType()->isPointerTy() )
+		{
+			// Struct variable or self parameter: alloca holds a heap pointer,
+			// load it and pass the heap pointer as self
+			llvm::Value *heapPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), selfAddr, "self.heap" );
+			args.push_back( heapPtr );
+		}
+		else
+		{
+			// Stack-allocated value (non-struct): pass address of alloca directly
+			args.push_back( selfAddr );
+		}
+	}
+	else
+	{
+		// If we can't get the address, generate the expression value.
+		// For structs this produces a heap pointer; pass it directly.
+		llvm::Value *selfVal = genExpression( expr->mObject );
+		if ( selfVal == nullptr )
+			return nullptr;
 		args.push_back( selfVal );
+	}
 
 	// Generate explicit arguments
 	for ( auto &argExpr : expr->mArgs )
@@ -2457,6 +4269,15 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 
 			// Store the value through the byte pointer
 			mBuilder->CreateStore( argVal, bytePtr );
+
+			// If storing a string into the enum payload, untrack the temp —
+			// ownership transfers to the enum value
+			if ( argType->isPointerTy() && i < variant.mAssociatedTypes.size() )
+			{
+				string assocTypeName = variant.mAssociatedTypes[i]->getName();
+				if ( assocTypeName == "string" )
+					untrackTempString( argVal );
+			}
 
 			uint64_t typeSize = dl.getTypeAllocSize( argType );
 			if ( typeSize == 0 ) typeSize = 4; // fallback
@@ -2717,6 +4538,37 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 
 // ---- Try operator codegen (Task 54) ----
 
+EnumDefinition *CodeGen::resolveExpressionEnumDef( Expression *expr )
+{
+	// Resolve the QLang-level type name of the expression to find its EnumDefinition.
+	std::string typeName;
+
+	if ( auto *call = dynamic_cast<CallExpression*>( expr ) )
+	{
+		if ( call->mFunction != nullptr && call->mFunction->getReturnType() != nullptr )
+			typeName = call->mFunction->getReturnType()->getName();
+	}
+	else if ( auto *varExpr = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		if ( varExpr->mVariable != nullptr && varExpr->mVariable->getVariableType() != nullptr )
+			typeName = varExpr->mVariable->getVariableType()->getName();
+	}
+	else if ( auto *methodCall = dynamic_cast<MethodCallExpression*>( expr ) )
+	{
+		(void)methodCall;
+		// Method return types are harder to resolve statically; fall through
+	}
+
+	if ( !typeName.empty() )
+	{
+		auto it = mEnumDefMap.find( typeName );
+		if ( it != mEnumDefMap.end() )
+			return it->second;
+	}
+
+	return nullptr;
+}
+
 llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 {
 	// Generate the operand expression (e.g., might_fail())
@@ -2724,11 +4576,194 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 	if ( result == nullptr )
 		return nullptr;
 
-	// Simplified ? operator: pass the value through.
-	// Full implementation would check the tag for Result/Option and
-	// branch to an early return on error. For now, we treat the value
-	// as already unwrapped (works when Result/Option maps to i32).
-	return result;
+	// Try to resolve the operand's enum definition
+	EnumDefinition *enumDef = resolveExpressionEnumDef( expr->mOperand );
+
+	// If we can't determine the enum type, fall back to pass-through
+	if ( enumDef == nullptr || !enumHasPayload( enumDef ) )
+		return result;
+
+	// Find success variant (ok/some) and error variant (err/none)
+	int successIdx = -1;
+	int errorIdx = -1;
+	for ( size_t i = 0; i < enumDef->mVariants.size(); i++ )
+	{
+		const std::string &vname = enumDef->mVariants[i].mName;
+		if ( vname == "ok" || vname == "some" )
+			successIdx = static_cast<int>( i );
+		else if ( vname == "err" || vname == "none" )
+			errorIdx = static_cast<int>( i );
+	}
+
+	// If we can't identify the variants, pass through
+	if ( successIdx < 0 || errorIdx < 0 )
+		return result;
+
+	llvm::StructType *enumType = getOrCreateEnumType( enumDef );
+
+	// Store the result in an alloca so we can GEP into it
+	llvm::AllocaInst *enumAlloca = mBuilder->CreateAlloca( enumType, nullptr, "try.enum" );
+	mBuilder->CreateStore( result, enumAlloca );
+
+	// Extract the tag
+	llvm::Value *tagPtr = mBuilder->CreateStructGEP( enumType, enumAlloca, 0, "try.tag.ptr" );
+	llvm::Value *tagVal = mBuilder->CreateLoad(
+		llvm::Type::getInt32Ty( *mContext ), tagPtr, "try.tag" );
+
+	// Compare tag to the success index
+	llvm::Value *isSuccess = mBuilder->CreateICmpEQ(
+		tagVal,
+		llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), successIdx ),
+		"try.is_ok" );
+
+	llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+	llvm::BasicBlock *okBB = llvm::BasicBlock::Create( *mContext, "try.ok", func );
+	llvm::BasicBlock *errBB = llvm::BasicBlock::Create( *mContext, "try.err", func );
+	llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create( *mContext, "try.merge", func );
+
+	mBuilder->CreateCondBr( isSuccess, okBB, errBB );
+
+	// ---- Error branch: propagate the error by returning early ----
+	mBuilder->SetInsertPoint( errBB );
+
+	// Determine the current function's return type at the QLang level
+	// to construct a matching error enum value for early return.
+	llvm::Type *funcRetType = func->getReturnType();
+
+	if ( funcRetType->isStructTy() )
+	{
+		// The current function returns an enum struct — forward the whole value.
+		// The operand's enum value is the error, so just return it as-is
+		// (compatible if same enum, or at least same layout).
+		llvm::Value *errVal = mBuilder->CreateLoad( enumType, enumAlloca, "try.err.val" );
+
+		// If the function's return struct type differs, we need to reconstruct.
+		// For now, if they're the same type, return directly.
+		if ( funcRetType == enumType )
+		{
+			mBuilder->CreateRet( errVal );
+		}
+		else
+		{
+			// Different return enum: extract error payload and re-wrap.
+			// Construct a new enum of the function's return type with the error variant.
+			EnumDefinition *retEnumDef = nullptr;
+			if ( mCurrentFunction != nullptr && mCurrentFunction->getReturnType() != nullptr )
+			{
+				auto retIt = mEnumDefMap.find( mCurrentFunction->getReturnType()->getName() );
+				if ( retIt != mEnumDefMap.end() )
+					retEnumDef = retIt->second;
+			}
+
+			if ( retEnumDef != nullptr )
+			{
+				// Find the error variant in the return enum
+				int retErrIdx = -1;
+				for ( size_t i = 0; i < retEnumDef->mVariants.size(); i++ )
+				{
+					if ( retEnumDef->mVariants[i].mName == "err" ||
+						 retEnumDef->mVariants[i].mName == "none" )
+					{
+						retErrIdx = static_cast<int>( i );
+						break;
+					}
+				}
+
+				if ( retErrIdx >= 0 )
+				{
+					llvm::StructType *retEnumType = getOrCreateEnumType( retEnumDef );
+					llvm::AllocaInst *retAlloca = mBuilder->CreateAlloca(
+						retEnumType, nullptr, "try.ret.enum" );
+
+					// Set tag to error variant
+					llvm::Value *retTagPtr = mBuilder->CreateStructGEP(
+						retEnumType, retAlloca, 0, "try.ret.tag" );
+					mBuilder->CreateStore(
+						llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), retErrIdx ),
+						retTagPtr );
+
+					// Copy payload from source error to return error
+					auto &srcErrVariant = enumDef->mVariants[errorIdx];
+					if ( !srcErrVariant.mAssociatedTypes.empty() )
+					{
+						llvm::Type *payloadArrType = enumType->getElementType( 1 );
+						llvm::Value *srcPayloadPtr = mBuilder->CreateStructGEP(
+							enumType, enumAlloca, 1, "try.src.payload" );
+						llvm::Value *srcByte = mBuilder->CreateGEP(
+							payloadArrType, srcPayloadPtr,
+							{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+							  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+							"try.src.byte" );
+						llvm::Type *errPayloadType = getLLVMType( srcErrVariant.mAssociatedTypes[0] );
+						llvm::Value *errPayload = mBuilder->CreateLoad(
+							errPayloadType, srcByte, "try.err.payload" );
+
+						llvm::Type *retPayloadArrType = retEnumType->getElementType( 1 );
+						llvm::Value *retPayloadPtr = mBuilder->CreateStructGEP(
+							retEnumType, retAlloca, 1, "try.ret.payload" );
+						llvm::Value *retByte = mBuilder->CreateGEP(
+							retPayloadArrType, retPayloadPtr,
+							{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+							  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+							"try.ret.byte" );
+						mBuilder->CreateStore( errPayload, retByte );
+					}
+
+					llvm::Value *retVal = mBuilder->CreateLoad(
+						retEnumType, retAlloca, "try.ret.val" );
+					mBuilder->CreateRet( retVal );
+				}
+				else
+				{
+					// Can't find error variant in return type — return null
+					mBuilder->CreateRet( llvm::Constant::getNullValue( funcRetType ) );
+				}
+			}
+			else
+			{
+				// Return type is not a known enum — return null
+				mBuilder->CreateRet( llvm::Constant::getNullValue( funcRetType ) );
+			}
+		}
+	}
+	else
+	{
+		// Current function returns a non-enum type — shouldn't use ? but handle gracefully
+		if ( funcRetType->isVoidTy() )
+			mBuilder->CreateRetVoid();
+		else
+			mBuilder->CreateRet( llvm::Constant::getNullValue( funcRetType ) );
+	}
+
+	// ---- Success branch: extract the unwrapped payload value ----
+	mBuilder->SetInsertPoint( okBB );
+
+	llvm::Type *successPayloadType = llvm::Type::getInt32Ty( *mContext ); // default
+	if ( !enumDef->mVariants[successIdx].mAssociatedTypes.empty() )
+		successPayloadType = getLLVMType( enumDef->mVariants[successIdx].mAssociatedTypes[0] );
+
+	// GEP to the payload area and load the success value
+	llvm::Type *payloadArrType = enumType->getElementType( 1 );
+	llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+		enumType, enumAlloca, 1, "try.ok.payload.ptr" );
+	llvm::Value *bytePtr = mBuilder->CreateGEP(
+		payloadArrType, payloadPtr,
+		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+		  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+		"try.ok.byte" );
+	llvm::Value *unwrapped = mBuilder->CreateLoad(
+		successPayloadType, bytePtr, "try.ok.val" );
+
+	mBuilder->CreateBr( mergeBB );
+
+	// ---- Merge block: the unwrapped value flows through ----
+	mBuilder->SetInsertPoint( mergeBB );
+
+	// Create a phi node for the unwrapped value (only from okBB)
+	llvm::PHINode *phi = mBuilder->CreatePHI( successPayloadType, 1, "try.unwrapped" );
+	phi->addIncoming( unwrapped, okBB );
+
+	return phi;
 }
 
 // ---- Array codegen ----
@@ -2751,6 +4786,15 @@ llvm::Value *CodeGen::genArrayLiteral( ArrayLiteralExpression *expr )
 			llvm::DataLayout dl( mModule.get() );
 			elemSize = dl.getTypeAllocSize( elemLLVMType );
 		}
+	}
+	else if ( mArrayElemTypeHint != nullptr )
+	{
+		// Empty array literal with type hint from variable declaration
+		// (e.g., Array<string> keys = []; needs elem_size = 8 for pointers)
+		elemLLVMType = mArrayElemTypeHint;
+		llvm::DataLayout dl( mModule.get() );
+		elemSize = dl.getTypeAllocSize( elemLLVMType );
+		mArrayElemTypeHint = nullptr;
 	}
 
 	// Create BlangArray: __blang_array_create(elem_size, capacity)
@@ -2780,6 +4824,13 @@ llvm::Value *CodeGen::genArrayLiteral( ArrayLiteralExpression *expr )
 			mBuilder->CreateStore( elemVal, tmpAlloca );
 			mBuilder->CreateCall( pushFn, { arr, tmpAlloca } );
 		}
+	}
+
+	// Set element destructor for arrays with refcounted element types
+	if ( !mArrayElemTypeNameHint.empty() )
+	{
+		emitArrayElemDtor( arr, mArrayElemTypeNameHint );
+		mArrayElemTypeNameHint.clear();
 	}
 
 	return arr;
@@ -2820,7 +4871,31 @@ llvm::Value *CodeGen::genIndexExpression( IndexExpression *expr )
 		{
 			Type *varType = ve->mVariable->getVariableType();
 			if ( varType != nullptr && varType->getNumTypeParams() > 0 )
-				elemType = getLLVMType( varType->getTypeParam( 0 ) );
+			{
+				Type *elemTypeParam = varType->getTypeParam( 0 );
+				// Check substitution map for generic type params
+				string elemTypeName = elemTypeParam->getName();
+				auto subIt = mTypeSubstitution.find( elemTypeName );
+				if ( subIt != mTypeSubstitution.end() )
+					elemType = getLLVMType( subIt->second );
+				else
+					elemType = getLLVMType( elemTypeParam );
+			}
+		}
+		else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mObject ) )
+		{
+			// Field access on struct (e.g., self.keys[i])
+			Type *fieldType = getFieldType( fa );
+			if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
+			{
+				Type *elemTypeParam = fieldType->getTypeParam( 0 );
+				string elemTypeName = elemTypeParam->getName();
+				auto subIt = mTypeSubstitution.find( elemTypeName );
+				if ( subIt != mTypeSubstitution.end() )
+					elemType = getLLVMType( subIt->second );
+				else
+					elemType = getLLVMType( elemTypeParam );
+			}
 		}
 
 		llvm::AllocaInst *outAlloca = mBuilder->CreateAlloca(
@@ -2976,6 +5051,22 @@ llvm::Function *CodeGen::getOrDeclareSyncUnlock()
 		false );
 	return llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, "__blang_sync_unlock", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareSysInit()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_sys_init" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_sys_init( int argc, char **argv )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::Type::getInt32Ty( *mContext ),
+		  llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_sys_init", mModule.get() );
 }
 
 llvm::Function *CodeGen::getOrDeclareRuntimeInit()
@@ -3341,6 +5432,12 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	auto savedArcStack = mArcScopeStack;
 	auto savedStringStack = mStringScopeStack;
 	auto savedArrayStack = mArrayScopeStack;
+	auto savedBufferStack = mBufferScopeStack;
+	auto savedLambdaStack = mLambdaScopeStack;
+	auto savedStructStack = mStructScopeStack;
+	auto savedEnumStack = mEnumScopeStack;
+	auto savedTempStrings = mTempStrings;
+	auto savedTempLambdaCtxs = mTempLambdaCtxs;
 	auto savedSpawnOwnVars = mSpawnOuterOwnVars;
 
 	// Generate the spawn function body
@@ -3354,6 +5451,12 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	mArcScopeStack.clear();
 	mStringScopeStack.clear();
 	mArrayScopeStack.clear();
+	mBufferScopeStack.clear();
+	mLambdaScopeStack.clear();
+	mStructScopeStack.clear();
+	mEnumScopeStack.clear();
+	mTempStrings.clear();
+	mTempLambdaCtxs.clear();
 
 	// Track own variables from the outer scope for spawn boundary checks.
 	// These were excluded from captures but need to be tracked so that
@@ -3407,6 +5510,12 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	mArcScopeStack = savedArcStack;
 	mStringScopeStack = savedStringStack;
 	mArrayScopeStack = savedArrayStack;
+	mBufferScopeStack = savedBufferStack;
+	mLambdaScopeStack = savedLambdaStack;
+	mStructScopeStack = savedStructStack;
+	mEnumScopeStack = savedEnumStack;
+	mTempStrings = savedTempStrings;
+	mTempLambdaCtxs = savedTempLambdaCtxs;
 	mSpawnOuterOwnVars = savedSpawnOwnVars;
 
 	// Back in the caller: allocate context, populate, and call __blang_spawn
@@ -3444,6 +5553,762 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	llvm::Value *taskHandle = mBuilder->CreateCall(
 		getOrDeclareSpawn(), { spawnFn, ctxAlloc }, "spawn.task" );
 	return taskHandle;
+}
+
+// ---- Lambda capture analysis ----
+
+// Walk an AST subtree and collect all VariableDefinition* references.
+// Used to determine which outer-scope variables a lambda actually uses,
+// so we only capture those (instead of blindly capturing everything).
+void CodeGen::collectReferencedVars( Statement *stmt, std::set<VariableDefinition*> &vars )
+{
+	if ( stmt == nullptr )
+		return;
+
+	// --- Leaf nodes that reference variables ---
+	if ( auto *ve = dynamic_cast<VariableExpression*>( stmt ) )
+	{
+		vars.insert( ve->mVariable );
+		return;
+	}
+	if ( auto *ae = dynamic_cast<AssignmentExpression*>( stmt ) )
+	{
+		vars.insert( ae->mVariable );
+		collectReferencedVars( ae->mValue, vars );
+		return;
+	}
+	if ( auto *ic = dynamic_cast<IndirectCallExpression*>( stmt ) )
+	{
+		vars.insert( ic->mFnVariable );
+		for ( auto &p : ic->mParams )
+			collectReferencedVars( p, vars );
+		return;
+	}
+
+	// --- Compound statements ---
+	if ( auto *block = dynamic_cast<Block*>( stmt ) )
+	{
+		for ( auto &s : block->mStatementList )
+			collectReferencedVars( s, vars );
+		return;
+	}
+	if ( auto *ifStmt = dynamic_cast<IfStatement*>( stmt ) )
+	{
+		collectReferencedVars( ifStmt->mIfExpression, vars );
+		collectReferencedVars( ifStmt->mStatement, vars );
+		collectReferencedVars( ifStmt->mElseStatement, vars );
+		return;
+	}
+	if ( auto *whileStmt = dynamic_cast<WhileStatement*>( stmt ) )
+	{
+		collectReferencedVars( whileStmt->mLoopExpression, vars );
+		collectReferencedVars( whileStmt->mLoopStatement, vars );
+		return;
+	}
+	if ( auto *forIn = dynamic_cast<ForInStatement*>( stmt ) )
+	{
+		collectReferencedVars( forIn->mIterableExpression, vars );
+		collectReferencedVars( forIn->mBody, vars );
+		return;
+	}
+	if ( auto *ret = dynamic_cast<ReturnStatement*>( stmt ) )
+	{
+		collectReferencedVars( ret->mExpression, vars );
+		return;
+	}
+	if ( auto *call = dynamic_cast<CallExpression*>( stmt ) )
+	{
+		for ( auto &p : call->mParams )
+			collectReferencedVars( p, vars );
+		return;
+	}
+
+	// --- Binary/unary expressions ---
+	if ( auto *ops = dynamic_cast<OperationsExpression*>( stmt ) )
+	{
+		collectReferencedVars( ops->mOp1, vars );
+		collectReferencedVars( ops->mOp2, vars );
+		return;
+	}
+	if ( auto *unary = dynamic_cast<UnaryExpression*>( stmt ) )
+	{
+		collectReferencedVars( unary->mOperand, vars );
+		return;
+	}
+
+	// --- Field/method/index access ---
+	if ( auto *fa = dynamic_cast<FieldAccessExpression*>( stmt ) )
+	{
+		collectReferencedVars( fa->mObject, vars );
+		return;
+	}
+	if ( auto *mc = dynamic_cast<MethodCallExpression*>( stmt ) )
+	{
+		collectReferencedVars( mc->mObject, vars );
+		for ( auto &a : mc->mArgs )
+			collectReferencedVars( a, vars );
+		return;
+	}
+	if ( auto *idx = dynamic_cast<IndexExpression*>( stmt ) )
+	{
+		collectReferencedVars( idx->mObject, vars );
+		collectReferencedVars( idx->mIndex, vars );
+		return;
+	}
+
+	// --- Struct, array, enum literals ---
+	if ( auto *sl = dynamic_cast<StructLiteralExpression*>( stmt ) )
+	{
+		for ( auto &v : sl->mFieldValues )
+			collectReferencedVars( v, vars );
+		return;
+	}
+	if ( auto *al = dynamic_cast<ArrayLiteralExpression*>( stmt ) )
+	{
+		for ( auto &e : al->mElements )
+			collectReferencedVars( e, vars );
+		return;
+	}
+	if ( auto *ec = dynamic_cast<EnumConstructExpression*>( stmt ) )
+	{
+		for ( auto &a : ec->mArgs )
+			collectReferencedVars( a, vars );
+		return;
+	}
+
+	// --- String interpolation ---
+	if ( auto *si = dynamic_cast<StringInterpolation*>( stmt ) )
+	{
+		for ( auto &p : si->mParts )
+			collectReferencedVars( p, vars );
+		return;
+	}
+
+	// --- Variable declarations ---
+	if ( auto *vd = dynamic_cast<VariableDeclaration*>( stmt ) )
+	{
+		for ( auto &d : vd->mVariables )
+			collectReferencedVars( d.mInitialValue, vars );
+		return;
+	}
+
+	// --- Assignment variants ---
+	if ( auto *fae = dynamic_cast<FieldAssignmentExpression*>( stmt ) )
+	{
+		collectReferencedVars( fae->mObject, vars );
+		collectReferencedVars( fae->mValue, vars );
+		return;
+	}
+	if ( auto *iae = dynamic_cast<IndexAssignmentExpression*>( stmt ) )
+	{
+		collectReferencedVars( iae->mObject, vars );
+		collectReferencedVars( iae->mIndex, vars );
+		collectReferencedVars( iae->mValue, vars );
+		return;
+	}
+
+	// --- Match/try/await ---
+	if ( auto *match = dynamic_cast<MatchExpression*>( stmt ) )
+	{
+		collectReferencedVars( match->mSubject, vars );
+		for ( auto &arm : match->mArms )
+			collectReferencedVars( arm.mBody, vars );
+		return;
+	}
+	if ( auto *tryExpr = dynamic_cast<TryExpression*>( stmt ) )
+	{
+		collectReferencedVars( tryExpr->mOperand, vars );
+		return;
+	}
+	if ( auto *awaitExpr = dynamic_cast<AwaitExpression*>( stmt ) )
+	{
+		collectReferencedVars( awaitExpr->mOperand, vars );
+		return;
+	}
+
+	// --- Pipeline ---
+	if ( auto *pipe = dynamic_cast<PipelineExpression*>( stmt ) )
+	{
+		collectReferencedVars( pipe->mInput, vars );
+		collectReferencedVars( pipe->mTransform, vars );
+		return;
+	}
+
+	// --- Range ---
+	if ( auto *range = dynamic_cast<RangeExpression*>( stmt ) )
+	{
+		collectReferencedVars( range->mStart, vars );
+		collectReferencedVars( range->mEnd, vars );
+		return;
+	}
+
+	// --- Spawn/event/assert ---
+	if ( auto *spawn = dynamic_cast<SpawnStatement*>( stmt ) )
+	{
+		collectReferencedVars( spawn->mBody, vars );
+		return;
+	}
+	if ( auto *eh = dynamic_cast<EventHandler*>( stmt ) )
+	{
+		collectReferencedVars( eh->mEventExpression, vars );
+		collectReferencedVars( eh->mBody, vars );
+		return;
+	}
+	if ( auto *assertStmt = dynamic_cast<AssertStatement*>( stmt ) )
+	{
+		collectReferencedVars( assertStmt->mExpression, vars );
+		return;
+	}
+	if ( auto *wait = dynamic_cast<WaitStatement*>( stmt ) )
+	{
+		collectReferencedVars( wait->mExpr, vars );
+		return;
+	}
+
+	// --- Nested lambdas: recurse to find transitive captures ---
+	if ( auto *innerLambda = dynamic_cast<LambdaExpression*>( stmt ) )
+	{
+		collectReferencedVars( innerLambda->mBody, vars );
+		return;
+	}
+
+	// ConstExpression, BreakStatement, ContinueStatement, WaitAllStatement,
+	// FunctionRefExpression — no variable references to collect
+}
+
+// ---- Lambda context destructor generation ----
+
+// Generate a destructor function for a lambda context struct.
+// The destructor releases any captured refcounted types (string, array,
+// buffer, fn-typed) when the context refcount reaches zero.
+// Context layout: { i64 refcount, ptr destructor, ...captured_fields... }
+// Captured fields start at index 2.
+llvm::Function *CodeGen::genLambdaDestructor(
+	const std::string &name,
+	llvm::StructType *ctxType,
+	const std::vector<std::pair<VariableDefinition*, llvm::AllocaInst*>> &captures,
+	const std::vector<llvm::Type*> &captureTypes )
+{
+	// Check if any captures need release
+	bool needsDestructor = false;
+	for ( size_t i = 0; i < captures.size(); i++ )
+	{
+		VariableDefinition *varDef = captures[i].first;
+		Type *varType = varDef->getVariableType();
+		if ( varType == nullptr )
+			continue;
+		string typeName = varType->getName();
+		if ( typeName == "string" || typeName == "Array" ||
+			 typeName == "Buffer" || varType->isFunctionType() )
+		{
+			needsDestructor = true;
+			break;
+		}
+		OwnershipQualifier ownership = varDef->getOwnership();
+		if ( ownership == OwnershipQualifier::kOwnership_Shared ||
+			 ownership == OwnershipQualifier::kOwnership_Sync )
+		{
+			needsDestructor = true;
+			break;
+		}
+	}
+
+	if ( !needsDestructor )
+		return nullptr;
+
+	// Create destructor function: void dtor(void* ctx)
+	llvm::FunctionType *dtorType = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	llvm::Function *dtorFn = llvm::Function::Create(
+		dtorType, llvm::Function::InternalLinkage, name, mModule.get() );
+
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+		*mContext, "entry", dtorFn );
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::Value *ctxPtr = dtorFn->getArg( 0 );
+
+	for ( size_t i = 0; i < captures.size(); i++ )
+	{
+		VariableDefinition *varDef = captures[i].first;
+		Type *varType = varDef->getVariableType();
+		if ( varType == nullptr )
+			continue;
+
+		string typeName = varType->getName();
+		unsigned fieldIdx = static_cast<unsigned>( i + 2 ); // +2 for refcount + destructor header
+
+		OwnershipQualifier ownership = varDef->getOwnership();
+		if ( ownership == OwnershipQualifier::kOwnership_Shared ||
+			 ownership == OwnershipQualifier::kOwnership_Sync )
+		{
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				ctxType, ctxPtr, fieldIdx, "dtor.arc.ptr" );
+			llvm::Value *val = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), fieldPtr, "dtor.arc.val" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { val } );
+		}
+		else if ( typeName == "string" )
+		{
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				ctxType, ctxPtr, fieldIdx, "dtor.str.ptr" );
+			llvm::Value *val = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), fieldPtr, "dtor.str.val" );
+			mBuilder->CreateCall( getOrDeclareStringRelease(), { val } );
+		}
+		else if ( typeName == "Array" )
+		{
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				ctxType, ctxPtr, fieldIdx, "dtor.arr.ptr" );
+			llvm::Value *val = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), fieldPtr, "dtor.arr.val" );
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { val } );
+		}
+		else if ( typeName == "Buffer" )
+		{
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				ctxType, ctxPtr, fieldIdx, "dtor.buf.ptr" );
+			llvm::Value *val = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), fieldPtr, "dtor.buf.val" );
+			mBuilder->CreateCall( getOrDeclareBufferRelease(), { val } );
+		}
+		else if ( varType->isFunctionType() )
+		{
+			// fn-typed capture: extract ctx_ptr (field 1 of {fn_ptr, ctx_ptr}) and release
+			llvm::Type *pairType = captureTypes[i]; // {ptr, ptr}
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				ctxType, ctxPtr, fieldIdx, "dtor.fn.ptr" );
+			llvm::Value *pairVal = mBuilder->CreateLoad( pairType, fieldPtr, "dtor.fn.val" );
+			llvm::Value *innerCtx = mBuilder->CreateExtractValue( pairVal, 1, "dtor.fn.ctx" );
+			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { innerCtx } );
+		}
+	}
+
+	mBuilder->CreateRetVoid();
+	mBuilder->SetInsertPoint( savedBB );
+	return dtorFn;
+}
+
+// ---- Lambda expression codegen ----
+
+llvm::Value *CodeGen::genLambdaExpression( LambdaExpression *lambda )
+{
+	if ( lambda->mBody == nullptr )
+		return nullptr;
+
+	// --- Capture analysis: only capture outer variables actually referenced ---
+	std::set<VariableDefinition*> referencedVars;
+	collectReferencedVars( lambda->mBody, referencedVars );
+
+	std::vector<std::pair<VariableDefinition*, llvm::AllocaInst*>> captures;
+	for ( auto &entry : mVariableMap )
+	{
+		// Only capture variables that are actually referenced in the body
+		if ( referencedVars.count( entry.first ) == 0 )
+			continue;
+
+		// Skip lambda's own parameters (not in mVariableMap yet, but just in case)
+		bool isOwnParam = false;
+		for ( auto &param : lambda->mParameters )
+		{
+			if ( (VariableDefinition*)param == entry.first )
+			{
+				isOwnParam = true;
+				break;
+			}
+		}
+		if ( isOwnParam )
+			continue;
+
+		// Ownership check: own refcounted types cannot be captured
+		OwnershipQualifier ownership = entry.first->getOwnership();
+		if ( ownership == OwnershipQualifier::kOwnership_Own )
+		{
+			Type *varType = entry.first->getVariableType();
+			if ( varType != nullptr )
+			{
+				string typeName = varType->getName();
+				if ( typeName == "string" || typeName == "Array" ||
+					 typeName == "Buffer" || varType->isFunctionType() )
+				{
+					cerr << "error: own variable '" << entry.first->getName()
+						 << "' cannot be captured by lambda (use shared instead)" << endl;
+					mHasError = true;
+					continue;
+				}
+			}
+		}
+
+		captures.push_back( { entry.first, entry.second } );
+	}
+
+	// Build context struct type with refcount header:
+	//   { i64 refcount, ptr destructor, ...captured_fields... }
+	std::vector<llvm::Type*> captureTypes;
+	for ( auto &cap : captures )
+		captureTypes.push_back( cap.second->getAllocatedType() );
+
+	// Full struct includes header (refcount + destructor ptr) + captured fields
+	std::vector<llvm::Type*> ctxFields;
+	ctxFields.push_back( llvm::Type::getInt64Ty( *mContext ) );    // refcount
+	ctxFields.push_back( llvm::PointerType::get( *mContext, 0 ) ); // destructor
+	for ( auto &ct : captureTypes )
+		ctxFields.push_back( ct );
+
+	llvm::StructType *ctxType = nullptr;
+	if ( !captures.empty() )
+		ctxType = llvm::StructType::create( *mContext, ctxFields, "lambda.ctx" );
+
+	// Determine the lambda function signature:
+	// RetType __blang_lambda_N(void* ctx, ParamType1, ParamType2, ...)
+	llvm::Type *retType = lambda->mReturnType != nullptr
+		? getLLVMType( lambda->mReturnType )
+		: llvm::Type::getVoidTy( *mContext );
+
+	std::vector<llvm::Type*> fnParamTypes;
+	fnParamTypes.push_back( llvm::PointerType::get( *mContext, 0 ) ); // ctx ptr
+	for ( auto &param : lambda->mParameters )
+		fnParamTypes.push_back( getLLVMType( param->getVariableType() ) );
+
+	llvm::FunctionType *fnType = llvm::FunctionType::get( retType, fnParamTypes, false );
+
+	string lambdaName = "__blang_lambda_" + to_string( mLambdaCounter++ );
+	llvm::Function *lambdaFn = llvm::Function::Create(
+		fnType, llvm::Function::InternalLinkage, lambdaName, mModule.get() );
+	lambdaFn->getArg( 0 )->setName( "ctx" );
+	for ( int i = 0; i < (int)lambda->mParameters.size(); i++ )
+		lambdaFn->getArg( i + 1 )->setName( lambda->mParameters[i]->getName() );
+
+	// Generate destructor for this lambda's context (releases captured refcounted types)
+	llvm::Function *dtorFn = nullptr;
+	if ( ctxType != nullptr )
+	{
+		dtorFn = genLambdaDestructor(
+			lambdaName + "_dtor", ctxType, captures, captureTypes );
+	}
+
+	// Save codegen state
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	auto savedVarMap = mVariableMap;
+	auto savedLoopStack = mLoopStack;
+	auto savedArcStack = mArcScopeStack;
+	auto savedStringStack = mStringScopeStack;
+	auto savedArrayStack = mArrayScopeStack;
+	auto savedBufferStack = mBufferScopeStack;
+	auto savedLambdaStack = mLambdaScopeStack;
+	auto savedStructStack = mStructScopeStack;
+	auto savedEnumStack = mEnumScopeStack;
+	auto savedTempStrings = mTempStrings;
+	auto savedTempLambdaCtxs = mTempLambdaCtxs;
+	auto savedCurrentFunc = mCurrentFunction;
+	auto savedResultAlloca = mResultAlloca;
+
+	// Generate the lambda function body
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
+		*mContext, "entry", lambdaFn );
+	mBuilder->SetInsertPoint( entryBB );
+
+	mVariableMap.clear();
+	mMovedVariables.clear();
+	mLoopStack.clear();
+	mArcScopeStack.clear();
+	mStringScopeStack.clear();
+	mArrayScopeStack.clear();
+	mBufferScopeStack.clear();
+	mLambdaScopeStack.clear();
+	mStructScopeStack.clear();
+	mEnumScopeStack.clear();
+	mTempStrings.clear();
+	mTempLambdaCtxs.clear();
+	mCurrentFunction = nullptr;
+	mResultAlloca = nullptr;
+
+	// Unpack captures from context struct (fields start at index 2, after header)
+	if ( ctxType != nullptr )
+	{
+		llvm::Value *ctxPtr = lambdaFn->getArg( 0 );
+		for ( size_t i = 0; i < captures.size(); i++ )
+		{
+			llvm::Type *fieldType = captureTypes[i];
+			llvm::AllocaInst *localAlloca = mBuilder->CreateAlloca(
+				fieldType, nullptr, captures[i].first->getName() );
+
+			unsigned fieldIdx = static_cast<unsigned>( i + 2 ); // +2 for header
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				ctxType, ctxPtr, fieldIdx, "ctx.field" );
+			llvm::Value *fieldVal = mBuilder->CreateLoad( fieldType, fieldPtr, "ctx.val" );
+			mBuilder->CreateStore( fieldVal, localAlloca );
+
+			mVariableMap[captures[i].first] = localAlloca;
+		}
+	}
+
+	// Create allocas for lambda parameters
+	for ( int i = 0; i < (int)lambda->mParameters.size(); i++ )
+	{
+		VariableDefinition *paramDef = lambda->mParameters[i];
+		llvm::Value *arg = lambdaFn->getArg( i + 1 );
+		llvm::AllocaInst *alloca = mBuilder->CreateAlloca(
+			arg->getType(), nullptr, paramDef->getName() );
+		mBuilder->CreateStore( arg, alloca );
+		mVariableMap[paramDef] = alloca;
+	}
+
+	// Generate body
+	genBlock( lambda->mBody );
+
+	// Add implicit return void if no terminator
+	if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+	{
+		if ( retType->isVoidTy() )
+			mBuilder->CreateRetVoid();
+		else
+			mBuilder->CreateRet( llvm::Constant::getNullValue( retType ) );
+	}
+
+	// Restore codegen state
+	mBuilder->SetInsertPoint( savedBB );
+	mVariableMap = savedVarMap;
+	mLoopStack = savedLoopStack;
+	mArcScopeStack = savedArcStack;
+	mStringScopeStack = savedStringStack;
+	mArrayScopeStack = savedArrayStack;
+	mBufferScopeStack = savedBufferStack;
+	mLambdaScopeStack = savedLambdaStack;
+	mStructScopeStack = savedStructStack;
+	mEnumScopeStack = savedEnumStack;
+	mTempStrings = savedTempStrings;
+	mTempLambdaCtxs = savedTempLambdaCtxs;
+	mCurrentFunction = savedCurrentFunc;
+	mResultAlloca = savedResultAlloca;
+
+	// Back in caller: allocate context, populate, build {fn_ptr, ctx_ptr}
+	llvm::Value *ctxAlloc = llvm::ConstantPointerNull::get(
+		llvm::PointerType::get( *mContext, 0 ) );
+
+	if ( ctxType != nullptr && !captures.empty() )
+	{
+		llvm::DataLayout dl( mModule.get() );
+		uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
+
+		llvm::Function *mallocFn = getOrDeclareMalloc();
+		ctxAlloc = mBuilder->CreateCall( mallocFn,
+			{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
+			"lambda.ctx" );
+
+		// Initialize refcount = 1
+		llvm::Value *rcPtr = mBuilder->CreateStructGEP(
+			ctxType, ctxAlloc, 0, "ctx.rc" );
+		mBuilder->CreateStore(
+			llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 1 ), rcPtr );
+
+		// Store destructor pointer (or null if no destructor needed)
+		llvm::Value *dtorPtr = mBuilder->CreateStructGEP(
+			ctxType, ctxAlloc, 1, "ctx.dtor" );
+		if ( dtorFn != nullptr )
+			mBuilder->CreateStore( dtorFn, dtorPtr );
+		else
+			mBuilder->CreateStore(
+				llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) ),
+				dtorPtr );
+
+		// Populate captured fields (at index i+2)
+		for ( size_t i = 0; i < captures.size(); i++ )
+		{
+			llvm::AllocaInst *alloca = captures[i].second;
+			llvm::Type *fieldType = captureTypes[i];
+			llvm::Value *val = mBuilder->CreateLoad( fieldType, alloca, "cap.val" );
+
+			unsigned fieldIdx = static_cast<unsigned>( i + 2 );
+			llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+				ctxType, ctxAlloc, fieldIdx, "ctx.store" );
+			mBuilder->CreateStore( val, fieldPtr );
+
+			// Retain captured refcounted types
+			VariableDefinition *varDef = captures[i].first;
+			Type *varType = varDef->getVariableType();
+			if ( varType != nullptr )
+			{
+				OwnershipQualifier ownership = varDef->getOwnership();
+				if ( ownership == OwnershipQualifier::kOwnership_Shared ||
+					 ownership == OwnershipQualifier::kOwnership_Sync )
+				{
+					mBuilder->CreateCall( getOrDeclareRcRetain(), { val } );
+				}
+				else
+				{
+					string typeName = varType->getName();
+					if ( typeName == "string" )
+						mBuilder->CreateCall( getOrDeclareStringRetain(), { val } );
+					else if ( typeName == "Array" )
+						mBuilder->CreateCall( getOrDeclareArrayRetain(), { val } );
+					else if ( typeName == "Buffer" )
+						mBuilder->CreateCall( getOrDeclareBufferRetain(), { val } );
+					else if ( varType->isFunctionType() )
+					{
+						// Retain the inner lambda's context pointer
+						llvm::Value *innerCtx = mBuilder->CreateExtractValue(
+							val, 1, "cap.fn.ctx" );
+						mBuilder->CreateCall( getOrDeclareLambdaCtxRetain(),
+							{ innerCtx } );
+					}
+				}
+			}
+		}
+	}
+
+	// Track inline lambda context for deferred release.
+	// If this lambda is stored to a variable, genVariableDeclaration will untrack it.
+	if ( ctxType != nullptr && !captures.empty() )
+		trackTempLambdaCtx( ctxAlloc );
+
+	// Return {fn_ptr, ctx_ptr} struct
+	llvm::Type *pairType = llvm::StructType::get( *mContext, {
+		llvm::PointerType::get( *mContext, 0 ),
+		llvm::PointerType::get( *mContext, 0 )
+	} );
+	llvm::Value *pair = llvm::UndefValue::get( pairType );
+	pair = mBuilder->CreateInsertValue( pair, lambdaFn, 0, "lambda.pair.fn" );
+	pair = mBuilder->CreateInsertValue( pair, ctxAlloc, 1, "lambda.pair.ctx" );
+	return pair;
+}
+
+// ---- Function reference codegen ----
+
+llvm::Value *CodeGen::genFunctionRefExpression( FunctionRefExpression *funcRef )
+{
+	FunctionDefinition *funcDef = funcRef->mFunction;
+
+	// Generate or look up a thunk: RetType __blang_thunk_FuncName(void* ctx, params...)
+	string thunkName = "__blang_thunk_" + funcDef->getName();
+	llvm::Function *thunkFn = nullptr;
+
+	auto it = mThunkMap.find( thunkName );
+	if ( it != mThunkMap.end() )
+	{
+		thunkFn = it->second;
+	}
+	else
+	{
+		// Build thunk type: same as target function but with void* ctx as first param
+		llvm::Type *retType = getLLVMType( funcDef->getReturnType() );
+
+		std::vector<llvm::Type*> thunkParams;
+		thunkParams.push_back( llvm::PointerType::get( *mContext, 0 ) ); // ctx (unused)
+		for ( int i = 0; i < funcDef->getNumberParams(); i++ )
+			thunkParams.push_back( getLLVMType( funcDef->getParamType( i ) ) );
+
+		llvm::FunctionType *thunkType = llvm::FunctionType::get(
+			retType, thunkParams, funcDef->isVariadic() );
+		thunkFn = llvm::Function::Create(
+			thunkType, llvm::Function::InternalLinkage, thunkName, mModule.get() );
+		thunkFn->getArg( 0 )->setName( "ctx" );
+		for ( int i = 0; i < funcDef->getNumberParams(); i++ )
+			thunkFn->getArg( i + 1 )->setName( funcDef->getParam( i )->getName() );
+
+		// Generate thunk body: call the real function, forwarding all args
+		llvm::BasicBlock *entry = llvm::BasicBlock::Create(
+			*mContext, "entry", thunkFn );
+		llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+		mBuilder->SetInsertPoint( entry );
+
+		// Look up or declare the target function
+		llvm::Function *targetFn = nullptr;
+		auto fIt = mFunctionMap.find( funcDef );
+		if ( fIt != mFunctionMap.end() )
+			targetFn = fIt->second;
+		else
+			targetFn = mModule->getFunction( funcDef->getName() );
+		if ( targetFn == nullptr && funcDef->isExtern() )
+			targetFn = genFunction( funcDef );
+
+		std::vector<llvm::Value*> args;
+		for ( int i = 0; i < funcDef->getNumberParams(); i++ )
+			args.push_back( thunkFn->getArg( i + 1 ) );
+
+		if ( retType->isVoidTy() )
+		{
+			mBuilder->CreateCall( targetFn, args );
+			mBuilder->CreateRetVoid();
+		}
+		else
+		{
+			llvm::Value *result = mBuilder->CreateCall( targetFn, args, "thunk.call" );
+			mBuilder->CreateRet( result );
+		}
+
+		mBuilder->SetInsertPoint( savedBB );
+		mThunkMap[thunkName] = thunkFn;
+	}
+
+	// Return {thunk_ptr, null} pair
+	llvm::Type *pairType = llvm::StructType::get( *mContext, {
+		llvm::PointerType::get( *mContext, 0 ),
+		llvm::PointerType::get( *mContext, 0 )
+	} );
+	llvm::Value *pair = llvm::UndefValue::get( pairType );
+	pair = mBuilder->CreateInsertValue( pair, thunkFn, 0, "fref.pair.fn" );
+	pair = mBuilder->CreateInsertValue( pair, llvm::ConstantPointerNull::get(
+		llvm::PointerType::get( *mContext, 0 ) ), 1, "fref.pair.ctx" );
+	return pair;
+}
+
+// ---- Indirect call codegen ----
+
+llvm::Value *CodeGen::genIndirectCallExpression( IndirectCallExpression *indCall )
+{
+	VariableDefinition *fnVar = indCall->mFnVariable;
+	FunctionType *fnType = dynamic_cast<FunctionType*>( fnVar->getVariableType() );
+	if ( fnType == nullptr )
+		return nullptr;
+
+	// Load the {fn_ptr, ctx_ptr} pair from the variable
+	auto it = mVariableMap.find( fnVar );
+	if ( it == mVariableMap.end() )
+	{
+		cerr << "CodeGen: undefined function variable '" << fnVar->getName() << "'" << endl;
+		return nullptr;
+	}
+
+	llvm::Type *pairType = it->second->getAllocatedType();
+	llvm::Value *pair = mBuilder->CreateLoad( pairType, it->second, fnVar->getName() + ".pair" );
+	llvm::Value *fnPtr = mBuilder->CreateExtractValue( pair, 0, "call.fn" );
+	llvm::Value *ctxPtr = mBuilder->CreateExtractValue( pair, 1, "call.ctx" );
+
+	// Build the LLVM function type: RetType(void* ctx, ParamTypes...)
+	llvm::Type *retType = fnType->getReturnType() != nullptr
+		? getLLVMType( fnType->getReturnType() )
+		: llvm::Type::getVoidTy( *mContext );
+
+	std::vector<llvm::Type*> callParamTypes;
+	callParamTypes.push_back( llvm::PointerType::get( *mContext, 0 ) ); // ctx
+	for ( int i = 0; i < fnType->getNumParamTypes(); i++ )
+		callParamTypes.push_back( getLLVMType( fnType->getParamType( i ) ) );
+
+	llvm::FunctionType *callType = llvm::FunctionType::get(
+		retType, callParamTypes, false );
+
+	// Build argument list: ctx_ptr, then user args
+	std::vector<llvm::Value*> args;
+	args.push_back( ctxPtr );
+	for ( auto &paramExpr : indCall->mParams )
+	{
+		llvm::Value *argVal = genExpression( paramExpr );
+		if ( argVal == nullptr )
+			return nullptr;
+		args.push_back( argVal );
+	}
+
+	if ( retType->isVoidTy() )
+	{
+		mBuilder->CreateCall( callType, fnPtr, args );
+		return nullptr;
+	}
+
+	return mBuilder->CreateCall( callType, fnPtr, args, "indcall" );
 }
 
 // ---- Wait statement codegen ----
@@ -3515,6 +6380,12 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	auto savedArcStack = mArcScopeStack;
 	auto savedStringStack = mStringScopeStack;
 	auto savedArrayStack = mArrayScopeStack;
+	auto savedBufferStack = mBufferScopeStack;
+	auto savedLambdaStack = mLambdaScopeStack;
+	auto savedStructStack = mStructScopeStack;
+	auto savedEnumStack = mEnumScopeStack;
+	auto savedTempStrings = mTempStrings;
+	auto savedTempLambdaCtxs = mTempLambdaCtxs;
 
 	// Generate callback body
 	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
@@ -3527,6 +6398,12 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	mArcScopeStack.clear();
 	mStringScopeStack.clear();
 	mArrayScopeStack.clear();
+	mBufferScopeStack.clear();
+	mLambdaScopeStack.clear();
+	mStructScopeStack.clear();
+	mEnumScopeStack.clear();
+	mTempStrings.clear();
+	mTempLambdaCtxs.clear();
 
 	// Unpack captures
 	llvm::Value *ctxPtr = cbFn->getArg( 0 );
@@ -3554,6 +6431,12 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	mArcScopeStack = savedArcStack;
 	mStringScopeStack = savedStringStack;
 	mArrayScopeStack = savedArrayStack;
+	mBufferScopeStack = savedBufferStack;
+	mLambdaScopeStack = savedLambdaStack;
+	mStructScopeStack = savedStructStack;
+	mEnumScopeStack = savedEnumStack;
+	mTempStrings = savedTempStrings;
+	mTempLambdaCtxs = savedTempLambdaCtxs;
 
 	// In the caller: evaluate the event expression (for side effects)
 	if ( handler->mEventExpression != nullptr )
@@ -3654,6 +6537,18 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 			llvm::Value *endVal = genExpression( rangeExpr->mEnd );
 			if ( startVal == nullptr || endVal == nullptr )
 				return;
+
+			// Promote start/end to matching types if widths differ
+			if ( startVal->getType() != endVal->getType() &&
+				 startVal->getType()->isIntegerTy() && endVal->getType()->isIntegerTy() )
+			{
+				unsigned startBits = startVal->getType()->getIntegerBitWidth();
+				unsigned endBits = endVal->getType()->getIntegerBitWidth();
+				if ( startBits < endBits )
+					startVal = mBuilder->CreateSExt( startVal, endVal->getType(), "range.promote" );
+				else
+					endVal = mBuilder->CreateSExt( endVal, startVal->getType(), "range.promote" );
+			}
 
 			// Create the loop variable alloca
 			llvm::Type *iterType = startVal->getType();
@@ -3833,6 +6728,53 @@ llvm::Function *CodeGen::getOrDeclareMalloc()
 		ft, llvm::Function::ExternalLinkage, "malloc", mModule.get() );
 }
 
+llvm::Function *CodeGen::getOrDeclareFree()
+{
+	llvm::Function *f = mModule->getFunction( "free" );
+	if ( f != nullptr )
+		return f;
+
+	// void free(void *ptr)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "free", mModule.get() );
+}
+
+// ---- Lambda context lifetime runtime declarations ----
+
+llvm::Function *CodeGen::getOrDeclareLambdaCtxRetain()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_lambda_ctx_retain" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_lambda_ctx_retain(void* ctx)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_lambda_ctx_retain", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareLambdaCtxRelease()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_lambda_ctx_release" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_lambda_ctx_release(void* ctx)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_lambda_ctx_release", mModule.get() );
+}
+
 // ---- String interpolation codegen ----
 
 llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
@@ -3860,6 +6802,7 @@ llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 				llvm::Type::getInt64Ty( *mContext ), cs->mValue.size() );
 			llvm::Value *strVal = mBuilder->CreateCall(
 				getOrDeclareStringCreateStatic(), { strData, lenVal }, "interp.str" );
+			trackTempString( strVal );
 			parts.push_back( strVal );
 		}
 		else
@@ -3871,32 +6814,35 @@ llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 
 			if ( val->getType()->isIntegerTy() )
 			{
+				llvm::Value *strPart;
 				if ( val->getType()->isIntegerTy( 1 ) )
 				{
-					// Bool → __blang_bool_to_string
-					parts.push_back( mBuilder->CreateCall(
-						getOrDeclareBoolToString(), { val }, "boolstr" ) );
+					strPart = mBuilder->CreateCall(
+						getOrDeclareBoolToString(), { val }, "boolstr" );
 				}
 				else
 				{
-					// Integer → extend to i64, then __blang_int_to_string
 					llvm::Value *ext = mBuilder->CreateSExt( val,
 						llvm::Type::getInt64Ty( *mContext ), "ext64" );
-					parts.push_back( mBuilder->CreateCall(
-						getOrDeclareIntToString(), { ext }, "intstr" ) );
+					strPart = mBuilder->CreateCall(
+						getOrDeclareIntToString(), { ext }, "intstr" );
 				}
+				trackTempString( strPart );
+				parts.push_back( strPart );
 			}
 			else if ( val->getType()->isFloatTy() || val->getType()->isDoubleTy() )
 			{
 				if ( val->getType()->isFloatTy() )
 					val = mBuilder->CreateFPExt( val,
 						llvm::Type::getDoubleTy( *mContext ), "fpext" );
-				parts.push_back( mBuilder->CreateCall(
-					getOrDeclareFloatToString(), { val }, "fltstr" ) );
+				llvm::Value *strPart = mBuilder->CreateCall(
+					getOrDeclareFloatToString(), { val }, "fltstr" );
+				trackTempString( strPart );
+				parts.push_back( strPart );
 			}
 			else if ( val->getType()->isPointerTy() )
 			{
-				// Already a BlangString pointer — use directly
+				// Already a BlangString pointer — use directly (borrowed)
 				parts.push_back( val );
 			}
 		}
@@ -3907,8 +6853,10 @@ llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 		llvm::Constant *emptyData = mBuilder->CreateGlobalStringPtr( "", "empty.data" );
 		llvm::Value *zeroLen = llvm::ConstantInt::get(
 			llvm::Type::getInt64Ty( *mContext ), 0 );
-		return mBuilder->CreateCall(
+		llvm::Value *r = mBuilder->CreateCall(
 			getOrDeclareStringCreateStatic(), { emptyData, zeroLen }, "str" );
+		trackTempString( r );
+		return r;
 	}
 
 	if ( parts.size() == 1 )
@@ -3934,8 +6882,543 @@ llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 	llvm::Value *arrPtr = mBuilder->CreateGEP(
 		arrType, arr, { idx0, idx0 }, "interp.ptr" );
 	llvm::Value *countVal = llvm::ConstantInt::get( i64Ty, parts.size() );
-	return mBuilder->CreateCall(
+	llvm::Value *result = mBuilder->CreateCall(
 		getOrDeclareStringConcatMany(), { arrPtr, countVal }, "interp.result" );
+	trackTempString( result );
+
+	return result;
+}
+
+// ---- Builtin print/println codegen ----
+
+void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
+{
+	// println() with no args → just emit newline
+	if ( call->mParams.empty() )
+	{
+		if ( appendNewline )
+			mBuilder->CreateCall( getOrDeclarePrintNewline(), {} );
+		return;
+	}
+
+	// First arg must be a string literal (format string).
+	// String literals containing '{' get parsed as StringInterpolation by the
+	// parser. When all parts are ConstString (no variable references resolved),
+	// reconstruct the original format string text.
+	std::string fmtStr;
+	auto *fmtConst = dynamic_cast<ConstString*>( (Expression*)call->mParams[0] );
+	if ( fmtConst != nullptr )
+	{
+		fmtStr = fmtConst->mValue;
+	}
+	else if ( auto *interp = dynamic_cast<StringInterpolation*>( (Expression*)call->mParams[0] ) )
+	{
+		// Reconstruct the format string from StringInterpolation parts.
+		// The parser preserves unresolved {}, {:spec} as literal text.
+		bool allLiteral = true;
+		for ( auto &part : interp->mParts )
+		{
+			if ( dynamic_cast<ConstString*>( (Expression*)part ) == nullptr )
+			{
+				allLiteral = false;
+				break;
+			}
+		}
+		if ( allLiteral )
+		{
+			for ( auto &part : interp->mParts )
+			{
+				auto *cs = dynamic_cast<ConstString*>( (Expression*)part );
+				fmtStr += cs->mValue;
+			}
+		}
+		else
+		{
+			cerr << "CodeGen error: print/println format string must be a string literal, not a string interpolation with variables" << endl;
+			mHasError = true;
+			return;
+		}
+	}
+	else
+	{
+		cerr << "CodeGen error: print/println format string must be a string literal" << endl;
+		mHasError = true;
+		return;
+	}
+
+	// Fake lexer for error reporting — we use a reference to the module scope's parent
+	// Since we're in codegen, errors are reported via cerr + mHasError
+
+	// Parse format string
+	// We need a Lexer for error reporting in ParsedFormatString::parse.
+	// Instead, we'll do inline parsing since we can't easily get a Lexer here.
+	// Re-implement the parse inline with cerr error reporting.
+
+	ParsedFormatString parsed;
+	{
+		std::string current;
+		int argIndex = 0;
+		size_t i = 0;
+		while ( i < fmtStr.size() )
+		{
+			char c = fmtStr[i];
+
+			if ( c == '{' && i + 1 < fmtStr.size() && fmtStr[i + 1] == '{' )
+			{
+				current += '{';
+				i += 2;
+				continue;
+			}
+			if ( c == '}' && i + 1 < fmtStr.size() && fmtStr[i + 1] == '}' )
+			{
+				current += '}';
+				i += 2;
+				continue;
+			}
+
+			if ( c == '{' )
+			{
+				parsed.literals.push_back( current );
+				current.clear();
+
+				FormatPlaceholder ph;
+				ph.argIndex = argIndex++;
+				i++;
+
+				if ( i < fmtStr.size() && fmtStr[i] == ':' )
+				{
+					i++;
+					std::string spec;
+					while ( i < fmtStr.size() && fmtStr[i] != '}' )
+					{
+						spec += fmtStr[i];
+						i++;
+					}
+					if ( spec.empty() )
+					{
+						cerr << "CodeGen error: empty format specifier after ':'" << endl;
+						mHasError = true;
+						return;
+					}
+					ph.specifier = spec;
+					char last = spec.back();
+					if ( last == 'x' || last == 'X' || last == 'o' || last == 'b' )
+						ph.type = last;
+					else if ( last == 'f' )
+					{
+						ph.type = 'f';
+						if ( spec.size() >= 2 && spec[0] == '.' )
+						{
+							std::string digits = spec.substr( 1, spec.size() - 2 );
+							ph.precision = 0;
+							for ( char d : digits )
+							{
+								if ( d < '0' || d > '9' )
+								{
+									cerr << "CodeGen error: invalid precision in format specifier: '" << spec << "'" << endl;
+									mHasError = true;
+									return;
+								}
+								ph.precision = ph.precision * 10 + ( d - '0' );
+							}
+						}
+					}
+					else if ( last == 'e' )
+						ph.type = 'e';
+					else
+					{
+						cerr << "CodeGen error: unknown format specifier: '" << spec << "'" << endl;
+						mHasError = true;
+						return;
+					}
+				}
+
+				if ( i >= fmtStr.size() || fmtStr[i] != '}' )
+				{
+					cerr << "CodeGen error: unterminated format placeholder" << endl;
+					mHasError = true;
+					return;
+				}
+				i++;
+				parsed.placeholders.push_back( ph );
+			}
+			else if ( c == '}' )
+			{
+				cerr << "CodeGen error: unexpected '}' in format string (use '}}' for literal '}')" << endl;
+				mHasError = true;
+				return;
+			}
+			else
+			{
+				current += c;
+				i++;
+			}
+		}
+		parsed.literals.push_back( current );
+	}
+
+	int numPlaceholders = (int)parsed.placeholders.size();
+	int numArgs = (int)call->mParams.size() - 1; // subtract format string
+
+	if ( numPlaceholders != numArgs )
+	{
+		cerr << "CodeGen error: format string has " << numPlaceholders
+			 << " placeholder(s) but " << numArgs << " argument(s) provided" << endl;
+		mHasError = true;
+		return;
+	}
+
+	// Validate type compatibility for specifiers
+	for ( int pi = 0; pi < numPlaceholders; pi++ )
+	{
+		const FormatPlaceholder &ph = parsed.placeholders[pi];
+		if ( ph.type == '\0' )
+			continue; // default {}, accept anything
+
+		Expression *argExpr = call->mParams[pi + 1];
+
+		// For specifier validation, we need the expression's type
+		// We'll do best-effort type checking via AST inspection
+		bool isIntArg = false, isFloatArg = false;
+		if ( dynamic_cast<ConstInteger*>( argExpr ) )
+			isIntArg = true;
+		else if ( dynamic_cast<ConstFloat*>( argExpr ) )
+			isFloatArg = true;
+		else if ( auto *ve = dynamic_cast<VariableExpression*>( argExpr ) )
+		{
+			if ( ve->mVariable && ve->mVariable->getVariableType() )
+			{
+				const std::string &tn = ve->mVariable->getVariableType()->getName();
+				if ( tn == "int" || tn == "long" || tn == "short" || tn == "char" )
+					isIntArg = true;
+				else if ( tn == "float" || tn == "double" )
+					isFloatArg = true;
+			}
+		}
+
+		if ( ph.type == 'x' || ph.type == 'X' || ph.type == 'o' || ph.type == 'b' )
+		{
+			if ( isFloatArg )
+			{
+				cerr << "CodeGen error: format specifier ':" << ph.type
+					 << "' requires integer type, got float/double" << endl;
+				mHasError = true;
+				return;
+			}
+		}
+		else if ( ph.type == 'f' || ph.type == 'e' )
+		{
+			if ( isIntArg )
+			{
+				cerr << "CodeGen error: format specifier ':" << ph.type
+					 << "' requires float/double type, got integer" << endl;
+				mHasError = true;
+				return;
+			}
+		}
+	}
+
+	// No placeholders: just print the literal string
+	if ( numPlaceholders == 0 )
+	{
+		llvm::Constant *strData = mBuilder->CreateGlobalStringPtr( fmtStr, "print.data" );
+		llvm::Value *lenVal = llvm::ConstantInt::get(
+			llvm::Type::getInt64Ty( *mContext ), fmtStr.size() );
+		llvm::Value *strVal = mBuilder->CreateCall(
+			getOrDeclareStringCreateStatic(), { strData, lenVal }, "print.str" );
+		trackTempString( strVal );
+		mBuilder->CreateCall( getOrDeclarePrintBlang(), { strVal } );
+		if ( appendNewline )
+			mBuilder->CreateCall( getOrDeclarePrintNewline(), {} );
+		return;
+	}
+
+	// Build parts by interleaving literals and formatted args
+	std::vector<llvm::Value*> parts;
+
+	for ( int i = 0; i <= numPlaceholders; i++ )
+	{
+		// Literal segment
+		if ( !parsed.literals[i].empty() )
+		{
+			llvm::Constant *litData = mBuilder->CreateGlobalStringPtr(
+				parsed.literals[i], "print.lit" );
+			llvm::Value *litLen = llvm::ConstantInt::get(
+				llvm::Type::getInt64Ty( *mContext ), parsed.literals[i].size() );
+			llvm::Value *litStr = mBuilder->CreateCall(
+				getOrDeclareStringCreateStatic(), { litData, litLen }, "print.litstr" );
+			trackTempString( litStr );
+			parts.push_back( litStr );
+		}
+
+		// Placeholder arg
+		if ( i < numPlaceholders )
+		{
+			const FormatPlaceholder &ph = parsed.placeholders[i];
+			Expression *argExpr = call->mParams[i + 1];
+			llvm::Value *val = genExpression( argExpr );
+			if ( val == nullptr )
+				continue;
+
+			// Check if this is a struct type variable first (before genExpression)
+			bool isStructArg = false;
+			std::string structTypeName;
+			if ( auto *ve = dynamic_cast<VariableExpression*>( argExpr ) )
+			{
+				if ( ve->mVariable && ve->mVariable->getVariableType() )
+				{
+					structTypeName = ve->mVariable->getVariableType()->getName();
+					if ( structTypeName != "string" && structTypeName != "cstring" &&
+						 structTypeName != "int" && structTypeName != "long" &&
+						 structTypeName != "short" && structTypeName != "char" &&
+						 structTypeName != "float" && structTypeName != "double" &&
+						 structTypeName != "bool" )
+					{
+						auto sIt = mStructDefMap.find( structTypeName );
+						if ( sIt != mStructDefMap.end() )
+							isStructArg = true;
+					}
+				}
+			}
+
+			if ( isStructArg )
+			{
+				// Struct type → call StructName_to_string
+				StructDefinition *sd = mStructDefMap[structTypeName];
+				bool hasPrintable = false;
+				for ( auto &m : sd->getMethods() )
+				{
+					if ( m->getName() == "to_string" )
+					{
+						hasPrintable = true;
+						break;
+					}
+				}
+				if ( !hasPrintable )
+				{
+					cerr << "CodeGen error: type '" << structTypeName
+						 << "' is not printable — implement the Printable protocol" << endl;
+					mHasError = true;
+					return;
+				}
+				// val already holds the loaded struct value from genExpression above
+				// to_string expects a pointer to the struct (self by pointer)
+				std::string fnName = structTypeName + "_to_string";
+				llvm::Function *toStrFn = mModule->getFunction( fnName );
+				if ( toStrFn )
+				{
+					// Store the struct value in a temporary alloca and pass its address
+					llvm::AllocaInst *tmpAlloca = mBuilder->CreateAlloca(
+						val->getType(), nullptr, "print.tmp" );
+					mBuilder->CreateStore( val, tmpAlloca );
+					llvm::Value *strPart = mBuilder->CreateCall(
+						toStrFn, { tmpAlloca }, "print.structstr" );
+					trackTempString( strPart );
+					parts.push_back( strPart );
+				}
+				else
+				{
+					cerr << "CodeGen error: '" << fnName << "' function not found" << endl;
+					mHasError = true;
+					return;
+				}
+			}
+			else if ( val->getType()->isIntegerTy() )
+			{
+				llvm::Value *strPart;
+				if ( val->getType()->isIntegerTy( 1 ) )
+				{
+					strPart = mBuilder->CreateCall(
+						getOrDeclareBoolToString(), { val }, "print.boolstr" );
+				}
+				else if ( ph.type != '\0' )
+				{
+					llvm::Value *ext = mBuilder->CreateSExt( val,
+						llvm::Type::getInt64Ty( *mContext ), "ext64" );
+					llvm::Constant *specData = mBuilder->CreateGlobalStringPtr(
+						ph.specifier, "print.spec" );
+					llvm::Value *specLen = llvm::ConstantInt::get(
+						llvm::Type::getInt32Ty( *mContext ), ph.specifier.size() );
+					strPart = mBuilder->CreateCall(
+						getOrDeclareIntToStringFmt(), { ext, specData, specLen }, "print.intfmt" );
+				}
+				else
+				{
+					llvm::Value *ext = mBuilder->CreateSExt( val,
+						llvm::Type::getInt64Ty( *mContext ), "ext64" );
+					strPart = mBuilder->CreateCall(
+						getOrDeclareIntToString(), { ext }, "print.intstr" );
+				}
+				trackTempString( strPart );
+				parts.push_back( strPart );
+			}
+			else if ( val->getType()->isFloatTy() || val->getType()->isDoubleTy() )
+			{
+				if ( val->getType()->isFloatTy() )
+					val = mBuilder->CreateFPExt( val,
+						llvm::Type::getDoubleTy( *mContext ), "fpext" );
+
+				llvm::Value *strPart;
+				if ( ph.type != '\0' )
+				{
+					llvm::Constant *specData = mBuilder->CreateGlobalStringPtr(
+						ph.specifier, "print.spec" );
+					llvm::Value *specLen = llvm::ConstantInt::get(
+						llvm::Type::getInt32Ty( *mContext ), ph.specifier.size() );
+					strPart = mBuilder->CreateCall(
+						getOrDeclareFloatToStringFmt(), { val, specData, specLen }, "print.fltfmt" );
+				}
+				else
+				{
+					strPart = mBuilder->CreateCall(
+						getOrDeclareFloatToString(), { val }, "print.fltstr" );
+				}
+				trackTempString( strPart );
+				parts.push_back( strPart );
+			}
+			else if ( val->getType()->isPointerTy() )
+			{
+				// String pointer — use directly (borrowed, not owned)
+				parts.push_back( val );
+			}
+		}
+	}
+
+	if ( parts.empty() )
+	{
+		if ( appendNewline )
+			mBuilder->CreateCall( getOrDeclarePrintNewline(), {} );
+		return;
+	}
+
+	// If single part, print directly
+	if ( parts.size() == 1 )
+	{
+		mBuilder->CreateCall( getOrDeclarePrintBlang(), { parts[0] } );
+	}
+	else
+	{
+		// Concat all parts then print
+		llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+		llvm::Type *i64Ty = llvm::Type::getInt64Ty( *mContext );
+		llvm::ArrayType *arrType = llvm::ArrayType::get( ptrType, parts.size() );
+		llvm::AllocaInst *arr = mBuilder->CreateAlloca( arrType, nullptr, "print.arr" );
+
+		llvm::Value *idx0 = llvm::ConstantInt::get(
+			llvm::Type::getInt32Ty( *mContext ), 0 );
+		for ( size_t i = 0; i < parts.size(); i++ )
+		{
+			llvm::Value *idx = llvm::ConstantInt::get(
+				llvm::Type::getInt32Ty( *mContext ), i );
+			llvm::Value *elemPtr = mBuilder->CreateGEP(
+				arrType, arr, { idx0, idx }, "print.elem" );
+			mBuilder->CreateStore( parts[i], elemPtr );
+		}
+
+		llvm::Value *arrPtr = mBuilder->CreateGEP(
+			arrType, arr, { idx0, idx0 }, "print.ptr" );
+		llvm::Value *countVal = llvm::ConstantInt::get( i64Ty, parts.size() );
+		llvm::Value *result = mBuilder->CreateCall(
+			getOrDeclareStringConcatMany(), { arrPtr, countVal }, "print.result" );
+		trackTempString( result );
+		mBuilder->CreateCall( getOrDeclarePrintBlang(), { result } );
+	}
+
+	if ( appendNewline )
+		mBuilder->CreateCall( getOrDeclarePrintNewline(), {} );
+}
+
+// ---- Print runtime declarations ----
+
+llvm::Function *CodeGen::getOrDeclarePrintBlang()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_print" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_print", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclarePrintNewline()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_print_newline" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{},
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_print_newline", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclarePrintFlush()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_print_flush" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{},
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_print_flush", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareIntToStringFmt()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_int_to_string_fmt" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangString *__blang_int_to_string_fmt(int64_t value, const char *spec, int spec_len)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ),
+		  llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt32Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_int_to_string_fmt", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareFloatToStringFmt()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_float_to_string_fmt" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangString *__blang_float_to_string_fmt(double value, const char *spec, int spec_len)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getDoubleTy( *mContext ),
+		  llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt32Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_float_to_string_fmt", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareCharToString()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_char_to_string" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangString *__blang_char_to_string(int32_t c)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt32Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_char_to_string", mModule.get() );
 }
 
 llvm::Function *CodeGen::getOrDeclareSnprintf()
@@ -3966,9 +7449,16 @@ bool CodeGen::isStringType( Expression *expr )
 	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
 	{
 		VariableDefinition *varDef = ve->mVariable;
-		if ( varDef != nullptr && varDef->getVariableType() != nullptr &&
-			 varDef->getVariableType()->getName() == "string" )
-			return true;
+		if ( varDef != nullptr && varDef->getVariableType() != nullptr )
+		{
+			string typeName = varDef->getVariableType()->getName();
+			// Check substitution map for generic type params (e.g., K -> string)
+			auto subIt = mTypeSubstitution.find( typeName );
+			if ( subIt != mTypeSubstitution.end() )
+				typeName = subIt->second->getName();
+			if ( typeName == "string" )
+				return true;
+		}
 	}
 	if ( auto *ce = dynamic_cast<CallExpression*>( expr ) )
 	{
@@ -3985,26 +7475,10 @@ bool CodeGen::isStringType( Expression *expr )
 	}
 	if ( auto *fa = dynamic_cast<FieldAccessExpression*>( expr ) )
 	{
-		// Check if the field type is string (e.g., structVar.stringField)
-		if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)fa->mObject ) )
-		{
-			Type *varType = ve->mVariable->getVariableType();
-			if ( varType != nullptr )
-			{
-				string typeName = varType->getName();
-				auto defIt = mStructDefMap.find( typeName );
-				if ( defIt != mStructDefMap.end() )
-				{
-					for ( auto &field : defIt->second->mFields )
-					{
-						if ( field->getName() == fa->mFieldName &&
-							 field->getVariableType() != nullptr &&
-							 field->getVariableType()->getName() == "string" )
-							return true;
-					}
-				}
-			}
-		}
+		// Use getFieldTypeName which handles self, generics, and substitution
+		string typeName = getFieldTypeName( fa );
+		if ( typeName == "string" )
+			return true;
 	}
 	if ( auto *mc = dynamic_cast<MethodCallExpression*>( expr ) )
 	{
@@ -4015,7 +7489,133 @@ bool CodeGen::isStringType( Expression *expr )
 			   method == "substring" || method == "replace" || method == "concat" ) )
 			return true;
 	}
+	// Check IndexExpression — array element type might be string
+	if ( auto *ie = dynamic_cast<IndexExpression*>( expr ) )
+	{
+		if ( isArrayType( ie->mObject ) )
+		{
+			// Determine element type from Array<T>
+			if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)ie->mObject ) )
+			{
+				Type *varType = ve->mVariable->getVariableType();
+				if ( varType != nullptr && varType->getNumTypeParams() > 0 )
+				{
+					string elemName = varType->getTypeParam( 0 )->getName();
+					auto subIt = mTypeSubstitution.find( elemName );
+					if ( subIt != mTypeSubstitution.end() )
+						elemName = subIt->second->getName();
+					if ( elemName == "string" )
+						return true;
+				}
+			}
+			else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)ie->mObject ) )
+			{
+				Type *fieldType = getFieldType( fa );
+				if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
+				{
+					string elemName = fieldType->getTypeParam( 0 )->getName();
+					auto subIt = mTypeSubstitution.find( elemName );
+					if ( subIt != mTypeSubstitution.end() )
+						elemName = subIt->second->getName();
+					if ( elemName == "string" )
+						return true;
+				}
+			}
+		}
+	}
 	return false;
+}
+
+// ---- Field type resolution helper ----
+
+Type *CodeGen::getFieldType( FieldAccessExpression *fa )
+{
+	// Determine the struct definition for the object
+	StructDefinition *structDef = nullptr;
+	string structName;
+
+	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)fa->mObject ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		if ( varType == nullptr )
+			return nullptr;
+
+		structName = varType->getName();
+
+		// Check if this is a self parameter pointing to a struct
+		auto selfIt = mSelfStructMap.find( ve->mVariable );
+		if ( selfIt != mSelfStructMap.end() )
+		{
+			structDef = selfIt->second;
+
+			// For generic struct methods, use the mangled name
+			auto mangledIt = mSelfStructMangledName.find( ve->mVariable );
+			if ( mangledIt != mSelfStructMangledName.end() )
+				structName = mangledIt->second;
+		}
+
+		if ( structDef == nullptr )
+		{
+			// Handle generic struct types
+			if ( varType->getNumTypeParams() > 0 )
+			{
+				std::vector<SmartPtr<Type>> typeArgs;
+				for ( int i = 0; i < varType->getNumTypeParams(); i++ )
+					typeArgs.push_back( varType->getTypeParam( i ) );
+				structName = mangleGenericName( varType->getName(), typeArgs );
+			}
+
+			auto defIt = mStructDefMap.find( structName );
+			if ( defIt != mStructDefMap.end() )
+				structDef = defIt->second;
+		}
+	}
+	// Handle chained field access (e.g., self.inner.field)
+	else if ( auto *innerFa = dynamic_cast<FieldAccessExpression*>( (Expression*)fa->mObject ) )
+	{
+		Type *innerType = getFieldType( innerFa );
+		if ( innerType != nullptr )
+		{
+			structName = innerType->getName();
+			auto subIt = mTypeSubstitution.find( structName );
+			if ( subIt != mTypeSubstitution.end() )
+				structName = subIt->second->getName();
+
+			auto defIt = mStructDefMap.find( structName );
+			if ( defIt != mStructDefMap.end() )
+				structDef = defIt->second;
+		}
+	}
+
+	if ( structDef == nullptr )
+		return nullptr;
+
+	// Find the field
+	for ( auto &field : structDef->mFields )
+	{
+		if ( field->getName() == fa->mFieldName )
+		{
+			Type *fieldType = field->getVariableType();
+			if ( fieldType != nullptr )
+			{
+				// Apply type substitution for generic fields
+				string typeName = fieldType->getName();
+				auto subIt = mTypeSubstitution.find( typeName );
+				if ( subIt != mTypeSubstitution.end() )
+					return subIt->second;
+			}
+			return fieldType;
+		}
+	}
+	return nullptr;
+}
+
+string CodeGen::getFieldTypeName( FieldAccessExpression *fa )
+{
+	Type *t = getFieldType( fa );
+	if ( t != nullptr )
+		return t->getName();
+	return "";
 }
 
 // ---- Array type helper ----
@@ -4025,7 +7625,14 @@ bool CodeGen::isArrayType( Expression *expr )
 	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
 	{
 		Type *varType = ve->mVariable->getVariableType();
-		return varType != nullptr && varType->getName() == "Array";
+		if ( varType == nullptr )
+			return false;
+		string typeName = varType->getName();
+		// Check substitution map for generic type params
+		auto subIt = mTypeSubstitution.find( typeName );
+		if ( subIt != mTypeSubstitution.end() )
+			typeName = subIt->second->getName();
+		return typeName == "Array";
 	}
 	if ( dynamic_cast<ArrayLiteralExpression*>( expr ) )
 		return true;
@@ -4035,6 +7642,12 @@ bool CodeGen::isArrayType( Expression *expr )
 		if ( funcDef != nullptr && funcDef->getReturnType() != nullptr &&
 			 funcDef->getReturnType()->getName() == "Array" )
 			return true;
+	}
+	// Check FieldAccessExpression — field type might be Array
+	if ( auto *fa = dynamic_cast<FieldAccessExpression*>( expr ) )
+	{
+		string typeName = getFieldTypeName( fa );
+		return typeName == "Array";
 	}
 	return false;
 }
@@ -4623,6 +8236,527 @@ llvm::Function *CodeGen::getOrDeclareArrayClear()
 		ft, llvm::Function::ExternalLinkage, "__blang_array_clear", mModule.get() );
 }
 
+llvm::Function *CodeGen::getOrDeclareArraySetElemDtor()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_array_set_elem_dtor" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_array_set_elem_dtor(BlangArray *a, void(*dtor)(void*))
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ ptrTy, ptrTy },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_array_set_elem_dtor", mModule.get() );
+}
+
+void CodeGen::emitArrayElemDtor( llvm::Value *arrayPtr, const std::string &elemTypeName )
+{
+	llvm::Function *dtorFn = nullptr;
+
+	if ( elemTypeName == "string" )
+		dtorFn = getOrDeclareStringRelease();
+	else if ( elemTypeName == "Array" )
+		dtorFn = getOrDeclareArrayRelease();
+	else if ( elemTypeName == "Buffer" )
+		dtorFn = getOrDeclareBufferRelease();
+	else if ( isUserStructType( elemTypeName ) )
+		dtorFn = getOrDeclareRcRelease();
+
+	if ( dtorFn != nullptr )
+	{
+		mBuilder->CreateCall( getOrDeclareArraySetElemDtor(), { arrayPtr, dtorFn } );
+	}
+}
+
+// ---- Buffer type helper ----
+
+bool CodeGen::isBufferType( Expression *expr )
+{
+	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		return varType != nullptr && varType->getName() == "Buffer";
+	}
+	if ( auto *ce = dynamic_cast<CallExpression*>( expr ) )
+	{
+		FunctionDefinition *funcDef = ce->mFunction;
+		if ( funcDef != nullptr && funcDef->getReturnType() != nullptr &&
+			 funcDef->getReturnType()->getName() == "Buffer" )
+			return true;
+	}
+	if ( auto *mc = dynamic_cast<MethodCallExpression*>( expr ) )
+	{
+		if ( isBufferType( mc->mObject ) &&
+			 ( mc->mMethodName == "slice" ) )
+			return true;
+	}
+	return false;
+}
+
+// ---- Buffer field/method codegen ----
+
+llvm::Value *CodeGen::genBufferFieldAccess( FieldAccessExpression *expr )
+{
+	llvm::Value *bufVal = genExpression( expr->mObject );
+	if ( bufVal == nullptr )
+		return nullptr;
+
+	if ( expr->mFieldName == "length" )
+		return mBuilder->CreateCall( getOrDeclareBufferLength(), { bufVal }, "buf.len" );
+	if ( expr->mFieldName == "capacity" )
+		return mBuilder->CreateCall( getOrDeclareBufferCapacity(), { bufVal }, "buf.cap" );
+	if ( expr->mFieldName == "is_empty" )
+		return mBuilder->CreateCall( getOrDeclareBufferIsEmpty(), { bufVal }, "buf.empty" );
+
+	return nullptr;
+}
+
+llvm::Value *CodeGen::genBufferMethodCall( MethodCallExpression *expr )
+{
+	llvm::Value *bufVal = genExpression( expr->mObject );
+	if ( bufVal == nullptr )
+		return nullptr;
+
+	const string &method = expr->mMethodName;
+
+	// No-arg property-like methods
+	if ( method == "is_empty" && expr->mArgs.empty() )
+		return mBuilder->CreateCall( getOrDeclareBufferIsEmpty(), { bufVal }, "buf.empty" );
+	if ( method == "length" && expr->mArgs.empty() )
+		return mBuilder->CreateCall( getOrDeclareBufferLength(), { bufVal }, "buf.len" );
+	if ( method == "capacity" && expr->mArgs.empty() )
+		return mBuilder->CreateCall( getOrDeclareBufferCapacity(), { bufVal }, "buf.cap" );
+
+	// get(index) -> int
+	if ( method == "get" && expr->mArgs.size() == 1 )
+	{
+		llvm::Value *idxVal = genExpression( expr->mArgs[0] );
+		if ( idxVal == nullptr )
+			return nullptr;
+		if ( !idxVal->getType()->isIntegerTy( 64 ) )
+			idxVal = mBuilder->CreateSExt( idxVal,
+				llvm::Type::getInt64Ty( *mContext ), "idx.ext" );
+		return mBuilder->CreateCall( getOrDeclareBufferGet(), { bufVal, idxVal }, "buf.get" );
+	}
+
+	// set(index, value)
+	if ( method == "set" && expr->mArgs.size() == 2 )
+	{
+		llvm::Value *idxVal = genExpression( expr->mArgs[0] );
+		llvm::Value *valVal = genExpression( expr->mArgs[1] );
+		if ( idxVal == nullptr || valVal == nullptr )
+			return nullptr;
+		if ( !idxVal->getType()->isIntegerTy( 64 ) )
+			idxVal = mBuilder->CreateSExt( idxVal,
+				llvm::Type::getInt64Ty( *mContext ), "idx.ext" );
+		if ( !valVal->getType()->isIntegerTy( 32 ) )
+			valVal = mBuilder->CreateIntCast( valVal,
+				llvm::Type::getInt32Ty( *mContext ), true, "val.i32" );
+		mBuilder->CreateCall( getOrDeclareBufferSet(), { bufVal, idxVal, valVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// append_byte(byte)
+	if ( method == "append_byte" && expr->mArgs.size() == 1 )
+	{
+		llvm::Value *byteVal = genExpression( expr->mArgs[0] );
+		if ( byteVal == nullptr )
+			return nullptr;
+		if ( !byteVal->getType()->isIntegerTy( 32 ) )
+			byteVal = mBuilder->CreateIntCast( byteVal,
+				llvm::Type::getInt32Ty( *mContext ), true, "byte.i32" );
+		mBuilder->CreateCall( getOrDeclareBufferAppendByte(), { bufVal, byteVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// append_bytes(src, len)
+	if ( method == "append_bytes" && expr->mArgs.size() == 2 )
+	{
+		llvm::Value *srcVal = genExpression( expr->mArgs[0] );
+		llvm::Value *lenVal = genExpression( expr->mArgs[1] );
+		if ( srcVal == nullptr || lenVal == nullptr )
+			return nullptr;
+		if ( !lenVal->getType()->isIntegerTy( 64 ) )
+			lenVal = mBuilder->CreateSExt( lenVal,
+				llvm::Type::getInt64Ty( *mContext ), "len.ext" );
+		mBuilder->CreateCall( getOrDeclareBufferAppendBytes(), { bufVal, srcVal, lenVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// append_string(s)
+	if ( method == "append_string" && expr->mArgs.size() == 1 )
+	{
+		llvm::Value *strVal = genExpression( expr->mArgs[0] );
+		if ( strVal == nullptr )
+			return nullptr;
+		mBuilder->CreateCall( getOrDeclareBufferAppendString(), { bufVal, strVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// index_of(pattern, offset)
+	if ( method == "index_of" && expr->mArgs.size() == 2 )
+	{
+		llvm::Value *patVal = genExpression( expr->mArgs[0] );
+		llvm::Value *offVal = genExpression( expr->mArgs[1] );
+		if ( patVal == nullptr || offVal == nullptr )
+			return nullptr;
+		if ( !offVal->getType()->isIntegerTy( 64 ) )
+			offVal = mBuilder->CreateSExt( offVal,
+				llvm::Type::getInt64Ty( *mContext ), "off.ext" );
+		llvm::Value *result = mBuilder->CreateCall(
+			getOrDeclareBufferIndexOf(), { bufVal, patVal, offVal }, "buf.indexOf" );
+		// Truncate i64 to i32 for BLang int type
+		return mBuilder->CreateTrunc( result, llvm::Type::getInt32Ty( *mContext ), "buf.indexOf.i32" );
+	}
+
+	// slice(start, end) -> Buffer
+	if ( method == "slice" && expr->mArgs.size() == 2 )
+	{
+		llvm::Value *startVal = genExpression( expr->mArgs[0] );
+		llvm::Value *endVal = genExpression( expr->mArgs[1] );
+		if ( startVal == nullptr || endVal == nullptr )
+			return nullptr;
+		if ( !startVal->getType()->isIntegerTy( 64 ) )
+			startVal = mBuilder->CreateSExt( startVal,
+				llvm::Type::getInt64Ty( *mContext ), "start.ext" );
+		if ( !endVal->getType()->isIntegerTy( 64 ) )
+			endVal = mBuilder->CreateSExt( endVal,
+				llvm::Type::getInt64Ty( *mContext ), "end.ext" );
+		return mBuilder->CreateCall(
+			getOrDeclareBufferSlice(), { bufVal, startVal, endVal }, "buf.slice" );
+	}
+
+	// to_string() -> string
+	if ( method == "to_string" && expr->mArgs.empty() )
+		return mBuilder->CreateCall( getOrDeclareBufferToString(), { bufVal }, "buf.tostr" );
+
+	// to_string_range(start, end) -> string
+	if ( method == "to_string_range" && expr->mArgs.size() == 2 )
+	{
+		llvm::Value *startVal = genExpression( expr->mArgs[0] );
+		llvm::Value *endVal = genExpression( expr->mArgs[1] );
+		if ( startVal == nullptr || endVal == nullptr )
+			return nullptr;
+		if ( !startVal->getType()->isIntegerTy( 64 ) )
+			startVal = mBuilder->CreateSExt( startVal,
+				llvm::Type::getInt64Ty( *mContext ), "start.ext" );
+		if ( !endVal->getType()->isIntegerTy( 64 ) )
+			endVal = mBuilder->CreateSExt( endVal,
+				llvm::Type::getInt64Ty( *mContext ), "end.ext" );
+		return mBuilder->CreateCall(
+			getOrDeclareBufferToStringRange(), { bufVal, startVal, endVal }, "buf.tostrr" );
+	}
+
+	// clear()
+	if ( method == "clear" && expr->mArgs.empty() )
+	{
+		mBuilder->CreateCall( getOrDeclareBufferClear(), { bufVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// compact(bytes)
+	if ( method == "compact" && expr->mArgs.size() == 1 )
+	{
+		llvm::Value *bytesVal = genExpression( expr->mArgs[0] );
+		if ( bytesVal == nullptr )
+			return nullptr;
+		if ( !bytesVal->getType()->isIntegerTy( 64 ) )
+			bytesVal = mBuilder->CreateSExt( bytesVal,
+				llvm::Type::getInt64Ty( *mContext ), "bytes.ext" );
+		mBuilder->CreateCall( getOrDeclareBufferCompact(), { bufVal, bytesVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	return nullptr;
+}
+
+// ---- Buffer runtime declarations ----
+
+llvm::Function *CodeGen::getOrDeclareBufferCreate()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_create" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangBuffer* __blang_buffer_create(int64_t capacity)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_create", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferCreateFromString()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_create_from_string" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangBuffer* __blang_buffer_create_from_string(BlangString *s)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_create_from_string", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferRetain()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_retain" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_retain", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferRelease()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_release" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_release", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferLength()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_length" );
+	if ( f != nullptr )
+		return f;
+
+	// int64_t __blang_buffer_length(BlangBuffer *buf)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt64Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_length", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferCapacity()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_capacity" );
+	if ( f != nullptr )
+		return f;
+
+	// int64_t __blang_buffer_capacity(BlangBuffer *buf)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt64Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_capacity", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferIsEmpty()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_is_empty" );
+	if ( f != nullptr )
+		return f;
+
+	// int32_t __blang_buffer_is_empty(BlangBuffer *buf)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_is_empty", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferGet()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_get" );
+	if ( f != nullptr )
+		return f;
+
+	// int32_t __blang_buffer_get(BlangBuffer *buf, int64_t index)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_get", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferSet()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_set" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_buffer_set(BlangBuffer *buf, int64_t index, int32_t value)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ),
+		  llvm::Type::getInt32Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_set", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferAppendByte()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_append_byte" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_buffer_append_byte(BlangBuffer *buf, int32_t byte)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt32Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_append_byte", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferAppendBytes()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_append_bytes" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_buffer_append_bytes(BlangBuffer *buf, BlangBuffer *src, int64_t len)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_append_bytes", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferAppendString()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_append_string" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_buffer_append_string(BlangBuffer *buf, BlangString *s)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_append_string", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferIndexOf()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_index_of" );
+	if ( f != nullptr )
+		return f;
+
+	// int64_t __blang_buffer_index_of(BlangBuffer *buf, BlangBuffer *pattern, int64_t offset)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt64Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_index_of", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferSlice()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_slice" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangBuffer* __blang_buffer_slice(BlangBuffer *buf, int64_t start, int64_t end)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ),
+		  llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_slice", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferToString()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_to_string" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangString* __blang_buffer_to_string(BlangBuffer *buf)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_to_string", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferToStringRange()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_to_string_range" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangString* __blang_buffer_to_string_range(BlangBuffer *buf, int64_t start, int64_t end)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ),
+		  llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_to_string_range", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferClear()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_clear" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_buffer_clear(BlangBuffer *buf)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_clear", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBufferCompact()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_buffer_compact" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_buffer_compact(BlangBuffer *buf, int64_t bytes)
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_buffer_compact", mModule.get() );
+}
+
 // ---- Pipeline expression codegen ----
 
 llvm::Value *CodeGen::genPipelineExpression( PipelineExpression *pipeline )
@@ -5006,9 +9140,10 @@ bool CodeGen::genJsonToJson( StructDefinition *structDef )
 	llvm::StructType *structType = getOrCreateStructType( structDef );
 	std::string funcName = structDef->getName() + "_to_json";
 
-	// StructName_to_json(StructType self) -> char*
+	// StructName_to_json(ptr self) -> char*
+	// self is a heap pointer to struct data (structs are by-reference)
 	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
-	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { structType }, false );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
 	llvm::Function *func = llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, funcName, mModule.get() );
 	func->getArg( 0 )->setName( "self" );
@@ -5016,9 +9151,8 @@ bool CodeGen::genJsonToJson( StructDefinition *structDef )
 	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", func );
 	mBuilder->SetInsertPoint( entryBB );
 
-	// Store struct arg to alloca for GEP access
-	llvm::AllocaInst *selfAlloca = mBuilder->CreateAlloca( structType, nullptr, "self.addr" );
-	mBuilder->CreateStore( func->getArg( 0 ), selfAlloca );
+	// self is already a pointer to struct data — use it directly for GEP
+	llvm::Value *selfAlloca = func->getArg( 0 );
 
 	// Create JSON object
 	llvm::Value *jsonObj = mBuilder->CreateCall( getOrDeclareJsonObject(), {}, "json.obj" );
@@ -5095,14 +9229,13 @@ bool CodeGen::genJsonToJson( StructDefinition *structDef )
 				}
 				if ( hasJson )
 				{
-					// Call NestedStruct_to_json(fieldVal) -> char*
+					// Call NestedStruct_to_json(ptr) -> char*
 					std::string nestedToJson = typeName + "_to_json";
 					llvm::Function *nestedFn = mModule->getFunction( nestedToJson );
 					if ( !nestedFn )
 					{
 						// Forward declare if not yet generated
-						llvm::StructType *nestedStructType = getOrCreateStructType( nestedDef );
-						llvm::FunctionType *nestedFt = llvm::FunctionType::get( ptrTy, { nestedStructType }, false );
+						llvm::FunctionType *nestedFt = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
 						nestedFn = llvm::Function::Create(
 							nestedFt, llvm::Function::ExternalLinkage, nestedToJson, mModule.get() );
 					}
@@ -5159,6 +9292,9 @@ bool CodeGen::genJsonToJson( StructDefinition *structDef )
 	llvm::Value *result = mBuilder->CreateCall(
 		getOrDeclareStringCreate(), { rawStr, len }, "json.blangstr" );
 
+	// Free the malloc'd char* from __blang_json_encode (string_create copied it)
+	mBuilder->CreateCall( getOrDeclareFree(), { rawStr } );
+
 	mBuilder->CreateRet( result );
 	return true;
 }
@@ -5168,9 +9304,9 @@ bool CodeGen::genJsonFromJson( StructDefinition *structDef )
 	llvm::StructType *structType = getOrCreateStructType( structDef );
 	std::string funcName = structDef->getName() + "_from_json";
 
-	// StructName_from_json(char*) -> StructType
+	// StructName_from_json(ptr input) -> ptr (heap-allocated struct)
 	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
-	llvm::FunctionType *ft = llvm::FunctionType::get( structType, { ptrTy }, false );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
 	llvm::Function *func = llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, funcName, mModule.get() );
 	func->getArg( 0 )->setName( "input" );
@@ -5194,10 +9330,20 @@ bool CodeGen::genJsonFromJson( StructDefinition *structDef )
 	llvm::Value *jsonObj = mBuilder->CreateCall(
 		getOrDeclareJsonDecode(), { rawInput, nullPtr }, "json.obj" );
 
-	// Alloca for result struct
-	llvm::AllocaInst *resultAlloca = mBuilder->CreateAlloca( structType, nullptr, "result" );
-	// Zero-initialize
-	mBuilder->CreateStore( llvm::Constant::getNullValue( structType ), resultAlloca );
+	// Heap-allocate result struct via ARC (with destructor for refcounted fields)
+	llvm::DataLayout dl( mModule.get() );
+	uint64_t dataSize = dl.getTypeAllocSize( structType );
+	llvm::Value *sizeVal = llvm::ConstantInt::get(
+		llvm::Type::getInt64Ty( *mContext ), dataSize );
+	std::map<std::string, std::string> emptyTypeSub;
+	llvm::Function *dtorFn = getOrGenStructDestructor( structDef, emptyTypeSub );
+	llvm::Value *resultAlloca = nullptr;
+	if ( dtorFn != nullptr )
+		resultAlloca = mBuilder->CreateCall(
+			getOrDeclareRcAllocDtor(), { sizeVal, dtorFn }, "result.ptr" );
+	else
+		resultAlloca = mBuilder->CreateCall(
+			getOrDeclareRcAlloc(), { sizeVal }, "result.ptr" );
 
 	// For each field: look up in JSON, extract, store
 	for ( unsigned i = 0; i < structDef->mFields.size(); i++ )
@@ -5284,13 +9430,15 @@ bool CodeGen::genJsonFromJson( StructDefinition *structDef )
 					llvm::Value *nestedStr = mBuilder->CreateCall(
 						getOrDeclareStringCreate(), { nestedRawStr, nestedLen }, fieldName + ".str" );
 
-					// Call NestedStruct_from_json(str) -> StructType
+					// Free the malloc'd char* from __blang_json_encode (string_create copied it)
+					mBuilder->CreateCall( getOrDeclareFree(), { nestedRawStr } );
+
+					// Call NestedStruct_from_json(str) -> ptr (heap-allocated)
 					std::string nestedFromJson = typeName + "_from_json";
-					llvm::StructType *nestedStructType = getOrCreateStructType( nestedDef );
 					llvm::Function *nestedFn = mModule->getFunction( nestedFromJson );
 					if ( !nestedFn )
 					{
-						llvm::FunctionType *nestedFt = llvm::FunctionType::get( nestedStructType, { ptrTy }, false );
+						llvm::FunctionType *nestedFt = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
 						nestedFn = llvm::Function::Create(
 							nestedFt, llvm::Function::ExternalLinkage, nestedFromJson, mModule.get() );
 					}
@@ -5323,9 +9471,8 @@ bool CodeGen::genJsonFromJson( StructDefinition *structDef )
 	// Free JSON tree
 	mBuilder->CreateCall( getOrDeclareJsonFree(), { jsonObj } );
 
-	// Load and return result
-	llvm::Value *result = mBuilder->CreateLoad( structType, resultAlloca, "result.val" );
-	mBuilder->CreateRet( result );
+	// Return the heap-allocated struct pointer
+	mBuilder->CreateRet( resultAlloca );
 	return true;
 }
 

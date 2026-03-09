@@ -1,6 +1,3 @@
-extern fn puts(cstring s) -> int;
-extern fn printf(cstring fmt, ...) -> int;
-
 enum Option {
     some(int),
     none
@@ -30,10 +27,10 @@ fn main() -> int {
             return 3;
         }
         none {
-            puts("None case works!");
+            println("None case works!");
         }
     }
 
-    puts("Enum payload test passed!");
+    println("Enum payload test passed!");
     return 0;
 }

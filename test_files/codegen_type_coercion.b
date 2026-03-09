@@ -1,5 +1,4 @@
 // E2E test: integer type coercion in binary expressions
-extern fn printf(cstring fmt, ...) -> int;
 
 fn main() -> int {
 	// char (i8) compared with int literal (i32)
@@ -37,6 +36,6 @@ fn main() -> int {
 	float f = 3.14;
 	double d = 2.718;
 
-	printf("Type coercion test passed!\n");
+	println("Type coercion test passed!");
 	return 0;
 }

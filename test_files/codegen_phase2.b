@@ -1,8 +1,6 @@
 // End-to-end codegen test for Phase 2 features
 // Tests: assert, ownership qualifiers, spawn, contracts
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn validate(int x) -> int requires x > 0 {
 	return x;
 }
@@ -27,6 +25,6 @@ fn main() -> int {
 	// Function with requires contract
 	int result = validate(5);
 
-	printf("Phase 2 codegen test passed!\n");
+	println("Phase 2 codegen test passed!");
 	return 0;
 }

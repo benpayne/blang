@@ -1,7 +1,5 @@
 // E2E test: multiple async calls, each awaited
 
-extern fn printf(cstring fmt, ...) -> int;
-
 async fn computeA() -> int {
 	return 10;
 }
@@ -15,6 +13,6 @@ async fn computeC() -> int {
 }
 
 fn main() -> int {
-	printf("Async multi codegen test passed!\n");
+	println("Async multi codegen test passed!");
 	return 0;
 }

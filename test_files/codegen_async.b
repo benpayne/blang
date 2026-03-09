@@ -1,7 +1,5 @@
 // E2E test: async/await basic functionality
 
-extern fn printf(cstring fmt, ...) -> int;
-
 async fn getData() -> int {
 	return 42;
 }
@@ -12,6 +10,6 @@ async fn process() -> int {
 }
 
 fn main() -> int {
-	printf("Async codegen test passed!\n");
+	println("Async codegen test passed!");
 	return 0;
 }

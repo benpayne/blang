@@ -1,8 +1,6 @@
 // Comprehensive E2E test: all Phase 2 features together
 // Tests: assert, contracts, ownership, spawn, for-in, async/await stubs
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn abs(int x) -> int requires x >= -1000 ensures result >= 0 {
 	if x < 0 {
 		return 0 - x;
@@ -55,6 +53,6 @@ fn main() -> int {
 	}
 	assert result == 7, "3 + 4 should be 7";
 
-	printf("Comprehensive Phase 2 test passed!\n");
+	println("Comprehensive Phase 2 test passed!");
 	return 0;
 }

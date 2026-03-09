@@ -14,13 +14,21 @@
 //   bcc test                      # discover and run test files
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
+#include <set>
+#include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+
+#include "ProjectConfig.h"
+#include "BuildCache.h"
 
 using namespace std;
 
@@ -40,6 +48,8 @@ static void printUsage( const char *progName )
 	cerr << "       " << progName << " test [--verbose]" << endl;
 	cerr << endl;
 	cerr << "Subcommands:" << endl;
+	cerr << "  build        Build project from blang.toml" << endl;
+	cerr << "  clean        Remove build cache (~/.cache/blang/)" << endl;
 	cerr << "  test         Discover and run BLang test files" << endl;
 	cerr << "  migrate      Schema migration (--preview, --apply, --generate)" << endl;
 	cerr << endl;
@@ -401,9 +411,485 @@ static int runMigrate( int argc, char *argv[] )
 	return 0;
 }
 
+// Discover all .b files in a directory (non-recursive, project root only)
+static vector<string> discoverSourceFiles( const string &dir )
+{
+	vector<string> files;
+	DIR *d = opendir( dir.c_str() );
+	if ( !d )
+		return files;
+
+	struct dirent *entry;
+	while ( ( entry = readdir( d ) ) != nullptr )
+	{
+		string name = entry->d_name;
+		if ( name.size() > 2 && name.substr( name.size() - 2 ) == ".b" )
+		{
+			string path = dir;
+			if ( !path.empty() && path.back() != '/' )
+				path += '/';
+			path += name;
+			files.push_back( path );
+		}
+	}
+	closedir( d );
+	sort( files.begin(), files.end() );
+	return files;
+}
+
+// Read file content as string for cache key computation
+static string readFileToString( const string &path )
+{
+	ifstream f( path, ios::binary );
+	if ( !f.is_open() )
+		return "";
+	ostringstream ss;
+	ss << f.rdbuf();
+	return ss.str();
+}
+
+// Resolve absolute path from a possibly relative path
+static string resolvePath( const string &basePath, const string &relPath )
+{
+	if ( !relPath.empty() && relPath[0] == '/' )
+		return relPath;
+	// basePath is the directory containing blang.toml
+	string base = basePath;
+	if ( !base.empty() && base.back() != '/' )
+		base += '/';
+	// Resolve with realpath
+	string combined = base + relPath;
+	char resolved[PATH_MAX];
+	if ( realpath( combined.c_str(), resolved ) )
+		return string( resolved );
+	return combined;
+}
+
+// Build a single project directory. Returns 0 on success.
+// Outputs: fills aFile and bmodFile if type=lib.
+// depBmodFiles/depAFiles receive dependency artifacts to pass downstream.
+static int buildProject( const string &projectDir, const string &exeDir,
+	bool verbose, set<string> &building,
+	string &outAFile, string &outBmodFile, string &cacheHash )
+{
+	// Circular dependency detection
+	char resolvedDir[PATH_MAX];
+	string canonDir = projectDir;
+	if ( realpath( projectDir.c_str(), resolvedDir ) )
+		canonDir = resolvedDir;
+
+	if ( building.count( canonDir ) )
+	{
+		cerr << "error: circular dependency detected: " << canonDir << endl;
+		return 1;
+	}
+	building.insert( canonDir );
+
+	ProjectConfig *config = ProjectConfig::loadFromDirectory( projectDir );
+	if ( !config )
+	{
+		cerr << "error: no blang.toml found in " << projectDir << endl;
+		return 1;
+	}
+
+	if ( verbose )
+		cerr << "--- Building " << config->getName() << " (" << projectDir << ") ---" << endl;
+
+	// Recursively build dependencies first
+	vector<string> depBmodFiles;
+	vector<string> depAFiles;
+	vector<string> depHashes;
+
+	for ( const auto &dep : config->getDependencies() )
+	{
+		if ( dep.path.empty() )
+		{
+			cerr << "error: dependency '" << dep.name << "' has no path (git deps not yet supported)" << endl;
+			delete config;
+			return 1;
+		}
+
+		string depDir = resolvePath( projectDir, dep.path );
+
+		// Check build cache
+		ProjectConfig *depConfig = ProjectConfig::loadFromDirectory( depDir );
+		if ( !depConfig )
+		{
+			cerr << "error: no blang.toml in dependency '" << dep.name << "' at " << depDir << endl;
+			delete config;
+			return 1;
+		}
+
+		vector<string> depSources = discoverSourceFiles( depDir );
+		string depToml = readFileToString( depDir + "/blang.toml" );
+		string depCacheKey = BuildCache::computeKey( depSources, depToml, {} );
+
+		string cachedA, cachedBmod;
+		if ( BuildCache::lookup( depCacheKey, cachedA, cachedBmod ) )
+		{
+			if ( verbose )
+				cerr << "  cache hit for " << dep.name << " (" << depCacheKey.substr( 0, 12 ) << "...)" << endl;
+			depAFiles.push_back( cachedA );
+			depBmodFiles.push_back( cachedBmod );
+			depHashes.push_back( depCacheKey );
+			delete depConfig;
+			continue;
+		}
+
+		delete depConfig;
+
+		// Cache miss — build recursively
+		string depA, depBmod, depHash;
+		int ret = buildProject( depDir, exeDir, verbose, building, depA, depBmod, depHash );
+		if ( ret != 0 )
+		{
+			delete config;
+			return ret;
+		}
+
+		depAFiles.push_back( depA );
+		depBmodFiles.push_back( depBmod );
+		depHashes.push_back( depHash );
+	}
+
+	// Discover source files
+	vector<string> sources = discoverSourceFiles( projectDir );
+	if ( sources.empty() )
+	{
+		cerr << "error: no .b source files found in " << projectDir << endl;
+		delete config;
+		return 1;
+	}
+
+	// Compute cache key for this project
+	string tomlContent = readFileToString( projectDir + "/blang.toml" );
+	cacheHash = BuildCache::computeKey( sources, tomlContent, depHashes );
+
+	// Check cache for this project
+	if ( config->isLibrary() )
+	{
+		string cachedA, cachedBmod;
+		if ( BuildCache::lookup( cacheHash, cachedA, cachedBmod ) )
+		{
+			if ( verbose )
+				cerr << "  cache hit for " << config->getName() << " (" << cacheHash.substr( 0, 12 ) << "...)" << endl;
+			outAFile = cachedA;
+			outBmodFile = cachedBmod;
+			delete config;
+			return 0;
+		}
+	}
+
+	string qcc = exeDir + "/qcc";
+
+	// Build qcc command: all source files + dependency .bmod files
+	vector<string> qccCmd = { qcc };
+	for ( const auto &src : sources )
+		qccCmd.push_back( src );
+	for ( const auto &bmod : depBmodFiles )
+		qccCmd.push_back( bmod );
+
+	if ( config->isLibrary() )
+	{
+		// For libraries: emit .bmod and compile to .ll files
+		string bmodPath = projectDir + "/" + config->getName() + ".bmod";
+		qccCmd.push_back( "--emit-bmod" );
+		qccCmd.push_back( bmodPath );
+
+		int ret = runCommand( qccCmd, verbose, !verbose );
+		if ( ret != 0 )
+		{
+			cerr << "error: compilation failed for " << config->getName() << endl;
+			delete config;
+			return 1;
+		}
+
+		// Compile each .ll to .o
+		string llc;
+#ifdef BCC_LLC_PATH
+		if ( access( BCC_LLC_PATH, X_OK ) == 0 )
+			llc = BCC_LLC_PATH;
+#endif
+		if ( llc.empty() )
+			llc = findTool( "llc-18", { "llc" } );
+		if ( llc.empty() )
+		{
+			cerr << "error: llc not found" << endl;
+			delete config;
+			return 1;
+		}
+
+		vector<string> objFiles;
+		for ( const auto &src : sources )
+		{
+			string base = getBaseName( src );
+			string srcDir = getDirName( src );
+			string llFile = srcDir + "/" + base + ".ll";
+			string objFile = "/tmp/" + config->getName() + "_" + base + ".o";
+
+			if ( access( llFile.c_str(), F_OK ) != 0 )
+				continue;
+
+			vector<string> llcCmd = { llc, "-filetype=obj", "--relocation-model=pic" };
+#if defined(BCC_HOST_ARCH)
+#if defined(PLATFORM_DARWIN)
+			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+#elif defined(PLATFORM_LINUX)
+			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
+#endif
+#endif
+			llcCmd.push_back( llFile );
+			llcCmd.push_back( "-o" );
+			llcCmd.push_back( objFile );
+
+			ret = runCommand( llcCmd, verbose );
+			if ( ret != 0 )
+			{
+				cerr << "error: IR compilation failed for " << base << endl;
+				delete config;
+				return 1;
+			}
+			remove( llFile.c_str() );
+			objFiles.push_back( objFile );
+		}
+
+		// Archive into .a
+		string aPath = projectDir + "/lib" + config->getName() + ".a";
+		{
+			vector<string> arCmd = { "ar", "rcs", aPath };
+			for ( const auto &obj : objFiles )
+				arCmd.push_back( obj );
+			ret = runCommand( arCmd, verbose );
+			if ( ret != 0 )
+			{
+				cerr << "error: archive creation failed" << endl;
+				delete config;
+				return 1;
+			}
+			for ( const auto &obj : objFiles )
+				remove( obj.c_str() );
+		}
+
+		outAFile = aPath;
+		outBmodFile = bmodPath;
+
+		// Store in cache
+		BuildCache::store( cacheHash, aPath, bmodPath );
+
+		if ( verbose )
+			cerr << "  built " << config->getName() << " -> " << aPath << " + " << bmodPath << endl;
+	}
+	else
+	{
+		// For binaries: compile and link
+		int ret = runCommand( qccCmd, verbose, !verbose );
+		if ( ret != 0 )
+		{
+			cerr << "error: compilation failed for " << config->getName() << endl;
+			delete config;
+			return 1;
+		}
+
+		// Compile each .ll to .o
+		string llc;
+#ifdef BCC_LLC_PATH
+		if ( access( BCC_LLC_PATH, X_OK ) == 0 )
+			llc = BCC_LLC_PATH;
+#endif
+		if ( llc.empty() )
+			llc = findTool( "llc-18", { "llc" } );
+		if ( llc.empty() )
+		{
+			cerr << "error: llc not found" << endl;
+			delete config;
+			return 1;
+		}
+
+		vector<string> objFiles;
+		for ( const auto &src : sources )
+		{
+			string base = getBaseName( src );
+			string srcDir = getDirName( src );
+			string llFile = srcDir + "/" + base + ".ll";
+			string objFile = "/tmp/" + config->getName() + "_" + base + ".o";
+
+			if ( access( llFile.c_str(), F_OK ) != 0 )
+				continue;
+
+			vector<string> llcCmd = { llc, "-filetype=obj", "--relocation-model=pic" };
+#if defined(BCC_HOST_ARCH)
+#if defined(PLATFORM_DARWIN)
+			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+#elif defined(PLATFORM_LINUX)
+			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
+#endif
+#endif
+			llcCmd.push_back( llFile );
+			llcCmd.push_back( "-o" );
+			llcCmd.push_back( objFile );
+
+			ret = runCommand( llcCmd, verbose );
+			if ( ret != 0 )
+			{
+				cerr << "error: IR compilation failed for " << base << endl;
+				delete config;
+				return 1;
+			}
+			remove( llFile.c_str() );
+			objFiles.push_back( objFile );
+		}
+
+		// Link
+		string outName = config->getName();
+		string cc = "cc";
+#ifdef BCC_CC_PATH
+		cc = BCC_CC_PATH;
+#endif
+		vector<string> linkCmd = { cc };
+#if defined(BCC_HOST_ARCH) && defined(PLATFORM_DARWIN)
+		linkCmd.push_back( "-arch" );
+		linkCmd.push_back( BCC_HOST_ARCH );
+#endif
+		for ( const auto &obj : objFiles )
+			linkCmd.push_back( obj );
+
+		// Link dependency .a files
+		for ( const auto &depA : depAFiles )
+			linkCmd.push_back( depA );
+
+		// Link BLang runtime libraries (order: dependents before dependencies)
+		auto findBuildLib = [&]( const char *baked, const char *name ) -> string {
+			string lib;
+			if ( baked != nullptr )
+				lib = baked;
+			if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
+			{
+				string fallback = exeDir + "/lib" + name + ".a";
+				if ( access( fallback.c_str(), F_OK ) == 0 )
+					lib = fallback;
+				else
+					lib.clear();
+			}
+			return lib;
+		};
+
+		const char *bkRuntime = nullptr, *bkString = nullptr, *bkArray = nullptr;
+		const char *bkBuffer = nullptr;
+		const char *bkJson = nullptr, *bkNet = nullptr, *bkSys = nullptr;
+#ifdef BCC_RUNTIME_LIB
+		bkRuntime = BCC_RUNTIME_LIB;
+#endif
+#ifdef BCC_STRING_LIB
+		bkString = BCC_STRING_LIB;
+#endif
+#ifdef BCC_ARRAY_LIB
+		bkArray = BCC_ARRAY_LIB;
+#endif
+#ifdef BCC_BUFFER_LIB
+		bkBuffer = BCC_BUFFER_LIB;
+#endif
+#ifdef BCC_JSON_LIB
+		bkJson = BCC_JSON_LIB;
+#endif
+#ifdef BCC_NET_LIB
+		bkNet = BCC_NET_LIB;
+#endif
+#ifdef BCC_SYS_LIB
+		bkSys = BCC_SYS_LIB;
+#endif
+
+		for ( const auto &lib : {
+			findBuildLib( bkSys, "blang_sys" ),
+			findBuildLib( bkNet, "blang_net" ),
+			findBuildLib( bkJson, "blang_json" ),
+			findBuildLib( bkBuffer, "blang_buffer" ),
+			findBuildLib( bkArray, "blang_array" ),
+			findBuildLib( bkString, "blang_string" ),
+			findBuildLib( bkRuntime, "blang_runtime" ),
+		} )
+		{
+			if ( !lib.empty() )
+				linkCmd.push_back( lib );
+		}
+
+		linkCmd.push_back( "-lpthread" );
+		linkCmd.push_back( "-o" );
+		linkCmd.push_back( projectDir + "/" + outName );
+#ifdef BCC_HAS_LIBUV
+		linkCmd.push_back( "-luv" );
+#endif
+
+		ret = runCommand( linkCmd, verbose );
+		if ( ret != 0 )
+		{
+			cerr << "error: linking failed for " << config->getName() << endl;
+			for ( const auto &obj : objFiles )
+				remove( obj.c_str() );
+			delete config;
+			return 1;
+		}
+		for ( const auto &obj : objFiles )
+			remove( obj.c_str() );
+
+		if ( verbose )
+			cerr << "  built " << config->getName() << " -> " << projectDir + "/" + outName << endl;
+	}
+
+	building.erase( canonDir );
+	delete config;
+	return 0;
+}
+
+// bcc build subcommand
+static int runBuild( int argc, char *argv[], const string &exeDir )
+{
+	bool verbose = false;
+	string projectDir = ".";
+
+	for ( int i = 2; i < argc; i++ )
+	{
+		string arg = argv[i];
+		if ( arg == "-v" || arg == "--verbose" )
+			verbose = true;
+		else if ( arg[0] != '-' )
+			projectDir = arg;
+	}
+
+	set<string> building;
+	string outA, outBmod, hash;
+	return buildProject( projectDir, exeDir, verbose, building, outA, outBmod, hash );
+}
+
+// bcc clean subcommand
+static int runClean()
+{
+	string cacheDir = BuildCache::getCacheDir();
+	cerr << "Removing build cache: " << cacheDir << endl;
+	if ( BuildCache::clean() )
+	{
+		cerr << "Done." << endl;
+		return 0;
+	}
+	else
+	{
+		cerr << "error: failed to remove cache directory" << endl;
+		return 1;
+	}
+}
+
 int main( int argc, char *argv[] )
 {
+	string exeDir = getExeDir( argv[0] );
+
 	// Intercept subcommands before normal option parsing
+	if ( argc >= 2 && string( argv[1] ) == "build" )
+	{
+		return runBuild( argc, argv, exeDir );
+	}
+	if ( argc >= 2 && string( argv[1] ) == "clean" )
+	{
+		return runClean();
+	}
 	if ( argc >= 2 && string( argv[1] ) == "test" )
 	{
 		return runTests( argc, argv );
@@ -420,19 +906,38 @@ int main( int argc, char *argv[] )
 		return 1;
 	}
 
-	string exeDir = getExeDir( argv[0] );
 	string baseName = getBaseName( opts.inputFile );
 	string srcDir = getDirName( opts.inputFile );
 
 	// Locate qcc (same directory as bcc)
 	string qcc = exeDir + "/qcc";
 
+	// Check for stdlib files to include via --combine
+	vector<string> stdlibFiles;
+	{
+		string candidate = exeDir + "/stdlib/sys.b";
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			stdlibFiles.push_back( candidate );
+	}
+	{
+		string candidate = exeDir + "/stdlib/net.b";
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			stdlibFiles.push_back( candidate );
+	}
+
 	// Step 1: Parse and generate LLVM IR
 	if ( opts.verbose )
 		cerr << "--- Step 1: Parsing and generating LLVM IR ---" << endl;
 
 	{
-		vector<string> cmd = { qcc, opts.inputFile };
+		vector<string> cmd = { qcc };
+		if ( !stdlibFiles.empty() )
+		{
+			cmd.push_back( "--combine" );
+			for ( const auto &sf : stdlibFiles )
+				cmd.push_back( sf );
+		}
+		cmd.push_back( opts.inputFile );
 		int ret = runCommand( cmd, opts.verbose, true );
 		if ( ret != 0 )
 		{
@@ -558,61 +1063,66 @@ int main( int argc, char *argv[] )
 #endif
 		cmd.push_back( objFile );
 
-		// Link BLang runtime library (ARC, thread pool, channels, async)
-		string runtimeLib;
+		// Link BLang libraries (order: dependents before dependencies)
+		auto findLib = [&]( const char *baked, const char *name ) -> string {
+			string lib;
+			if ( baked != nullptr )
+				lib = baked;
+			if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
+			{
+				string fallback = exeDir + "/lib" + name + ".a";
+				if ( access( fallback.c_str(), F_OK ) == 0 )
+					lib = fallback;
+				else
+					lib.clear();
+			}
+			return lib;
+		};
+
+		// Order matters: higher-level libs first, base libs last
+		const char *bakedRuntime = nullptr;
+		const char *bakedString = nullptr;
+		const char *bakedArray = nullptr;
+		const char *bakedBuffer = nullptr;
+		const char *bakedJson = nullptr;
+		const char *bakedNet = nullptr;
+		const char *bakedSys = nullptr;
 #ifdef BCC_RUNTIME_LIB
-		runtimeLib = BCC_RUNTIME_LIB;
+		bakedRuntime = BCC_RUNTIME_LIB;
 #endif
-		if ( runtimeLib.empty() || access( runtimeLib.c_str(), F_OK ) != 0 )
-		{
-			string fallback = exeDir + "/libblang_runtime.a";
-			if ( access( fallback.c_str(), F_OK ) == 0 )
-				runtimeLib = fallback;
-		}
-		if ( !runtimeLib.empty() )
-			cmd.push_back( runtimeLib );
-
-		// Link BLang string library (safe string type)
-		string stringLib;
 #ifdef BCC_STRING_LIB
-		stringLib = BCC_STRING_LIB;
+		bakedString = BCC_STRING_LIB;
 #endif
-		if ( stringLib.empty() || access( stringLib.c_str(), F_OK ) != 0 )
-		{
-			string fallback = exeDir + "/libblang_string.a";
-			if ( access( fallback.c_str(), F_OK ) == 0 )
-				stringLib = fallback;
-		}
-		if ( !stringLib.empty() )
-			cmd.push_back( stringLib );
-
-		// Link BLang array library (safe array type)
-		string arrayLib;
 #ifdef BCC_ARRAY_LIB
-		arrayLib = BCC_ARRAY_LIB;
+		bakedArray = BCC_ARRAY_LIB;
 #endif
-		if ( arrayLib.empty() || access( arrayLib.c_str(), F_OK ) != 0 )
-		{
-			string fallback = exeDir + "/libblang_array.a";
-			if ( access( fallback.c_str(), F_OK ) == 0 )
-				arrayLib = fallback;
-		}
-		if ( !arrayLib.empty() )
-			cmd.push_back( arrayLib );
-
-		// Link BLang JSON library (@json annotation support)
-		string jsonLib;
+#ifdef BCC_BUFFER_LIB
+		bakedBuffer = BCC_BUFFER_LIB;
+#endif
 #ifdef BCC_JSON_LIB
-		jsonLib = BCC_JSON_LIB;
+		bakedJson = BCC_JSON_LIB;
 #endif
-		if ( jsonLib.empty() || access( jsonLib.c_str(), F_OK ) != 0 )
+#ifdef BCC_NET_LIB
+		bakedNet = BCC_NET_LIB;
+#endif
+#ifdef BCC_SYS_LIB
+		bakedSys = BCC_SYS_LIB;
+#endif
+
+		// Push in dependency order: sys→net→json→array→string→runtime
+		for ( const auto &lib : {
+			findLib( bakedSys, "blang_sys" ),
+			findLib( bakedNet, "blang_net" ),
+			findLib( bakedJson, "blang_json" ),
+			findLib( bakedBuffer, "blang_buffer" ),
+			findLib( bakedArray, "blang_array" ),
+			findLib( bakedString, "blang_string" ),
+			findLib( bakedRuntime, "blang_runtime" ),
+		} )
 		{
-			string fallback = exeDir + "/libblang_json.a";
-			if ( access( fallback.c_str(), F_OK ) == 0 )
-				jsonLib = fallback;
+			if ( !lib.empty() )
+				cmd.push_back( lib );
 		}
-		if ( !jsonLib.empty() )
-			cmd.push_back( jsonLib );
 
 		cmd.push_back( "-lpthread" );
 

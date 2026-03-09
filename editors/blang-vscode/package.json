@@ -1,0 +1,39 @@
+{
+	"name": "blang",
+	"displayName": "BLang",
+	"description": "Syntax highlighting for the BLang programming language",
+	"version": "0.1.0",
+	"publisher": "blang",
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "blang",
+				"aliases": [
+					"BLang",
+					"blang"
+				],
+				"extensions": [
+					".b"
+				],
+				"configuration": "./language-configuration.json",
+				"icon": {
+					"light": "./icon.png",
+					"dark": "./icon.png"
+				}
+			}
+		],
+		"grammars": [
+			{
+				"language": "blang",
+				"scopeName": "source.blang",
+				"path": "./syntaxes/blang.tmLanguage.json"
+			}
+		]
+	}
+}

@@ -1,8 +1,6 @@
 // E2E test: for-in loop with range expression
 // Tests: for x in 0..N range iteration
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
 	int sum = 0;
 
@@ -20,6 +18,6 @@ fn main() -> int {
 	}
 	assert count == 100, "count should be 100";
 
-	printf("For-in codegen test passed!\n");
+	println("For-in codegen test passed!");
 	return 0;
 }

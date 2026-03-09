@@ -1,8 +1,6 @@
 // E2E test: wait for a single spawned task
 // Tests: Task t = spawn { }; wait t;
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
 	sync int counter = 0;
 
@@ -19,9 +17,9 @@ fn main() -> int {
 	wait t2;
 
 	// After waiting, counter should be 30
-	printf("counter = %d\n", counter);
+	println("counter = {}", counter);
 	assert counter == 30, "counter should be 30 after waiting";
 
-	printf("Wait codegen test passed!\n");
+	println("Wait codegen test passed!");
 	return 0;
 }

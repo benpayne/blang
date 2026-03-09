@@ -1,8 +1,6 @@
 // E2E test: sync variable locking
 // Tests: sync read lock/unlock, sync = with self-reference (TOCTOU fix), sync +=
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int {
 	// sync variable with locked reads and writes
 	sync int counter = 0;
@@ -26,6 +24,6 @@ fn main() -> int {
 	val = counter;
 	assert val == 12, "counter should be 12 after counter = counter + counter";
 
-	printf("Sync locking codegen test passed!\n");
+	println("Sync locking codegen test passed!");
 	return 0;
 }

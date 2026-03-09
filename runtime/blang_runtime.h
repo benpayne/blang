@@ -10,6 +10,9 @@ extern "C" {
 
 /* ---- ARC (Automatic Reference Counting) ---- */
 
+/* Destructor callback type: called with user-data pointer when refcount hits 0. */
+typedef void (*blang_dtor_fn)( void *ptr );
+
 /* Header prepended to every heap-allocated shared/sync object.
    Layout: [BlangRefHeader] [user data ...] */
 typedef struct BlangRefHeader
@@ -17,12 +20,17 @@ typedef struct BlangRefHeader
 	int32_t ref_count;  /* atomic reference count */
 	int32_t is_sync;    /* 1 if this object has a mutex */
 	void *mutex;        /* pointer to pthread_mutex_t (NULL for shared-only) */
+	blang_dtor_fn destructor; /* destructor for releasing owned resources (may be NULL) */
 } BlangRefHeader;
 
 /* Allocate a new ref-counted object with given data size.
    Returned pointer points PAST the header (to user data).
-   Initial ref_count = 1. */
+   Initial ref_count = 1.  destructor = NULL. */
 void *__blang_rc_alloc( size_t data_size );
+
+/* Allocate a ref-counted object with a destructor callback.
+   When refcount reaches 0, the destructor is called before freeing. */
+void *__blang_rc_alloc_dtor( size_t data_size, blang_dtor_fn dtor );
 
 /* Allocate a sync (mutex-protected) ref-counted object.
    Same as __blang_rc_alloc but also creates a mutex. */
@@ -31,7 +39,8 @@ void *__blang_rc_alloc_sync( size_t data_size );
 /* Increment reference count. */
 void __blang_rc_retain( void *ptr );
 
-/* Decrement reference count.  Frees memory (and mutex) when count reaches 0. */
+/* Decrement reference count.  Calls destructor (if set) and frees memory
+   when count reaches 0. */
 void __blang_rc_release( void *ptr );
 
 /* Lock the mutex on a sync object.  No-op if ptr is NULL or not sync. */
@@ -39,6 +48,19 @@ void __blang_sync_lock( void *ptr );
 
 /* Unlock the mutex on a sync object. */
 void __blang_sync_unlock( void *ptr );
+
+/* ---- Lambda Context Lifetime ---- */
+
+/* Lambda context layout: { int64_t refcount, void(*destructor)(void*), ...captured_fields... }
+   The refcount and destructor are stored at known offsets in the malloc'd context struct. */
+
+/* Increment lambda context reference count. No-op if ctx is NULL. */
+void __blang_lambda_ctx_retain( void *ctx );
+
+/* Decrement lambda context reference count. When count reaches 0,
+   calls the destructor (at offset 8) to release captured values, then frees ctx.
+   No-op if ctx is NULL. */
+void __blang_lambda_ctx_release( void *ctx );
 
 /* ---- Green Thread Pool (spawn) ---- */
 

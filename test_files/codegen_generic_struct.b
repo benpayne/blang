@@ -1,6 +1,3 @@
-extern fn puts(cstring s) -> int;
-extern fn printf(cstring fmt, ...) -> int;
-
 struct Box<T> {
 	T value;
 }
@@ -10,8 +7,8 @@ fn main() -> int {
 	if b1.value != 42 { return 1; }
 
 	Box<string> b2 = Box<string> { value: "hello" };
-	puts(b2.value);
+	println("{}", b2.value);
 
-	puts("Generic struct test passed!");
+	println("Generic struct test passed!");
 	return 0;
 }

@@ -211,10 +211,15 @@ namespace QLang
 		void addParam( Expression *param ) { mParams.push_back( param ); }
 		void addTypeArg( Type *typeArg ) { mTypeArgs.push_back( typeArg ); }
 
+		// Override the LLVM function name for namespace-mangled calls (e.g. "sys__args")
+		void setMangledName( const std::string &name ) { mMangledName = name; }
+		const std::string &getMangledName() const { return mMangledName; }
+
 	private:
 		SmartPtr<FunctionDefinition> mFunction;
 		std::vector<SmartPtr<Type>> mTypeArgs;
 		std::vector<SmartPtr<Expression> > mParams;
+		std::string mMangledName;  // namespace-mangled name, empty if not mangled
 		friend class CodeGen;
 	};
 	
@@ -241,7 +246,37 @@ namespace QLang
 		SmartPtr<Expression> mValue;
 		friend class CodeGen;
 	};
-	
+
+	class FieldAssignmentExpression : public Expression
+	{
+	public:
+		FieldAssignmentExpression( std::string operation, Expression *object,
+			const std::string &fieldName, Expression *value ) :
+			mOperation( operation ), mObject( object ), mFieldName( fieldName ), mValue( value ) {}
+
+	private:
+		std::string mOperation;
+		SmartPtr<Expression> mObject;
+		std::string mFieldName;
+		SmartPtr<Expression> mValue;
+		friend class CodeGen;
+	};
+
+	class IndexAssignmentExpression : public Expression
+	{
+	public:
+		IndexAssignmentExpression( std::string operation, Expression *object,
+			Expression *index, Expression *value ) :
+			mOperation( operation ), mObject( object ), mIndex( index ), mValue( value ) {}
+
+	private:
+		std::string mOperation;
+		SmartPtr<Expression> mObject;
+		SmartPtr<Expression> mIndex;
+		SmartPtr<Expression> mValue;
+		friend class CodeGen;
+	};
+
 	class OperationsExpression : public Expression
 	{
 	public:
@@ -368,6 +403,9 @@ namespace QLang
 
 		static FieldAccessExpression *Parse( Lexer &l, Scope *scope );
 
+		Expression *getObject() { return mObject; }
+		const std::string &getFieldName() const { return mFieldName; }
+
 	private:
 		SmartPtr<Expression> mObject;
 		std::string mFieldName;
@@ -416,6 +454,9 @@ namespace QLang
 	public:
 		IndexExpression( Expression *object, Expression *index ) :
 			mObject( object ), mIndex( index ) {}
+
+		Expression *getObject() { return mObject; }
+		Expression *getIndex() { return mIndex; }
 
 	private:
 		SmartPtr<Expression> mObject;
@@ -519,6 +560,44 @@ namespace QLang
 
 	private:
 		SmartPtr<Expression> mOperand;
+		friend class CodeGen;
+	};
+
+	class FunctionRefExpression : public Expression
+	{
+	public:
+		FunctionRefExpression( FunctionDefinition *func ) : mFunction( func ) {}
+
+	private:
+		SmartPtr<FunctionDefinition> mFunction;
+		friend class CodeGen;
+	};
+
+	class LambdaExpression : public Expression
+	{
+	public:
+		static LambdaExpression *Parse( Lexer &l, Scope *scope );
+
+	protected:
+		LambdaExpression() {}
+
+	private:
+		SmartPtr<Type> mReturnType;  // nullptr = void
+		std::vector<SmartPtr<VariableDefinition>> mParameters;
+		SmartPtr<Block> mBody;
+		friend class CodeGen;
+	};
+
+	class IndirectCallExpression : public Expression
+	{
+	public:
+		IndirectCallExpression( VariableDefinition *fnVar ) : mFnVariable( fnVar ) {}
+
+		void addParam( Expression *param ) { mParams.push_back( param ); }
+
+	private:
+		SmartPtr<VariableDefinition> mFnVariable;
+		std::vector<SmartPtr<Expression>> mParams;
 		friend class CodeGen;
 	};
 

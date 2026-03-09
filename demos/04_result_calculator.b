@@ -1,9 +1,6 @@
 // Demo 4: Result-Based Calculator
 // Features: enum payloads, Result type, match/destructuring, error handling
 
-extern fn printf(cstring fmt, ...) -> int;
-extern fn puts(cstring s) -> int;
-
 enum Result {
 	ok(int),
 	err(string)
@@ -43,46 +40,48 @@ fn unwrap_or(Result r, int fallback) -> int {
 			out = val;
 		}
 		err(msg) {
-			printf("  ERROR: %s\n", msg.to_cstring());
+			println("  ERROR: {}", msg);
 		}
 	}
 	return out;
 }
 
 fn main() -> int {
-	printf("=== Result-Based Calculator ===\n\n");
+	println("=== Result-Based Calculator ===");
+	println();
 
 	// Basic operations
-	printf("Basic operations:\n");
+	println("Basic operations:");
 	Result r1 = add(10, 20);
 	match r1 {
-		ok(val) { printf("  10 + 20 = %d\n", val); assert val == 30; }
+		ok(val) { println("  10 + 20 = {}", val); assert val == 30; }
 		err(msg) { return 1; }
 	}
 
 	Result r2 = multiply(7, 6);
 	match r2 {
-		ok(val) { printf("  7 * 6 = %d\n", val); assert val == 42; }
+		ok(val) { println("  7 * 6 = {}", val); assert val == 42; }
 		err(msg) { return 1; }
 	}
 
 	Result r3 = divide(100, 4);
 	match r3 {
-		ok(val) { printf("  100 / 4 = %d\n", val); assert val == 25; }
+		ok(val) { println("  100 / 4 = {}", val); assert val == 25; }
 		err(msg) { return 1; }
 	}
 
-	printf("\nError handling:\n");
+	println();
+	println("Error handling:");
 
 	// Division by zero — should return err
 	Result r4 = divide(42, 0);
 	match r4 {
 		ok(val) {
-			printf("  UNEXPECTED: got ok(%d)\n", val);
+			println("  UNEXPECTED: got ok({})", val);
 			return 1;
 		}
 		err(msg) {
-			printf("  42 / 0 = err(\"%s\") -- correctly caught!\n", msg.to_cstring());
+			println("  42 / 0 = err(\"{}\") -- correctly caught!", msg);
 		}
 	}
 
@@ -91,24 +90,26 @@ fn main() -> int {
 	match r5 {
 		ok(val) { return 1; }
 		err(msg) {
-			printf("  10 %% 0 = err(\"%s\") -- correctly caught!\n", msg.to_cstring());
+			println("  10 % 0 = err(\"{}\") -- correctly caught!", msg);
 		}
 	}
 
-	printf("\nChained computation (((100 - 30) * 2) / 7):\n");
+	println();
+	println("Chained computation (((100 - 30) * 2) / 7):");
 
 	// Chained: (100 - 30) * 2 / 7 = 70 * 2 / 7 = 140 / 7 = 20
 	int step1 = unwrap_or(subtract(100, 30), 0);
-	printf("  100 - 30 = %d\n", step1);
+	println("  100 - 30 = {}", step1);
 
 	int step2 = unwrap_or(multiply(step1, 2), 0);
-	printf("  %d * 2 = %d\n", step1, step2);
+	println("  {} * 2 = {}", step1, step2);
 
 	int step3 = unwrap_or(divide(step2, 7), 0);
-	printf("  %d / 7 = %d\n", step2, step3);
+	println("  {} / 7 = {}", step2, step3);
 
 	assert step3 == 20, "chained computation should equal 20";
 
-	printf("\nResult calculator demo passed!\n");
+	println();
+	println("Result calculator demo passed!");
 	return 0;
 }

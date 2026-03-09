@@ -1,8 +1,6 @@
 // E2E test: pipeline operator |>
 // Tests: expr |> fn(args) desugars to fn(expr, args)
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn add(int a, int b) -> int {
 	return a + b;
 }
@@ -25,6 +23,6 @@ fn main() -> int {
 	int piped = x |> add(20);
 	assert piped == 30, "pipeline: x |> add(20) should be 30";
 
-	printf("Pipeline codegen test passed!\n");
+	println("Pipeline codegen test passed!");
 	return 0;
 }

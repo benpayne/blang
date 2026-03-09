@@ -12,7 +12,7 @@
 using namespace QLang;
 using namespace std;
 
-ProtocolDefinition *ProtocolDefinition::Parse( Lexer &l, Scope *s )
+ProtocolDefinition *ProtocolDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 {
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_PROTOCOL )
@@ -27,6 +27,7 @@ ProtocolDefinition *ProtocolDefinition::Parse( Lexer &l, Scope *s )
 	}
 
 	ProtocolDefinition *protoDef = new ProtocolDefinition( l.getSymbolText() );
+	protoDef->mIsPublic = isPublic;
 
 	// Check for generic parameters: protocol Name<T>
 	if ( l.peekSymbol() == '<' )

@@ -4,6 +4,7 @@
 
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 
 #include "RefCount.h"
@@ -48,11 +49,33 @@ namespace QLang
 		int getNumTypeParams() const { return mTypeParams.size(); }
 		Type *getTypeParam( int i ) { return mTypeParams[ i ]; }
 
+		virtual bool isFunctionType() const { return false; }
+
 		friend std::ostream &operator<<(std::ostream &out, const Type &type);
 
 	private:
 		std::string mName;
 		std::vector<SmartPtr<Type>> mTypeParams;
+	};
+
+	class FunctionType : public Type
+	{
+	public:
+		FunctionType() : Type( "fn" ) {}
+
+		void setReturnType( Type *rt ) { mReturnType = rt; }
+		Type *getReturnType() { return mReturnType; }
+
+		void addParamType( Type *pt ) { mParamTypes.push_back( pt ); }
+		int getNumParamTypes() const { return (int)mParamTypes.size(); }
+		Type *getParamType( int i ) { return mParamTypes[i]; }
+
+		bool isFunctionType() const override { return true; }
+
+	private:
+		SmartPtr<Type> mReturnType;  // nullptr = void
+		std::vector<SmartPtr<Type>> mParamTypes;
+		friend class CodeGen;
 	};
 
 	class Symbol : virtual public RefCount
@@ -89,8 +112,8 @@ namespace QLang
 			kScope_Loop,
 		};
 
-		Scope( ScopeType type = kScope_Anonymous ) {}
-		Scope( ScopeType type, const std::string &name ) {}
+		Scope( ScopeType type = kScope_Anonymous ) : mType( type ) {}
+		Scope( ScopeType type, const std::string &name ) : mType( type ) {}
 
 		bool addSymbol( Symbol *sym )
 		{
@@ -138,6 +161,37 @@ namespace QLang
 			mParent = parent;
 		}
 
+		// Namespace support for module-qualified access (e.g. sys.args, net.Socket)
+		void addNamespace( const std::string &name, Scope *ns )
+		{
+			mNamespaceMap[name] = ns;
+		}
+
+		Scope *findNamespace( const std::string &name )
+		{
+			auto it = mNamespaceMap.find( name );
+			if ( it != mNamespaceMap.end() )
+				return it->second;
+			if ( mParent != nullptr )
+				return mParent->findNamespace( name );
+			return nullptr;
+		}
+
+		// Track which modules have been imported in this scope
+		void addImportedModule( const std::string &name )
+		{
+			mImportedModules.insert( name );
+		}
+
+		bool isModuleImported( const std::string &name )
+		{
+			if ( mImportedModules.count( name ) > 0 )
+				return true;
+			if ( mParent != nullptr )
+				return mParent->isModuleImported( name );
+			return false;
+		}
+
 	private:
 		typedef std::map<std::string, SmartPtr<Symbol> > SymbolListType;
 		typedef std::map<std::string, SmartPtr<Type> > TypeListType;
@@ -146,6 +200,8 @@ namespace QLang
 		SmartPtr<Scope> mParent;
 		SymbolListType mSymbolList;
 		TypeListType mTypeList;
+		std::map<std::string, SmartPtr<Scope>> mNamespaceMap;
+		std::set<std::string> mImportedModules;
 	};
 
 	struct GenericParam
@@ -173,12 +229,22 @@ namespace QLang
 
 	class StructDefinition;
 	class EnumDefinition;
+	class ProtocolDefinition;
 
 	class Module : virtual public RefCount
 	{
 	public:
 
 		static Module *Parse( Lexer &l, Scope *s );
+
+		const std::vector<SmartPtr<FunctionDefinition>> &getFunctionList() const { return mFunctionList; }
+		const std::vector<SmartPtr<ImportStatement>> &getImports() const { return mImports; }
+		const std::vector<SmartPtr<StructDefinition>> &getStructList() const { return mStructList; }
+		const std::vector<SmartPtr<EnumDefinition>> &getEnumList() const { return mEnumList; }
+		const std::vector<SmartPtr<ProtocolDefinition>> &getProtocolList() const { return mProtocolList; }
+
+		bool isExtern() const { return mIsExtern; }
+		void setExtern( bool isExtern ) { mIsExtern = isExtern; }
 
 	private:
 		Module() {}
@@ -188,8 +254,10 @@ namespace QLang
 		std::vector<SmartPtr<ImportStatement>> mImports;
 		std::vector<SmartPtr<StructDefinition>> mStructList;
 		std::vector<SmartPtr<EnumDefinition>> mEnumList;
+		std::vector<SmartPtr<ProtocolDefinition>> mProtocolList;
 		std::vector<SmartPtr<TestBlock>> mTestBlocks;
 		SmartPtr<Scope> mScope;
+		bool mIsExtern = false;
 	};
 
 	class FunctionDefinition : public Symbol
@@ -197,6 +265,19 @@ namespace QLang
 	public:
 
 		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false, bool isPublic = false );
+
+		// Create a builtin function definition (for compiler-provided builtins)
+		static FunctionDefinition *CreateBuiltin( const std::string &name, Type *returnType,
+			const std::vector<VariableDefinition*> &params, bool isVariadic = false )
+		{
+			FunctionDefinition *f = new FunctionDefinition( name );
+			f->mReturnType = returnType;
+			for ( auto *p : params )
+				f->mParameters.push_back( p );
+			f->mIsVariadic = isVariadic;
+			f->mIsBuiltin = true;
+			return f;
+		}
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
 
@@ -207,10 +288,13 @@ namespace QLang
 		Type *getParamType( int p );
 		VariableDefinition *getParam( int p );
 		bool isExtern() const { return mIsExtern; }
+		void setFunctionExtern( bool e ) { mIsExtern = e; }
 		bool isVariadic() const { return mIsVariadic; }
 		bool isGeneric() const { return !mGenericParams.empty(); }
 		bool isPublic() const { return mIsPublic; }
 		bool isAsync() const { return mIsAsync; }
+		bool isBuiltin() const { return mIsBuiltin; }
+		const std::vector<GenericParam> &getGenericParams() const { return mGenericParams; }
 		bool hasRequires() const { return !mRequiresClauses.empty(); }
 		bool hasEnsures() const { return !mEnsuresClauses.empty(); }
 
@@ -228,6 +312,7 @@ namespace QLang
 		bool mIsVariadic = false;
 		bool mIsPublic = false;
 		bool mIsAsync = false;
+		bool mIsBuiltin = false;
 		std::vector<GenericParam> mGenericParams;
 		std::vector<SmartPtr<Expression>> mRequiresClauses;
 		std::vector<SmartPtr<Expression>> mEnsuresClauses;
@@ -286,6 +371,7 @@ namespace QLang
 		bool isGeneric() const { return !mGenericParams.empty(); }
 		bool isPublic() const { return mIsPublic; }
 		bool isTable() const { return mIsTable; }
+		const std::vector<GenericParam> &getGenericParams() const { return mGenericParams; }
 		void setIsTable( bool isTable ) { mIsTable = isTable; }
 
 		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
@@ -310,11 +396,23 @@ namespace QLang
 	{
 	public:
 
-		static ProtocolDefinition *Parse( Lexer &l, Scope *s );
+		static ProtocolDefinition *Parse( Lexer &l, Scope *s, bool isPublic = false );
+
+		// Create a builtin protocol definition
+		static ProtocolDefinition *CreateBuiltin( const std::string &name,
+			const std::vector<FunctionDefinition*> &methods )
+		{
+			ProtocolDefinition *p = new ProtocolDefinition( name );
+			for ( auto *m : methods )
+				p->mRequiredMethods.push_back( m );
+			return p;
+		}
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeFunction; }
 
 		bool isGeneric() const { return !mGenericParams.empty(); }
+		bool isPublic() const { return mIsPublic; }
+		const std::vector<GenericParam> &getGenericParams() const { return mGenericParams; }
 
 		const std::vector<SmartPtr<FunctionDefinition> > &getRequiredMethods() const { return mRequiredMethods; }
 
@@ -323,6 +421,7 @@ namespace QLang
 
 		std::vector<SmartPtr<FunctionDefinition> > mRequiredMethods;
 		std::vector<GenericParam> mGenericParams;
+		bool mIsPublic = false;
 		friend class CodeGen;
 	};
 
@@ -336,11 +435,13 @@ namespace QLang
 			std::vector<SmartPtr<Type>> mAssociatedTypes;
 		};
 
-		static EnumDefinition *Parse( Lexer &l, Scope *s );
+		static EnumDefinition *Parse( Lexer &l, Scope *s, bool isPublic = false );
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
 
 		bool isGeneric() const { return !mGenericParams.empty(); }
+		bool isPublic() const { return mIsPublic; }
+		const std::vector<GenericParam> &getGenericParams() const { return mGenericParams; }
 
 		const std::vector<Variant> &getVariants() const { return mVariants; }
 		int getNumVariants() const { return mVariants.size(); }
@@ -354,6 +455,7 @@ namespace QLang
 		std::vector<Variant> mVariants;
 		std::vector<GenericParam> mGenericParams;
 		std::vector<AnnotationNode> mAnnotations;
+		bool mIsPublic = false;
 		friend class CodeGen;
 	};
 

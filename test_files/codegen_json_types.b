@@ -1,6 +1,3 @@
-extern fn puts(cstring s) -> int;
-extern fn printf(cstring fmt, ...) -> int;
-
 @json
 struct AllTypes {
 	int i;
@@ -16,7 +13,7 @@ struct AllTypes {
 fn main() -> int {
 	AllTypes a = AllTypes { i: 42, f: 3.14, d: 2.718, s: "hello", b: true, c: 65, sh: 100, l: 999999 };
 	string json = AllTypes_to_json(a);
-	puts(json);
+	println("{}", json);
 
 	AllTypes a2 = AllTypes_from_json(json);
 
@@ -26,6 +23,6 @@ fn main() -> int {
 	if a2.sh != 100 { return 4; }
 	if a2.l != 999999 { return 5; }
 
-	puts("All types JSON test passed!");
+	println("All types JSON test passed!");
 	return 0;
 }

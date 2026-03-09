@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+/* Element destructor callback: called with pointer value loaded from each slot. */
+typedef void (*blang_array_elem_dtor_fn)( void *elem );
+
 typedef struct
 {
 	void *data;          /* pointer to contiguous elements */
@@ -15,6 +18,7 @@ typedef struct
 	int64_t capacity;    /* allocated capacity (in elements) */
 	int32_t ref_count;   /* reference count */
 	int32_t elem_size;   /* size of each element in bytes */
+	blang_array_elem_dtor_fn elem_dtor; /* destructor for refcounted elements (may be NULL) */
 } BlangArray;
 
 /* Creation */
@@ -42,6 +46,9 @@ void __blang_array_remove( BlangArray *a, int64_t index, void *out );
 
 /* Concatenation */
 BlangArray *__blang_array_concat( BlangArray *a, BlangArray *b );
+
+/* Element destructor */
+void __blang_array_set_elem_dtor( BlangArray *a, blang_array_elem_dtor_fn dtor );
 
 /* Utility */
 void __blang_array_clear( BlangArray *a );

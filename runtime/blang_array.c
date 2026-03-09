@@ -56,6 +56,7 @@ BlangArray *__blang_array_create( int32_t elem_size, int64_t initial_capacity )
 	a->length = 0;
 	a->capacity = initial_capacity;
 	a->ref_count = 1;
+	a->elem_dtor = NULL;
 	a->data = calloc( (size_t)initial_capacity, (size_t)elem_size );
 	if ( a->data == NULL )
 	{
@@ -81,6 +82,7 @@ BlangArray *__blang_array_create_from_data( int32_t elem_size, const void *data,
 	a->length = count;
 	a->capacity = cap;
 	a->ref_count = 1;
+	a->elem_dtor = NULL;
 	a->data = calloc( (size_t)cap, (size_t)elem_size );
 	if ( a->data == NULL )
 	{
@@ -110,6 +112,17 @@ void __blang_array_release( BlangArray *a )
 	int32_t new_count = __atomic_sub_fetch( &a->ref_count, 1, __ATOMIC_SEQ_CST );
 	if ( new_count <= 0 )
 	{
+		/* Release refcounted elements before freeing the data buffer */
+		if ( a->elem_dtor != NULL && a->data != NULL )
+		{
+			for ( int64_t i = 0; i < a->length; i++ )
+			{
+				void *slot = (char *)a->data + i * (int64_t)a->elem_size;
+				void *elem_val = *(void **)slot;
+				if ( elem_val != NULL )
+					a->elem_dtor( elem_val );
+			}
+		}
 		free( a->data );
 		free( a );
 	}
@@ -280,9 +293,27 @@ BlangArray *__blang_array_concat( BlangArray *a, BlangArray *b )
    Utility
    ======================================================================== */
 
+void __blang_array_set_elem_dtor( BlangArray *a, blang_array_elem_dtor_fn dtor )
+{
+	if ( a == NULL )
+		return;
+	a->elem_dtor = dtor;
+}
+
 void __blang_array_clear( BlangArray *a )
 {
 	if ( a == NULL )
 		return;
+	/* Release refcounted elements before clearing */
+	if ( a->elem_dtor != NULL && a->data != NULL )
+	{
+		for ( int64_t i = 0; i < a->length; i++ )
+		{
+			void *slot = (char *)a->data + i * (int64_t)a->elem_size;
+			void *elem_val = *(void **)slot;
+			if ( elem_val != NULL )
+				a->elem_dtor( elem_val );
+		}
+	}
 	a->length = 0;
 }

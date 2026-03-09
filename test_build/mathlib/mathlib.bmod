@@ -1,0 +1,4 @@
+// auto-generated .bmod interface file — do not edit
+
+pub fn add(int a, int b) -> int;
+pub fn multiply(int a, int b) -> int;

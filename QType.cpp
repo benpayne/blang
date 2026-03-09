@@ -63,9 +63,57 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 			COMPILE_ERROR( l, "Expected '>' after carray type argument" );
 		return t; // already parsed generic args, skip the generic check below
 	}
+	else if ( sym == Lexer::KEYWORD_FN )
+	{
+		// Function type: fn(ParamTypes) -> RetType
+		FunctionType *ft = new FunctionType();
+		if ( l.getSymbol() != '(' )
+			COMPILE_ERROR( l, "Expected '(' in function type" );
+		if ( l.peekSymbol() != ')' )
+		{
+			do {
+				Type *pt = Type::Parse( l, s, false );
+				if ( pt == nullptr )
+					COMPILE_ERROR( l, "Expected parameter type in function type" );
+				ft->addParamType( pt );
+				int next = l.getSymbol();
+				if ( next == ')' ) break;
+				if ( next != ',' )
+					COMPILE_ERROR( l, "Expected ',' or ')' in function type" );
+			} while ( true );
+		}
+		else
+		{
+			l.getSymbol(); // consume ')'
+		}
+		if ( l.peekSymbol() == Lexer::ARROW )
+		{
+			l.getSymbol(); // consume '->'
+			ft->setReturnType( Type::Parse( l, s, false ) );
+		}
+		return ft;
+	}
 	else if ( sym == Lexer::SYMBOL )
 	{
-		t = s->findType( l.getSymbolText() );
+		string symName = l.getSymbolText();
+
+		// Check for module-qualified type: net.Socket
+		Scope *nsScope = s->findNamespace( symName );
+		if ( nsScope != nullptr && s->isModuleImported( symName ) && l.peekSymbol() == '.' )
+		{
+			l.getSymbol(); // consume '.'
+			int memberSym = l.getSymbol();
+			if ( memberSym != Lexer::SYMBOL )
+				COMPILE_ERROR( l, "Expected type name after '" + symName + ".'" );
+			string memberName = l.getSymbolText();
+			t = nsScope->findType( memberName );
+			if ( t == nullptr )
+				COMPILE_ERROR( l, "Module '" + symName + "' has no type '" + memberName + "'" );
+		}
+		else
+		{
+			t = s->findType( symName );
+		}
 	}
 	else
 	{

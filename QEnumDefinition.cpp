@@ -17,7 +17,7 @@ using namespace std;
 
 // Parse: enum Name { Variant1, Variant2(Type1, Type2), ... }
 // Parse: enum Name<T> { Variant1, Variant2(T), ... }
-EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s )
+EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
@@ -37,6 +37,7 @@ EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s )
 	string enumName = l.getSymbolText();
 
 	EnumDefinition *enumDef = new EnumDefinition( enumName );
+	enumDef->mIsPublic = isPublic;
 
 	// Check for generic parameters: <T> or <T: Constraint>
 	if ( l.peekSymbol() == '<' )

@@ -14,6 +14,7 @@
 #include "Type.h"
 #include "Expression.h"
 #include "SQLGen.h"
+#include "FormatString.h"
 
 namespace QLang
 {
@@ -27,6 +28,14 @@ public:
 	bool generate( Module *mod );
 	void print( llvm::raw_ostream &os );
 	bool verify();
+
+	// Set a module prefix for name mangling (e.g. "sys" → functions become "sys__funcName")
+	void setModulePrefix( const std::string &prefix ) { mModulePrefix = prefix; }
+
+	// Multi-module support: register struct/enum defs from other modules
+	void registerExternalTypes(
+		const std::vector<SmartPtr<StructDefinition>> &structs,
+		const std::vector<SmartPtr<EnumDefinition>> &enums );
 
 private:
 	// Top-level generators
@@ -73,13 +82,17 @@ private:
 		const std::vector<SmartPtr<Type>> &typeArgs );
 	llvm::Value *genStructLiteral( StructLiteralExpression *expr );
 	llvm::Value *genFieldAccess( FieldAccessExpression *expr );
+	llvm::Value *genFieldAssignment( FieldAssignmentExpression *expr );
+	llvm::Value *genIndexAssignment( IndexAssignmentExpression *expr );
 	llvm::Value *genMethodCall( MethodCallExpression *expr );
 
 	// Builtin type method/field codegen
 	llvm::Value *genStringMethodCall( MethodCallExpression *expr );
 	llvm::Value *genArrayMethodCall( MethodCallExpression *expr );
+	llvm::Value *genBufferMethodCall( MethodCallExpression *expr );
 	llvm::Value *genStringFieldAccess( FieldAccessExpression *expr );
 	llvm::Value *genArrayFieldAccess( FieldAccessExpression *expr );
+	llvm::Value *genBufferFieldAccess( FieldAccessExpression *expr );
 
 	// Enum tagged union codegen
 	llvm::StructType *getOrCreateEnumType( EnumDefinition *enumDef );
@@ -90,6 +103,9 @@ private:
 	// Match and error handling codegen
 	llvm::Value *genMatchExpression( MatchExpression *expr );
 	llvm::Value *genTryExpression( TryExpression *expr );
+
+	// Try operator helper: resolve the QLang enum type of an expression
+	EnumDefinition *resolveExpressionEnumDef( Expression *expr );
 
 	// Array codegen
 	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
@@ -109,10 +125,37 @@ private:
 	llvm::Function *getOrDeclareArrayIsEmpty();
 	llvm::Function *getOrDeclareArrayPop();
 	llvm::Function *getOrDeclareArrayClear();
+	llvm::Function *getOrDeclareArraySetElemDtor();
+
+	// Set element destructor on an array based on element type name
+	void emitArrayElemDtor( llvm::Value *arrayPtr, const std::string &elemTypeName );
 
 	// Array type helper
 	bool isArrayType( Expression *expr );
 	int getElementSize( Type *elemType );
+
+	// Buffer type helper
+	bool isBufferType( Expression *expr );
+
+	// Buffer runtime declarations
+	llvm::Function *getOrDeclareBufferCreate();
+	llvm::Function *getOrDeclareBufferCreateFromString();
+	llvm::Function *getOrDeclareBufferRetain();
+	llvm::Function *getOrDeclareBufferRelease();
+	llvm::Function *getOrDeclareBufferLength();
+	llvm::Function *getOrDeclareBufferCapacity();
+	llvm::Function *getOrDeclareBufferIsEmpty();
+	llvm::Function *getOrDeclareBufferGet();
+	llvm::Function *getOrDeclareBufferSet();
+	llvm::Function *getOrDeclareBufferAppendByte();
+	llvm::Function *getOrDeclareBufferAppendBytes();
+	llvm::Function *getOrDeclareBufferAppendString();
+	llvm::Function *getOrDeclareBufferIndexOf();
+	llvm::Function *getOrDeclareBufferSlice();
+	llvm::Function *getOrDeclareBufferToString();
+	llvm::Function *getOrDeclareBufferToStringRange();
+	llvm::Function *getOrDeclareBufferClear();
+	llvm::Function *getOrDeclareBufferCompact();
 
 	// Break/continue codegen
 	void genBreakStatement();
@@ -123,6 +166,36 @@ private:
 
 	// Pipeline expression codegen
 	llvm::Value *genPipelineExpression( PipelineExpression *pipeline );
+
+	// Builtin print/println codegen
+	void genPrintCall( CallExpression *call, bool appendNewline );
+
+	// Print runtime declarations
+	llvm::Function *getOrDeclarePrintBlang();
+	llvm::Function *getOrDeclarePrintNewline();
+	llvm::Function *getOrDeclarePrintFlush();
+	llvm::Function *getOrDeclareIntToStringFmt();
+	llvm::Function *getOrDeclareFloatToStringFmt();
+	llvm::Function *getOrDeclareCharToString();
+
+	// Lambda, function reference, and indirect call codegen
+	llvm::Value *genLambdaExpression( LambdaExpression *lambda );
+	llvm::Value *genFunctionRefExpression( FunctionRefExpression *funcRef );
+	llvm::Value *genIndirectCallExpression( IndirectCallExpression *indCall );
+
+	// Lambda capture analysis: walk AST and collect referenced VariableDefinitions
+	void collectReferencedVars( Statement *stmt, std::set<VariableDefinition*> &vars );
+
+	// Lambda context destructor generation (releases captured refcounted types)
+	llvm::Function *genLambdaDestructor(
+		const std::string &name,
+		llvm::StructType *ctxType,
+		const std::vector<std::pair<VariableDefinition*, llvm::AllocaInst*>> &captures,
+		const std::vector<llvm::Type*> &captureTypes );
+
+	// Lambda context lifetime runtime declarations
+	llvm::Function *getOrDeclareLambdaCtxRetain();
+	llvm::Function *getOrDeclareLambdaCtxRelease();
 
 	// Phase 2 expression generators
 	llvm::Value *genAwaitExpression( AwaitExpression *await );
@@ -171,8 +244,13 @@ private:
 	// String type helper
 	bool isStringType( Expression *expr );
 
+	// Field type resolution helper (for FieldAccessExpression)
+	std::string getFieldTypeName( FieldAccessExpression *fa );
+	Type *getFieldType( FieldAccessExpression *fa );
+
 	// Memory allocation helpers
 	llvm::Function *getOrDeclareMalloc();
+	llvm::Function *getOrDeclareFree();
 
 	// BLang runtime library declarations
 	llvm::Function *getOrDeclareRcAlloc();
@@ -181,6 +259,7 @@ private:
 	llvm::Function *getOrDeclareRcRelease();
 	llvm::Function *getOrDeclareSyncLock();
 	llvm::Function *getOrDeclareSyncUnlock();
+	llvm::Function *getOrDeclareSysInit();
 	llvm::Function *getOrDeclareRuntimeInit();
 	llvm::Function *getOrDeclareSpawn();
 	llvm::Function *getOrDeclareSpawnWait();
@@ -251,6 +330,11 @@ private:
 	// Struct type maps
 	std::map<std::string, llvm::StructType*> mStructTypeMap;
 	std::map<std::string, StructDefinition*> mStructDefMap;
+
+	// Maps self parameters to their owning struct definition
+	std::map<VariableDefinition*, StructDefinition*> mSelfStructMap;
+	// Maps self parameters to the mangled struct name (for generic struct methods)
+	std::map<VariableDefinition*, std::string> mSelfStructMangledName;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
 	std::map<std::string, llvm::StructType*> mEnumTypeMap;
 
@@ -259,9 +343,16 @@ private:
 	std::map<std::string, llvm::Function*> mGenericFunctionMap;   // "identity_int" -> LLVM func
 	std::map<std::string, Type*> mTypeSubstitution; // active during generic instantiation
 
+	// Lambda/callback thunk cache: named function -> thunk wrapper
+	std::map<std::string, llvm::Function*> mThunkMap;
+	int mLambdaCounter = 0;
+
 	// Module scope for type resolution
 	Scope *mScope = nullptr;
 	QLang::Module *mQLangModule = nullptr;
+
+	// Module prefix for namespace name mangling (empty for user code)
+	std::string mModulePrefix;
 
 	// Loop break/continue target stack (for nested loops)
 	std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> mLoopStack;
@@ -276,6 +367,60 @@ private:
 
 	// Array refcount tracking: array variables per scope depth
 	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mArrayScopeStack;
+
+	// Buffer refcount tracking: buffer variables per scope depth
+	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mBufferScopeStack;
+
+	// Lambda/fn-typed variable tracking: release ctx on scope exit
+	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mLambdaScopeStack;
+
+	// Struct variable tracking: heap-allocated struct variables per scope depth.
+	// All user-defined structs are heap-allocated via __blang_rc_alloc and refcounted.
+	// At scope exit, __blang_rc_release is called, which invokes the destructor to
+	// release refcounted fields when the refcount reaches zero.
+	std::vector<std::vector<llvm::AllocaInst*>> mStructScopeStack;
+
+	// Generate a destructor function for a struct type that releases refcounted fields.
+	// Returns nullptr if the struct has no refcounted fields.
+	llvm::Function *getOrGenStructDestructor( StructDefinition *sd,
+		const std::map<std::string, std::string> &typeSub );
+
+	// Cache of generated struct destructor functions
+	std::map<std::string, llvm::Function*> mStructDtorMap;
+
+	// Check if a type name refers to a user-defined struct (not a builtin)
+	bool isUserStructType( const std::string &typeName );
+
+	// Enum variable tracking: release refcounted payloads at scope exit.
+	// Each entry pairs an alloca with the enum definition for tag-based cleanup.
+	std::vector<std::vector<std::pair<llvm::AllocaInst*, EnumDefinition*>>> mEnumScopeStack;
+
+	// Emit cleanup code for an enum variable's refcounted payload
+	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef );
+
+	// Runtime declaration for __blang_rc_alloc_dtor
+	llvm::Function *getOrDeclareRcAllocDtor();
+
+	// Temporary string tracking: strings created during expression evaluation
+	// (concat results, string literals in expressions, method return values)
+	// that need to be released after the enclosing statement completes.
+	std::vector<llvm::Value*> mTempStrings;
+
+	// Helper to register a temporary string for deferred release
+	void trackTempString( llvm::Value *val );
+
+	// Release and clear all tracked temporary strings
+	void releaseTempStrings();
+
+	// Remove a value from the temp list (when it becomes owned by a variable)
+	void untrackTempString( llvm::Value *val );
+
+	// Temporary lambda context tracking: inline lambdas (not stored to a variable)
+	// that need their context released after the enclosing statement completes.
+	std::vector<llvm::Value*> mTempLambdaCtxs;
+	void trackTempLambdaCtx( llvm::Value *ctxPtr );
+	void releaseTempLambdaCtxs();
+	void untrackTempLambdaCtx( llvm::Value *ctxPtr );
 
 	// Ownership move tracking: own variables that have been moved
 	std::set<VariableDefinition*> mMovedVariables;
@@ -301,6 +446,12 @@ private:
 	llvm::AllocaInst *mAsyncResultAlloca = nullptr;
 	llvm::BasicBlock *mAsyncExitBB = nullptr;
 	llvm::Type *mAsyncReturnType = nullptr;
+
+	// Hint for empty array literals: set by variable declaration handler
+	// to the LLVM element type from the Array<T> type parameter.
+	// Reset to nullptr after use by genArrayLiteral.
+	llvm::Type *mArrayElemTypeHint = nullptr;
+	std::string mArrayElemTypeNameHint;  // semantic type name for array element dtor
 };
 
 } // namespace QLang

@@ -22,6 +22,15 @@ ReturnStatement *ReturnStatement::Parse( Lexer &l, Scope *scope )
 	}
 	
 	statement = new ReturnStatement;
+
+	// Check for bare 'return;' (void return)
+	if ( l.peekSymbol() == ';' )
+	{
+		l.getSymbol(); // consume the semicolon
+		statement->mExpression = nullptr;
+		return statement;
+	}
+
 	statement->mExpression = Expression::Parse( l, scope );
 	if ( statement->mExpression == nullptr )
 	{
@@ -29,6 +38,6 @@ ReturnStatement *ReturnStatement::Parse( Lexer &l, Scope *scope )
 		delete statement;
 		return nullptr;
 	}
-	
+
 	return statement;
 }

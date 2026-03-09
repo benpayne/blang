@@ -87,6 +87,13 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		return new AwaitExpression( operand );
 	}
 
+	// Lambda expression: fn(params) -> RetType { body }
+	if ( sym == Lexer::KEYWORD_FN )
+	{
+		l.getSymbol(); // consume 'fn'
+		return LambdaExpression::Parse( l, scope );
+	}
+
 	// spawn expression: spawn { ... } returns a Task handle
 	if ( sym == Lexer::KEYWORD_SPAWN )
 	{
@@ -218,6 +225,114 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		l.getSymbol(); // consume SYMBOL to read its text
 		string identName = l.getSymbolText();
 		l.setCurrentPos( pos ); // restore position
+
+		// Check for module-qualified access: sys.args, sys.exit(), net.Socket { }
+		Scope *nsScope = scope->findNamespace( identName );
+		if ( nsScope != nullptr && scope->isModuleImported( identName ) )
+		{
+			// Save position past the module name to check for '.'
+			l.getSymbol(); // consume module name
+			if ( l.peekSymbol() == '.' )
+			{
+				l.getSymbol(); // consume '.'
+				int memberSym = l.getSymbol();
+				if ( memberSym != Lexer::SYMBOL )
+					COMPILE_ERROR( l, "Expected member name after '" + identName + ".'" );
+				string memberName = l.getSymbolText();
+
+				Symbol *resolved = nsScope->findSymbol( memberName );
+				if ( resolved == nullptr )
+					COMPILE_ERROR( l, "Module '" + identName + "' has no member '" + memberName + "'" );
+
+				FunctionDefinition *funcDef = dynamic_cast<FunctionDefinition*>( resolved );
+				StructDefinition *structDef = dynamic_cast<StructDefinition*>( resolved );
+
+				if ( funcDef != nullptr )
+				{
+					if ( l.peekSymbol() == '(' )
+					{
+						// sys.exit(1) → CallExpression with mangled name sys__exit
+						// Create a call expression referencing the original FunctionDefinition
+						CallExpression *call = new CallExpression( funcDef );
+						call->setMangledName( identName + "__" + memberName );
+
+						l.getSymbol(); // consume '('
+						if ( l.peekSymbol() != ')' )
+						{
+							do {
+								Expression *arg = ParseExpr( l, scope, 0 );
+								if ( arg == nullptr )
+									COMPILE_ERROR( l, "Expected expression in function call" );
+								call->addParam( arg );
+								int s = l.getSymbol();
+								if ( s == ')' ) break;
+								if ( s != ',' )
+									COMPILE_ERROR( l, "Expected ',' or ')' in function call" );
+							} while ( true );
+						}
+						else
+						{
+							l.getSymbol(); // consume ')'
+						}
+						result = call;
+					}
+					else
+					{
+						// sys.args → zero-arg getter call (property-style)
+						CallExpression *call = new CallExpression( funcDef );
+						call->setMangledName( identName + "__" + memberName );
+						result = call;
+					}
+				}
+				else if ( structDef != nullptr && l.peekSymbol() == '{' )
+				{
+					// net.Socket { fd: 5 } → struct literal
+					// Restore position to just before the '{' and parse normally
+					// We need to handle this specially since StructLiteralExpression::Parse
+					// expects SYMBOL '{' ...
+					int beforeBrace = l.getCurrentPos();
+
+					l.getSymbol(); // consume '{'
+					StructLiteralExpression *expr = new StructLiteralExpression( memberName );
+					if ( l.peekSymbol() != '}' )
+					{
+						do {
+							int fSym = l.getSymbol();
+							if ( fSym != Lexer::SYMBOL )
+								COMPILE_ERROR( l, "Expected field name in struct literal" );
+							string fieldName = l.getSymbolText();
+							int colon = l.getSymbol();
+							if ( colon != ':' )
+								COMPILE_ERROR( l, "Expected ':' after field name in struct literal" );
+							Expression *value = ParseExpr( l, scope, 0 );
+							if ( value == nullptr )
+								COMPILE_ERROR( l, "Expected expression for field value" );
+							expr->addField( fieldName, value );
+							if ( l.peekSymbol() == ',' )
+								l.getSymbol();
+						} while ( l.peekSymbol() != '}' );
+					}
+					int closeBrace = l.getSymbol();
+					if ( closeBrace != '}' )
+						COMPILE_ERROR( l, "Expected '}' in struct literal" );
+					result = expr;
+				}
+				else if ( structDef != nullptr )
+				{
+					// net.Socket used as a type reference — not valid in expression position
+					COMPILE_ERROR( l, "'" + identName + "." + memberName + "' is a type, not an expression" );
+				}
+				else
+				{
+					COMPILE_ERROR( l, "Module '" + identName + "' member '" + memberName + "' is not a function or struct" );
+				}
+			}
+			else
+			{
+				// Module name without '.', restore and fall through
+				l.setCurrentPos( pos );
+			}
+		}
 
 		SmartPtr<Symbol> structSym = scope->findSymbol( identName );
 		if ( structSym != nullptr &&
@@ -357,7 +472,27 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 				if ( callExpr != nullptr )
 					result = callExpr;
 			} catch ( CompileError & ) {
-				// Not a valid call — fall through to variable
+				// Not a valid call — fall through to variable or function ref
+			}
+		}
+
+		// Check for bare function name used as a value (function reference)
+		if ( result == nullptr )
+		{
+			l.setCurrentPos( pos );
+			l.getSymbol(); // consume SYMBOL to read name
+			string symName = l.getSymbolText();
+			SmartPtr<Symbol> symLookup = scope->findSymbol( symName );
+			if ( symLookup != nullptr && symLookup->getSymbolType() == Symbol::TypeFunction &&
+				 l.peekSymbol() != '(' )
+			{
+				FunctionDefinition *funcDef = dynamic_cast<FunctionDefinition*>( (Symbol*)symLookup );
+				if ( funcDef != nullptr )
+					result = new FunctionRefExpression( funcDef );
+			}
+			else
+			{
+				l.setCurrentPos( pos ); // restore for variable parse
 			}
 		}
 
@@ -365,6 +500,37 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		{
 			l.setCurrentPos( pos );
 			result = VariableExpression::Parse( l, scope );
+
+			// Check for indirect call through function-typed variable
+			if ( result != nullptr )
+			{
+				VariableExpression *varExpr = dynamic_cast<VariableExpression*>( result );
+				if ( varExpr != nullptr &&
+					 varExpr->getVariable()->getVariableType()->isFunctionType() &&
+					 l.peekSymbol() == '(' )
+				{
+					l.getSymbol(); // consume '('
+					IndirectCallExpression *indCall = new IndirectCallExpression( varExpr->getVariable() );
+					if ( l.peekSymbol() != ')' )
+					{
+						do {
+							Expression *arg = ParseExpr( l, scope, 0 );
+							if ( arg == nullptr )
+								COMPILE_ERROR( l, "Expected expression in indirect call" );
+							indCall->addParam( arg );
+							sym = l.getSymbol();
+							if ( sym == ')' ) break;
+							if ( sym != ',' )
+								COMPILE_ERROR( l, "Expected ',' or ')' in indirect call" );
+						} while ( true );
+					}
+					else
+					{
+						l.getSymbol(); // consume ')'
+					}
+					result = indCall;
+				}
+			}
 		}
 	}
 
@@ -585,15 +751,37 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 		if ( isAssign )
 		{
 			VariableExpression *varExpr = dynamic_cast<VariableExpression*>( exp );
-			if ( varExpr == nullptr )
-				COMPILE_ERROR( l, "Left side of assignment must be a variable" );
+			FieldAccessExpression *fieldExpr = dynamic_cast<FieldAccessExpression*>( exp );
+			IndexExpression *indexExpr = dynamic_cast<IndexExpression*>( exp );
 
-			l.getSymbol(); // consume assignment operator
-			Expression *value = ParseExpr( l, scope, 0 );
-			if ( value == nullptr )
-				COMPILE_ERROR( l, "Expected expression after assignment operator" );
-
-			exp = new AssignmentExpression( assignOp, varExpr->getVariable(), value );
+			if ( varExpr != nullptr )
+			{
+				l.getSymbol(); // consume assignment operator
+				Expression *value = ParseExpr( l, scope, 0 );
+				if ( value == nullptr )
+					COMPILE_ERROR( l, "Expected expression after assignment operator" );
+				exp = new AssignmentExpression( assignOp, varExpr->getVariable(), value );
+			}
+			else if ( fieldExpr != nullptr )
+			{
+				l.getSymbol(); // consume assignment operator
+				Expression *value = ParseExpr( l, scope, 0 );
+				if ( value == nullptr )
+					COMPILE_ERROR( l, "Expected expression after assignment operator" );
+				exp = new FieldAssignmentExpression( assignOp, fieldExpr->getObject(), fieldExpr->getFieldName(), value );
+			}
+			else if ( indexExpr != nullptr )
+			{
+				l.getSymbol(); // consume assignment operator
+				Expression *value = ParseExpr( l, scope, 0 );
+				if ( value == nullptr )
+					COMPILE_ERROR( l, "Expected expression after assignment operator" );
+				exp = new IndexAssignmentExpression( assignOp, indexExpr->getObject(), indexExpr->getIndex(), value );
+			}
+			else
+			{
+				COMPILE_ERROR( l, "Left side of assignment must be a variable, field, or index expression" );
+			}
 		}
 	}
 

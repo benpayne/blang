@@ -1,8 +1,6 @@
 // Demo 2: Prime Number Finder
 // Features: nested loops, while, break, modulo, functions, for-in range
 
-extern fn printf(cstring fmt, ...) -> int;
-
 fn is_prime(int n) -> int {
 	if n < 2 {
 		return 0;
@@ -40,26 +38,28 @@ fn count_primes_up_to(int limit) -> int {
 }
 
 fn main() -> int {
-	printf("=== Prime Number Finder ===\n\n");
+	println("=== Prime Number Finder ===");
+	println();
 
 	// Print primes up to 100
-	printf("Primes up to 100:\n  ");
+	print("Primes up to 100:\n  ");
 	int printed = 0;
 	for n in 2..101 {
 		if is_prime(n) == 1 {
-			printf("%d ", n);
+			print("{} ", n);
 			printed = printed + 1;
 			// Newline every 10 primes for readability
 			if printed % 10 == 0 {
-				printf("\n  ");
+				print("\n  ");
 			}
 		}
 	}
-	printf("\n\n");
+	println();
+	println();
 
 	// There are 25 primes below 100
 	int count = count_primes_up_to(100);
-	printf("Count of primes up to 100: %d\n", count);
+	println("Count of primes up to 100: {}", count);
 	assert count == 25, "there are 25 primes up to 100";
 
 	// Verify some known primes
@@ -72,9 +72,10 @@ fn main() -> int {
 
 	// Count primes up to 1000
 	int big_count = count_primes_up_to(1000);
-	printf("Count of primes up to 1000: %d\n", big_count);
+	println("Count of primes up to 1000: {}", big_count);
 	assert big_count == 168, "there are 168 primes up to 1000";
 
-	printf("\nPrime number demo passed!\n");
+	println();
+	println("Prime number demo passed!");
 	return 0;
 }

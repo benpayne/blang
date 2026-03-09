@@ -1,7 +1,5 @@
-extern fn printf(cstring fmt, ...) -> int;
-
 fn main() -> int
 {
-	printf("Hello, World!\n");
+	println("Hello, World!");
 	return 0;
 }

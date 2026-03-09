@@ -62,6 +62,17 @@ BlangString *__blang_int_to_string( int64_t value );
 BlangString *__blang_float_to_string( double value );
 BlangString *__blang_bool_to_string( bool value );
 
+/* Formatted conversion (with format specifier) */
+BlangString *__blang_int_to_string_fmt( int64_t value, const char *spec, int spec_len );
+BlangString *__blang_float_to_string_fmt( double value, const char *spec, int spec_len );
+BlangString *__blang_char_to_string( int32_t c );
+
+/* Output to stdout */
+void __blang_print( BlangString *s );
+void __blang_print_cstr( const char *s );
+void __blang_print_newline( void );
+void __blang_print_flush( void );
+
 #ifdef __cplusplus
 }
 #endif

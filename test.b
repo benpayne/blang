@@ -30,43 +30,43 @@ fn main() -> int
 	
 	// block 0a
 	if ( _c )
-		printf( "a" );
+		print( "a" );
 
 	// block 0b
 	if ( _c )
 	{
-		printf( "a" );
+		print( "a" );
 	}
 
 	// block 0c
 	if ( _c == 0 )
 	{
-		printf( "a" );
+		print( "a" );
 	}
 	else
-		printf( "b" );
+		print( "b" );
 		
 	// block 1
 	if ( _c )
 	{
 		if ( a > 0 )
-			printf( "a" );
+			print( "a" );
 		else
-			printf( "b" );
+			print( "b" );
 	}
 	
 	// block 2
 	if ( _c )
 		if ( a < 0 )
-			printf( "a" );
+			print( "a" );
 		else
-			printf( "b" );
+			print( "b" );
 
 	test_func( b, _c );
 	
 	string s = "help";
 	
-	printf( "Hello World %d\n", intFive );
+	println( "Hello World {}", intFive );
 	
 	
 	return i;
