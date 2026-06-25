@@ -512,6 +512,14 @@ int main( int argc, char *argv[] )
 			new Type( "void" ),
 			{ new VariableDefinition( new Type( "string" ), "fmt" ) },
 			true /* variadic */ ) );
+
+		// to_json(value) -> string: serializes a @json-annotated struct.
+		// Variadic so the parser accepts any struct argument; codegen resolves
+		// the concrete type and dispatches to StructName_to_json.
+		gScope->addSymbol( FunctionDefinition::CreateBuiltin( "to_json",
+			new Type( "string" ),
+			{},
+			true /* variadic */ ) );
 	}
 
 	// Register Printable as a builtin protocol

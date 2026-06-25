@@ -801,10 +801,13 @@ struct APIResponse {
 	List<User> data;
 }
 
-// Automatically gets:
-// fn to_json(self) -> string
-// fn from_json(string input) -> Result<APIResponse, ParseError>
+// Automatically gets serializers, dispatched at compile time:
+// to_json(value) -> string            // serialize a @json struct
+// APIResponse_from_json(string input) -> APIResponse   // parse
 ```
+
+The builtin `to_json(value)` resolves the argument's struct type at compile
+time and serializes it (a compile error if the struct is not `@json`).
 
 ### gRPC and Protocol Buffers
 
@@ -871,6 +874,7 @@ fn main() {
 	server.get("/users", fn(http.Request req) -> http.Response {
 		users = query User |> where { .active == true }?;
 		return http.ok(users);   // auto-serialized via @json
+		// implemented form: return net.http_json(to_json(users));
 	});
 
 	server.post("/users", fn(http.Request req) -> http.Response {

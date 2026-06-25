@@ -288,6 +288,9 @@ private:
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();
 
+	// Builtin to_json(value): compile-time dispatch to StructName_to_json
+	llvm::Value *genToJsonCall( CallExpression *call );
+
 	// JSON codegen (@json annotation)
 	bool genJsonToJson( StructDefinition *structDef );
 	bool genJsonFromJson( StructDefinition *structDef );

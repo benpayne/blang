@@ -2697,6 +2697,10 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			genPrintCall( call, true );
 			return nullptr;
 		}
+		if ( funcDef->getName() == "to_json" )
+		{
+			return genToJsonCall( call );
+		}
 	}
 
 	// Handle @format annotation: validate format string at call site
@@ -9471,6 +9475,79 @@ void CodeGen::genTestRunner( const std::vector<llvm::Function*> &testFunctions,
 	}
 
 	mBuilder->CreateRetVoid();
+}
+
+// Builtin to_json(value): resolve the argument's struct type at compile time
+// and dispatch to the generated StructName_to_json. Errors if the argument is
+// not a @json-annotated struct. Lets HTTP handlers etc. write
+// net.http_json(to_json(user)) for an auto-serialized JSON response.
+llvm::Value *CodeGen::genToJsonCall( CallExpression *call )
+{
+	if ( call->mParams.size() != 1 )
+	{
+		cerr << "Error: to_json expects exactly one argument" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	Expression *arg = call->mParams[0];
+
+	// Resolve the argument's struct type name.
+	std::string structTypeName;
+	if ( auto *slit = dynamic_cast<StructLiteralExpression*>( arg ) )
+		structTypeName = slit->mTypeName;
+	else
+	{
+		Type *qt = resolveExpressionQType( arg );
+		if ( qt != nullptr )
+			structTypeName = qt->getName();
+	}
+
+	auto sIt = mStructDefMap.find( structTypeName );
+	if ( structTypeName.empty() || sIt == mStructDefMap.end() )
+	{
+		cerr << "Error: to_json argument must be a struct value" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	// Require the struct to carry the @json annotation.
+	bool hasJson = false;
+	for ( const auto &ann : sIt->second->getAnnotations() )
+	{
+		if ( ann.mName == "json" )
+		{
+			hasJson = true;
+			break;
+		}
+	}
+	if ( !hasJson )
+	{
+		cerr << "Error: to_json requires a @json-annotated struct, but '"
+			 << structTypeName << "' is not annotated @json" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	llvm::Value *val = genExpression( arg );
+	if ( val == nullptr )
+		return nullptr;
+
+	// StructName_to_json(ptr self) -> string. Structs are heap pointers, so the
+	// generated value is already the self pointer the function expects.
+	std::string fnName = structTypeName + "_to_json";
+	llvm::Function *toJsonFn = mModule->getFunction( fnName );
+	if ( toJsonFn == nullptr )
+	{
+		cerr << "Error: to_json: no serializer generated for '"
+			 << structTypeName << "'" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	llvm::Value *result = mBuilder->CreateCall( toJsonFn, { val }, "to_json" );
+	trackTempString( result );
+	return result;
 }
 
 // ---- JSON codegen (@json annotation) ----
