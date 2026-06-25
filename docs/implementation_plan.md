@@ -95,8 +95,8 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 47 | Implement `Result<T, E>` as built-in generic type | impl | DEFERRED | User-defined enums work as Result; built-in treatment deferred until generic monomorphization matures |
-| 48 | Implement `Option<T>` as built-in generic type | impl | DEFERRED | User-defined enums work as Option; built-in treatment deferred until generic monomorphization matures |
+| 47 | Implement `Result<T, E>` as built-in generic type | impl | YES | Registered in gScope (`EnumDefinition::CreateBuiltinResult`) and mEnumDefMap; type-erased 8-byte payload, concrete T/E recovered at match/`?` from the subject's type args; user-defined `Result` still shadows it. Tested in `codegen_builtin_result.b`, `codegen_builtin_try.b` |
+| 48 | Implement `Option<T>` as built-in generic type | impl | YES | Registered in gScope (`EnumDefinition::CreateBuiltinOption`) and mEnumDefMap; channel `recv()` now returns this same built-in `Option<T>`. Tested in `codegen_builtin_option.b`, `cgfail/builtin_option_non_exhaustive.b` |
 | 49 | Add `match` keyword to lexer | impl | YES | `match` is a recognized keyword token |
 | 50 | Parse `match` expressions | impl | YES | `QMatchExpression.cpp` — literal, wildcard `_`, destructuring patterns |
 | 51 | Parse `?` operator | impl | YES | `QUESTION_MARK` token in lexer; `TryExpression` AST node; postfix parsing in `ParsePrimary` |
@@ -445,7 +445,7 @@ These tasks span multiple phases and should be addressed incrementally.
 
 | Phase | Tasks | Focus | Done | Partial | Deferred | Remaining |
 |-------|-------|-------|------|---------|----------|-----------|
-| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 74 | 0 | 2 | 0 |
+| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 75 | 0 | 1 | 0 |
 | Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 47 | 4 | 0 | 6 |
 | Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 36 | 3 | 0 | 31 |
 | Phase 4 | 218–250 | Build system: .bmod, blang.toml, deps, cache | 33 | 0 | 0 | 0 |
@@ -455,7 +455,7 @@ These tasks span multiple phases and should be addressed incrementally.
 ### Phase 1 Complete
 
 All Phase 1 tasks are done or explicitly deferred:
-- **Task 47/48** (built-in Result/Option): Deferred — user-defined enums work correctly as Result/Option types. Built-in treatment will be added when generic monomorphization matures.
+- **Task 47/48** (built-in Result/Option): Done — `Option<T>` and `Result<T,E>` are registered as built-in generic enums (no user definition required). They use a type-erased pointer-sized payload; the concrete type argument is recovered at the match/`?` site from the subject's static type. A user-defined `Option`/`Result` shadows the built-in (user defs land in a child scope).
 - **Task 63** (visibility checking): Deferred — requires cross-module name resolution which depends on multi-module function linking (not just type sharing).
 
 ### Phase 4 Complete

@@ -522,6 +522,16 @@ int main( int argc, char *argv[] )
 		gScope->addSymbol( ProtocolDefinition::CreateBuiltin( "Printable", { toStr } ) );
 	}
 
+	// Register Option<T> and Result<T,E> as builtin generic enums. A program that
+	// defines its own Option/Result enum shadows these (user defs land in a child
+	// scope), so this is backward compatible.
+	{
+		gScope->addType( new Type( "Option" ) );
+		gScope->addSymbol( EnumDefinition::CreateBuiltinOption() );
+		gScope->addType( new Type( "Result" ) );
+		gScope->addSymbol( EnumDefinition::CreateBuiltinResult() );
+	}
+
 	// Parse each input file into its own Module. Each module gets its own
 	// module-level scope parented to the shared global scope so that built-in
 	// types are visible everywhere but top-level symbols remain per-file.

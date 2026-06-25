@@ -107,6 +107,13 @@ private:
 	// Try operator helper: resolve the QLang enum type of an expression
 	EnumDefinition *resolveExpressionEnumDef( Expression *expr );
 
+	// Resolve the full QLang type (with type arguments) of an expression, used to
+	// recover concrete types for generic enum variant payloads (Option<T>/Result<T,E>).
+	Type *resolveExpressionQType( Expression *expr );
+	// Resolve the concrete QLang type of a variant's first associated type,
+	// substituting the enum's generic params from `subjectType`'s type arguments.
+	Type *resolveVariantBindingQType( EnumDefinition *enumDef, int variantIdx, Type *subjectType );
+
 	// Array codegen
 	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
 	llvm::Value *genIndexExpression( IndexExpression *expr );
@@ -141,9 +148,6 @@ private:
 	bool isChanType( Expression *expr );
 	Type *getChanElementQType( Expression *expr );
 	llvm::Value *genChanMethodCall( MethodCallExpression *expr );
-	// Synthesize (and cache) a concrete `enum Option_<T> { some(T), none }` used
-	// as the return type of chan<T>.recv(); registered so match can resolve it.
-	EnumDefinition *getOrCreateChanOptionEnum( Type *elemQType );
 
 	// Buffer runtime declarations
 	llvm::Function *getOrDeclareBufferCreate();
@@ -345,8 +349,10 @@ private:
 	// Maps self parameters to the mangled struct name (for generic struct methods)
 	std::map<VariableDefinition*, std::string> mSelfStructMangledName;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
-	// Owns enums synthesized at codegen time (e.g. Option_<T> for channel recv).
+	// Owns enums synthesized at codegen time (e.g. built-in Option/Result).
 	std::vector<SmartPtr<EnumDefinition>> mSyntheticEnums;
+	// Owns QLang types synthesized at codegen time (e.g. Option<T> for chan recv).
+	std::vector<SmartPtr<Type>> mSyntheticTypes;
 	std::map<std::string, llvm::StructType*> mEnumTypeMap;
 
 	// Generic instantiation tracking

@@ -172,11 +172,28 @@ uint64_t CodeGen::getEnumMaxPayloadSize( EnumDefinition *enumDef )
 	uint64_t maxSize = 0;
 	llvm::DataLayout dl( mModule.get() );
 
+	// Generic params are erased to a pointer-sized slot: built-in Option<T>/
+	// Result<T,E> (and any generic enum used without monomorphization) store the
+	// payload type-erased, so any primitive, pointer, or heap struct (all <= 8
+	// bytes) fits.  The concrete type is recovered at the match/`?` site from the
+	// subject's static type arguments.
+	auto isGenericParam = [&]( const std::string &n ) {
+		for ( auto &gp : enumDef->mGenericParams )
+			if ( gp.mName == n )
+				return true;
+		return false;
+	};
+
 	for ( auto &variant : enumDef->mVariants )
 	{
 		uint64_t variantSize = 0;
 		for ( auto &assocType : variant.mAssociatedTypes )
 		{
+			if ( assocType != nullptr && isGenericParam( assocType->getName() ) )
+			{
+				variantSize += 8; // pointer-sized erased slot
+				continue;
+			}
 			llvm::Type *llvmType = getLLVMType( assocType );
 			uint64_t typeSize = dl.getTypeAllocSize( llvmType );
 			// Fallback for zero-sized types
@@ -554,6 +571,21 @@ bool CodeGen::generate( Module *mod )
 	for ( auto &enumDef : mod->mEnumList )
 	{
 		mEnumDefMap[enumDef->getName()] = enumDef;
+	}
+
+	// Register built-in Option/Result for codegen resolution (match, getLLVMType)
+	// unless the program defines its own — a user definition takes precedence.
+	if ( mEnumDefMap.find( "Option" ) == mEnumDefMap.end() )
+	{
+		SmartPtr<EnumDefinition> opt = EnumDefinition::CreateBuiltinOption();
+		mSyntheticEnums.push_back( opt );
+		mEnumDefMap["Option"] = opt;
+	}
+	if ( mEnumDefMap.find( "Result" ) == mEnumDefMap.end() )
+	{
+		SmartPtr<EnumDefinition> res = EnumDefinition::CreateBuiltinResult();
+		mSyntheticEnums.push_back( res );
+		mEnumDefMap["Result"] = res;
 	}
 
 	// Forward-declare all module-level functions so that methods/lambdas
@@ -4284,13 +4316,13 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 			mBuilder->CreateStore( argVal, bytePtr );
 
 			// If storing a string into the enum payload, untrack the temp —
-			// ownership transfers to the enum value
-			if ( argType->isPointerTy() && i < variant.mAssociatedTypes.size() )
-			{
-				string assocTypeName = variant.mAssociatedTypes[i]->getName();
-				if ( assocTypeName == "string" )
-					untrackTempString( argVal );
-			}
+			// ownership transfers to the enum value.  Detect strings by the
+			// argument's own type (isStringType), not the declared associated
+			// type: for generic enums (Option<T>/Result<T,E>) the declared type
+			// is an erased param like "T"/"E", so a name check would miss it and
+			// the string would be released at scope exit -> use-after-free.
+			if ( argType->isPointerTy() && isStringType( expr->mArgs[i] ) )
+				untrackTempString( argVal );
 
 			uint64_t typeSize = dl.getTypeAllocSize( argType );
 			if ( typeSize == 0 ) typeSize = 4; // fallback
@@ -4520,10 +4552,18 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				}
 
 				llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
+				Type *bindQType = nullptr;
 				if ( variantIdx >= 0 &&
 					 !matchedEnum->mVariants[variantIdx].mAssociatedTypes.empty() )
 				{
-					bindType = getLLVMType( matchedEnum->mVariants[variantIdx].mAssociatedTypes[0] );
+					// For generic enums (Option<T>/Result<T,E>) recover the concrete
+					// payload type from the subject's static type arguments.
+					Type *subjType = resolveExpressionQType( expr->mSubject );
+					bindQType = resolveVariantBindingQType(
+						matchedEnum, variantIdx, subjType );
+					if ( bindQType == nullptr )
+						bindQType = matchedEnum->mVariants[variantIdx].mAssociatedTypes[0];
+					bindType = getLLVMType( bindQType );
 				}
 
 				// GEP to the payload area (field 1) and load the value
@@ -4553,7 +4593,15 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
 						expr->mArms[i].mBindingName );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
+					{
 						mVariableMap[bindVar] = bindAlloca;
+						// Give the binding its concrete QLang type (the parser left
+						// it as a "var" placeholder). Without this, type-dependent
+						// operations on the bound value — e.g. string `==` or string
+						// methods — would not recognize it.
+						if ( bindQType != nullptr )
+							bindVar->setVariableType( bindQType );
+					}
 				}
 			}
 			else
@@ -4621,6 +4669,61 @@ EnumDefinition *CodeGen::resolveExpressionEnumDef( Expression *expr )
 	return nullptr;
 }
 
+Type *CodeGen::resolveExpressionQType( Expression *expr )
+{
+	if ( auto *varExpr = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		if ( varExpr->mVariable != nullptr )
+			return varExpr->mVariable->getVariableType();
+	}
+	else if ( auto *call = dynamic_cast<CallExpression*>( expr ) )
+	{
+		if ( call->mFunction != nullptr )
+			return call->mFunction->getReturnType();
+	}
+	else if ( auto *mc = dynamic_cast<MethodCallExpression*>( expr ) )
+	{
+		// chan<T>.recv() yields Option<T> — synthesize that type so the match/
+		// `?` site can recover the element type for the payload binding.
+		if ( mc->mMethodName == "recv" && isChanType( mc->mObject ) )
+		{
+			SmartPtr<Type> opt = new Type( "Option" );
+			Type *elem = getChanElementQType( mc->mObject );
+			opt->addTypeParam( elem != nullptr ? elem : new Type( "int" ) );
+			mSyntheticTypes.push_back( opt );
+			return opt;
+		}
+	}
+	return nullptr;
+}
+
+Type *CodeGen::resolveVariantBindingQType( EnumDefinition *enumDef, int variantIdx, Type *subjectType )
+{
+	if ( enumDef == nullptr || variantIdx < 0 ||
+		 variantIdx >= (int)enumDef->mVariants.size() )
+		return nullptr;
+
+	auto &assoc = enumDef->mVariants[variantIdx].mAssociatedTypes;
+	if ( assoc.empty() || assoc[0] == nullptr )
+		return nullptr;
+
+	Type *declared = assoc[0];
+
+	// If the declared associated type is one of the enum's generic params,
+	// substitute the concrete type from the subject's type arguments by position.
+	for ( size_t gi = 0; gi < enumDef->mGenericParams.size(); gi++ )
+	{
+		if ( enumDef->mGenericParams[gi].mName == declared->getName() )
+		{
+			if ( subjectType != nullptr && (int)gi < subjectType->getNumTypeParams() )
+				return subjectType->getTypeParam( gi );
+			return nullptr; // generic, but no concrete type arg available
+		}
+	}
+
+	return declared; // concrete (non-generic) associated type
+}
+
 llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 {
 	// Generate the operand expression (e.g., might_fail())
@@ -4634,6 +4737,10 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 	// If we can't determine the enum type, fall back to pass-through
 	if ( enumDef == nullptr || !enumHasPayload( enumDef ) )
 		return result;
+
+	// The operand's full QLang type (with type args) — used to recover concrete
+	// payload types for generic enums like Result<int, string>.
+	Type *operandQType = resolveExpressionQType( expr->mOperand );
 
 	// Find success variant (ok/some) and error variant (err/none)
 	int successIdx = -1;
@@ -4746,7 +4853,11 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 							{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
 							  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
 							"try.src.byte" );
-						llvm::Type *errPayloadType = getLLVMType( srcErrVariant.mAssociatedTypes[0] );
+						Type *errBindQType = resolveVariantBindingQType(
+							enumDef, errorIdx, operandQType );
+						llvm::Type *errPayloadType = ( errBindQType != nullptr )
+							? getLLVMType( errBindQType )
+							: getLLVMType( srcErrVariant.mAssociatedTypes[0] );
 						llvm::Value *errPayload = mBuilder->CreateLoad(
 							errPayloadType, srcByte, "try.err.payload" );
 
@@ -4792,7 +4903,12 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 
 	llvm::Type *successPayloadType = llvm::Type::getInt32Ty( *mContext ); // default
 	if ( !enumDef->mVariants[successIdx].mAssociatedTypes.empty() )
-		successPayloadType = getLLVMType( enumDef->mVariants[successIdx].mAssociatedTypes[0] );
+	{
+		Type *bindQType = resolveVariantBindingQType( enumDef, successIdx, operandQType );
+		successPayloadType = ( bindQType != nullptr )
+			? getLLVMType( bindQType )
+			: getLLVMType( enumDef->mVariants[successIdx].mAssociatedTypes[0] );
+	}
 
 	// GEP to the payload area and load the success value
 	llvm::Type *payloadArrType = enumType->getElementType( 1 );
@@ -8388,38 +8504,6 @@ Type *CodeGen::getChanElementQType( Expression *expr )
 	return nullptr;
 }
 
-// Synthesize a concrete Option enum specialized to a channel's element type:
-//   enum Option_<T> { some(T), none }
-// This lets recv() return Option<T> (some on success, none when the channel is
-// closed and empty) using the existing tagged-union enum + match machinery,
-// without depending on generic Option monomorphization.  Cached per element
-// type name and registered in mEnumDefMap so match resolves "enum.Option_<T>".
-EnumDefinition *CodeGen::getOrCreateChanOptionEnum( Type *elemQType )
-{
-	std::string elemName = ( elemQType != nullptr ) ? elemQType->getName() : "int";
-	std::string enumName = "Option_" + elemName;
-
-	auto it = mEnumDefMap.find( enumName );
-	if ( it != mEnumDefMap.end() )
-		return it->second;
-
-	SmartPtr<EnumDefinition> e = new EnumDefinition( enumName );
-
-	EnumDefinition::Variant someVariant;
-	someVariant.mName = "some";
-	someVariant.mAssociatedTypes.push_back(
-		elemQType != nullptr ? SmartPtr<Type>( elemQType ) : SmartPtr<Type>( new Type( "int" ) ) );
-	e->mVariants.push_back( someVariant );
-
-	EnumDefinition::Variant noneVariant;
-	noneVariant.mName = "none";
-	e->mVariants.push_back( noneVariant );
-
-	mSyntheticEnums.push_back( e );
-	mEnumDefMap[enumName] = e;
-	return e;
-}
-
 // Codegen for channel method calls: send(value), recv(), close().
 //   chan<T> declarations store a BlangChan* (see genVariableDefinition).
 //   send marshals the element through a stack slot of T's LLVM type;
@@ -8477,9 +8561,25 @@ llvm::Value *CodeGen::genChanMethodCall( MethodCallExpression *expr )
 	//   to handle the closed case.
 	if ( method == "recv" && expr->mArgs.empty() )
 	{
-		EnumDefinition *optEnum = getOrCreateChanOptionEnum( elemQType );
-		llvm::StructType *optType = getOrCreateEnumType( optEnum );
+		// recv() yields the built-in Option<T>.  resolveExpressionQType maps a
+		// chan recv expression to Option<elemType>, so match/`?` recover T.
+		EnumDefinition *optEnum = nullptr;
+		auto optIt = mEnumDefMap.find( "Option" );
+		if ( optIt != mEnumDefMap.end() )
+			optEnum = optIt->second;
+		if ( optEnum == nullptr )
+			return nullptr;
 
+		int someIdx = -1, noneIdx = -1;
+		for ( size_t v = 0; v < optEnum->mVariants.size(); v++ )
+		{
+			if ( optEnum->mVariants[v].mName == "some" ) someIdx = (int)v;
+			else if ( optEnum->mVariants[v].mName == "none" ) noneIdx = (int)v;
+		}
+		if ( someIdx < 0 || noneIdx < 0 )
+			return nullptr;
+
+		llvm::StructType *optType = getOrCreateEnumType( optEnum );
 		llvm::AllocaInst *resultAlloca = mBuilder->CreateAlloca(
 			optType, nullptr, "chan.recv.opt" );
 
@@ -8499,14 +8599,14 @@ llvm::Value *CodeGen::genChanMethodCall( MethodCallExpression *expr )
 		llvm::Value *flag = mBuilder->CreateCall(
 			getOrDeclareChanRecv(), { chanVal, bytePtr }, "chan.recv.flag" );
 
-		// tag = success ? someIndex(0) : noneIndex(1)
+		// tag = success ? some : none
 		llvm::Value *isSuccess = mBuilder->CreateICmpNE(
 			flag, llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 ),
 			"chan.recv.ok" );
 		llvm::Value *tagVal = mBuilder->CreateSelect(
 			isSuccess,
-			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 ),
-			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 1 ),
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), someIdx ),
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), noneIdx ),
 			"opt.tag" );
 		llvm::Value *tagPtr = mBuilder->CreateStructGEP(
 			optType, resultAlloca, 0, "opt.tag.ptr" );
