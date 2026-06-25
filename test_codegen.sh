@@ -18,6 +18,7 @@ NET_LIB="${SCRIPT_DIR}/build/libblang_net.a"
 SYS_LIB="${SCRIPT_DIR}/build/libblang_sys.a"
 STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
 STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
+STDLIB_TIMER="${SCRIPT_DIR}/stdlib/timer.b"
 
 # Colors
 RED='\033[0;31m'
@@ -83,6 +84,12 @@ run_one_test() {
 	if [[ "${base_name}" == *"tcp"* ]] || [[ "${base_name}" == *"selector"* ]] || [[ "${base_name}" == *"net"* ]] || [[ "${base_name}" == *"sys_args"* ]] || [[ "${base_name}" == *"http"* ]]; then
 		if [ -f "${STDLIB_NET}" ]; then
 			stdlib_files+=("${STDLIB_NET}")
+			need_combine=1
+		fi
+	fi
+	if [[ "${base_name}" == *"timer"* ]] || [[ "${base_name}" == *"event"* ]]; then
+		if [ -f "${STDLIB_TIMER}" ]; then
+			stdlib_files+=("${STDLIB_TIMER}")
 			need_combine=1
 		fi
 	fi

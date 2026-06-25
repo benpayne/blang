@@ -79,6 +79,24 @@ void __blang_selector_shutdown( int sel_handle );
 /* Destroy a selector and free its resources. */
 void __blang_selector_destroy( int sel_handle );
 
+/* ---- Global event loop + timers (backs `on EXPR { ... }`) ---- */
+
+/* Handle of the global default event loop (created on first use). */
+int __blang_event_loop( void );
+
+/* Create a repeating timer (fires every interval_ms) or a one-shot timer
+   (fires once after delay_ms). Returns a timerfd to register with on/__blang_event_on. */
+int __blang_timer_every( int interval_ms );
+int __blang_timer_after( int delay_ms );
+
+/* Register a handler to run when `fd` (a timerfd or socket fd) is readable,
+   on the global event loop. */
+void __blang_event_on( int fd, void (*handler)( void *ctx, int fd ), void *ctx );
+
+/* Run / stop the global event loop. run() blocks the calling thread. */
+void __blang_event_run( void );
+void __blang_event_stop( void );
+
 #ifdef __cplusplus
 }
 #endif
