@@ -141,6 +141,9 @@ private:
 	bool isChanType( Expression *expr );
 	Type *getChanElementQType( Expression *expr );
 	llvm::Value *genChanMethodCall( MethodCallExpression *expr );
+	// Synthesize (and cache) a concrete `enum Option_<T> { some(T), none }` used
+	// as the return type of chan<T>.recv(); registered so match can resolve it.
+	EnumDefinition *getOrCreateChanOptionEnum( Type *elemQType );
 
 	// Buffer runtime declarations
 	llvm::Function *getOrDeclareBufferCreate();
@@ -342,6 +345,8 @@ private:
 	// Maps self parameters to the mangled struct name (for generic struct methods)
 	std::map<VariableDefinition*, std::string> mSelfStructMangledName;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
+	// Owns enums synthesized at codegen time (e.g. Option_<T> for channel recv).
+	std::vector<SmartPtr<EnumDefinition>> mSyntheticEnums;
 	std::map<std::string, llvm::StructType*> mEnumTypeMap;
 
 	// Generic instantiation tracking

@@ -1172,6 +1172,12 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		genBlock( func->mFuncBody );
 	}
 
+	// Capture the block where the body's control flow actually ended.  This is
+	// NOT necessarily the physically-last block in the function: a trailing
+	// `match` (or any construct that creates its merge block before its arm
+	// blocks) leaves the merge block earlier in the list than the arm blocks.
+	llvm::BasicBlock *bodyEndBB = mBuilder->GetInsertBlock();
+
 	// Inject init calls into main's entry block (before the branch to body)
 	if ( isMain )
 	{
@@ -1190,9 +1196,8 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 				{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
 		}
 
-		// Restore insert point to after the body
-		llvm::BasicBlock *afterBody = &llvmFunc->back();
-		mBuilder->SetInsertPoint( afterBody );
+		// Restore insert point to where the body's control flow ended
+		mBuilder->SetInsertPoint( bodyEndBB );
 	}
 
 	// If the function is void and the last block has no terminator, add ret void
@@ -8383,9 +8388,42 @@ Type *CodeGen::getChanElementQType( Expression *expr )
 	return nullptr;
 }
 
+// Synthesize a concrete Option enum specialized to a channel's element type:
+//   enum Option_<T> { some(T), none }
+// This lets recv() return Option<T> (some on success, none when the channel is
+// closed and empty) using the existing tagged-union enum + match machinery,
+// without depending on generic Option monomorphization.  Cached per element
+// type name and registered in mEnumDefMap so match resolves "enum.Option_<T>".
+EnumDefinition *CodeGen::getOrCreateChanOptionEnum( Type *elemQType )
+{
+	std::string elemName = ( elemQType != nullptr ) ? elemQType->getName() : "int";
+	std::string enumName = "Option_" + elemName;
+
+	auto it = mEnumDefMap.find( enumName );
+	if ( it != mEnumDefMap.end() )
+		return it->second;
+
+	SmartPtr<EnumDefinition> e = new EnumDefinition( enumName );
+
+	EnumDefinition::Variant someVariant;
+	someVariant.mName = "some";
+	someVariant.mAssociatedTypes.push_back(
+		elemQType != nullptr ? SmartPtr<Type>( elemQType ) : SmartPtr<Type>( new Type( "int" ) ) );
+	e->mVariants.push_back( someVariant );
+
+	EnumDefinition::Variant noneVariant;
+	noneVariant.mName = "none";
+	e->mVariants.push_back( noneVariant );
+
+	mSyntheticEnums.push_back( e );
+	mEnumDefMap[enumName] = e;
+	return e;
+}
+
 // Codegen for channel method calls: send(value), recv(), close().
 //   chan<T> declarations store a BlangChan* (see genVariableDefinition).
-//   send/recv marshal the element through a stack slot of T's LLVM type,
+//   send marshals the element through a stack slot of T's LLVM type;
+//   recv returns Option<T> (some(value) on success, none on closed+empty),
 //   matching the byte-copy contract of __blang_chan_send/recv.
 llvm::Value *CodeGen::genChanMethodCall( MethodCallExpression *expr )
 {
@@ -8431,15 +8469,50 @@ llvm::Value *CodeGen::genChanMethodCall( MethodCallExpression *expr )
 		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
 	}
 
-	// recv() -> T  (int __blang_chan_recv(BlangChan*, void* out); returns
-	// the received value, leaving the success flag to a future Option<T> form)
+	// recv() -> Option<T>
+	//   int __blang_chan_recv(BlangChan*, void* out) returns 1 on success, 0 if
+	//   the channel is closed and empty.  We recv directly into the payload area
+	//   of an Option_<T> enum, then set the tag from the success flag: some(value)
+	//   on success, none on closed+empty.  Exhaustive match then forces callers
+	//   to handle the closed case.
 	if ( method == "recv" && expr->mArgs.empty() )
 	{
-		llvm::Value *slot = mBuilder->CreateAlloca( elemType, nullptr, "chan.recv.slot" );
-		// Zero-initialize so a recv on a closed/empty channel yields a defined value.
-		mBuilder->CreateStore( llvm::Constant::getNullValue( elemType ), slot );
-		mBuilder->CreateCall( getOrDeclareChanRecv(), { chanVal, slot } );
-		return mBuilder->CreateLoad( elemType, slot, "chan.recv" );
+		EnumDefinition *optEnum = getOrCreateChanOptionEnum( elemQType );
+		llvm::StructType *optType = getOrCreateEnumType( optEnum );
+
+		llvm::AllocaInst *resultAlloca = mBuilder->CreateAlloca(
+			optType, nullptr, "chan.recv.opt" );
+
+		// GEP to the payload byte area (field 1, byte 0) and zero-initialize it,
+		// so the none case has a defined payload.
+		llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+			optType, resultAlloca, 1, "opt.payload.ptr" );
+		llvm::Type *payloadArrType = optType->getElementType( 1 );
+		llvm::Value *bytePtr = mBuilder->CreateGEP(
+			payloadArrType, payloadPtr,
+			{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+			  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+			"opt.payload.byte" );
+		mBuilder->CreateStore( llvm::Constant::getNullValue( elemType ), bytePtr );
+
+		// Receive directly into the payload; flag is 1 on success, 0 on closed+empty.
+		llvm::Value *flag = mBuilder->CreateCall(
+			getOrDeclareChanRecv(), { chanVal, bytePtr }, "chan.recv.flag" );
+
+		// tag = success ? someIndex(0) : noneIndex(1)
+		llvm::Value *isSuccess = mBuilder->CreateICmpNE(
+			flag, llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 ),
+			"chan.recv.ok" );
+		llvm::Value *tagVal = mBuilder->CreateSelect(
+			isSuccess,
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 ),
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 1 ),
+			"opt.tag" );
+		llvm::Value *tagPtr = mBuilder->CreateStructGEP(
+			optType, resultAlloca, 0, "opt.tag.ptr" );
+		mBuilder->CreateStore( tagVal, tagPtr );
+
+		return mBuilder->CreateLoad( optType, resultAlloca, "chan.recv.opt.val" );
 	}
 
 	return nullptr;

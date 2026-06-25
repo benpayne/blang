@@ -1,6 +1,6 @@
 // End-to-end codegen test for channel send/recv (single-threaded, buffered).
-// Sends three values into a buffered channel and reads them back, verifying
-// FIFO ordering and value integrity.  Returns 0 on success.
+// recv() returns Option<T>; on success the some(v) arm binds the value.
+// Sends three values and reads them back, verifying FIFO order and integrity.
 
 fn main() -> int {
 	chan<int> ch;
@@ -9,12 +9,23 @@ fn main() -> int {
 	ch.send(20);
 	ch.send(12);
 
-	int a = ch.recv();
-	int b = ch.recv();
-	int c = ch.recv();
+	int sum = 0;
+
+	match ch.recv() {
+		some(v) { sum = sum + v; }
+		none { return 1; }
+	}
+	match ch.recv() {
+		some(v) { sum = sum + v; }
+		none { return 2; }
+	}
+	match ch.recv() {
+		some(v) { sum = sum + v; }
+		none { return 3; }
+	}
 
 	ch.close();
 
-	// FIFO: a=10, b=20, c=12 -> sum 42
-	return a + b + c - 42;
+	// FIFO: 10 + 20 + 12 -> 42
+	return sum - 42;
 }

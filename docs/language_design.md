@@ -417,13 +417,24 @@ wait tasks;    // wait for all tasks in the array
 Typed, thread-safe communication between spawn contexts.
 
 ```
-chan int results = chan.new(10);   // buffered, capacity 10
+chan<int> results;                 // buffered channel of int
 
 spawn {
 	results.send(compute());
 }
 
-value = results.recv();           // blocks until value available
+// recv() returns Option<T>: some(value) on success, none when the channel
+// is closed and empty. A match must handle both cases (exhaustiveness).
+match results.recv() {             // blocks until a value is available
+	some(value) {
+		use(value);
+	}
+	none {
+		// channel was closed and drained
+	}
+}
+
+results.close();                   // no further sends allowed
 ```
 
 ### Sync Types

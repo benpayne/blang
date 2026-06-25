@@ -1,6 +1,7 @@
 // End-to-end codegen test for channels across a spawn boundary.
-// A spawned producer sends a value; main blocks in recv() until it arrives.
-// Exercises channel capture into a spawn closure and blocking handoff.
+// A spawned producer sends a value; main blocks in recv() until it arrives,
+// receiving some(42).  Exercises channel capture into a spawn closure, the
+// blocking handoff, and Option<T> recv.
 
 fn main() -> int {
 	chan<int> ch;
@@ -9,6 +10,11 @@ fn main() -> int {
 		ch.send(42);
 	}
 
-	int x = ch.recv();
-	return x - 42;
+	int result = 99;
+	match ch.recv() {
+		some(v) { result = v; }
+		none { result = -1; }
+	}
+
+	return result - 42;
 }
