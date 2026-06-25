@@ -2052,7 +2052,15 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 							(Expression*)data.mInitialValue );
 						auto *srcFieldExpr = dynamic_cast<FieldAccessExpression*>(
 							(Expression*)data.mInitialValue );
-						if ( srcVarExpr != nullptr || srcFieldExpr != nullptr )
+						// Array element access (arr[i]) returns a borrowed reference —
+						// __blang_array_get does not retain — so binding it to a tracked
+						// local must retain, exactly like a variable copy or field access.
+						// Without this the local's scope-exit release double-frees the
+						// element the array still owns.
+						auto *srcIndexExpr = dynamic_cast<IndexExpression*>(
+							(Expression*)data.mInitialValue );
+						if ( srcVarExpr != nullptr || srcFieldExpr != nullptr ||
+							 srcIndexExpr != nullptr )
 						{
 							mBuilder->CreateCall( getOrDeclareRcRetain(), { initVal } );
 						}
