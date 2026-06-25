@@ -8,6 +8,19 @@
 extern "C" {
 #endif
 
+/* ---- Allocation helpers ---- */
+
+/* Report a fatal out-of-memory condition and abort.  `what` is an optional
+   short label describing the failed allocation (may be NULL). */
+void __blang_oom( const char *what );
+
+/* Checked malloc/calloc: never return NULL.  On allocation failure they call
+   __blang_oom() and abort.  A zero size/count is rounded up to 1 so the
+   returned pointer is always usable.  Generated code that allocates raw
+   context structs (lambdas, spawn/async closures) routes through these. */
+void *__blang_alloc( size_t size );
+void *__blang_calloc( size_t count, size_t size );
+
 /* ---- ARC (Automatic Reference Counting) ---- */
 
 /* Destructor callback type: called with user-data pointer when refcount hits 0. */

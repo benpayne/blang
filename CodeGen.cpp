@@ -948,7 +948,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 			// Box the return value: allocate heap memory, store value, return ptr
 			llvm::DataLayout dl( mModule.get() );
 			uint64_t typeSize = dl.getTypeAllocSize( retType );
-			llvm::Function *mallocFn = getOrDeclareMalloc();
+			llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 			llvm::Value *boxPtr = mBuilder->CreateCall( mallocFn,
 				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), typeSize ) },
 				"async.box" );
@@ -1003,7 +1003,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 
 			llvm::DataLayout dl( mModule.get() );
 			uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
-			llvm::Function *mallocFn = getOrDeclareMalloc();
+			llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 			ctxArg = mBuilder->CreateCall( mallocFn,
 				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 				"async.ctx" );
@@ -3992,6 +3992,14 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 			return result;
 	}
 
+	// Built-in channel method calls: chan<T> .send()/.recv()/.close()
+	if ( isChanType( expr->mObject ) )
+	{
+		llvm::Value *result = genChanMethodCall( expr );
+		if ( result != nullptr )
+			return result;
+	}
+
 	// Determine the struct type from the object
 	StructDefinition *structDef = nullptr;
 	string structName;
@@ -5522,7 +5530,7 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	llvm::DataLayout dl( mModule.get() );
 	uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
 
-	llvm::Function *mallocFn = getOrDeclareMalloc();
+	llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 	llvm::Value *ctxAlloc = mBuilder->CreateCall( mallocFn,
 		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 		"spawn.ctx" );
@@ -6094,7 +6102,7 @@ llvm::Value *CodeGen::genLambdaExpression( LambdaExpression *lambda )
 		llvm::DataLayout dl( mModule.get() );
 		uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
 
-		llvm::Function *mallocFn = getOrDeclareMalloc();
+		llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 		ctxAlloc = mBuilder->CreateCall( mallocFn,
 			{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 			"lambda.ctx" );
@@ -6445,7 +6453,7 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	// Allocate context and populate captures
 	llvm::DataLayout dl( mModule.get() );
 	uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
-	llvm::Function *mallocFn = getOrDeclareMalloc();
+	llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 	llvm::Value *ctxAlloc = mBuilder->CreateCall( mallocFn,
 		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 		"event.ctx" );
@@ -6726,6 +6734,21 @@ llvm::Function *CodeGen::getOrDeclareMalloc()
 		false );
 	return llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, "malloc", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBlangAlloc()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_alloc" );
+	if ( f != nullptr )
+		return f;
+
+	// void *__blang_alloc(size_t size) — checked malloc, aborts on OOM
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_alloc", mModule.get() );
 }
 
 llvm::Function *CodeGen::getOrDeclareFree()
@@ -8294,6 +8317,93 @@ bool CodeGen::isBufferType( Expression *expr )
 			return true;
 	}
 	return false;
+}
+
+// ---- Channel (chan<T>) type helpers and method codegen ----
+
+bool CodeGen::isChanType( Expression *expr )
+{
+	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		return varType != nullptr && varType->getName() == "chan";
+	}
+	return false;
+}
+
+// Resolve the QLang element type T of a chan<T> object expression.
+// Returns nullptr if the type parameter is missing (treated as int-sized).
+Type *CodeGen::getChanElementQType( Expression *expr )
+{
+	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		if ( varType != nullptr && varType->getNumTypeParams() > 0 )
+			return varType->getTypeParam( 0 );
+	}
+	return nullptr;
+}
+
+// Codegen for channel method calls: send(value), recv(), close().
+//   chan<T> declarations store a BlangChan* (see genVariableDefinition).
+//   send/recv marshal the element through a stack slot of T's LLVM type,
+//   matching the byte-copy contract of __blang_chan_send/recv.
+llvm::Value *CodeGen::genChanMethodCall( MethodCallExpression *expr )
+{
+	const string &method = expr->mMethodName;
+
+	// Load the BlangChan* from the channel variable.
+	llvm::Value *chanVal = genExpression( expr->mObject );
+	if ( chanVal == nullptr )
+		return nullptr;
+
+	// Determine the element LLVM type (default to i32 when unparameterized,
+	// consistent with the default element size used at channel creation).
+	Type *elemQType = getChanElementQType( expr->mObject );
+	llvm::Type *elemType = elemQType != nullptr
+		? getLLVMType( elemQType )
+		: llvm::Type::getInt32Ty( *mContext );
+	if ( elemType == nullptr )
+		elemType = llvm::Type::getInt32Ty( *mContext );
+
+	// close() -> void
+	if ( method == "close" && expr->mArgs.empty() )
+	{
+		mBuilder->CreateCall( getOrDeclareChanClose(), { chanVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// send(value) -> void  (void __blang_chan_send(BlangChan*, const void*))
+	if ( method == "send" && expr->mArgs.size() == 1 )
+	{
+		llvm::Value *valVal = genExpression( expr->mArgs[0] );
+		if ( valVal == nullptr )
+			return nullptr;
+
+		// Coerce integer widths to the channel element type so the byte copy
+		// transfers exactly elem_size bytes (e.g. an i32 literal into chan<long>).
+		if ( valVal->getType()->isIntegerTy() && elemType->isIntegerTy() &&
+			 valVal->getType() != elemType )
+			valVal = mBuilder->CreateIntCast( valVal, elemType, true, "chan.val" );
+
+		llvm::Value *slot = mBuilder->CreateAlloca( elemType, nullptr, "chan.send.slot" );
+		mBuilder->CreateStore( valVal, slot );
+		mBuilder->CreateCall( getOrDeclareChanSend(), { chanVal, slot } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// recv() -> T  (int __blang_chan_recv(BlangChan*, void* out); returns
+	// the received value, leaving the success flag to a future Option<T> form)
+	if ( method == "recv" && expr->mArgs.empty() )
+	{
+		llvm::Value *slot = mBuilder->CreateAlloca( elemType, nullptr, "chan.recv.slot" );
+		// Zero-initialize so a recv on a closed/empty channel yields a defined value.
+		mBuilder->CreateStore( llvm::Constant::getNullValue( elemType ), slot );
+		mBuilder->CreateCall( getOrDeclareChanRecv(), { chanVal, slot } );
+		return mBuilder->CreateLoad( elemType, slot, "chan.recv" );
+	}
+
+	return nullptr;
 }
 
 // ---- Buffer field/method codegen ----

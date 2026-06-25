@@ -137,6 +137,11 @@ private:
 	// Buffer type helper
 	bool isBufferType( Expression *expr );
 
+	// Channel type helpers and method codegen (chan<T> .send()/.recv()/.close())
+	bool isChanType( Expression *expr );
+	Type *getChanElementQType( Expression *expr );
+	llvm::Value *genChanMethodCall( MethodCallExpression *expr );
+
 	// Buffer runtime declarations
 	llvm::Function *getOrDeclareBufferCreate();
 	llvm::Function *getOrDeclareBufferCreateFromString();
@@ -250,6 +255,7 @@ private:
 
 	// Memory allocation helpers
 	llvm::Function *getOrDeclareMalloc();
+	llvm::Function *getOrDeclareBlangAlloc();
 	llvm::Function *getOrDeclareFree();
 
 	// BLang runtime library declarations

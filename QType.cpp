@@ -63,6 +63,22 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 			COMPILE_ERROR( l, "Expected '>' after carray type argument" );
 		return t; // already parsed generic args, skip the generic check below
 	}
+	else if ( sym == Lexer::KEYWORD_CHAN )
+	{
+		// Channel type requires a generic type argument: chan<T>
+		if ( l.peekSymbol() != '<' )
+			COMPILE_ERROR( l, "chan requires a type argument: chan<T>" );
+		l.getSymbol(); // consume '<'
+		Type *elemType = Type::Parse( l, s, false );
+		if ( elemType == nullptr )
+			COMPILE_ERROR( l, "Expected type argument for chan" );
+		t = new Type( "chan" );
+		t->addTypeParam( elemType );
+		int closeSym = l.getSymbol();
+		if ( closeSym != '>' )
+			COMPILE_ERROR( l, "Expected '>' after chan type argument" );
+		return t; // already parsed generic args, skip the generic check below
+	}
 	else if ( sym == Lexer::KEYWORD_FN )
 	{
 		// Function type: fn(ParamTypes) -> RetType
