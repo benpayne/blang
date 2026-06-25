@@ -307,13 +307,13 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 185 | Implement `http.Server` in standard library | impl | — | Basic HTTP/1.1 server with routing |
-| 186 | Implement `http.Request` / `http.Response` types | impl | — | Request parsing, response building |
-| 187 | Implement route registration (`.get()`, `.post()`, etc.) | impl | — | Method-based routing API |
-| 188 | Implement automatic JSON serialization for responses | impl | — | `http.ok(struct)` auto-calls `to_json()` if `@json` annotated |
-| 189 | Implement `http.Client` for outgoing requests | impl | — | `http.get(url)`, `http.post(url, body)` |
-| 190 | Add pass tests for HTTP server | test | — | Start server, make request, validate response |
-| 191 | Document HTTP library | docs | — | Update CLAUDE.md |
+| 185 | Implement `http.Server` in standard library | impl | YES | `HttpServer` in `stdlib/net.b` — selector-backed HTTP/1.1 server with a route table; `serve()` parses each request and dispatches to the matching route |
+| 186 | Implement `http.Request` / `http.Response` types | impl | YES | `HttpRequest` (method/path/body), `HttpResponse` (status/content_type/body); request parsing (`parse_http_request_line`, headers, body) and response building (`build_http_response`) |
+| 187 | Implement route registration (`.get()`, `.post()`, etc.) | impl | YES | `HttpServer.get/post/put/route(method, path, handler)` build an `Array<Route>` route table; `dispatch_request` matches method+path → handler, else 404. (`delete` is a keyword — use `route("DELETE", ...)`.) Tested in `codegen_http_routing.b` |
+| 188 | Implement automatic JSON serialization for responses | impl | PARTIAL | `http_json(body)` sets `application/json`; auto-serializing a `@json` struct directly (`http.ok(struct)`) needs generic dispatch and is pending |
+| 189 | Implement `http.Client` for outgoing requests | impl | YES | `http_get(host, port, path)` and `http_post(host, port, path, content_type, body)` — BLang-native Buffer I/O, return the response body |
+| 190 | Add pass tests for HTTP server | test | YES | `codegen_http_routing.b` (route dispatch + get/post registration); `codegen_http_blang.b` (parsing/response building). Live socket serving verified manually (deterministic socket+thread E2E omitted from the suite) |
+| 191 | Document HTTP library | docs | YES | Documented in CLAUDE.md; demo `demos/13_http_server.b` uses the routing API |
 
 ### 3.7 GraphQL Standard Library
 

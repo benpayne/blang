@@ -2862,6 +2862,16 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 				}
 				llvm::Value *fnPtr = mBuilder->CreateExtractValue( argVal, 0, "cb.fn" );
 				llvm::Value *ctxPtr = mBuilder->CreateExtractValue( argVal, 1, "cb.ctx" );
+
+				// A closure passed to an EXTERN function escapes into native code,
+				// which may store it and invoke it later (e.g. selector callbacks
+				// run on another thread). Retain its context an extra time so it
+				// outlives the current scope — otherwise the scope-exit release
+				// frees it and the deferred invocation calls through freed memory.
+				// (null contexts — non-capturing lambdas / fn refs — are no-ops.)
+				if ( funcDef->isExtern() )
+					mBuilder->CreateCall( getOrDeclareLambdaCtxRetain(), { ctxPtr } );
+
 				args.push_back( fnPtr );
 				args.push_back( ctxPtr );
 				continue;
