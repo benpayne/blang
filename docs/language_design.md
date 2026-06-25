@@ -247,11 +247,11 @@ fn process_config() -> Result<int, IOError> {
 }
 ```
 
-#### Exhaustive Matching (Future)
+#### Exhaustive Matching
 
-The compiler will enforce that all variants are covered in a `match` expression. For `Result`, both `ok` and `err` arms must be present. For `Option`, both `some` and `none` arms must be present. A wildcard `_` arm satisfies any remaining variants.
+The compiler enforces that all variants are covered in a `match` expression. For `Result`, both `ok` and `err` arms must be present. For `Option`, both `some` and `none` arms must be present. A wildcard `_` arm satisfies any remaining variants.
 
-This guarantee is planned for a future compiler phase. Currently, match arms are parsed and stored but exhaustiveness is not checked at compile time.
+A `match` on an enum that omits a variant without providing a wildcard arm is a compile error that names the missing variant(s). Exhaustiveness is checked during code generation (when built with LLVM); `match` on non-enum subjects (e.g. integers) is unaffected.
 
 ### Null Safety
 

@@ -101,7 +101,7 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 50 | Parse `match` expressions | impl | YES | `QMatchExpression.cpp` — literal, wildcard `_`, destructuring patterns |
 | 51 | Parse `?` operator | impl | YES | `QUESTION_MARK` token in lexer; `TryExpression` AST node; postfix parsing in `ParsePrimary` |
 | 52 | Codegen for Result/Option | impl | YES | Enum tagged union layout `{i32 tag, [N x i8] payload}` via `genEnumConstruct`; tested in `codegen_result_type.b` and `codegen_enum_payload.b` |
-| 53 | Codegen for match | impl | YES | `genMatchExpression` — tag extraction, switch dispatch, variant pattern matching with payload extraction and binding, wildcard arms |
+| 53 | Codegen for match | impl | YES | `genMatchExpression` — tag extraction, switch dispatch, variant pattern matching with payload extraction and binding, wildcard arms, and enum exhaustiveness checking (missing variant without `_` is a compile error; tested in `cgfail/match_non_exhaustive.b`, `codegen_match_exhaustive.b`, `codegen_match_wildcard_enum.b`) |
 | 54 | Codegen for `?` operator | impl | YES | `genTryExpression` — resolves operand's enum type, extracts tag, branches on success (ok/some) vs error (err/none), unwraps payload on success, propagates error via early return on failure; tested in `codegen_try_operator.b` |
 | 55 | Add pass tests for Result/Option | test | YES | `result_option.b`, `match_enum_variants.b`, `try_operator.b` |
 | 56 | Add fail test: unhandled Result | test | YES | `match_missing_brace.b` — match arm without block braces rejected |

@@ -4354,6 +4354,45 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 		}
 	}
 
+	// Exhaustiveness checking for enum matches: when matching on a tagged-union
+	// enum without a wildcard '_' arm, every variant must have a corresponding
+	// arm.  A missing variant is a compile error (matching the "safe by default"
+	// design goal — no silently-unhandled cases).
+	if ( isEnumStruct && matchedEnum != nullptr && wildcardIdx < 0 )
+	{
+		std::vector<std::string> missing;
+		for ( const auto &variant : matchedEnum->mVariants )
+		{
+			bool covered = false;
+			for ( const auto &arm : expr->mArms )
+			{
+				if ( !arm.mIsWildcard && arm.mPattern == variant.mName )
+				{
+					covered = true;
+					break;
+				}
+			}
+			if ( !covered )
+				missing.push_back( variant.mName );
+		}
+
+		if ( !missing.empty() )
+		{
+			std::string joined;
+			for ( size_t i = 0; i < missing.size(); i++ )
+			{
+				if ( i > 0 )
+					joined += ", ";
+				joined += missing[i];
+			}
+			cerr << "Error: non-exhaustive match on enum '"
+				 << matchedEnum->getName() << "': missing variant(s): "
+				 << joined
+				 << ". Add the missing arm(s) or a wildcard '_' arm." << endl;
+			mHasError = true;
+		}
+	}
+
 	// Create basic blocks for each arm
 	std::vector<llvm::BasicBlock*> armBBs;
 	for ( size_t i = 0; i < expr->mArms.size(); i++ )
