@@ -194,10 +194,35 @@ pub fn http_not_found() -> HttpResponse {
 	return HttpResponse { status: 404, content_type: "text/plain", body: "Not Found" };
 }
 
+// --- Route: a (method, path) pair bound to a handler ---
+pub struct Route {
+	string method;
+	string path;
+	fn(HttpRequest) -> HttpResponse handler;
+}
+
 // --- HttpServer struct (impl block is below, after HTTP utility functions) ---
 pub struct HttpServer {
 	int _selector_handle;
 	int _server_fd;
+	Array<Route> _routes;
+}
+
+// Find the route matching a request and invoke its handler, returning the
+// handler's response; falls back to 404 when nothing matches. Pure function —
+// testable without a live socket.
+pub fn dispatch_request(Array<Route> routes, HttpRequest req) -> HttpResponse {
+	int i = 0;
+	for i in 0..routes.length {
+		Route r = routes[i];
+		if r.method == req.method {
+			if r.path == req.path {
+				fn(HttpRequest) -> HttpResponse h = r.handler;
+				return h(req);
+			}
+		}
+	}
+	return http_not_found();
 }
 
 // ================================================================
@@ -416,11 +441,88 @@ pub fn http_get(string host, int port, string path) -> string {
 	return http_get_buffered(host, port, path);
 }
 
+// Performs a blocking HTTP POST with a request body and returns the response
+// body. content_type sets the Content-Type header (e.g. "application/json").
+pub fn http_post(string host, int port, string path, string content_type, string body) -> string {
+	Socket sock = tcp_connect(host, port);
+
+	int body_len = body.length;
+	string request = "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n" + body;
+	sock.write(request);
+
+	Buffer buf = __blang_buffer_create(4096);
+	for {
+		int n = sock.read_into(buf, 8192);
+		if n <= 0 {
+			break;
+		}
+	}
+	sock.close();
+
+	return extract_http_body(buf);
+}
+
 // ================================================================
 // HttpServer implementation (pure BLang, uses Selector + HTTP parsing)
 // ================================================================
 
 impl HttpServer {
+	// --- Route registration ---
+	// Register a handler for a given method + path. get()/post() are sugar.
+	fn route(self, string method, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: method, path: path, handler: handler });
+	}
+
+	fn get(self, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: "GET", path: path, handler: handler });
+	}
+
+	fn post(self, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: "POST", path: path, handler: handler });
+	}
+
+	fn put(self, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: "PUT", path: path, handler: handler });
+	}
+
+	// Note: there is no dedicated delete() method because `delete` is a reserved
+	// keyword. Use route("DELETE", path, handler) for DELETE routes.
+
+	// Start serving registered routes. Each accepted connection is parsed into
+	// an HttpRequest, dispatched to the matching route (or 404), and the
+	// response is written back. Call after registering routes; then join().
+	fn serve(self) {
+		int sel = self._selector_handle;
+		int sfd = self._server_fd;
+		Array<Route> routes = self._routes;
+		__blang_selector_add_accept(sel, sfd, fn(int new_fd) {
+			Buffer buf = __blang_buffer_create(4096);
+			Buffer sep = __blang_buffer_create(4);
+			sep.append_byte(13);
+			sep.append_byte(10);
+			sep.append_byte(13);
+			sep.append_byte(10);
+			for {
+				int n = __blang_tcp_read_into_buffer(new_fd, buf, 4096);
+				if n <= 0 { break; }
+				if buf.index_of(sep, 0) >= 0 { break; }
+			}
+
+			HttpRequestLine rline = parse_http_request_line(buf);
+			string body = extract_http_body(buf);
+			HttpRequest req = HttpRequest {
+				method: rline.method,
+				path: rline.path,
+				body: body
+			};
+
+			HttpResponse resp = dispatch_request(routes, req);
+			string response_str = build_http_response(resp.status, resp.content_type, resp.body);
+			__blang_tcp_write_string(new_fd, response_str);
+			__blang_tcp_close(new_fd);
+		});
+	}
+
 	fn on_request(self, fn(HttpRequest) -> HttpResponse handler) {
 		int sel = self._selector_handle;
 		int sfd = self._server_fd;
@@ -476,5 +578,6 @@ pub fn http_server(string host, int port) -> HttpServer {
 	int sel = __blang_selector_create();
 	// Spawn the event loop on a dedicated thread.
 	spawn { __blang_selector_run(sel); }
-	return HttpServer { _selector_handle: sel, _server_fd: server_fd };
+	Array<Route> routes = [];
+	return HttpServer { _selector_handle: sel, _server_fd: server_fd, _routes: routes };
 }

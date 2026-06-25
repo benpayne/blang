@@ -342,6 +342,7 @@ namespace QLang
 
 		Type *getVariableType() { return mType; }
 		const Type *getVariableType() const { return mType; }
+		void setVariableType( Type *t ) { mType = t; }
 
 		bool isConst() const { return mIsConst; }
 		void setConst( bool isConst ) { mIsConst = isConst; }
@@ -436,6 +437,45 @@ namespace QLang
 		};
 
 		static EnumDefinition *Parse( Lexer &l, Scope *s, bool isPublic = false );
+
+		// Built-in generic Option<T> { some(T), none }.
+		static EnumDefinition *CreateBuiltinOption()
+		{
+			EnumDefinition *e = new EnumDefinition( "Option" );
+			GenericParam t; t.mName = "T";
+			e->mGenericParams.push_back( t );
+
+			Variant some; some.mName = "some";
+			some.mAssociatedTypes.push_back( new Type( "T" ) );
+			e->mVariants.push_back( some );
+
+			Variant none; none.mName = "none";
+			e->mVariants.push_back( none );
+
+			e->mIsPublic = true;
+			return e;
+		}
+
+		// Built-in generic Result<T, E> { ok(T), err(E) }.
+		static EnumDefinition *CreateBuiltinResult()
+		{
+			EnumDefinition *e = new EnumDefinition( "Result" );
+			GenericParam t; t.mName = "T";
+			GenericParam er; er.mName = "E";
+			e->mGenericParams.push_back( t );
+			e->mGenericParams.push_back( er );
+
+			Variant ok; ok.mName = "ok";
+			ok.mAssociatedTypes.push_back( new Type( "T" ) );
+			e->mVariants.push_back( ok );
+
+			Variant err; err.mName = "err";
+			err.mAssociatedTypes.push_back( new Type( "E" ) );
+			e->mVariants.push_back( err );
+
+			e->mIsPublic = true;
+			return e;
+		}
 
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
 

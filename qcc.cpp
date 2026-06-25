@@ -512,6 +512,14 @@ int main( int argc, char *argv[] )
 			new Type( "void" ),
 			{ new VariableDefinition( new Type( "string" ), "fmt" ) },
 			true /* variadic */ ) );
+
+		// to_json(value) -> string: serializes a @json-annotated struct.
+		// Variadic so the parser accepts any struct argument; codegen resolves
+		// the concrete type and dispatches to StructName_to_json.
+		gScope->addSymbol( FunctionDefinition::CreateBuiltin( "to_json",
+			new Type( "string" ),
+			{},
+			true /* variadic */ ) );
 	}
 
 	// Register Printable as a builtin protocol
@@ -520,6 +528,16 @@ int main( int argc, char *argv[] )
 			new Type( "string" ),
 			{ new VariableDefinition( new Type( "self" ), "self" ) } );
 		gScope->addSymbol( ProtocolDefinition::CreateBuiltin( "Printable", { toStr } ) );
+	}
+
+	// Register Option<T> and Result<T,E> as builtin generic enums. A program that
+	// defines its own Option/Result enum shadows these (user defs land in a child
+	// scope), so this is backward compatible.
+	{
+		gScope->addType( new Type( "Option" ) );
+		gScope->addSymbol( EnumDefinition::CreateBuiltinOption() );
+		gScope->addType( new Type( "Result" ) );
+		gScope->addSymbol( EnumDefinition::CreateBuiltinResult() );
 	}
 
 	// Parse each input file into its own Module. Each module gets its own

@@ -172,11 +172,28 @@ uint64_t CodeGen::getEnumMaxPayloadSize( EnumDefinition *enumDef )
 	uint64_t maxSize = 0;
 	llvm::DataLayout dl( mModule.get() );
 
+	// Generic params are erased to a pointer-sized slot: built-in Option<T>/
+	// Result<T,E> (and any generic enum used without monomorphization) store the
+	// payload type-erased, so any primitive, pointer, or heap struct (all <= 8
+	// bytes) fits.  The concrete type is recovered at the match/`?` site from the
+	// subject's static type arguments.
+	auto isGenericParam = [&]( const std::string &n ) {
+		for ( auto &gp : enumDef->mGenericParams )
+			if ( gp.mName == n )
+				return true;
+		return false;
+	};
+
 	for ( auto &variant : enumDef->mVariants )
 	{
 		uint64_t variantSize = 0;
 		for ( auto &assocType : variant.mAssociatedTypes )
 		{
+			if ( assocType != nullptr && isGenericParam( assocType->getName() ) )
+			{
+				variantSize += 8; // pointer-sized erased slot
+				continue;
+			}
 			llvm::Type *llvmType = getLLVMType( assocType );
 			uint64_t typeSize = dl.getTypeAllocSize( llvmType );
 			// Fallback for zero-sized types
@@ -554,6 +571,21 @@ bool CodeGen::generate( Module *mod )
 	for ( auto &enumDef : mod->mEnumList )
 	{
 		mEnumDefMap[enumDef->getName()] = enumDef;
+	}
+
+	// Register built-in Option/Result for codegen resolution (match, getLLVMType)
+	// unless the program defines its own — a user definition takes precedence.
+	if ( mEnumDefMap.find( "Option" ) == mEnumDefMap.end() )
+	{
+		SmartPtr<EnumDefinition> opt = EnumDefinition::CreateBuiltinOption();
+		mSyntheticEnums.push_back( opt );
+		mEnumDefMap["Option"] = opt;
+	}
+	if ( mEnumDefMap.find( "Result" ) == mEnumDefMap.end() )
+	{
+		SmartPtr<EnumDefinition> res = EnumDefinition::CreateBuiltinResult();
+		mSyntheticEnums.push_back( res );
+		mEnumDefMap["Result"] = res;
 	}
 
 	// Forward-declare all module-level functions so that methods/lambdas
@@ -948,7 +980,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 			// Box the return value: allocate heap memory, store value, return ptr
 			llvm::DataLayout dl( mModule.get() );
 			uint64_t typeSize = dl.getTypeAllocSize( retType );
-			llvm::Function *mallocFn = getOrDeclareMalloc();
+			llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 			llvm::Value *boxPtr = mBuilder->CreateCall( mallocFn,
 				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), typeSize ) },
 				"async.box" );
@@ -1003,7 +1035,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 
 			llvm::DataLayout dl( mModule.get() );
 			uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
-			llvm::Function *mallocFn = getOrDeclareMalloc();
+			llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 			ctxArg = mBuilder->CreateCall( mallocFn,
 				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 				"async.ctx" );
@@ -1172,6 +1204,12 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		genBlock( func->mFuncBody );
 	}
 
+	// Capture the block where the body's control flow actually ended.  This is
+	// NOT necessarily the physically-last block in the function: a trailing
+	// `match` (or any construct that creates its merge block before its arm
+	// blocks) leaves the merge block earlier in the list than the arm blocks.
+	llvm::BasicBlock *bodyEndBB = mBuilder->GetInsertBlock();
+
 	// Inject init calls into main's entry block (before the branch to body)
 	if ( isMain )
 	{
@@ -1190,9 +1228,8 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 				{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
 		}
 
-		// Restore insert point to after the body
-		llvm::BasicBlock *afterBody = &llvmFunc->back();
-		mBuilder->SetInsertPoint( afterBody );
+		// Restore insert point to where the body's control flow ended
+		mBuilder->SetInsertPoint( bodyEndBB );
 	}
 
 	// If the function is void and the last block has no terminator, add ret void
@@ -2015,7 +2052,15 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 							(Expression*)data.mInitialValue );
 						auto *srcFieldExpr = dynamic_cast<FieldAccessExpression*>(
 							(Expression*)data.mInitialValue );
-						if ( srcVarExpr != nullptr || srcFieldExpr != nullptr )
+						// Array element access (arr[i]) returns a borrowed reference —
+						// __blang_array_get does not retain — so binding it to a tracked
+						// local must retain, exactly like a variable copy or field access.
+						// Without this the local's scope-exit release double-frees the
+						// element the array still owns.
+						auto *srcIndexExpr = dynamic_cast<IndexExpression*>(
+							(Expression*)data.mInitialValue );
+						if ( srcVarExpr != nullptr || srcFieldExpr != nullptr ||
+							 srcIndexExpr != nullptr )
 						{
 							mBuilder->CreateCall( getOrDeclareRcRetain(), { initVal } );
 						}
@@ -2652,6 +2697,10 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			genPrintCall( call, true );
 			return nullptr;
 		}
+		if ( funcDef->getName() == "to_json" )
+		{
+			return genToJsonCall( call );
+		}
 	}
 
 	// Handle @format annotation: validate format string at call site
@@ -2817,6 +2866,16 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 				}
 				llvm::Value *fnPtr = mBuilder->CreateExtractValue( argVal, 0, "cb.fn" );
 				llvm::Value *ctxPtr = mBuilder->CreateExtractValue( argVal, 1, "cb.ctx" );
+
+				// A closure passed to an EXTERN function escapes into native code,
+				// which may store it and invoke it later (e.g. selector callbacks
+				// run on another thread). Retain its context an extra time so it
+				// outlives the current scope — otherwise the scope-exit release
+				// frees it and the deferred invocation calls through freed memory.
+				// (null contexts — non-capturing lambdas / fn refs — are no-ops.)
+				if ( funcDef->isExtern() )
+					mBuilder->CreateCall( getOrDeclareLambdaCtxRetain(), { ctxPtr } );
+
 				args.push_back( fnPtr );
 				args.push_back( ctxPtr );
 				continue;
@@ -3992,6 +4051,14 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 			return result;
 	}
 
+	// Built-in channel method calls: chan<T> .send()/.recv()/.close()
+	if ( isChanType( expr->mObject ) )
+	{
+		llvm::Value *result = genChanMethodCall( expr );
+		if ( result != nullptr )
+			return result;
+	}
+
 	// Determine the struct type from the object
 	StructDefinition *structDef = nullptr;
 	string structName;
@@ -4271,13 +4338,13 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 			mBuilder->CreateStore( argVal, bytePtr );
 
 			// If storing a string into the enum payload, untrack the temp —
-			// ownership transfers to the enum value
-			if ( argType->isPointerTy() && i < variant.mAssociatedTypes.size() )
-			{
-				string assocTypeName = variant.mAssociatedTypes[i]->getName();
-				if ( assocTypeName == "string" )
-					untrackTempString( argVal );
-			}
+			// ownership transfers to the enum value.  Detect strings by the
+			// argument's own type (isStringType), not the declared associated
+			// type: for generic enums (Option<T>/Result<T,E>) the declared type
+			// is an erased param like "T"/"E", so a name check would miss it and
+			// the string would be released at scope exit -> use-after-free.
+			if ( argType->isPointerTy() && isStringType( expr->mArgs[i] ) )
+				untrackTempString( argVal );
 
 			uint64_t typeSize = dl.getTypeAllocSize( argType );
 			if ( typeSize == 0 ) typeSize = 4; // fallback
@@ -4343,6 +4410,45 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 		{
 			wildcardIdx = static_cast<int>( i );
 			break;
+		}
+	}
+
+	// Exhaustiveness checking for enum matches: when matching on a tagged-union
+	// enum without a wildcard '_' arm, every variant must have a corresponding
+	// arm.  A missing variant is a compile error (matching the "safe by default"
+	// design goal — no silently-unhandled cases).
+	if ( isEnumStruct && matchedEnum != nullptr && wildcardIdx < 0 )
+	{
+		std::vector<std::string> missing;
+		for ( const auto &variant : matchedEnum->mVariants )
+		{
+			bool covered = false;
+			for ( const auto &arm : expr->mArms )
+			{
+				if ( !arm.mIsWildcard && arm.mPattern == variant.mName )
+				{
+					covered = true;
+					break;
+				}
+			}
+			if ( !covered )
+				missing.push_back( variant.mName );
+		}
+
+		if ( !missing.empty() )
+		{
+			std::string joined;
+			for ( size_t i = 0; i < missing.size(); i++ )
+			{
+				if ( i > 0 )
+					joined += ", ";
+				joined += missing[i];
+			}
+			cerr << "Error: non-exhaustive match on enum '"
+				 << matchedEnum->getName() << "': missing variant(s): "
+				 << joined
+				 << ". Add the missing arm(s) or a wildcard '_' arm." << endl;
+			mHasError = true;
 		}
 	}
 
@@ -4468,10 +4574,18 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				}
 
 				llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
+				Type *bindQType = nullptr;
 				if ( variantIdx >= 0 &&
 					 !matchedEnum->mVariants[variantIdx].mAssociatedTypes.empty() )
 				{
-					bindType = getLLVMType( matchedEnum->mVariants[variantIdx].mAssociatedTypes[0] );
+					// For generic enums (Option<T>/Result<T,E>) recover the concrete
+					// payload type from the subject's static type arguments.
+					Type *subjType = resolveExpressionQType( expr->mSubject );
+					bindQType = resolveVariantBindingQType(
+						matchedEnum, variantIdx, subjType );
+					if ( bindQType == nullptr )
+						bindQType = matchedEnum->mVariants[variantIdx].mAssociatedTypes[0];
+					bindType = getLLVMType( bindQType );
 				}
 
 				// GEP to the payload area (field 1) and load the value
@@ -4501,7 +4615,15 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
 						expr->mArms[i].mBindingName );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
+					{
 						mVariableMap[bindVar] = bindAlloca;
+						// Give the binding its concrete QLang type (the parser left
+						// it as a "var" placeholder). Without this, type-dependent
+						// operations on the bound value — e.g. string `==` or string
+						// methods — would not recognize it.
+						if ( bindQType != nullptr )
+							bindVar->setVariableType( bindQType );
+					}
 				}
 			}
 			else
@@ -4569,6 +4691,61 @@ EnumDefinition *CodeGen::resolveExpressionEnumDef( Expression *expr )
 	return nullptr;
 }
 
+Type *CodeGen::resolveExpressionQType( Expression *expr )
+{
+	if ( auto *varExpr = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		if ( varExpr->mVariable != nullptr )
+			return varExpr->mVariable->getVariableType();
+	}
+	else if ( auto *call = dynamic_cast<CallExpression*>( expr ) )
+	{
+		if ( call->mFunction != nullptr )
+			return call->mFunction->getReturnType();
+	}
+	else if ( auto *mc = dynamic_cast<MethodCallExpression*>( expr ) )
+	{
+		// chan<T>.recv() yields Option<T> — synthesize that type so the match/
+		// `?` site can recover the element type for the payload binding.
+		if ( mc->mMethodName == "recv" && isChanType( mc->mObject ) )
+		{
+			SmartPtr<Type> opt = new Type( "Option" );
+			Type *elem = getChanElementQType( mc->mObject );
+			opt->addTypeParam( elem != nullptr ? elem : new Type( "int" ) );
+			mSyntheticTypes.push_back( opt );
+			return opt;
+		}
+	}
+	return nullptr;
+}
+
+Type *CodeGen::resolveVariantBindingQType( EnumDefinition *enumDef, int variantIdx, Type *subjectType )
+{
+	if ( enumDef == nullptr || variantIdx < 0 ||
+		 variantIdx >= (int)enumDef->mVariants.size() )
+		return nullptr;
+
+	auto &assoc = enumDef->mVariants[variantIdx].mAssociatedTypes;
+	if ( assoc.empty() || assoc[0] == nullptr )
+		return nullptr;
+
+	Type *declared = assoc[0];
+
+	// If the declared associated type is one of the enum's generic params,
+	// substitute the concrete type from the subject's type arguments by position.
+	for ( size_t gi = 0; gi < enumDef->mGenericParams.size(); gi++ )
+	{
+		if ( enumDef->mGenericParams[gi].mName == declared->getName() )
+		{
+			if ( subjectType != nullptr && (int)gi < subjectType->getNumTypeParams() )
+				return subjectType->getTypeParam( gi );
+			return nullptr; // generic, but no concrete type arg available
+		}
+	}
+
+	return declared; // concrete (non-generic) associated type
+}
+
 llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 {
 	// Generate the operand expression (e.g., might_fail())
@@ -4582,6 +4759,10 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 	// If we can't determine the enum type, fall back to pass-through
 	if ( enumDef == nullptr || !enumHasPayload( enumDef ) )
 		return result;
+
+	// The operand's full QLang type (with type args) — used to recover concrete
+	// payload types for generic enums like Result<int, string>.
+	Type *operandQType = resolveExpressionQType( expr->mOperand );
 
 	// Find success variant (ok/some) and error variant (err/none)
 	int successIdx = -1;
@@ -4694,7 +4875,11 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 							{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
 							  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
 							"try.src.byte" );
-						llvm::Type *errPayloadType = getLLVMType( srcErrVariant.mAssociatedTypes[0] );
+						Type *errBindQType = resolveVariantBindingQType(
+							enumDef, errorIdx, operandQType );
+						llvm::Type *errPayloadType = ( errBindQType != nullptr )
+							? getLLVMType( errBindQType )
+							: getLLVMType( srcErrVariant.mAssociatedTypes[0] );
 						llvm::Value *errPayload = mBuilder->CreateLoad(
 							errPayloadType, srcByte, "try.err.payload" );
 
@@ -4740,7 +4925,12 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 
 	llvm::Type *successPayloadType = llvm::Type::getInt32Ty( *mContext ); // default
 	if ( !enumDef->mVariants[successIdx].mAssociatedTypes.empty() )
-		successPayloadType = getLLVMType( enumDef->mVariants[successIdx].mAssociatedTypes[0] );
+	{
+		Type *bindQType = resolveVariantBindingQType( enumDef, successIdx, operandQType );
+		successPayloadType = ( bindQType != nullptr )
+			? getLLVMType( bindQType )
+			: getLLVMType( enumDef->mVariants[successIdx].mAssociatedTypes[0] );
+	}
 
 	// GEP to the payload area and load the success value
 	llvm::Type *payloadArrType = enumType->getElementType( 1 );
@@ -5522,7 +5712,7 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	llvm::DataLayout dl( mModule.get() );
 	uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
 
-	llvm::Function *mallocFn = getOrDeclareMalloc();
+	llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 	llvm::Value *ctxAlloc = mBuilder->CreateCall( mallocFn,
 		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 		"spawn.ctx" );
@@ -6094,7 +6284,7 @@ llvm::Value *CodeGen::genLambdaExpression( LambdaExpression *lambda )
 		llvm::DataLayout dl( mModule.get() );
 		uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
 
-		llvm::Function *mallocFn = getOrDeclareMalloc();
+		llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 		ctxAlloc = mBuilder->CreateCall( mallocFn,
 			{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 			"lambda.ctx" );
@@ -6445,7 +6635,7 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	// Allocate context and populate captures
 	llvm::DataLayout dl( mModule.get() );
 	uint64_t ctxSize = dl.getTypeAllocSize( ctxType );
-	llvm::Function *mallocFn = getOrDeclareMalloc();
+	llvm::Function *mallocFn = getOrDeclareBlangAlloc();
 	llvm::Value *ctxAlloc = mBuilder->CreateCall( mallocFn,
 		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), ctxSize ) },
 		"event.ctx" );
@@ -6726,6 +6916,21 @@ llvm::Function *CodeGen::getOrDeclareMalloc()
 		false );
 	return llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, "malloc", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareBlangAlloc()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_alloc" );
+	if ( f != nullptr )
+		return f;
+
+	// void *__blang_alloc(size_t size) — checked malloc, aborts on OOM
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::PointerType::get( *mContext, 0 ),
+		{ llvm::Type::getInt64Ty( *mContext ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_alloc", mModule.get() );
 }
 
 llvm::Function *CodeGen::getOrDeclareFree()
@@ -8296,6 +8501,145 @@ bool CodeGen::isBufferType( Expression *expr )
 	return false;
 }
 
+// ---- Channel (chan<T>) type helpers and method codegen ----
+
+bool CodeGen::isChanType( Expression *expr )
+{
+	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		return varType != nullptr && varType->getName() == "chan";
+	}
+	return false;
+}
+
+// Resolve the QLang element type T of a chan<T> object expression.
+// Returns nullptr if the type parameter is missing (treated as int-sized).
+Type *CodeGen::getChanElementQType( Expression *expr )
+{
+	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		if ( varType != nullptr && varType->getNumTypeParams() > 0 )
+			return varType->getTypeParam( 0 );
+	}
+	return nullptr;
+}
+
+// Codegen for channel method calls: send(value), recv(), close().
+//   chan<T> declarations store a BlangChan* (see genVariableDefinition).
+//   send marshals the element through a stack slot of T's LLVM type;
+//   recv returns Option<T> (some(value) on success, none on closed+empty),
+//   matching the byte-copy contract of __blang_chan_send/recv.
+llvm::Value *CodeGen::genChanMethodCall( MethodCallExpression *expr )
+{
+	const string &method = expr->mMethodName;
+
+	// Load the BlangChan* from the channel variable.
+	llvm::Value *chanVal = genExpression( expr->mObject );
+	if ( chanVal == nullptr )
+		return nullptr;
+
+	// Determine the element LLVM type (default to i32 when unparameterized,
+	// consistent with the default element size used at channel creation).
+	Type *elemQType = getChanElementQType( expr->mObject );
+	llvm::Type *elemType = elemQType != nullptr
+		? getLLVMType( elemQType )
+		: llvm::Type::getInt32Ty( *mContext );
+	if ( elemType == nullptr )
+		elemType = llvm::Type::getInt32Ty( *mContext );
+
+	// close() -> void
+	if ( method == "close" && expr->mArgs.empty() )
+	{
+		mBuilder->CreateCall( getOrDeclareChanClose(), { chanVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// send(value) -> void  (void __blang_chan_send(BlangChan*, const void*))
+	if ( method == "send" && expr->mArgs.size() == 1 )
+	{
+		llvm::Value *valVal = genExpression( expr->mArgs[0] );
+		if ( valVal == nullptr )
+			return nullptr;
+
+		// Coerce integer widths to the channel element type so the byte copy
+		// transfers exactly elem_size bytes (e.g. an i32 literal into chan<long>).
+		if ( valVal->getType()->isIntegerTy() && elemType->isIntegerTy() &&
+			 valVal->getType() != elemType )
+			valVal = mBuilder->CreateIntCast( valVal, elemType, true, "chan.val" );
+
+		llvm::Value *slot = mBuilder->CreateAlloca( elemType, nullptr, "chan.send.slot" );
+		mBuilder->CreateStore( valVal, slot );
+		mBuilder->CreateCall( getOrDeclareChanSend(), { chanVal, slot } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// recv() -> Option<T>
+	//   int __blang_chan_recv(BlangChan*, void* out) returns 1 on success, 0 if
+	//   the channel is closed and empty.  We recv directly into the payload area
+	//   of an Option_<T> enum, then set the tag from the success flag: some(value)
+	//   on success, none on closed+empty.  Exhaustive match then forces callers
+	//   to handle the closed case.
+	if ( method == "recv" && expr->mArgs.empty() )
+	{
+		// recv() yields the built-in Option<T>.  resolveExpressionQType maps a
+		// chan recv expression to Option<elemType>, so match/`?` recover T.
+		EnumDefinition *optEnum = nullptr;
+		auto optIt = mEnumDefMap.find( "Option" );
+		if ( optIt != mEnumDefMap.end() )
+			optEnum = optIt->second;
+		if ( optEnum == nullptr )
+			return nullptr;
+
+		int someIdx = -1, noneIdx = -1;
+		for ( size_t v = 0; v < optEnum->mVariants.size(); v++ )
+		{
+			if ( optEnum->mVariants[v].mName == "some" ) someIdx = (int)v;
+			else if ( optEnum->mVariants[v].mName == "none" ) noneIdx = (int)v;
+		}
+		if ( someIdx < 0 || noneIdx < 0 )
+			return nullptr;
+
+		llvm::StructType *optType = getOrCreateEnumType( optEnum );
+		llvm::AllocaInst *resultAlloca = mBuilder->CreateAlloca(
+			optType, nullptr, "chan.recv.opt" );
+
+		// GEP to the payload byte area (field 1, byte 0) and zero-initialize it,
+		// so the none case has a defined payload.
+		llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+			optType, resultAlloca, 1, "opt.payload.ptr" );
+		llvm::Type *payloadArrType = optType->getElementType( 1 );
+		llvm::Value *bytePtr = mBuilder->CreateGEP(
+			payloadArrType, payloadPtr,
+			{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+			  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+			"opt.payload.byte" );
+		mBuilder->CreateStore( llvm::Constant::getNullValue( elemType ), bytePtr );
+
+		// Receive directly into the payload; flag is 1 on success, 0 on closed+empty.
+		llvm::Value *flag = mBuilder->CreateCall(
+			getOrDeclareChanRecv(), { chanVal, bytePtr }, "chan.recv.flag" );
+
+		// tag = success ? some : none
+		llvm::Value *isSuccess = mBuilder->CreateICmpNE(
+			flag, llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 ),
+			"chan.recv.ok" );
+		llvm::Value *tagVal = mBuilder->CreateSelect(
+			isSuccess,
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), someIdx ),
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), noneIdx ),
+			"opt.tag" );
+		llvm::Value *tagPtr = mBuilder->CreateStructGEP(
+			optType, resultAlloca, 0, "opt.tag.ptr" );
+		mBuilder->CreateStore( tagVal, tagPtr );
+
+		return mBuilder->CreateLoad( optType, resultAlloca, "chan.recv.opt.val" );
+	}
+
+	return nullptr;
+}
+
 // ---- Buffer field/method codegen ----
 
 llvm::Value *CodeGen::genBufferFieldAccess( FieldAccessExpression *expr )
@@ -9131,6 +9475,79 @@ void CodeGen::genTestRunner( const std::vector<llvm::Function*> &testFunctions,
 	}
 
 	mBuilder->CreateRetVoid();
+}
+
+// Builtin to_json(value): resolve the argument's struct type at compile time
+// and dispatch to the generated StructName_to_json. Errors if the argument is
+// not a @json-annotated struct. Lets HTTP handlers etc. write
+// net.http_json(to_json(user)) for an auto-serialized JSON response.
+llvm::Value *CodeGen::genToJsonCall( CallExpression *call )
+{
+	if ( call->mParams.size() != 1 )
+	{
+		cerr << "Error: to_json expects exactly one argument" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	Expression *arg = call->mParams[0];
+
+	// Resolve the argument's struct type name.
+	std::string structTypeName;
+	if ( auto *slit = dynamic_cast<StructLiteralExpression*>( arg ) )
+		structTypeName = slit->mTypeName;
+	else
+	{
+		Type *qt = resolveExpressionQType( arg );
+		if ( qt != nullptr )
+			structTypeName = qt->getName();
+	}
+
+	auto sIt = mStructDefMap.find( structTypeName );
+	if ( structTypeName.empty() || sIt == mStructDefMap.end() )
+	{
+		cerr << "Error: to_json argument must be a struct value" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	// Require the struct to carry the @json annotation.
+	bool hasJson = false;
+	for ( const auto &ann : sIt->second->getAnnotations() )
+	{
+		if ( ann.mName == "json" )
+		{
+			hasJson = true;
+			break;
+		}
+	}
+	if ( !hasJson )
+	{
+		cerr << "Error: to_json requires a @json-annotated struct, but '"
+			 << structTypeName << "' is not annotated @json" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	llvm::Value *val = genExpression( arg );
+	if ( val == nullptr )
+		return nullptr;
+
+	// StructName_to_json(ptr self) -> string. Structs are heap pointers, so the
+	// generated value is already the self pointer the function expects.
+	std::string fnName = structTypeName + "_to_json";
+	llvm::Function *toJsonFn = mModule->getFunction( fnName );
+	if ( toJsonFn == nullptr )
+	{
+		cerr << "Error: to_json: no serializer generated for '"
+			 << structTypeName << "'" << endl;
+		mHasError = true;
+		return nullptr;
+	}
+
+	llvm::Value *result = mBuilder->CreateCall( toJsonFn, { val }, "to_json" );
+	trackTempString( result );
+	return result;
 }
 
 // ---- JSON codegen (@json annotation) ----

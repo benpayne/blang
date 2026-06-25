@@ -107,6 +107,13 @@ private:
 	// Try operator helper: resolve the QLang enum type of an expression
 	EnumDefinition *resolveExpressionEnumDef( Expression *expr );
 
+	// Resolve the full QLang type (with type arguments) of an expression, used to
+	// recover concrete types for generic enum variant payloads (Option<T>/Result<T,E>).
+	Type *resolveExpressionQType( Expression *expr );
+	// Resolve the concrete QLang type of a variant's first associated type,
+	// substituting the enum's generic params from `subjectType`'s type arguments.
+	Type *resolveVariantBindingQType( EnumDefinition *enumDef, int variantIdx, Type *subjectType );
+
 	// Array codegen
 	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
 	llvm::Value *genIndexExpression( IndexExpression *expr );
@@ -136,6 +143,11 @@ private:
 
 	// Buffer type helper
 	bool isBufferType( Expression *expr );
+
+	// Channel type helpers and method codegen (chan<T> .send()/.recv()/.close())
+	bool isChanType( Expression *expr );
+	Type *getChanElementQType( Expression *expr );
+	llvm::Value *genChanMethodCall( MethodCallExpression *expr );
 
 	// Buffer runtime declarations
 	llvm::Function *getOrDeclareBufferCreate();
@@ -250,6 +262,7 @@ private:
 
 	// Memory allocation helpers
 	llvm::Function *getOrDeclareMalloc();
+	llvm::Function *getOrDeclareBlangAlloc();
 	llvm::Function *getOrDeclareFree();
 
 	// BLang runtime library declarations
@@ -274,6 +287,9 @@ private:
 	llvm::Function *getOrDeclareAsyncCall();
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();
+
+	// Builtin to_json(value): compile-time dispatch to StructName_to_json
+	llvm::Value *genToJsonCall( CallExpression *call );
 
 	// JSON codegen (@json annotation)
 	bool genJsonToJson( StructDefinition *structDef );
@@ -336,6 +352,10 @@ private:
 	// Maps self parameters to the mangled struct name (for generic struct methods)
 	std::map<VariableDefinition*, std::string> mSelfStructMangledName;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
+	// Owns enums synthesized at codegen time (e.g. built-in Option/Result).
+	std::vector<SmartPtr<EnumDefinition>> mSyntheticEnums;
+	// Owns QLang types synthesized at codegen time (e.g. Option<T> for chan recv).
+	std::vector<SmartPtr<Type>> mSyntheticTypes;
 	std::map<std::string, llvm::StructType*> mEnumTypeMap;
 
 	// Generic instantiation tracking
