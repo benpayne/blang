@@ -286,6 +286,11 @@ private:
 	llvm::Function *getOrDeclareChanDestroy();
 	llvm::Function *getOrDeclareEventOn();
 	llvm::Function *getOrDeclareEventRunAuto();
+
+	// Recursively scans a statement subtree for any `on` event handler so that
+	// mUsesEventHandlers can be set up front (order-independent), before any
+	// function body is generated. Returns true if an EventHandler is present.
+	bool statementUsesEventHandlers( Statement *stmt );
 	llvm::Function *getOrDeclareAsyncCall();
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();
