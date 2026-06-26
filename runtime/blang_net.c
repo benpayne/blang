@@ -220,6 +220,7 @@ typedef struct
 	short events;            /* POLLIN */
 	int is_accept;           /* 1 = listen socket (auto-accept), 0 = data */
 	int is_timer;            /* 1 = timerfd (drain the expiration count before dispatch) */
+	int is_oneshot;          /* 1 = remove + close after firing once (timer.after) */
 	void (*handler)( void *ctx, int fd );
 	void *ctx;
 } SelectorEntry;
@@ -229,6 +230,8 @@ typedef struct
 	struct pollfd fds[SELECTOR_MAX_FDS];
 	SelectorEntry entries[SELECTOR_MAX_FDS];
 	int count;
+	int active_count;        /* number of real handler fds (excludes self-pipe) */
+	int exit_when_idle;      /* 1 = run() returns when active_count hits 0 */
 	int pipe_fd[2];          /* self-pipe for waking poll */
 	int shutdown;
 	int stopped;             /* 1 = event loop has exited */
@@ -318,9 +321,11 @@ void __blang_selector_add_read( int sel_handle, int fd,
 	sel->entries[idx].events = POLLIN;
 	sel->entries[idx].is_accept = 0;
 	sel->entries[idx].is_timer = 0;
+	sel->entries[idx].is_oneshot = 0;
 	sel->entries[idx].handler = handler;
 	sel->entries[idx].ctx = ctx;
 	sel->count++;
+	sel->active_count++;
 
 	selector_wake( sel );
 }
@@ -339,9 +344,11 @@ void __blang_selector_add_accept( int sel_handle, int listen_fd,
 	sel->entries[idx].events = POLLIN;
 	sel->entries[idx].is_accept = 1;
 	sel->entries[idx].is_timer = 0;
+	sel->entries[idx].is_oneshot = 0;
 	sel->entries[idx].handler = handler;
 	sel->entries[idx].ctx = ctx;
 	sel->count++;
+	sel->active_count++;
 
 	selector_wake( sel );
 }
@@ -363,6 +370,8 @@ void __blang_selector_remove( int sel_handle, int fd )
 				sel->entries[j] = sel->entries[j + 1];
 			}
 			sel->count--;
+			if ( sel->active_count > 0 )
+				sel->active_count--;
 			break;
 		}
 	}
@@ -378,7 +387,10 @@ void __blang_selector_run( int sel_handle )
 
 	sel->shutdown = 0;
 
-	while ( !sel->shutdown )
+	/* exit_when_idle loops drain until no real handlers remain (used by the
+	   global `on` event loop); plain selectors run until explicit shutdown. */
+	while ( !sel->shutdown &&
+		!( sel->exit_when_idle && sel->active_count == 0 ) )
 	{
 		int ret = poll( sel->fds, (nfds_t)sel->count, -1 );
 		if ( ret < 0 )
@@ -398,6 +410,11 @@ void __blang_selector_run( int sel_handle )
 			/* Just a wake-up, continue to check shutdown and re-poll */
 		}
 
+		/* Fired one-shot timers to drop after dispatch (removed by fd so a
+		   handler that mutates the set mid-iteration can't corrupt this). */
+		int oneshot_done[SELECTOR_MAX_FDS];
+		int oneshot_n = 0;
+
 		/* Process active fds (iterate backwards to allow removal) */
 		for ( int i = sel->count - 1; i >= 1; i-- )
 		{
@@ -415,6 +432,8 @@ void __blang_selector_run( int sel_handle )
 				{
 					/* Timer fds must be drained (read the 8-byte expiration
 					   count) or they stay perpetually readable. */
+					int was_oneshot = entry->is_oneshot;
+					int efd = entry->fd;
 					if ( entry->is_timer )
 					{
 						uint64_t expirations = 0;
@@ -424,6 +443,9 @@ void __blang_selector_run( int sel_handle )
 					/* Data ready — invoke handler with fd */
 					if ( entry->handler != NULL )
 						entry->handler( entry->ctx, entry->fd );
+					/* A one-shot fires exactly once; drop it after dispatch. */
+					if ( was_oneshot && oneshot_n < SELECTOR_MAX_FDS )
+						oneshot_done[oneshot_n++] = efd;
 				}
 			}
 
@@ -436,7 +458,31 @@ void __blang_selector_run( int sel_handle )
 					sel->entries[j] = sel->entries[j + 1];
 				}
 				sel->count--;
+				if ( sel->active_count > 0 )
+					sel->active_count--;
 			}
+		}
+
+		/* Remove fired one-shot timers by fd and close them. */
+		for ( int k = 0; k < oneshot_n; k++ )
+		{
+			int efd = oneshot_done[k];
+			for ( int i = 1; i < sel->count; i++ )
+			{
+				if ( sel->entries[i].fd == efd )
+				{
+					for ( int j = i; j < sel->count - 1; j++ )
+					{
+						sel->fds[j] = sel->fds[j + 1];
+						sel->entries[j] = sel->entries[j + 1];
+					}
+					sel->count--;
+					if ( sel->active_count > 0 )
+						sel->active_count--;
+					break;
+				}
+			}
+			close( efd );
 		}
 	}
 
@@ -495,11 +541,17 @@ void __blang_selector_destroy( int sel_handle )
 
 static int g_event_loop_handle = -1;
 static pthread_mutex_t g_event_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Set once the loop is driven explicitly (timer.run/stop) so the automatic
+   run injected at the end of main() does not run it a second time. */
+static int g_event_ran = 0;
 
 /* timerfds, so the loop knows to drain the expiration count on dispatch. */
 #define MAX_TIMER_FDS 64
 static int g_timer_fds[MAX_TIMER_FDS];
 static int g_timer_fd_count = 0;
+/* one-shot timerfds (timer.after) — dropped from the loop after they fire. */
+static int g_oneshot_fds[MAX_TIMER_FDS];
+static int g_oneshot_fd_count = 0;
 
 int __blang_event_loop( void )
 {
@@ -523,6 +575,22 @@ static int is_timer_fd( int fd )
 {
 	for ( int i = 0; i < g_timer_fd_count; i++ )
 		if ( g_timer_fds[i] == fd )
+			return 1;
+	return 0;
+}
+
+static void track_oneshot_fd( int fd )
+{
+	pthread_mutex_lock( &g_event_loop_mutex );
+	if ( g_oneshot_fd_count < MAX_TIMER_FDS )
+		g_oneshot_fds[g_oneshot_fd_count++] = fd;
+	pthread_mutex_unlock( &g_event_loop_mutex );
+}
+
+static int is_oneshot_fd( int fd )
+{
+	for ( int i = 0; i < g_oneshot_fd_count; i++ )
+		if ( g_oneshot_fds[i] == fd )
 			return 1;
 	return 0;
 }
@@ -575,6 +643,7 @@ int __blang_timer_after( int delay_ms )
 		return -1;
 	}
 	track_timer_fd( tfd );
+	track_oneshot_fd( tfd );
 	return tfd;
 }
 
@@ -595,21 +664,50 @@ void __blang_event_on( int fd, void (*handler)( void *ctx, int fd ), void *ctx )
 	sel->entries[idx].events = POLLIN;
 	sel->entries[idx].is_accept = 0;
 	sel->entries[idx].is_timer = is_timer_fd( fd );
+	sel->entries[idx].is_oneshot = is_oneshot_fd( fd );
 	sel->entries[idx].handler = handler;
 	sel->entries[idx].ctx = ctx;
 	sel->count++;
+	sel->active_count++;
 
 	selector_wake( sel );
 }
 
-/* Run the global event loop (blocks the calling thread until stopped). */
+/* Cancel an individual event source (timer or socket fd): remove it from the
+   loop and, if it is a timer, close it. When the last source is removed an
+   idle-exiting loop returns on its own. */
+void __blang_event_cancel( int fd )
+{
+	if ( fd < 0 )
+		return;
+	__blang_selector_remove( __blang_event_loop(), fd );
+	if ( is_timer_fd( fd ) )
+		close( fd );
+}
+
+/* Run the global event loop (blocks the calling thread until stopped or no
+   event sources remain). Marks the loop as explicitly driven. */
 void __blang_event_run( void )
 {
+	BlangSelector *sel = get_selector( __blang_event_loop() );
+	if ( sel != NULL )
+		sel->exit_when_idle = 1;
+	g_event_ran = 1;
 	__blang_selector_run( __blang_event_loop() );
+}
+
+/* Run the loop automatically (injected at the end of main()) unless it was
+   already driven explicitly via timer.run()/stop(). */
+void __blang_event_run_auto( void )
+{
+	if ( g_event_ran )
+		return;
+	__blang_event_run();
 }
 
 /* Stop the global event loop. */
 void __blang_event_stop( void )
 {
+	g_event_ran = 1;
 	__blang_selector_shutdown( __blang_event_loop() );
 }

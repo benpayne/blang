@@ -1242,6 +1242,12 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 			genContractCheck( clause, "Postcondition violated" );
 		}
 
+		// If main registered `on` handlers and falls through (no explicit
+		// return), run the event loop automatically — no timer.run() needed.
+		// Runs only if the loop was not already driven explicitly.
+		if ( isMain && mUsesEventHandlers )
+			mBuilder->CreateCall( getOrDeclareEventRunAuto(), {} );
+
 		// Insert runtime shutdown for main() if concurrency features are used
 		if ( isMain && mUsesConcurrency )
 			mBuilder->CreateCall( getOrDeclareRuntimeShutdown(), {} );
@@ -5290,6 +5296,19 @@ llvm::Function *CodeGen::getOrDeclareEventOn()
 		ft, llvm::Function::ExternalLinkage, "__blang_event_on", mModule.get() );
 }
 
+llvm::Function *CodeGen::getOrDeclareEventRunAuto()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_event_run_auto" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_event_run_auto( void )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), {}, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_event_run_auto", mModule.get() );
+}
+
 llvm::Function *CodeGen::getOrDeclareSpawn()
 {
 	llvm::Function *f = mModule->getFunction( "__blang_spawn" );
@@ -6707,9 +6726,10 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	if ( registerOnLoop )
 	{
 		// Register on the global event loop: fires whenever the source fd is
-		// readable. Run the loop with timer.run() (__blang_event_run).
+		// readable. The loop runs automatically at the end of main().
 		mBuilder->CreateCall( getOrDeclareEventOn(), { fdVal, cbFn, ctxAlloc } );
 		mUsesConcurrency = true;
+		mUsesEventHandlers = true;
 	}
 	else
 	{

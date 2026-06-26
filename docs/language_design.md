@@ -495,11 +495,13 @@ on signal(SIGINT) {
 ```
 
 Implemented today: `on EXPR { ... }` registers the body on the global event
-loop, keyed by the fd that `EXPR` yields. `import timer;` provides timer
-sources — `timer.every(ms)` (repeating) and `timer.after(ms)` (one-shot) —
-and `timer.run()`/`timer.stop()` drive and stop the loop. Timer fds and socket
-fds share one poll-based loop. Argument bindings (the `|bytes|` form) and
-`signal(...)` sources are not yet implemented.
+loop, keyed by the fd that `EXPR` yields. The loop runs automatically once
+`main` falls through (no explicit run call needed) and exits when stopped or
+when no sources remain. `import timer;` provides `timer.every(ms)` (repeating),
+`timer.after(ms)` (one-shot), `timer.cancel(source)` (remove one timer),
+`timer.stop()` (stop the loop), and an optional explicit `timer.run()`. Timer
+fds and socket fds share one poll-based loop. Argument bindings (the `|bytes|`
+form) and `signal(...)` sources are not yet implemented.
 
 ### Thread Safety Rules
 

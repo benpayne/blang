@@ -1,14 +1,15 @@
 // Demo 14: Timer event loop
 //
 // Registers a repeating timer on the global event loop. The handler runs every
-// 200ms and stops the loop after 5 ticks. `on EXPR { ... }` registers the body
-// against the event source that EXPR yields (here, a timer).
+// 200ms and stops the loop after 5 ticks. No timer.run() call is needed — once
+// main() finishes, the event loop runs automatically because an `on` handler is
+// registered, and exits when the handler calls timer.stop().
 //
 // Run: bcc demos/14_timer.b -o timer && ./timer
 
 import timer;
 
-fn main() -> int {
+fn main() {
 	sync int ticks = 0;
 
 	on timer.every(200) {
@@ -19,8 +20,6 @@ fn main() -> int {
 		}
 	}
 
-	println("starting event loop...");
-	timer.run();
-	println("done after {} ticks", ticks);
-	return 0;
+	println("event loop starting (runs automatically)...");
+	// main() falls through here; the event loop runs until timer.stop().
 }

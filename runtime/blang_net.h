@@ -93,8 +93,15 @@ int __blang_timer_after( int delay_ms );
    on the global event loop. */
 void __blang_event_on( int fd, void (*handler)( void *ctx, int fd ), void *ctx );
 
-/* Run / stop the global event loop. run() blocks the calling thread. */
+/* Cancel an individual event source (timer/socket fd): remove it from the
+   loop (and close it if it is a timer). */
+void __blang_event_cancel( int fd );
+
+/* Run / stop the global event loop. run() blocks until stopped or no event
+   sources remain. run_auto() is injected at the end of main() and runs the
+   loop only if it was not already driven explicitly. */
 void __blang_event_run( void );
+void __blang_event_run_auto( void );
 void __blang_event_stop( void );
 
 #ifdef __cplusplus
