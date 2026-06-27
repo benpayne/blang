@@ -206,6 +206,8 @@ run_one_test() {
 		else
 			db_sys_flags="-lsqlite3"
 		fi
+		echo "    [db-test] DB_LIB=${db_link} db_sys_flags='${db_sys_flags}'"
+		echo "    [db-test] sqlite refs in lib: $(nm "${DB_LIB}" 2>/dev/null | grep -c 'U sqlite3_')"
 	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
 		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
@@ -214,9 +216,9 @@ run_one_test() {
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"
-		if [ "$VERBOSE" -eq 1 ]; then
-			echo "$cc_output" | tail -5 | sed 's/^/    /'
-		fi
+		# Always surface the linker error — link failures are environment-
+		# specific (missing system libs) and hard to diagnose without it.
+		echo "$cc_output" | tail -8 | sed 's/^/    /'
 		rm -f "${ir_file}" "${obj_file}"
 		FAIL_COUNT=$((FAIL_COUNT + 1))
 		return 1
