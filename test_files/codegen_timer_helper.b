@@ -1,8 +1,7 @@
-// Auto-run with the `on` handler buried in a helper function (not in main).
-// main() only calls setup(); the handler is registered indirectly. The auto-run
-// injection into main must be driven by a module-wide pre-scan, not by whether
-// the `on` is lexically inside main — so this exercises order-independence.
-// The handler exits 0 on the 3rd tick.
+// Handler registered from a helper, loop entered from main: registration and
+// run() can live in different functions. setup() registers an `on` handler;
+// main() calls setup() and then explicitly enters the loop with timer.run().
+// The handler exits 0 on the 3rd tick (and 1 if it ever overruns).
 import timer;
 import sys;
 
@@ -20,8 +19,6 @@ fn setup() {
 }
 
 fn main() {
-	setup();
-	// main falls through; the event loop runs automatically because setup()
-	// registered an `on` handler. Without the pre-scan, no run_auto() would be
-	// injected here and the program would exit before any tick fired.
+	setup();      // registers the handler (no firing yet)
+	timer.run();  // enter the loop — the handler fires from here
 }

@@ -541,9 +541,6 @@ void __blang_selector_destroy( int sel_handle )
 
 static int g_event_loop_handle = -1;
 static pthread_mutex_t g_event_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
-/* Set once the loop is driven explicitly (timer.run/stop) so the automatic
-   run injected at the end of main() does not run it a second time. */
-static int g_event_ran = 0;
 
 /* timerfds, so the loop knows to drain the expiration count on dispatch. */
 #define MAX_TIMER_FDS 64
@@ -686,28 +683,18 @@ void __blang_event_cancel( int fd )
 }
 
 /* Run the global event loop (blocks the calling thread until stopped or no
-   event sources remain). Marks the loop as explicitly driven. */
+   event sources remain). The loop is entered explicitly from BLang via
+   `timer.run()` / `events.run()`; handlers do not fire before this is called. */
 void __blang_event_run( void )
 {
 	BlangSelector *sel = get_selector( __blang_event_loop() );
 	if ( sel != NULL )
 		sel->exit_when_idle = 1;
-	g_event_ran = 1;
 	__blang_selector_run( __blang_event_loop() );
-}
-
-/* Run the loop automatically (injected at the end of main()) unless it was
-   already driven explicitly via timer.run()/stop(). */
-void __blang_event_run_auto( void )
-{
-	if ( g_event_ran )
-		return;
-	__blang_event_run();
 }
 
 /* Stop the global event loop. */
 void __blang_event_stop( void )
 {
-	g_event_ran = 1;
 	__blang_selector_shutdown( __blang_event_loop() );
 }

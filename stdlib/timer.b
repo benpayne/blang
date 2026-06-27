@@ -1,20 +1,21 @@
 // stdlib/timer.b — Timers and the event loop
 //
 // Usage: import timer;
-//   on timer.every(1000) { ... }   // run the body every 1000ms
-//   on timer.after(500)  { ... }   // run the body once after 500ms
+//   on timer.every(1000) { ... }   // register a handler: run every 1000ms
+//   on timer.after(500)  { ... }   // register a handler: run once after 500ms
+//   timer.run();                   // enter the loop — handlers fire from here
 //
-// The event loop runs automatically once main() returns, as long as any `on`
-// handler is registered — you do NOT need to call run(). The loop blocks until
+// `on EXPR { ... }` only *registers* a handler; it does not fire it. Handlers
+// run when you explicitly enter the loop with `timer.run()`, which blocks until
 // either stop() is called or every source has been cancelled / has finished
-// (e.g. all one-shot timers have fired).
+// (e.g. all one-shot timers have fired). This keeps control flow explicit: code
+// before run() executes to completion first, and nothing in your `main` body is
+// silently preempted by a timer.
 //
-//   timer.stop()        // stop the whole loop
+//   timer.stop()        // stop the whole loop (makes run() return)
 //   int t = timer.every(1000); on t { ... } timer.cancel(t);  // cancel one timer
-//   timer.run()         // optional: run the loop explicitly (blocks)
 //
-// `on EXPR { ... }` registers the body on the global event loop, keyed by the
-// fd that EXPR yields. timer.every/after return a source handle (a timerfd).
+// timer.every/after return a source handle (a timerfd) that `on` keys on.
 
 extern fn __blang_timer_every(int interval_ms) -> int;
 extern fn __blang_timer_after(int delay_ms) -> int;
@@ -39,8 +40,8 @@ pub fn cancel(int source) {
 	__blang_event_cancel(source);
 }
 
-// Run the global event loop explicitly. Usually unnecessary — the loop runs
-// automatically after main() when handlers are registered.
+// Enter the global event loop. Blocks until stop() is called or every source
+// has finished. Registered `on` handlers fire from here, not before.
 pub fn run() {
 	__blang_event_run();
 }

@@ -285,12 +285,6 @@ private:
 	llvm::Function *getOrDeclareChanClose();
 	llvm::Function *getOrDeclareChanDestroy();
 	llvm::Function *getOrDeclareEventOn();
-	llvm::Function *getOrDeclareEventRunAuto();
-
-	// Recursively scans a statement subtree for any `on` event handler so that
-	// mUsesEventHandlers can be set up front (order-independent), before any
-	// function body is generated. Returns true if an EventHandler is present.
-	bool statementUsesEventHandlers( Statement *stmt );
 	llvm::Function *getOrDeclareAsyncCall();
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();
@@ -460,9 +454,6 @@ private:
 
 	// Flag indicating module uses concurrency features
 	bool mUsesConcurrency = false;
-	// Set when an `on` handler is registered on the global event loop; triggers
-	// an automatic event-loop run injected at the end of main().
-	bool mUsesEventHandlers = false;
 
 	// Flag indicating a codegen error occurred (e.g., ownership violation)
 	bool mHasError = false;

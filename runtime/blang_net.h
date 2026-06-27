@@ -98,10 +98,8 @@ void __blang_event_on( int fd, void (*handler)( void *ctx, int fd ), void *ctx )
 void __blang_event_cancel( int fd );
 
 /* Run / stop the global event loop. run() blocks until stopped or no event
-   sources remain. run_auto() is injected at the end of main() and runs the
-   loop only if it was not already driven explicitly. */
+   sources remain; it is entered explicitly from BLang via timer.run(). */
 void __blang_event_run( void );
-void __blang_event_run_auto( void );
 void __blang_event_stop( void );
 
 #ifdef __cplusplus

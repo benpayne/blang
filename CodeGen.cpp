@@ -636,25 +636,6 @@ bool CodeGen::generate( Module *mod )
 		mFunctionMap[func] = llvmFunc;
 	}
 
-	// Pre-scan every function body for `on` event handlers so the auto-run
-	// decision for main() is independent of the order functions are generated.
-	// The codegen flag answers only "does this program register any handler?"
-	// — the *runtime* decides whether the loop actually blocks (active_count),
-	// so a conditionally-registered handler that never fires makes the injected
-	// __blang_event_run_auto() a no-op (immediate idle exit). Without this scan
-	// the flag was set lazily during genEventHandler, making it order-dependent.
-	for ( auto &func : mod->mFunctionList )
-	{
-		if ( func->isGeneric() || func->mFuncBody == nullptr )
-			continue;
-		if ( statementUsesEventHandlers( func->mFuncBody ) )
-		{
-			mUsesEventHandlers = true;
-			mUsesConcurrency = true;
-			break;
-		}
-	}
-
 	// Generate methods from impl blocks as regular LLVM functions
 	for ( auto &structDef : mod->mStructList )
 	{
@@ -1260,12 +1241,6 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		{
 			genContractCheck( clause, "Postcondition violated" );
 		}
-
-		// If main registered `on` handlers and falls through (no explicit
-		// return), run the event loop automatically — no timer.run() needed.
-		// Runs only if the loop was not already driven explicitly.
-		if ( isMain && mUsesEventHandlers )
-			mBuilder->CreateCall( getOrDeclareEventRunAuto(), {} );
 
 		// Insert runtime shutdown for main() if concurrency features are used
 		if ( isMain && mUsesConcurrency )
@@ -5315,55 +5290,6 @@ llvm::Function *CodeGen::getOrDeclareEventOn()
 		ft, llvm::Function::ExternalLinkage, "__blang_event_on", mModule.get() );
 }
 
-llvm::Function *CodeGen::getOrDeclareEventRunAuto()
-{
-	llvm::Function *f = mModule->getFunction( "__blang_event_run_auto" );
-	if ( f != nullptr )
-		return f;
-
-	// void __blang_event_run_auto( void )
-	llvm::FunctionType *ft = llvm::FunctionType::get(
-		llvm::Type::getVoidTy( *mContext ), {}, false );
-	return llvm::Function::Create(
-		ft, llvm::Function::ExternalLinkage, "__blang_event_run_auto", mModule.get() );
-}
-
-bool CodeGen::statementUsesEventHandlers( Statement *stmt )
-{
-	if ( stmt == nullptr )
-		return false;
-
-	if ( dynamic_cast<EventHandler*>( stmt ) != nullptr )
-		return true;
-
-	if ( Block *block = dynamic_cast<Block*>( stmt ) )
-	{
-		for ( auto &s : block->mStatementList )
-		{
-			if ( statementUsesEventHandlers( s ) )
-				return true;
-		}
-		return false;
-	}
-
-	if ( IfStatement *ifStmt = dynamic_cast<IfStatement*>( stmt ) )
-	{
-		return statementUsesEventHandlers( ifStmt->mStatement ) ||
-			statementUsesEventHandlers( ifStmt->mElseStatement );
-	}
-
-	if ( WhileStatement *whileStmt = dynamic_cast<WhileStatement*>( stmt ) )
-		return statementUsesEventHandlers( whileStmt->mLoopStatement );
-
-	if ( ForInStatement *forStmt = dynamic_cast<ForInStatement*>( stmt ) )
-		return statementUsesEventHandlers( forStmt->mBody );
-
-	if ( SpawnStatement *spawnStmt = dynamic_cast<SpawnStatement*>( stmt ) )
-		return statementUsesEventHandlers( spawnStmt->mBody );
-
-	return false;
-}
-
 llvm::Function *CodeGen::getOrDeclareSpawn()
 {
 	llvm::Function *f = mModule->getFunction( "__blang_spawn" );
@@ -6781,10 +6707,10 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	if ( registerOnLoop )
 	{
 		// Register on the global event loop: fires whenever the source fd is
-		// readable. The loop runs automatically at the end of main().
+		// readable. The handler runs when the program explicitly enters the
+		// loop via `timer.run()` / `events.run()`.
 		mBuilder->CreateCall( getOrDeclareEventOn(), { fdVal, cbFn, ctxAlloc } );
 		mUsesConcurrency = true;
-		mUsesEventHandlers = true;
 	}
 	else
 	{
