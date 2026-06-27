@@ -189,6 +189,14 @@ target_compile_definitions(bcc PRIVATE BCC_BUFFER_LIB="${CMAKE_BINARY_DIR}/libbl
 target_compile_definitions(bcc PRIVATE BCC_JSON_LIB="${CMAKE_BINARY_DIR}/libblang_json.a")
 target_compile_definitions(bcc PRIVATE BCC_NET_LIB="${CMAKE_BINARY_DIR}/libblang_net.a")
 target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang_sys.a")
+target_compile_definitions(bcc PRIVATE BCC_DB_LIB="${CMAKE_BINARY_DIR}/libblang_db.a")
+# Linker flags for the DB backend (e.g. -lsqlite3) baked when SQLite is present.
+if(SQLITE3_FOUND)
+	string(REPLACE ";" " " BCC_DB_LDFLAGS_STR "${SQLITE3_LDFLAGS}")
+	target_compile_definitions(bcc PRIVATE BCC_DB_LINKFLAGS="${BCC_DB_LDFLAGS_STR}")
+else()
+	target_compile_definitions(bcc PRIVATE BCC_DB_LINKFLAGS="")
+endif()
 message(STATUS "bcc: C compiler = ${CMAKE_C_COMPILER}")
 message(STATUS "bcc: host arch = ${CMAKE_SYSTEM_PROCESSOR}")
 

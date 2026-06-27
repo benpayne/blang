@@ -16,6 +16,7 @@ BUFFER_LIB="${SCRIPT_DIR}/build/libblang_buffer.a"
 JSON_LIB="${SCRIPT_DIR}/build/libblang_json.a"
 NET_LIB="${SCRIPT_DIR}/build/libblang_net.a"
 SYS_LIB="${SCRIPT_DIR}/build/libblang_sys.a"
+DB_LIB="${SCRIPT_DIR}/build/libblang_db.a"
 STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
 STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
 STDLIB_TIMER="${SCRIPT_DIR}/stdlib/timer.b"
@@ -178,10 +179,21 @@ run_one_test() {
 	if [ -f "${SYS_LIB}" ]; then
 		sys_link="${SYS_LIB}"
 	fi
+	# Database tests (codegen_db_* / *query*) link the DB runtime + SQLite.
+	local db_link=""
+	local db_sys_flags=""
+	if [[ "${base_name}" == *"db"* ]] || [[ "${base_name}" == *"query"* ]]; then
+		if [ -f "${DB_LIB}" ]; then
+			db_link="${DB_LIB}"
+		fi
+		if pkg-config --exists sqlite3 2>/dev/null; then
+			db_sys_flags="$(pkg-config --libs sqlite3)"
+		fi
+	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
 	else
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${db_link} ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -o "${bin_file}" 2>&1)
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"
@@ -198,6 +210,10 @@ run_one_test() {
 	local run_env=""
 	if [ "$LEAK_CHECK" -eq 1 ]; then
 		run_env="ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=exitcode=23"
+	fi
+	# Database tests use an in-memory SQLite DB unless the test ships a blang.toml.
+	if [[ "${base_name}" == *"db"* ]] || [[ "${base_name}" == *"query"* ]]; then
+		run_env="${run_env} BLANG_DATABASE_URL=:memory: BLANG_DATABASE_DRIVER=sqlite"
 	fi
 	run_output=$(timeout 10 env ${run_env} "${bin_file}" 2>&1)
 	local exit_code=$?

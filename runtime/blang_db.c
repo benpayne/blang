@@ -100,6 +100,104 @@ void __blang_db_result_free( BlangDBResult *result )
 	free( result );
 }
 
+/* ---- Global / Named Connection Registry ---- */
+
+/*
+ * A small process-wide registry so generated code does not have to thread a
+ * connection pointer through every query.  The default connection is used when
+ * a table struct has no @db("name") annotation; named connections back the
+ * @db("name") routing.  Kept driver-independent (it only calls __blang_db_open,
+ * which is defined for both the real and stub backends below).
+ */
+
+#define BLANG_DB_MAX_NAMED 16
+
+static BlangDBConn *g_default_conn = NULL;
+
+static struct
+{
+	char *name;
+	BlangDBConn *conn;
+} g_named_conns[BLANG_DB_MAX_NAMED];
+static int g_num_named = 0;
+
+BlangDBDriver __blang_db_driver_from_name( const char *name )
+{
+	if ( name && ( strcmp( name, "postgres" ) == 0 ||
+		strcmp( name, "postgresql" ) == 0 || strcmp( name, "pg" ) == 0 ) )
+		return BLANG_DB_POSTGRES;
+	return BLANG_DB_SQLITE;
+}
+
+void __blang_db_set_default( BlangDBConn *conn )
+{
+	g_default_conn = conn;
+}
+
+BlangDBConn *__blang_db_default( void )
+{
+	if ( g_default_conn )
+		return g_default_conn;
+
+	/* Lazy fallback: open from environment so single-file programs and tests
+	   work without any [database] config plumbing. */
+	const char *url = getenv( "BLANG_DATABASE_URL" );
+	if ( url && *url )
+	{
+		const char *drv = getenv( "BLANG_DATABASE_DRIVER" );
+		const char *err = NULL;
+		BlangDBConn *conn = __blang_db_open(
+			__blang_db_driver_from_name( drv ), url, &err );
+		if ( conn )
+			g_default_conn = conn;
+		return conn;
+	}
+
+	return NULL;
+}
+
+void __blang_db_register( const char *name, BlangDBConn *conn )
+{
+	if ( !name )
+		return;
+
+	/* Replace if the name already exists. */
+	for ( int i = 0; i < g_num_named; i++ )
+	{
+		if ( strcmp( g_named_conns[i].name, name ) == 0 )
+		{
+			g_named_conns[i].conn = conn;
+			return;
+		}
+	}
+
+	if ( g_num_named < BLANG_DB_MAX_NAMED )
+	{
+		g_named_conns[g_num_named].name = strdup( name );
+		g_named_conns[g_num_named].conn = conn;
+		g_num_named++;
+	}
+}
+
+BlangDBConn *__blang_db_get( const char *name )
+{
+	if ( name )
+	{
+		for ( int i = 0; i < g_num_named; i++ )
+		{
+			if ( strcmp( g_named_conns[i].name, name ) == 0 )
+				return g_named_conns[i].conn;
+		}
+	}
+	return __blang_db_default();
+}
+
+int __blang_db_exec_raw_default( const char *sql )
+{
+	const char *err = NULL;
+	return __blang_db_exec_raw( __blang_db_default(), sql, &err );
+}
+
 /* ---- SQLite Backend ---- */
 
 /*
@@ -118,6 +216,20 @@ BlangDBConn *__blang_db_open( BlangDBDriver driver, const char *connection_strin
 	{
 		if ( error_msg ) *error_msg = "Only SQLite driver is currently supported";
 		return NULL;
+	}
+
+	// Resolve an "env:VAR" connection string against the environment at runtime,
+	// so a url configured in blang.toml ([database] url = "env:DATABASE_URL")
+	// picks up the deployment value rather than a build-time constant.
+	if ( connection_string && strncmp( connection_string, "env:", 4 ) == 0 )
+	{
+		const char *resolved = getenv( connection_string + 4 );
+		if ( !resolved || !*resolved )
+		{
+			if ( error_msg ) *error_msg = "environment variable for database url is not set";
+			return NULL;
+		}
+		connection_string = resolved;
 	}
 
 	sqlite3 *db = NULL;
@@ -255,8 +367,18 @@ int __blang_db_exec_raw( BlangDBConn *conn, const char *sql, const char **error_
 
 	if ( rc != SQLITE_OK )
 	{
-		if ( error_msg ) *error_msg = err ? err : sqlite3_errmsg( db );
-		/* Note: err is allocated by sqlite3 and will be freed on next call */
+		/* sqlite3_exec allocates `err`; copy it into a connection-owned buffer
+		   and free the sqlite allocation so we neither leak nor hand back a
+		   pointer freed on the next call. */
+		if ( error_msg )
+		{
+			static char errbuf[512];
+			snprintf( errbuf, sizeof( errbuf ), "%s",
+				err ? err : sqlite3_errmsg( db ) );
+			*error_msg = errbuf;
+		}
+		if ( err )
+			sqlite3_free( err );
 		return -1;
 	}
 

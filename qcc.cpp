@@ -432,6 +432,11 @@ int main( int argc, char *argv[] )
 	std::string outputFile;
 	std::string emitBmodFile;
 	std::vector<std::string> inputFiles;
+	// Database config forwarded by bcc from blang.toml [database].
+	std::string dbDriver;
+	std::string dbUrl;
+	struct DbConnArg { std::string name, driver, url; };
+	std::vector<DbConnArg> dbNamedConns;
 
 	for ( int i = 1; i < argc; i++ )
 	{
@@ -461,6 +466,43 @@ int main( int argc, char *argv[] )
 			else
 			{
 				std::cerr << "Error: " << arg << " requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--db-driver" )
+		{
+			if ( i + 1 < argc )
+				dbDriver = argv[++i];
+			else
+			{
+				std::cerr << "Error: --db-driver requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--db-url" )
+		{
+			if ( i + 1 < argc )
+				dbUrl = argv[++i];
+			else
+			{
+				std::cerr << "Error: --db-url requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--db-conn" )
+		{
+			// --db-conn <name> <driver> <url>
+			if ( i + 3 < argc )
+			{
+				DbConnArg c;
+				c.name = argv[++i];
+				c.driver = argv[++i];
+				c.url = argv[++i];
+				dbNamedConns.push_back( c );
+			}
+			else
+			{
+				std::cerr << "Error: --db-conn requires <name> <driver> <url>" << std::endl;
 				return -1;
 			}
 		}
@@ -748,6 +790,9 @@ int main( int argc, char *argv[] )
 
 			QLang::CodeGen codegen( combinedName.c_str() );
 			codegen.registerExternalTypes( allStructs, allEnums );
+			codegen.setDbConfig( dbDriver, dbUrl );
+			for ( auto &c : dbNamedConns )
+				codegen.addDbNamedConn( c.name, c.driver, c.url );
 
 			for ( std::size_t idx = 0; idx < modules.size(); idx++ )
 			{
@@ -835,6 +880,9 @@ int main( int argc, char *argv[] )
 
 				const std::string &inputFile = inputFiles[ idx ];
 				QLang::CodeGen codegen( inputFile.c_str() );
+				codegen.setDbConfig( dbDriver, dbUrl );
+				for ( auto &c : dbNamedConns )
+					codegen.addDbNamedConn( c.name, c.driver, c.url );
 
 				// Register types from all other modules before generating
 				codegen.registerExternalTypes( allStructs, allEnums );

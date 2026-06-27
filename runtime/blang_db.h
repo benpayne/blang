@@ -32,6 +32,29 @@ BlangDBConn *__blang_db_open( BlangDBDriver driver, const char *connection_strin
 /* Close a database connection and free resources. */
 void __blang_db_close( BlangDBConn *conn );
 
+/* ---- Global / Named Connection Registry ---- */
+
+/* Set the process-wide default connection (used by query/insert/update/delete
+   codegen when a table struct carries no @db("name") annotation). */
+void __blang_db_set_default( BlangDBConn *conn );
+
+/* Return the process-wide default connection.  If none has been set, this
+   lazily opens one from the BLANG_DATABASE_URL environment variable
+   (driver from BLANG_DATABASE_DRIVER, defaulting to "sqlite"), caches it as
+   the default, and returns it.  Returns NULL if no default is available. */
+BlangDBConn *__blang_db_default( void );
+
+/* Register a connection under a name for @db("name") routing. */
+void __blang_db_register( const char *name, BlangDBConn *conn );
+
+/* Look up a named connection.  Falls back to the default connection if the
+   name is not registered. */
+BlangDBConn *__blang_db_get( const char *name );
+
+/* Map a driver name ("sqlite" / "postgres") to a BlangDBDriver.  Defaults to
+   SQLite for unrecognized names. */
+BlangDBDriver __blang_db_driver_from_name( const char *name );
+
 /* ---- Query Execution ---- */
 
 /* Execute a parameterized SQL query.
@@ -75,6 +98,10 @@ void __blang_db_result_free( BlangDBResult *result );
 /* Execute raw SQL (e.g., CREATE TABLE, ALTER TABLE).
    Returns 0 on success, -1 on error. */
 int __blang_db_exec_raw( BlangDBConn *conn, const char *sql, const char **error_msg );
+
+/* Execute raw SQL against the default connection (convenience for generated
+   code and migrations).  Returns 0 on success, -1 on error. */
+int __blang_db_exec_raw_default( const char *sql );
 
 #ifdef __cplusplus
 }

@@ -9,11 +9,15 @@
 namespace QLang
 {
 
-// Generated SQL with parameterized placeholders
+// Generated SQL with parameterized placeholders.
+//
+// paramExprs holds the AST nodes whose runtime values bind to the `?`
+// placeholders in `sql`, in left-to-right placeholder order.  Codegen
+// evaluates each expression and passes the values to the DB runtime.
 struct SQLStatement
 {
 	std::string sql;
-	std::vector<std::string> params;
+	std::vector<const Expression*> paramExprs;
 };
 
 // Walks query AST nodes and emits parameterized SQL strings.
@@ -46,8 +50,10 @@ private:
 	// Convert a table struct name to a SQL table name (lowercase)
 	static std::string tableNameToSQL( const std::string &structName );
 
-	// Generate a WHERE clause expression as SQL
-	static std::string exprToSQL( const Expression *expr, std::vector<std::string> &params );
+	// Generate a WHERE clause expression as SQL, collecting any runtime-bound
+	// value expressions into paramExprs in placeholder order.
+	static std::string exprToSQL( const Expression *expr,
+		std::vector<const Expression*> &paramExprs );
 };
 
 } // namespace QLang

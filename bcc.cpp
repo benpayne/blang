@@ -785,6 +785,24 @@ static int buildProject( const string &projectDir, const string &exeDir,
 				qccCmd.push_back( bmod );
 			qccCmd.push_back( "-o" );
 			qccCmd.push_back( combinedLL );
+
+			// Forward [database] config so the generated main() opens the
+			// default/named connections at startup.
+			if ( !config->getDbUrl().empty() )
+			{
+				qccCmd.push_back( "--db-driver" );
+				qccCmd.push_back( config->getDbDriver().empty()
+					? "sqlite" : config->getDbDriver() );
+				qccCmd.push_back( "--db-url" );
+				qccCmd.push_back( config->getDbUrl() );
+			}
+			for ( const auto &c : config->getNamedDbConns() )
+			{
+				qccCmd.push_back( "--db-conn" );
+				qccCmd.push_back( c.name );
+				qccCmd.push_back( c.driver.empty() ? "sqlite" : c.driver );
+				qccCmd.push_back( c.url );
+			}
 		}
 
 		int ret = runCommand( qccCmd, verbose, !verbose );
@@ -899,6 +917,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		const char *bkRuntime = nullptr, *bkString = nullptr, *bkArray = nullptr;
 		const char *bkBuffer = nullptr;
 		const char *bkJson = nullptr, *bkNet = nullptr, *bkSys = nullptr;
+		const char *bkDb = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bkRuntime = BCC_RUNTIME_LIB;
 #endif
@@ -920,8 +939,12 @@ static int buildProject( const string &projectDir, const string &exeDir,
 #ifdef BCC_SYS_LIB
 		bkSys = BCC_SYS_LIB;
 #endif
+#ifdef BCC_DB_LIB
+		bkDb = BCC_DB_LIB;
+#endif
 
 		for ( const auto &lib : {
+			findBuildLib( bkDb, "blang_db" ),
 			findBuildLib( bkSys, "blang_sys" ),
 			findBuildLib( bkNet, "blang_net" ),
 			findBuildLib( bkJson, "blang_json" ),
@@ -934,6 +957,17 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( !lib.empty() )
 				linkCmd.push_back( lib );
 		}
+
+		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
+#ifdef BCC_DB_LINKFLAGS
+		{
+			string dbFlags = BCC_DB_LINKFLAGS;
+			istringstream dbf( dbFlags );
+			string tok;
+			while ( dbf >> tok )
+				linkCmd.push_back( tok );
+		}
+#endif
 
 		linkCmd.push_back( "-lpthread" );
 		linkCmd.push_back( "-o" );
@@ -1204,6 +1238,7 @@ int main( int argc, char *argv[] )
 		const char *bakedJson = nullptr;
 		const char *bakedNet = nullptr;
 		const char *bakedSys = nullptr;
+		const char *bakedDb = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bakedRuntime = BCC_RUNTIME_LIB;
 #endif
@@ -1225,9 +1260,13 @@ int main( int argc, char *argv[] )
 #ifdef BCC_SYS_LIB
 		bakedSys = BCC_SYS_LIB;
 #endif
+#ifdef BCC_DB_LIB
+		bakedDb = BCC_DB_LIB;
+#endif
 
-		// Push in dependency order: sys→net→json→array→string→runtime
+		// Push in dependency order: db→sys→net→json→array→string→runtime
 		for ( const auto &lib : {
+			findLib( bakedDb, "blang_db" ),
 			findLib( bakedSys, "blang_sys" ),
 			findLib( bakedNet, "blang_net" ),
 			findLib( bakedJson, "blang_json" ),
@@ -1240,6 +1279,17 @@ int main( int argc, char *argv[] )
 			if ( !lib.empty() )
 				cmd.push_back( lib );
 		}
+
+		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
+#ifdef BCC_DB_LINKFLAGS
+		{
+			string dbFlags = BCC_DB_LINKFLAGS;
+			istringstream dbf( dbFlags );
+			string tok;
+			while ( dbf >> tok )
+				cmd.push_back( tok );
+		}
+#endif
 
 		cmd.push_back( "-lpthread" );
 

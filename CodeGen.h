@@ -32,6 +32,22 @@ public:
 	// Set a module prefix for name mangling (e.g. "sys" → functions become "sys__funcName")
 	void setModulePrefix( const std::string &prefix ) { mModulePrefix = prefix; }
 
+	// Configure the default database connection opened in main() (from the
+	// [database] section of blang.toml, forwarded by bcc via qcc flags).
+	// An empty url leaves the connection to the runtime's lazy env fallback.
+	void setDbConfig( const std::string &driver, const std::string &url )
+	{
+		mDbDriver = driver;
+		mDbUrl = url;
+	}
+
+	// Register a named database connection for @db("name") routing.
+	void addDbNamedConn( const std::string &name, const std::string &driver,
+		const std::string &url )
+	{
+		mDbNamedConns.push_back( { name, driver, url } );
+	}
+
 	// Multi-module support: register struct/enum defs from other modules
 	void registerExternalTypes(
 		const std::vector<SmartPtr<StructDefinition>> &structs,
@@ -325,6 +341,36 @@ private:
 	llvm::Function *getOrDeclareDbResultGet();
 	llvm::Function *getOrDeclareDbResultGetInt();
 	llvm::Function *getOrDeclareDbResultFree();
+	llvm::Function *getOrDeclareDbDefault();
+	llvm::Function *getOrDeclareDbGet();
+	llvm::Function *getOrDeclareDbOpen();
+	llvm::Function *getOrDeclareDbSetDefault();
+	llvm::Function *getOrDeclareDbRegister();
+
+	// Resolve the connection pointer for a query on table `tableName`:
+	// __blang_db_get("name") if the table struct carries @db("name"),
+	// otherwise __blang_db_default().
+	llvm::Value *genDbConnForTable( const std::string &tableName );
+
+	// Build an [N x i8*] array of C-string param values from the runtime
+	// expressions backing SQL `?` placeholders; returns an i8** to element 0
+	// (or a null i8** when there are no params). Sets outCount to N.
+	llvm::Value *buildParamArray( const std::vector<const Expression*> &paramExprs,
+		int &outCount );
+
+	// Convert an evaluated value to a NUL-terminated C string (i8*) suitable
+	// for binding as a SQL parameter.
+	llvm::Value *paramToCString( llvm::Value *val );
+
+	// Compile-time validation that query/update/delete field references and
+	// insert field names exist on the target table struct.  Reports via
+	// cerr + mHasError (consistent with the rest of codegen).
+	void validateQueryFields( const std::string &tableName,
+		const std::vector<QueryPipelineStep> &steps, Expression *node );
+	void validateInsertFields( InsertExpression *insert );
+	// Recursively collect .field references (QueryFieldExpression) from an expr.
+	void collectQueryFieldRefs( const Expression *expr,
+		std::vector<std::string> &out );
 
 	// ForIn codegen
 	void genForInStatement( ForInStatement *forInStmt );
@@ -374,6 +420,12 @@ private:
 
 	// Module prefix for namespace name mangling (empty for user code)
 	std::string mModulePrefix;
+
+	// Database configuration (from blang.toml [database], forwarded by bcc).
+	std::string mDbDriver;   // "sqlite" / "postgres" (default sqlite)
+	std::string mDbUrl;      // connection string; empty => runtime env fallback
+	struct DbNamedConn { std::string name, driver, url; };
+	std::vector<DbNamedConn> mDbNamedConns;
 
 	// Loop break/continue target stack (for nested loops)
 	std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> mLoopStack;
