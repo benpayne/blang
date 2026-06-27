@@ -78,9 +78,13 @@ add_executable(qcc ${QCC_SOURCES})
 target_compile_definitions(qcc PRIVATE JH_VERBOSE_LOGGING)
 set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
+# blang_sqlgen (SQLGen + SchemaMigration) is always needed: codegen uses SQLGen
+# and --emit-schema uses SchemaMigration even in parse-only builds.
+target_link_libraries(qcc blang_sqlgen)
+
 if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
-	target_link_libraries(qcc ${llvm_libs} blang_sqlgen)
+	target_link_libraries(qcc ${llvm_libs})
 endif()
 
 # BLang runtime library (ARC, thread pool, channels, async)
@@ -197,6 +201,9 @@ if(SQLITE3_FOUND)
 else()
 	target_compile_definitions(bcc PRIVATE BCC_DB_LINKFLAGS="")
 endif()
+# bcc runs schema migrations in-process (SchemaMigration) and applies them
+# against the database (blang_db + SQLite backend).
+target_link_libraries(bcc blang_sqlgen blang_db)
 message(STATUS "bcc: C compiler = ${CMAKE_C_COMPILER}")
 message(STATUS "bcc: host arch = ${CMAKE_SYSTEM_PROCESSOR}")
 

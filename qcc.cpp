@@ -13,6 +13,7 @@
 #include "logging.h"
 
 #include "BmodEmitter.h"
+#include "SchemaMigration.h"
 
 #ifdef BLANG_HAS_LLVM
 #include "CodeGen.h"
@@ -431,6 +432,7 @@ int main( int argc, char *argv[] )
 	bool combineMode = false;
 	std::string outputFile;
 	std::string emitBmodFile;
+	std::string emitSchemaFile;
 	std::vector<std::string> inputFiles;
 	// Database config forwarded by bcc from blang.toml [database].
 	std::string dbDriver;
@@ -466,6 +468,16 @@ int main( int argc, char *argv[] )
 			else
 			{
 				std::cerr << "Error: " << arg << " requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--emit-schema" )
+		{
+			if ( i + 1 < argc )
+				emitSchemaFile = argv[++i];
+			else
+			{
+				std::cerr << "Error: --emit-schema requires an argument" << std::endl;
 				return -1;
 			}
 		}
@@ -755,6 +767,29 @@ int main( int argc, char *argv[] )
 		}
 		QLang::BmodEmitter::emit( modPtrs, bmodOut );
 		cout << "Wrote .bmod to " << emitBmodFile << endl;
+	}
+
+	// Emit the current schema (table structs) as JSON for `bcc migrate`.
+	if ( !emitSchemaFile.empty() )
+	{
+		std::vector<SmartPtr<StructDefinition>> tableStructs;
+		for ( auto &mod : modules )
+		{
+			if ( mod->isExtern() )
+				continue;
+			for ( auto &s : mod->getStructList() )
+				tableStructs.push_back( s );
+		}
+
+		QLang::SchemaMigration mig;
+		mig.extractSchema( tableStructs );
+		if ( !mig.saveSchema( emitSchemaFile ) )
+		{
+			cerr << "Error: cannot write schema to " << emitSchemaFile << endl;
+			return -1;
+		}
+		cout << "Wrote schema to " << emitSchemaFile << endl;
+		return 0;
 	}
 
 #ifdef BLANG_HAS_LLVM
