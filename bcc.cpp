@@ -633,6 +633,21 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		return 1;
 	}
 
+	// Resolve stdlib modules imported by the project's own sources (e.g.
+	// `import timer;`). For binaries these are combined into the program so the
+	// stdlib bodies are present; the matching runtime libs are linked below.
+	// Libraries intentionally do NOT embed stdlib (it would duplicate symbols
+	// when a downstream binary imports the same module) — they reference stdlib
+	// declarations and the final binary supplies the bodies.
+	set<string> projImports;
+	for ( const auto &src : sources )
+	{
+		set<string> imp = parseImports( src );
+		projImports.insert( imp.begin(), imp.end() );
+	}
+	vector<string> stdlibFiles = resolveStdlibFiles( exeDir, projImports );
+	bool useCombine = !stdlibFiles.empty() && !config->isLibrary();
+
 	// Compute cache key for this project
 	string tomlContent = readFileToString( projectDir + "/blang.toml" );
 	cacheHash = BuildCache::computeKey( sources, tomlContent, depHashes );
@@ -753,7 +768,25 @@ static int buildProject( const string &projectDir, const string &exeDir,
 	}
 	else
 	{
-		// For binaries: compile and link
+		// For binaries: compile and link. When the program imports stdlib
+		// modules, build in --combine mode so the stdlib sources share scope
+		// with the program and emit a single combined .ll; otherwise keep the
+		// per-source .ll path (which preserves the existing dependency flow).
+		string combinedLL;
+		if ( useCombine )
+		{
+			combinedLL = projectDir + "/" + config->getName() + ".ll";
+			qccCmd = { qcc, "--combine" };
+			for ( const auto &sf : stdlibFiles )
+				qccCmd.push_back( sf );
+			for ( const auto &src : sources )
+				qccCmd.push_back( src );
+			for ( const auto &bmod : depBmodFiles )
+				qccCmd.push_back( bmod );
+			qccCmd.push_back( "-o" );
+			qccCmd.push_back( combinedLL );
+		}
+
 		int ret = runCommand( qccCmd, verbose, !verbose );
 		if ( ret != 0 )
 		{
@@ -777,13 +810,31 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			return 1;
 		}
 
-		vector<string> objFiles;
-		for ( const auto &src : sources )
+		// The IR files to compile: a single combined module in --combine mode,
+		// or one per project source otherwise. Track each .ll with the object
+		// name to emit.
+		vector<pair<string,string> > llToObj;
+		if ( useCombine )
 		{
-			string base = getBaseName( src );
-			string srcDir = getDirName( src );
-			string llFile = srcDir + "/" + base + ".ll";
-			string objFile = "/tmp/" + config->getName() + "_" + base + ".o";
+			llToObj.push_back( { combinedLL,
+				"/tmp/" + config->getName() + "_combined.o" } );
+		}
+		else
+		{
+			for ( const auto &src : sources )
+			{
+				string base = getBaseName( src );
+				string srcDir = getDirName( src );
+				llToObj.push_back( { srcDir + "/" + base + ".ll",
+					"/tmp/" + config->getName() + "_" + base + ".o" } );
+			}
+		}
+
+		vector<string> objFiles;
+		for ( const auto &entry : llToObj )
+		{
+			const string &llFile = entry.first;
+			const string &objFile = entry.second;
 
 			if ( access( llFile.c_str(), F_OK ) != 0 )
 				continue;
@@ -803,7 +854,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			ret = runCommand( llcCmd, verbose );
 			if ( ret != 0 )
 			{
-				cerr << "error: IR compilation failed for " << base << endl;
+				cerr << "error: IR compilation failed for " << getBaseName( llFile ) << endl;
 				delete config;
 				return 1;
 			}

@@ -72,7 +72,8 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── test_files/                # Test cases organized in pass/, fail/, cgfail/, xfail/ subdirectories
 ├── test_build/                # Build system integration tests (lib + bin project pairs)
 │   ├── mathlib/               # Test library project (blang.toml type=lib, pub fn add/multiply)
-│   └── myapp/                 # Test binary project (blang.toml type=bin, depends on mathlib)
+│   ├── myapp/                 # Test binary project (blang.toml type=bin, depends on mathlib)
+│   └── timerapp/              # Test binary project (blang.toml type=bin, imports stdlib timer)
 ├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/cgfail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> link -> run)
 ├── docs/
@@ -183,6 +184,8 @@ mathlib = { path = "../mathlib" }
 ```
 
 **Build flow**: Dependencies are built recursively in topological order. Each dependency's artifacts (.a + .bmod) are cached in `~/.cache/blang/objects/<sha256>/`. On cache hit, the build is skipped. `.bmod` files are passed to `qcc` for type resolution; `.a` files are linked into the final binary.
+
+**Stdlib in projects**: a binary project's `import <name>;` statements are resolved to `stdlib/<name>.b` and combined into the program (single combined `.ll`), so `import timer;` / `import net;` work in `bcc build` just as in single-file mode. Library projects do **not** embed stdlib (doing so would duplicate symbols when a downstream binary imports the same module); a lib that uses stdlib should leave the bodies to the final binary.
 
 **No blang.toml**: When no `blang.toml` is present, `bcc` operates in single-file mode (`bcc hello.b -o hello`) — fully backward compatible.
 
