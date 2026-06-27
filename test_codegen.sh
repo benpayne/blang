@@ -201,13 +201,25 @@ run_one_test() {
 	local db_sys_flags=""
 	if [ "$is_db_test" -eq 1 ]; then
 		db_link="${DB_LIB}"
-		if pkg-config --exists sqlite3 2>/dev/null; then
-			db_sys_flags="$(pkg-config --libs sqlite3)"
-		else
-			db_sys_flags="-lsqlite3"
+		# Link whichever backends were compiled into libblang_db.a. The lib may
+		# reference sqlite3_* and/or PQ* depending on which dev packages CMake
+		# found; link the matching system libraries (pkg-config, else -l<name>).
+		local db_syms
+		db_syms="$(nm "${DB_LIB}" 2>/dev/null)"
+		if echo "$db_syms" | grep -q "U sqlite3_"; then
+			if pkg-config --exists sqlite3 2>/dev/null; then
+				db_sys_flags="${db_sys_flags} $(pkg-config --libs sqlite3)"
+			else
+				db_sys_flags="${db_sys_flags} -lsqlite3"
+			fi
 		fi
-		echo "    [db-test] DB_LIB=${db_link} db_sys_flags='${db_sys_flags}'"
-		echo "    [db-test] sqlite refs in lib: $(nm "${DB_LIB}" 2>/dev/null | grep -c 'U sqlite3_')"
+		if echo "$db_syms" | grep -q "U PQ"; then
+			if pkg-config --exists libpq 2>/dev/null; then
+				db_sys_flags="${db_sys_flags} $(pkg-config --libs libpq)"
+			else
+				db_sys_flags="${db_sys_flags} -lpq"
+			fi
+		fi
 	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
 		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
