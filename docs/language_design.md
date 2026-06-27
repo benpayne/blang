@@ -494,6 +494,18 @@ on signal(SIGINT) {
 }
 ```
 
+Implemented today: `on EXPR { ... }` registers the body on the global event
+loop, keyed by the fd that `EXPR` yields. Registration does not fire the
+handler — the program enters the loop explicitly with `timer.run()`, which
+blocks until the loop is stopped or no sources remain. Entry is explicit by
+design: code before `run()` runs to completion first, so nothing in `main` is
+silently preempted by a timer, and there is no invisible control flow injected
+after `main`. `import timer;` provides `timer.every(ms)` (repeating),
+`timer.after(ms)` (one-shot), `timer.cancel(source)` (remove one timer),
+`timer.run()` (enter the loop), and `timer.stop()` (stop it). Timer fds and
+socket fds share one poll-based loop. Argument bindings (the `|bytes|` form) and
+`signal(...)` sources are not yet implemented.
+
 ### Thread Safety Rules
 
 The compiler enforces these rules at compile time:

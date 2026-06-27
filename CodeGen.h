@@ -284,6 +284,7 @@ private:
 	llvm::Function *getOrDeclareChanRecv();
 	llvm::Function *getOrDeclareChanClose();
 	llvm::Function *getOrDeclareChanDestroy();
+	llvm::Function *getOrDeclareEventOn();
 	llvm::Function *getOrDeclareAsyncCall();
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();

@@ -188,7 +188,7 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 107 | Codegen for await | impl | YES | `__blang_await` + `__blang_task_destroy`; tested in `codegen_wait.b`, `codegen_wait_all.b` |
 | 108 | Add `on` keyword for event handlers | impl | YES | `on timer.every(1000) { ... }` |
 | 109 | Parse event handler syntax | impl | YES | `on expr { body }` parsed into EventHandler AST node |
-| 110 | Codegen for event handlers | impl | PARTIAL | Callback extraction works; full event loop registration is a runtime fallback (executes inline) |
+| 110 | Codegen for event handlers | impl | YES | `on EXPR { body }` extracts the body to a callback and registers it on the global event loop via `__blang_event_on` keyed by the fd that EXPR yields (timerfd or socket fd); refcounted captures are retained for deferred invocation. A non-fd event expr falls back to inline invocation (legacy). Runtime: poll-based loop with timerfds (`timer.every/after`, `timer.run/stop`); tested in `codegen_timer_event.b` |
 | 111 | Add pass tests for async/await | test | YES | async_fn.b, async_fn_void.b, await_expr.b, event_handler.b |
 | 112 | Document async model | docs | YES | Update CLAUDE.md |
 
@@ -446,11 +446,11 @@ These tasks span multiple phases and should be addressed incrementally.
 | Phase | Tasks | Focus | Done | Partial | Deferred | Remaining |
 |-------|-------|-------|------|---------|----------|-----------|
 | Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 75 | 0 | 1 | 0 |
-| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 49 | 2 | 0 | 6 |
+| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 50 | 1 | 0 | 6 |
 | Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 43 | 3 | 0 | 24 |
 | Phase 4 | 218–250 | Build system: .bmod, blang.toml, deps, cache | 33 | 0 | 0 | 0 |
 | Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 9 | 3 | 0 | 2 |
-| **Total** | **250** | | **209** | **8** | **1** | **32** |
+| **Total** | **250** | | **210** | **7** | **1** | **32** |
 
 ### Phase 1 Complete
 
