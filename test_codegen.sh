@@ -58,6 +58,7 @@ fi
 PASS_COUNT=0
 FAIL_COUNT=0
 LEAK_TOTAL=0
+SKIP_COUNT=0
 TOTAL=0
 
 # Run one test through the full pipeline: qcc -> llc -> cc -> run
@@ -70,6 +71,19 @@ run_one_test() {
 	local ir_file="/tmp/${base_name}.ll"
 	local obj_file="/tmp/${base_name}.o"
 	local bin_file="/tmp/${base_name}"
+
+	# Database tests need a SQLite-backed libblang_db. If the DB runtime was
+	# built without SQLite (stub), skip rather than fail — there is no backend
+	# to execute against.
+	local is_db_test=0
+	if [[ "${base_name}" == *"db"* ]] || [[ "${base_name}" == *"query"* ]]; then
+		is_db_test=1
+		if [ ! -f "${DB_LIB}" ] || ! nm "${DB_LIB}" 2>/dev/null | grep -q "U sqlite3_"; then
+			echo -e "  ${YELLOW}SKIP${NC}  ${test_file}  (SQLite backend not built)"
+			SKIP_COUNT=$((SKIP_COUNT + 1))
+			return 0
+		fi
+	fi
 
 	TOTAL=$((TOTAL + 1))
 
@@ -179,15 +193,18 @@ run_one_test() {
 	if [ -f "${SYS_LIB}" ]; then
 		sys_link="${SYS_LIB}"
 	fi
-	# Database tests (codegen_db_* / *query*) link the DB runtime + SQLite.
+	# Database tests link the DB runtime + its SQLite backend. By this point a
+	# db test is known to have a SQLite-enabled libblang_db (otherwise skipped
+	# above), so resolve the sqlite link flags, preferring pkg-config but
+	# falling back to a plain -lsqlite3 when pkg-config metadata is absent.
 	local db_link=""
 	local db_sys_flags=""
-	if [[ "${base_name}" == *"db"* ]] || [[ "${base_name}" == *"query"* ]]; then
-		if [ -f "${DB_LIB}" ]; then
-			db_link="${DB_LIB}"
-		fi
+	if [ "$is_db_test" -eq 1 ]; then
+		db_link="${DB_LIB}"
 		if pkg-config --exists sqlite3 2>/dev/null; then
 			db_sys_flags="$(pkg-config --libs sqlite3)"
+		else
+			db_sys_flags="-lsqlite3"
 		fi
 	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
@@ -294,6 +311,9 @@ echo " Results"
 echo "==========================================="
 echo -e "  ${GREEN}Passed:${NC}  $PASS_COUNT"
 echo -e "  ${RED}Failed:${NC}  $FAIL_COUNT"
+if [ "$SKIP_COUNT" -gt 0 ]; then
+echo -e "  ${YELLOW}Skipped:${NC} $SKIP_COUNT"
+fi
 if [ "$LEAK_CHECK" -eq 1 ]; then
 echo -e "  ${YELLOW}Leaks:${NC}   $LEAK_TOTAL"
 fi
