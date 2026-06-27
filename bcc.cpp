@@ -448,6 +448,78 @@ static string readFileToString( const string &path )
 	return ss.str();
 }
 
+// Extract the set of imported module names from a BLang source file.
+// Recognizes top-level `import name;` and `import name.sub;` statements,
+// returning just the leading identifier ("name"). Comments and other tokens
+// are ignored well enough for stdlib resolution.
+static set<string> parseImports( const string &path )
+{
+	set<string> imports;
+	string src = readFileToString( path );
+	istringstream in( src );
+	string line;
+	while ( getline( in, line ) )
+	{
+		// Strip a trailing line comment.
+		size_t cpos = line.find( "//" );
+		if ( cpos != string::npos )
+			line = line.substr( 0, cpos );
+
+		// Find the first non-space character.
+		size_t i = 0;
+		while ( i < line.size() && isspace( (unsigned char)line[i] ) )
+			i++;
+		if ( line.compare( i, 7, "import " ) != 0 )
+			continue;
+		i += 7;
+		while ( i < line.size() && isspace( (unsigned char)line[i] ) )
+			i++;
+
+		// Read the leading identifier of the module path.
+		size_t start = i;
+		while ( i < line.size() &&
+			( isalnum( (unsigned char)line[i] ) || line[i] == '_' ) )
+			i++;
+		if ( i > start )
+			imports.insert( line.substr( start, i - start ) );
+	}
+	return imports;
+}
+
+// Given the user's imports, return the stdlib `.b` files to combine, in a
+// dependency-safe order. Only modules the program actually imports are pulled
+// in, so an unused module never pollutes the namespace (e.g. collections' Map).
+static vector<string> resolveStdlibFiles( const string &exeDir,
+	const set<string> &imports )
+{
+	vector<string> files;
+	auto addIfPresent = [&]( const string &name ) {
+		string candidate = exeDir + "/stdlib/" + name + ".b";
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			files.push_back( candidate );
+	};
+
+	// Known stdlib modules, ordered so any future cross-module dependency
+	// (base modules first) resolves correctly under --combine.
+	static const char *kKnownOrder[] = { "sys", "collections", "net", "timer" };
+	set<string> handled;
+	for ( const char *name : kKnownOrder )
+	{
+		if ( imports.count( name ) )
+		{
+			addIfPresent( name );
+			handled.insert( name );
+		}
+	}
+	// Any other imported name that happens to ship a stdlib file.
+	for ( const string &name : imports )
+	{
+		if ( !handled.count( name ) )
+			addIfPresent( name );
+	}
+	return files;
+}
+
 // Resolve absolute path from a possibly relative path
 static string resolvePath( const string &basePath, const string &relPath )
 {
@@ -912,18 +984,12 @@ int main( int argc, char *argv[] )
 	// Locate qcc (same directory as bcc)
 	string qcc = exeDir + "/qcc";
 
-	// Check for stdlib files to include via --combine
-	vector<string> stdlibFiles;
-	{
-		string candidate = exeDir + "/stdlib/sys.b";
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			stdlibFiles.push_back( candidate );
-	}
-	{
-		string candidate = exeDir + "/stdlib/net.b";
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			stdlibFiles.push_back( candidate );
-	}
+	// Check for stdlib files to include via --combine. Driven by the program's
+	// `import` statements so only modules it actually uses are pulled in (e.g.
+	// `import timer;` brings in stdlib/timer.b). The matching runtime libraries
+	// are linked unconditionally in step 3, so any stdlib module resolves.
+	vector<string> stdlibFiles =
+		resolveStdlibFiles( exeDir, parseImports( opts.inputFile ) );
 
 	// Step 1: Parse and generate LLVM IR
 	if ( opts.verbose )

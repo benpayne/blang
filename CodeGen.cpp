@@ -2882,14 +2882,17 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			}
 		}
 
-		// Integer type promotion: widen i32 to i64 if the function parameter expects it
+		// Integer width coercion: match the argument to the parameter's LLVM
+		// integer type. Widening (e.g. i32->i64) sign-extends; narrowing (e.g.
+		// a `true`/`false` literal, generated as i32, passed to a `bool` (i1)
+		// parameter) truncates. CreateIntCast picks the right op per direction.
 		if ( llvmFunc != nullptr && argIdx < llvmFunc->arg_size() )
 		{
 			llvm::Type *paramType = llvmFunc->getFunctionType()->getParamType( argIdx );
 			if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
-				 paramType->getIntegerBitWidth() > argVal->getType()->getIntegerBitWidth() )
+				 paramType->getIntegerBitWidth() != argVal->getType()->getIntegerBitWidth() )
 			{
-				argVal = mBuilder->CreateSExt( argVal, paramType, "arg.ext" );
+				argVal = mBuilder->CreateIntCast( argVal, paramType, true, "arg.cast" );
 			}
 		}
 

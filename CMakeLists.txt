@@ -192,10 +192,15 @@ target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang
 message(STATUS "bcc: C compiler = ${CMAKE_C_COMPILER}")
 message(STATUS "bcc: host arch = ${CMAKE_SYSTEM_PROCESSOR}")
 
-# Copy stdlib .b files alongside executables for --combine auto-include
+# Copy stdlib .b files alongside executables so bcc can resolve `import` to the
+# matching stdlib/<name>.b at compile time. Globs all modules so new ones are
+# picked up automatically.
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/stdlib)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/net.b ${CMAKE_BINARY_DIR}/stdlib/net.b COPYONLY)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/sys.b ${CMAKE_BINARY_DIR}/stdlib/sys.b COPYONLY)
+file(GLOB STDLIB_FILES ${CMAKE_CURRENT_SOURCE_DIR}/stdlib/*.b)
+foreach(stdlib_file ${STDLIB_FILES})
+	get_filename_component(stdlib_name ${stdlib_file} NAME)
+	configure_file(${stdlib_file} ${CMAKE_BINARY_DIR}/stdlib/${stdlib_name} COPYONLY)
+endforeach()
 
 if(LIBUV_FOUND)
 	target_compile_definitions(bcc PRIVATE BCC_HAS_LIBUV)
