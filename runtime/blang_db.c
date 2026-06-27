@@ -198,40 +198,34 @@ int __blang_db_exec_raw_default( const char *sql )
 	return __blang_db_exec_raw( __blang_db_default(), sql, &err );
 }
 
-/* ---- SQLite Backend ---- */
-
-/*
- * SQLite support is compiled conditionally.
- * When BLANG_HAS_SQLITE is defined (i.e., libsqlite3 is available),
- * the real implementation is used.  Otherwise, stub functions return errors.
- */
-
-#ifdef BLANG_HAS_SQLITE
-#include <sqlite3.h>
-
-BlangDBConn *__blang_db_open( BlangDBDriver driver, const char *connection_string,
+/* Resolve an "env:VAR" connection string against the environment at runtime,
+   so a url configured in blang.toml ([database] url = "env:DATABASE_URL")
+   picks up the deployment value rather than a build-time constant.  Returns
+   the resolved string, or NULL if the env var is unset (sets *error_msg). */
+static const char *resolve_conn_string( const char *connection_string,
 	const char **error_msg )
 {
-	if ( driver != BLANG_DB_SQLITE )
-	{
-		if ( error_msg ) *error_msg = "Only SQLite driver is currently supported";
-		return NULL;
-	}
-
-	// Resolve an "env:VAR" connection string against the environment at runtime,
-	// so a url configured in blang.toml ([database] url = "env:DATABASE_URL")
-	// picks up the deployment value rather than a build-time constant.
 	if ( connection_string && strncmp( connection_string, "env:", 4 ) == 0 )
 	{
 		const char *resolved = getenv( connection_string + 4 );
 		if ( !resolved || !*resolved )
 		{
-			if ( error_msg ) *error_msg = "environment variable for database url is not set";
+			if ( error_msg )
+				*error_msg = "environment variable for database url is not set";
 			return NULL;
 		}
-		connection_string = resolved;
+		return resolved;
 	}
+	return connection_string;
+}
 
+/* ---- SQLite Backend ---- */
+
+#ifdef BLANG_HAS_SQLITE
+#include <sqlite3.h>
+
+static BlangDBConn *sqlite_open( const char *connection_string, const char **error_msg )
+{
 	sqlite3 *db = NULL;
 	int rc = sqlite3_open( connection_string, &db );
 	if ( rc != SQLITE_OK )
@@ -247,23 +241,9 @@ BlangDBConn *__blang_db_open( BlangDBDriver driver, const char *connection_strin
 	return conn;
 }
 
-void __blang_db_close( BlangDBConn *conn )
-{
-	if ( !conn ) return;
-	if ( conn->driver == BLANG_DB_SQLITE && conn->driver_data )
-		sqlite3_close( (sqlite3 *)conn->driver_data );
-	free( conn );
-}
-
-BlangDBResult *__blang_db_query( BlangDBConn *conn, const char *sql,
+static BlangDBResult *sqlite_query( BlangDBConn *conn, const char *sql,
 	const char **params, int num_params, const char **error_msg )
 {
-	if ( !conn || conn->driver != BLANG_DB_SQLITE )
-	{
-		if ( error_msg ) *error_msg = "Invalid connection";
-		return NULL;
-	}
-
 	sqlite3 *db = (sqlite3 *)conn->driver_data;
 	sqlite3_stmt *stmt = NULL;
 
@@ -274,7 +254,6 @@ BlangDBResult *__blang_db_query( BlangDBConn *conn, const char *sql,
 		return NULL;
 	}
 
-	/* Bind parameters */
 	for ( int i = 0; i < num_params; i++ )
 	{
 		if ( params[i] )
@@ -286,11 +265,9 @@ BlangDBResult *__blang_db_query( BlangDBConn *conn, const char *sql,
 	int num_cols = sqlite3_column_count( stmt );
 	BlangDBResult *result = result_alloc( num_cols );
 
-	/* Column names */
 	for ( int i = 0; i < num_cols; i++ )
 		result->column_names[i] = strdup( sqlite3_column_name( stmt, i ) );
 
-	/* Fetch rows */
 	while ( ( rc = sqlite3_step( stmt ) ) == SQLITE_ROW )
 	{
 		char **row = (char **)calloc( num_cols, sizeof( char * ) );
@@ -314,15 +291,9 @@ BlangDBResult *__blang_db_query( BlangDBConn *conn, const char *sql,
 	return result;
 }
 
-int __blang_db_exec( BlangDBConn *conn, const char *sql,
+static int sqlite_exec( BlangDBConn *conn, const char *sql,
 	const char **params, int num_params, const char **error_msg )
 {
-	if ( !conn || conn->driver != BLANG_DB_SQLITE )
-	{
-		if ( error_msg ) *error_msg = "Invalid connection";
-		return -1;
-	}
-
 	sqlite3 *db = (sqlite3 *)conn->driver_data;
 	sqlite3_stmt *stmt = NULL;
 
@@ -353,14 +324,8 @@ int __blang_db_exec( BlangDBConn *conn, const char *sql,
 	return sqlite3_changes( db );
 }
 
-int __blang_db_exec_raw( BlangDBConn *conn, const char *sql, const char **error_msg )
+static int sqlite_exec_raw( BlangDBConn *conn, const char *sql, const char **error_msg )
 {
-	if ( !conn || conn->driver != BLANG_DB_SQLITE )
-	{
-		if ( error_msg ) *error_msg = "Invalid connection";
-		return -1;
-	}
-
 	sqlite3 *db = (sqlite3 *)conn->driver_data;
 	char *err = NULL;
 	int rc = sqlite3_exec( db, sql, NULL, NULL, &err );
@@ -385,42 +350,267 @@ int __blang_db_exec_raw( BlangDBConn *conn, const char *sql, const char **error_
 	return 0;
 }
 
-#else /* !BLANG_HAS_SQLITE */
+static void sqlite_close( BlangDBConn *conn )
+{
+	if ( conn->driver_data )
+		sqlite3_close( (sqlite3 *)conn->driver_data );
+}
 
-/* Stub implementations when SQLite is not available */
+#endif /* BLANG_HAS_SQLITE */
+
+/* ---- Postgres Backend ---- */
+
+/*
+ * Compiled only when BLANG_HAS_POSTGRES is defined (libpq available).
+ * Postgres uses $1,$2,... placeholders rather than `?`; codegen stays
+ * driver-neutral by always emitting `?`, and the rewrite happens here.
+ */
+
+#ifdef BLANG_HAS_POSTGRES
+#include <libpq-fe.h>
+
+/* Rewrite `?` placeholders to Postgres `$1,$2,...`.  Caller frees the result.
+   Naive scan (parameters are always bound, so SQL contains no literal `?`). */
+static char *pg_rewrite_placeholders( const char *sql )
+{
+	size_t len = strlen( sql );
+	/* Worst case each `?` becomes `$NN` — allocate generously. */
+	char *out = (char *)malloc( len * 4 + 1 );
+	size_t o = 0;
+	int n = 0;
+	for ( size_t i = 0; i < len; i++ )
+	{
+		if ( sql[i] == '?' )
+			o += sprintf( out + o, "$%d", ++n );
+		else
+			out[o++] = sql[i];
+	}
+	out[o] = '\0';
+	return out;
+}
+
+static BlangDBConn *pg_open( const char *connection_string, const char **error_msg )
+{
+	PGconn *pg = PQconnectdb( connection_string );
+	if ( PQstatus( pg ) != CONNECTION_OK )
+	{
+		if ( error_msg )
+		{
+			static char errbuf[512];
+			snprintf( errbuf, sizeof( errbuf ), "%s", PQerrorMessage( pg ) );
+			*error_msg = errbuf;
+		}
+		PQfinish( pg );
+		return NULL;
+	}
+
+	BlangDBConn *conn = (BlangDBConn *)calloc( 1, sizeof( BlangDBConn ) );
+	conn->driver = BLANG_DB_POSTGRES;
+	conn->driver_data = pg;
+	return conn;
+}
+
+static BlangDBResult *pg_query( BlangDBConn *conn, const char *sql,
+	const char **params, int num_params, const char **error_msg )
+{
+	PGconn *pg = (PGconn *)conn->driver_data;
+	char *rewritten = pg_rewrite_placeholders( sql );
+	PGresult *res = PQexecParams( pg, rewritten, num_params, NULL,
+		params, NULL, NULL, 0 /* text results */ );
+	free( rewritten );
+
+	if ( PQresultStatus( res ) != PGRES_TUPLES_OK )
+	{
+		if ( error_msg )
+		{
+			static char errbuf[512];
+			snprintf( errbuf, sizeof( errbuf ), "%s", PQerrorMessage( pg ) );
+			*error_msg = errbuf;
+		}
+		PQclear( res );
+		return NULL;
+	}
+
+	int num_cols = PQnfields( res );
+	int num_rows = PQntuples( res );
+	BlangDBResult *result = result_alloc( num_cols );
+
+	for ( int c = 0; c < num_cols; c++ )
+		result->column_names[c] = strdup( PQfname( res, c ) );
+
+	for ( int r = 0; r < num_rows; r++ )
+	{
+		char **row = (char **)calloc( num_cols, sizeof( char * ) );
+		for ( int c = 0; c < num_cols; c++ )
+		{
+			const char *val = PQgetisnull( res, r, c )
+				? "" : PQgetvalue( res, r, c );
+			row[c] = strdup( val );
+		}
+		result_add_row( result, row );
+	}
+
+	PQclear( res );
+	return result;
+}
+
+static int pg_exec( BlangDBConn *conn, const char *sql,
+	const char **params, int num_params, const char **error_msg )
+{
+	PGconn *pg = (PGconn *)conn->driver_data;
+	char *rewritten = pg_rewrite_placeholders( sql );
+	PGresult *res = PQexecParams( pg, rewritten, num_params, NULL,
+		params, NULL, NULL, 0 );
+	free( rewritten );
+
+	ExecStatusType st = PQresultStatus( res );
+	if ( st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK )
+	{
+		if ( error_msg )
+		{
+			static char errbuf[512];
+			snprintf( errbuf, sizeof( errbuf ), "%s", PQerrorMessage( pg ) );
+			*error_msg = errbuf;
+		}
+		PQclear( res );
+		return -1;
+	}
+
+	const char *affected = PQcmdTuples( res );
+	int n = ( affected && *affected ) ? atoi( affected ) : 0;
+	PQclear( res );
+	return n;
+}
+
+static int pg_exec_raw( BlangDBConn *conn, const char *sql, const char **error_msg )
+{
+	PGconn *pg = (PGconn *)conn->driver_data;
+	PGresult *res = PQexec( pg, sql );
+	ExecStatusType st = PQresultStatus( res );
+	if ( st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK )
+	{
+		if ( error_msg )
+		{
+			static char errbuf[512];
+			snprintf( errbuf, sizeof( errbuf ), "%s", PQerrorMessage( pg ) );
+			*error_msg = errbuf;
+		}
+		PQclear( res );
+		return -1;
+	}
+	PQclear( res );
+	return 0;
+}
+
+static void pg_close( BlangDBConn *conn )
+{
+	if ( conn->driver_data )
+		PQfinish( (PGconn *)conn->driver_data );
+}
+
+#endif /* BLANG_HAS_POSTGRES */
+
+/* ---- Public Driver Dispatch ---- */
 
 BlangDBConn *__blang_db_open( BlangDBDriver driver, const char *connection_string,
 	const char **error_msg )
 {
-	(void)driver;
-	(void)connection_string;
-	if ( error_msg ) *error_msg = "Database support not compiled (install libsqlite3-dev)";
+	connection_string = resolve_conn_string( connection_string, error_msg );
+	if ( connection_string == NULL )
+		return NULL;
+
+	if ( driver == BLANG_DB_SQLITE )
+	{
+#ifdef BLANG_HAS_SQLITE
+		return sqlite_open( connection_string, error_msg );
+#else
+		if ( error_msg )
+			*error_msg = "SQLite support not compiled (install libsqlite3-dev)";
+		return NULL;
+#endif
+	}
+	else if ( driver == BLANG_DB_POSTGRES )
+	{
+#ifdef BLANG_HAS_POSTGRES
+		return pg_open( connection_string, error_msg );
+#else
+		if ( error_msg )
+			*error_msg = "Postgres support not compiled (install libpq-dev)";
+		return NULL;
+#endif
+	}
+
+	if ( error_msg ) *error_msg = "Unknown database driver";
 	return NULL;
 }
 
-void __blang_db_close( BlangDBConn *conn ) { (void)conn; }
+void __blang_db_close( BlangDBConn *conn )
+{
+	if ( !conn ) return;
+#ifdef BLANG_HAS_SQLITE
+	if ( conn->driver == BLANG_DB_SQLITE ) sqlite_close( conn );
+#endif
+#ifdef BLANG_HAS_POSTGRES
+	if ( conn->driver == BLANG_DB_POSTGRES ) pg_close( conn );
+#endif
+	free( conn );
+}
 
 BlangDBResult *__blang_db_query( BlangDBConn *conn, const char *sql,
 	const char **params, int num_params, const char **error_msg )
 {
-	(void)conn; (void)sql; (void)params; (void)num_params;
-	if ( error_msg ) *error_msg = "Database support not compiled";
+	if ( !conn )
+	{
+		if ( error_msg ) *error_msg = "Invalid connection";
+		return NULL;
+	}
+#ifdef BLANG_HAS_SQLITE
+	if ( conn->driver == BLANG_DB_SQLITE )
+		return sqlite_query( conn, sql, params, num_params, error_msg );
+#endif
+#ifdef BLANG_HAS_POSTGRES
+	if ( conn->driver == BLANG_DB_POSTGRES )
+		return pg_query( conn, sql, params, num_params, error_msg );
+#endif
+	if ( error_msg ) *error_msg = "Database driver not compiled";
 	return NULL;
 }
 
 int __blang_db_exec( BlangDBConn *conn, const char *sql,
 	const char **params, int num_params, const char **error_msg )
 {
-	(void)conn; (void)sql; (void)params; (void)num_params;
-	if ( error_msg ) *error_msg = "Database support not compiled";
+	if ( !conn )
+	{
+		if ( error_msg ) *error_msg = "Invalid connection";
+		return -1;
+	}
+#ifdef BLANG_HAS_SQLITE
+	if ( conn->driver == BLANG_DB_SQLITE )
+		return sqlite_exec( conn, sql, params, num_params, error_msg );
+#endif
+#ifdef BLANG_HAS_POSTGRES
+	if ( conn->driver == BLANG_DB_POSTGRES )
+		return pg_exec( conn, sql, params, num_params, error_msg );
+#endif
+	if ( error_msg ) *error_msg = "Database driver not compiled";
 	return -1;
 }
 
 int __blang_db_exec_raw( BlangDBConn *conn, const char *sql, const char **error_msg )
 {
-	(void)conn; (void)sql;
-	if ( error_msg ) *error_msg = "Database support not compiled";
+	if ( !conn )
+	{
+		if ( error_msg ) *error_msg = "Invalid connection";
+		return -1;
+	}
+#ifdef BLANG_HAS_SQLITE
+	if ( conn->driver == BLANG_DB_SQLITE )
+		return sqlite_exec_raw( conn, sql, error_msg );
+#endif
+#ifdef BLANG_HAS_POSTGRES
+	if ( conn->driver == BLANG_DB_POSTGRES )
+		return pg_exec_raw( conn, sql, error_msg );
+#endif
+	if ( error_msg ) *error_msg = "Database driver not compiled";
 	return -1;
 }
-
-#endif /* BLANG_HAS_SQLITE */
