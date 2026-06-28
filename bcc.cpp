@@ -350,6 +350,12 @@ static int runTests( int argc, char *argv[] )
 	return ( failed > 0 ) ? 1 : 0;
 }
 
+// Forward declarations (defined later) so migrate can resolve stdlib imports
+// the same way `bcc build` does.
+static set<string> parseImports( const string &path );
+static vector<string> resolveStdlibFiles( const string &exeDir,
+	const set<string> &imports );
+
 // bcc migrate subcommand
 //
 // Compares current table struct definitions against stored schema snapshot
@@ -399,7 +405,23 @@ static int runMigrate( int argc, char *argv[] )
 	string storedSchemaPath = ".blang/schema.json";
 	string currentSchemaPath = ".blang/schema.current.json";
 
-	vector<string> qccCmd = { qcc, "--emit-schema", currentSchemaPath };
+	// Resolve stdlib imports so projects that `import net;` (etc.) parse — the
+	// table struct lives in a source file that references stdlib symbols, so the
+	// stdlib modules must be combined into the same parse, exactly as bcc build
+	// does. User sources go last (combine treats the last file as user scope).
+	set<string> imports;
+	for ( const auto &f : sourceFiles )
+		for ( const auto &imp : parseImports( f ) )
+			imports.insert( imp );
+	vector<string> stdlibFiles = resolveStdlibFiles( exeDir, imports );
+
+	vector<string> qccCmd = { qcc };
+	if ( !stdlibFiles.empty() )
+		qccCmd.push_back( "--combine" );
+	qccCmd.push_back( "--emit-schema" );
+	qccCmd.push_back( currentSchemaPath );
+	for ( const auto &sf : stdlibFiles )
+		qccCmd.push_back( sf );
 	for ( const auto &f : sourceFiles )
 		qccCmd.push_back( f );
 	if ( runCommand( qccCmd, false, true ) != 0 )

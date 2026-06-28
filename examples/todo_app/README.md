@@ -16,13 +16,17 @@ end-to-end and doubles as an integration test for these features:
 
 ```sh
 cd examples/todo_app
-bcc build
+bcc build              # compile the app
+bcc migrate --apply    # create the SQLite schema from the Todo table struct
 ./todo_app
 # open http://localhost:8080
 ```
 
 `bcc build` reads `blang.toml`, combines `main.b` with the `net` stdlib module,
-and links the SQLite-backed database runtime. Todos persist in `todos.db`.
+and links the SQLite-backed database runtime. `bcc migrate --apply` derives the
+schema directly from the `table struct Todo` and creates the table in `todos.db`
+— there is **no hand-written `CREATE TABLE`** in the app. Use
+`bcc migrate --preview` to see the SQL it would run. Todos persist in `todos.db`.
 
 ## REST API
 

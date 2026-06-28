@@ -31,17 +31,22 @@ if [ ! -x "$BCC" ]; then
 fi
 
 cd "$APP_DIR" || exit 1
-rm -f todos.db
+rm -rf todos.db .blang
 
 echo "=== building todo_app ==="
 if ! "$BCC" build > /tmp/todo_build.log 2>&1; then
 	echo -e "${RED}build failed${NC}"; tail -5 /tmp/todo_build.log; exit 1
 fi
 
+echo "=== migrating schema (creates the todo table from the table struct) ==="
+if ! "$BCC" migrate --apply > /tmp/todo_migrate.log 2>&1; then
+	echo -e "${RED}migrate failed${NC}"; tail -5 /tmp/todo_migrate.log; exit 1
+fi
+
 echo "=== starting server ==="
 ./todo_app > /tmp/todo_run.log 2>&1 &
 SRV=$!
-trap 'kill $SRV 2>/dev/null; rm -f todos.db' EXIT
+trap 'kill $SRV 2>/dev/null; rm -rf todos.db .blang' EXIT
 
 # Wait for the server to accept connections (up to ~5s).
 for _ in $(seq 1 50); do
