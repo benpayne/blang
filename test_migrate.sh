@@ -99,6 +99,28 @@ check "destructive apply refused without flag" 1 $?
 $BCC migrate --apply --allow-destructive app.b > /dev/null 2>&1
 check "destructive apply allowed with flag" 0 $?
 
+# 4. Schema extraction for a project that imports a stdlib module. The table
+#    struct lives in a file that references stdlib symbols (net.*), so migrate
+#    must combine the imported stdlib to parse it (regression for that fix).
+mkdir -p imp && cd imp
+cat > app.b <<'EOF'
+import net;
+
+table struct Note {
+	int id;
+	string body;
+}
+
+fn ping(net.HttpRequest req) -> net.HttpResponse {
+	return net.http_ok("pong");
+}
+
+fn main() -> int { return 0; }
+EOF
+out="$($BCC migrate --preview app.b 2>/dev/null)"
+check_contains "migrate parses stdlib-importing project" "Create table Note" "$out"
+cd ..
+
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]

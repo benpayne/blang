@@ -5,22 +5,22 @@
 // back into an `Array<Todo>`, all served over HTTP and serialized with @json.
 //
 // Build & run:
-//   cd examples/todo_app && bcc build && ./todo_app
+//   cd examples/todo_app && bcc build && bcc migrate --apply && ./todo_app
 // then open http://localhost:8080
+//
+// `bcc migrate --apply` creates the SQLite schema directly from the `Todo`
+// table struct below — no hand-written CREATE TABLE needed.
 
 import net;
 
 // A single struct used both as the SQLite-backed table (`table`) and as the
-// JSON wire format (`@json`).
+// JSON wire format (`@json`). `bcc migrate` derives the schema from this.
 @json
 table struct Todo {
 	int id;
 	string title;
 	bool done;
 }
-
-// Execute raw SQL (CREATE TABLE) against the default connection.
-extern fn __blang_db_exec_raw_default(cstring sql) -> int;
 
 // The single-page frontend, served as static text/html. Uses single-quoted
 // attributes/strings so the BLang string literal needs no escaping, and avoids
@@ -182,11 +182,9 @@ fn handle(net.HttpRequest req) -> net.HttpResponse {
 }
 
 fn main() -> int {
-	// The Todo table is created on first run; the default connection is opened
-	// at startup from blang.toml's [database] section.
-	__blang_db_exec_raw_default(
-		"CREATE TABLE IF NOT EXISTS todo (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, done INTEGER)" );
-
+	// The default connection is opened at startup from blang.toml's [database]
+	// section. The schema is created beforehand by `bcc migrate --apply`, so the
+	// app contains no table-creation SQL.
 	net.HttpServer server = net.http_server("0.0.0.0", 8080);
 	server.on_request(handle);
 	println("Todo app listening on http://localhost:8080");
