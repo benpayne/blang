@@ -340,6 +340,7 @@ private:
 	llvm::Function *getOrDeclareDbResultCount();
 	llvm::Function *getOrDeclareDbResultGet();
 	llvm::Function *getOrDeclareDbResultGetInt();
+	llvm::Function *getOrDeclareDbResultGetFloat();
 	llvm::Function *getOrDeclareDbResultFree();
 	llvm::Function *getOrDeclareDbDefault();
 	llvm::Function *getOrDeclareDbGet();

@@ -6920,14 +6920,24 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		llvm::Value *lenVal = mBuilder->CreateCall(
 			getOrDeclareArrayLength(), { arrVal }, "arr.len" );
 
-		// Determine element type from the array's type annotation
+		// Determine element type from the array's type annotation. Capture the
+		// element's BLang type too so the loop variable is typed correctly —
+		// without it, field access / method calls on the loop var (e.g. a
+		// struct element's `.field`) can't resolve the element's type.
 		llvm::Type *elemType = llvm::Type::getInt32Ty( *mContext ); // default
+		Type *elemQType = nullptr;
 		if ( auto *ve = dynamic_cast<VariableExpression*>(
 				 (Expression*)forInStmt->mIterableExpression ) )
 		{
 			Type *varType = ve->mVariable->getVariableType();
 			if ( varType != nullptr && varType->getNumTypeParams() > 0 )
-				elemType = getLLVMType( varType->getTypeParam( 0 ) );
+			{
+				elemQType = varType->getTypeParam( 0 );
+				auto subIt = mTypeSubstitution.find( elemQType->getName() );
+				if ( subIt != mTypeSubstitution.end() )
+					elemQType = subIt->second;
+				elemType = getLLVMType( elemQType );
+			}
 		}
 
 		// Create the loop counter and element variable
@@ -6947,7 +6957,13 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 			{
 				Symbol *iterSym = bodyBlock->mScope->findSymbol( forInStmt->mVariableName );
 				if ( auto *iterVar = dynamic_cast<VariableDefinition*>( iterSym ) )
+				{
 					mVariableMap[iterVar] = elemAlloca;
+					// Give the loop variable the element's type so field access,
+					// method calls, etc. on it resolve correctly.
+					if ( elemQType != nullptr )
+						iterVar->setVariableType( elemQType );
+				}
 			}
 		}
 
@@ -9333,6 +9349,20 @@ llvm::Function *CodeGen::getOrDeclareDbResultGetInt()
 		ft, llvm::Function::ExternalLinkage, "__blang_db_result_get_int", mModule.get() );
 }
 
+llvm::Function *CodeGen::getOrDeclareDbResultGetFloat()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_result_get_float" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::Type *dblTy = llvm::Type::getDoubleTy( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get( dblTy, { ptrTy, i32Ty, i32Ty }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_result_get_float", mModule.get() );
+}
+
 llvm::Function *CodeGen::getOrDeclareDbResultFree()
 {
 	llvm::Function *f = mModule->getFunction( "__blang_db_result_free" );
@@ -9651,12 +9681,134 @@ llvm::Value *CodeGen::genQueryExpression( QueryExpression *query )
 	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "query.err" );
 	mBuilder->CreateStore( nullPtr, errMsgAlloca );
 
-	// __blang_db_query(conn, sql, params, num_params, &error_msg)
-	return mBuilder->CreateCall(
+	// __blang_db_query(conn, sql, params, num_params, &error_msg) -> BlangDBResult*
+	llvm::Value *result = mBuilder->CreateCall(
 		getOrDeclareDbQuery(),
 		{ conn, sqlStr, params,
 		  llvm::ConstantInt::get( i32Ty, numParams ), errMsgAlloca },
 		"query.result" );
+
+	// Map result rows into an Array<T> of the table struct. SELECT * returns
+	// columns in the table's (== struct's) field order, so column i feeds
+	// field i. Each row becomes a heap struct; the array owns those pointers.
+	llvm::Type *i64Ty = llvm::Type::getInt64Ty( *mContext );
+
+	StructDefinition *structDef = nullptr;
+	{
+		auto it = mStructDefMap.find( query->mTableName );
+		if ( it != mStructDefMap.end() )
+			structDef = it->second;
+	}
+
+	// arr = __blang_array_create(elem_size = sizeof(ptr), capacity)
+	llvm::Value *arr = mBuilder->CreateCall(
+		getOrDeclareArrayCreate(),
+		{ llvm::ConstantInt::get( i32Ty, 8 ),
+		  llvm::ConstantInt::get( i64Ty, 8 ) }, "rows" );
+
+	if ( structDef == nullptr )
+	{
+		// Unknown table — free the result and return an empty array.
+		mBuilder->CreateCall( getOrDeclareDbResultFree(), { result } );
+		return arr;
+	}
+
+	// Release each row struct when the array is freed.
+	emitArrayElemDtor( arr, structDef->getName() );
+
+	llvm::StructType *structType = getOrCreateStructType( structDef );
+
+	llvm::Value *count = mBuilder->CreateCall(
+		getOrDeclareDbResultCount(), { result }, "row.count" );
+
+	// for ( i = 0; i < count; i++ ) { build struct from row i; push }
+	llvm::Function *fn = mBuilder->GetInsertBlock()->getParent();
+	llvm::BasicBlock *condBB = llvm::BasicBlock::Create( *mContext, "qrow.cond", fn );
+	llvm::BasicBlock *bodyBB = llvm::BasicBlock::Create( *mContext, "qrow.body", fn );
+	llvm::BasicBlock *endBB  = llvm::BasicBlock::Create( *mContext, "qrow.end", fn );
+
+	llvm::AllocaInst *iAlloca = mBuilder->CreateAlloca( i32Ty, nullptr, "qrow.i" );
+	mBuilder->CreateStore( llvm::ConstantInt::get( i32Ty, 0 ), iAlloca );
+	mBuilder->CreateBr( condBB );
+
+	mBuilder->SetInsertPoint( condBB );
+	llvm::Value *iVal = mBuilder->CreateLoad( i32Ty, iAlloca, "i" );
+	llvm::Value *cmp = mBuilder->CreateICmpSLT( iVal, count, "i.lt.count" );
+	mBuilder->CreateCondBr( cmp, bodyBB, endBB );
+
+	mBuilder->SetInsertPoint( bodyBB );
+	llvm::Value *rowIdx = mBuilder->CreateLoad( i32Ty, iAlloca, "row" );
+
+	// Heap-allocate the struct (with destructor for refcounted field cleanup).
+	llvm::DataLayout dl( mModule.get() );
+	llvm::Value *structSize = llvm::ConstantInt::get(
+		i64Ty, dl.getTypeAllocSize( structType ) );
+	std::map<std::string, std::string> noSub;
+	llvm::Function *structDtor = getOrGenStructDestructor( structDef, noSub );
+	llvm::Value *rowStruct;
+	if ( structDtor != nullptr )
+		rowStruct = mBuilder->CreateCall( getOrDeclareRcAllocDtor(),
+			{ structSize, structDtor }, "row.struct" );
+	else
+		rowStruct = mBuilder->CreateCall( getOrDeclareRcAlloc(),
+			{ structSize }, "row.struct" );
+
+	const auto &fields = structDef->getFields();
+	for ( size_t f = 0; f < fields.size(); f++ )
+	{
+		llvm::Value *colIdx = llvm::ConstantInt::get( i32Ty, (int)f );
+		llvm::Type *fieldLLVM = structType->getElementType( (unsigned)f );
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+			structType, rowStruct, (unsigned)f, "row.field" );
+
+		std::string fieldTypeName = fields[f]->getVariableType()->getName();
+		llvm::Value *stored = nullptr;
+
+		if ( fieldTypeName == "string" )
+		{
+			llvm::Value *cstr = mBuilder->CreateCall(
+				getOrDeclareDbResultGet(), { result, rowIdx, colIdx }, "col.str" );
+			llvm::Value *len = mBuilder->CreateCall(
+				getOrDeclareStrlen(), { cstr }, "col.len" );
+			stored = mBuilder->CreateCall(
+				getOrDeclareStringCreate(), { cstr, len }, "col.blangstr" );
+		}
+		else if ( fieldLLVM->isFloatingPointTy() )
+		{
+			llvm::Value *d = mBuilder->CreateCall(
+				getOrDeclareDbResultGetFloat(), { result, rowIdx, colIdx }, "col.f" );
+			if ( fieldLLVM->isFloatTy() )
+				d = mBuilder->CreateFPTrunc( d, fieldLLVM, "col.f.trunc" );
+			stored = d;
+		}
+		else if ( fieldLLVM->isIntegerTy() )
+		{
+			llvm::Value *v = mBuilder->CreateCall(
+				getOrDeclareDbResultGetInt(), { result, rowIdx, colIdx }, "col.i" );
+			stored = mBuilder->CreateIntCast( v, fieldLLVM, true, "col.i.cast" );
+		}
+		else
+		{
+			// Unsupported column type (nested struct/array) — leave it null.
+			stored = llvm::Constant::getNullValue( fieldLLVM );
+		}
+
+		mBuilder->CreateStore( stored, fieldPtr );
+	}
+
+	// arr.push(rowStruct) — push copies the pointer; the array now owns the row.
+	llvm::AllocaInst *elemSlot = mBuilder->CreateAlloca( ptrTy, nullptr, "row.slot" );
+	mBuilder->CreateStore( rowStruct, elemSlot );
+	mBuilder->CreateCall( getOrDeclareArrayPush(), { arr, elemSlot } );
+
+	llvm::Value *iNext = mBuilder->CreateAdd(
+		rowIdx, llvm::ConstantInt::get( i32Ty, 1 ), "i.next" );
+	mBuilder->CreateStore( iNext, iAlloca );
+	mBuilder->CreateBr( condBB );
+
+	mBuilder->SetInsertPoint( endBB );
+	mBuilder->CreateCall( getOrDeclareDbResultFree(), { result } );
+	return arr;
 }
 
 llvm::Value *CodeGen::genInsertExpression( InsertExpression *insert )
