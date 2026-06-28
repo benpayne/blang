@@ -29,6 +29,10 @@
 
 #include "ProjectConfig.h"
 #include "BuildCache.h"
+#include "Type.h"
+#include "Expression.h"
+#include "SchemaMigration.h"
+#include "runtime/blang_db.h"
 
 using namespace std;
 
@@ -358,6 +362,7 @@ static int runTests( int argc, char *argv[] )
 static int runMigrate( int argc, char *argv[] )
 {
 	string mode = "--preview"; // default
+	bool allowDestructive = false;
 	vector<string> sourceFiles;
 
 	for ( int i = 2; i < argc; i++ )
@@ -365,6 +370,8 @@ static int runMigrate( int argc, char *argv[] )
 		string arg = argv[i];
 		if ( arg == "--preview" || arg == "--apply" || arg == "--generate" )
 			mode = arg;
+		else if ( arg == "--allow-destructive" )
+			allowDestructive = true;
 		else if ( arg[0] != '-' )
 			sourceFiles.push_back( arg );
 	}
@@ -383,31 +390,128 @@ static int runMigrate( int argc, char *argv[] )
 		return 1;
 	}
 
-	// Parse all source files to extract table struct definitions.
-	// Run qcc --parse-only on each file and capture output.
-	// Note: In a full implementation, we would parse directly and use
-	// the SchemaMigration class. For now, this is a placeholder that
-	// reports the subcommand was invoked.
+	// 1. Obtain the current schema by parsing the sources with qcc and having
+	//    it emit the table-struct schema as JSON (qcc owns the parser).
+	string exeDir = getExeDir( argv[0] );
+	string qcc = exeDir + "/qcc";
 
-	cerr << "bcc migrate: " << mode << " mode" << endl;
-	cerr << "bcc migrate: found " << sourceFiles.size() << " source file(s)" << endl;
+	mkdir( ".blang", 0755 );
+	string storedSchemaPath = ".blang/schema.json";
+	string currentSchemaPath = ".blang/schema.current.json";
+
+	vector<string> qccCmd = { qcc, "--emit-schema", currentSchemaPath };
+	for ( const auto &f : sourceFiles )
+		qccCmd.push_back( f );
+	if ( runCommand( qccCmd, false, true ) != 0 )
+	{
+		cerr << "bcc migrate: failed to extract schema from sources" << endl;
+		return 1;
+	}
+
+	// 2. Diff the stored snapshot against the current schema.
+	QLang::SchemaMigration mig;
+	mig.loadSchema( storedSchemaPath );          // stored (empty on first run)
+	mig.loadCurrentSchema( currentSchemaPath );  // current
+
+	vector<QLang::MigrationStep> steps = mig.computeDiff();
 
 	if ( mode == "--preview" )
 	{
-		cerr << "bcc migrate: schema migration preview" << endl;
-		cerr << "  (Run with --generate to emit SQL)" << endl;
-	}
-	else if ( mode == "--generate" )
-	{
-		cerr << "bcc migrate: generating migration SQL..." << endl;
-		cerr << "  (Full migration generation requires parsing source files)" << endl;
-	}
-	else if ( mode == "--apply" )
-	{
-		cerr << "bcc migrate: applying migrations..." << endl;
-		cerr << "  (Full migration apply requires database connection)" << endl;
+		cout << mig.preview();
+		remove( currentSchemaPath.c_str() );
+		return 0;
 	}
 
+	if ( mode == "--generate" )
+	{
+		cout << mig.generateSQL();
+		remove( currentSchemaPath.c_str() );
+		return 0;
+	}
+
+	// mode == "--apply"
+	if ( steps.empty() )
+	{
+		cout << "No schema changes to apply." << endl;
+		remove( currentSchemaPath.c_str() );
+		return 0;
+	}
+
+	// Destructive changes (DROP TABLE / DROP COLUMN) require explicit consent.
+	// The @drop annotation marks an intentional removal in source; since a
+	// removed entity no longer exists in source, apply additionally gates on
+	// the --allow-destructive flag as the CLI confirmation path.
+	if ( mig.hasDestructiveChanges() && !allowDestructive )
+	{
+		cerr << "bcc migrate: refusing to apply destructive changes without "
+			 << "--allow-destructive:" << endl;
+		for ( const auto &step : steps )
+			if ( step.isDestructive )
+				cerr << "  [DESTRUCTIVE] " << step.description << endl;
+		remove( currentSchemaPath.c_str() );
+		return 1;
+	}
+
+	// Resolve the database connection from blang.toml [database] or the
+	// BLANG_DATABASE_URL environment variable.
+	string driver = "sqlite";
+	string url;
+	ProjectConfig *cfg = ProjectConfig::loadFromDirectory( "." );
+	if ( cfg != nullptr )
+	{
+		if ( !cfg->getDbDriver().empty() ) driver = cfg->getDbDriver();
+		url = cfg->getDbUrl();
+		delete cfg;
+	}
+	if ( url.empty() )
+	{
+		const char *envUrl = getenv( "BLANG_DATABASE_URL" );
+		if ( envUrl != nullptr )
+			url = envUrl;
+	}
+	if ( url.empty() )
+	{
+		cerr << "bcc migrate: no database url configured (set [database].url in "
+			 << "blang.toml or BLANG_DATABASE_URL)" << endl;
+		remove( currentSchemaPath.c_str() );
+		return 1;
+	}
+
+	const char *errMsg = nullptr;
+	BlangDBConn *conn = __blang_db_open(
+		__blang_db_driver_from_name( driver.c_str() ), url.c_str(), &errMsg );
+	if ( conn == nullptr )
+	{
+		cerr << "bcc migrate: cannot open database: "
+			 << ( errMsg ? errMsg : "unknown error" ) << endl;
+		remove( currentSchemaPath.c_str() );
+		return 1;
+	}
+
+	int applied = 0;
+	for ( const auto &step : steps )
+	{
+		const char *stepErr = nullptr;
+		if ( __blang_db_exec_raw( conn, step.sql.c_str(), &stepErr ) != 0 )
+		{
+			cerr << "bcc migrate: failed: " << step.description << endl;
+			cerr << "  SQL: " << step.sql << endl;
+			cerr << "  error: " << ( stepErr ? stepErr : "unknown" ) << endl;
+			__blang_db_close( conn );
+			remove( currentSchemaPath.c_str() );
+			return 1;
+		}
+		cout << "applied: " << step.description << endl;
+		applied++;
+	}
+
+	__blang_db_close( conn );
+
+	// Snapshot the now-current schema as the new stored baseline.
+	mig.saveSchema( storedSchemaPath );
+	remove( currentSchemaPath.c_str() );
+
+	cout << "Migration complete: " << applied << " step(s) applied." << endl;
 	return 0;
 }
 
@@ -785,6 +889,24 @@ static int buildProject( const string &projectDir, const string &exeDir,
 				qccCmd.push_back( bmod );
 			qccCmd.push_back( "-o" );
 			qccCmd.push_back( combinedLL );
+
+			// Forward [database] config so the generated main() opens the
+			// default/named connections at startup.
+			if ( !config->getDbUrl().empty() )
+			{
+				qccCmd.push_back( "--db-driver" );
+				qccCmd.push_back( config->getDbDriver().empty()
+					? "sqlite" : config->getDbDriver() );
+				qccCmd.push_back( "--db-url" );
+				qccCmd.push_back( config->getDbUrl() );
+			}
+			for ( const auto &c : config->getNamedDbConns() )
+			{
+				qccCmd.push_back( "--db-conn" );
+				qccCmd.push_back( c.name );
+				qccCmd.push_back( c.driver.empty() ? "sqlite" : c.driver );
+				qccCmd.push_back( c.url );
+			}
 		}
 
 		int ret = runCommand( qccCmd, verbose, !verbose );
@@ -899,6 +1021,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		const char *bkRuntime = nullptr, *bkString = nullptr, *bkArray = nullptr;
 		const char *bkBuffer = nullptr;
 		const char *bkJson = nullptr, *bkNet = nullptr, *bkSys = nullptr;
+		const char *bkDb = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bkRuntime = BCC_RUNTIME_LIB;
 #endif
@@ -920,8 +1043,12 @@ static int buildProject( const string &projectDir, const string &exeDir,
 #ifdef BCC_SYS_LIB
 		bkSys = BCC_SYS_LIB;
 #endif
+#ifdef BCC_DB_LIB
+		bkDb = BCC_DB_LIB;
+#endif
 
 		for ( const auto &lib : {
+			findBuildLib( bkDb, "blang_db" ),
 			findBuildLib( bkSys, "blang_sys" ),
 			findBuildLib( bkNet, "blang_net" ),
 			findBuildLib( bkJson, "blang_json" ),
@@ -934,6 +1061,17 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( !lib.empty() )
 				linkCmd.push_back( lib );
 		}
+
+		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
+#ifdef BCC_DB_LINKFLAGS
+		{
+			string dbFlags = BCC_DB_LINKFLAGS;
+			istringstream dbf( dbFlags );
+			string tok;
+			while ( dbf >> tok )
+				linkCmd.push_back( tok );
+		}
+#endif
 
 		linkCmd.push_back( "-lpthread" );
 		linkCmd.push_back( "-o" );
@@ -1204,6 +1342,7 @@ int main( int argc, char *argv[] )
 		const char *bakedJson = nullptr;
 		const char *bakedNet = nullptr;
 		const char *bakedSys = nullptr;
+		const char *bakedDb = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bakedRuntime = BCC_RUNTIME_LIB;
 #endif
@@ -1225,9 +1364,13 @@ int main( int argc, char *argv[] )
 #ifdef BCC_SYS_LIB
 		bakedSys = BCC_SYS_LIB;
 #endif
+#ifdef BCC_DB_LIB
+		bakedDb = BCC_DB_LIB;
+#endif
 
-		// Push in dependency order: sys→net→json→array→string→runtime
+		// Push in dependency order: db→sys→net→json→array→string→runtime
 		for ( const auto &lib : {
+			findLib( bakedDb, "blang_db" ),
 			findLib( bakedSys, "blang_sys" ),
 			findLib( bakedNet, "blang_net" ),
 			findLib( bakedJson, "blang_json" ),
@@ -1240,6 +1383,17 @@ int main( int argc, char *argv[] )
 			if ( !lib.empty() )
 				cmd.push_back( lib );
 		}
+
+		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
+#ifdef BCC_DB_LINKFLAGS
+		{
+			string dbFlags = BCC_DB_LINKFLAGS;
+			istringstream dbf( dbFlags );
+			string tok;
+			while ( dbf >> tok )
+				cmd.push_back( tok );
+		}
+#endif
 
 		cmd.push_back( "-lpthread" );
 

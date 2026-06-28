@@ -136,6 +136,32 @@ ProjectConfig *ProjectConfig::loadFromFile( const string &path )
 			else if ( key == "type" )
 				config->mType = val;
 		}
+		else if ( currentSection == "database" )
+		{
+			string val = unquote( value );
+			if ( key == "driver" )
+				config->mDbDriver = val;
+			else if ( key == "url" )
+				config->mDbUrl = val;   // may be "env:VAR" (resolved at runtime)
+		}
+		else if ( currentSection.rfind( "database.", 0 ) == 0 )
+		{
+			// Named connection: [database.<name>]
+			string connName = currentSection.substr( string( "database." ).size() );
+			DbConnConfig *conn = nullptr;
+			for ( auto &c : config->mNamedDbConns )
+				if ( c.name == connName ) { conn = &c; break; }
+			if ( conn == nullptr )
+			{
+				config->mNamedDbConns.push_back( DbConnConfig{ connName, "", "" } );
+				conn = &config->mNamedDbConns.back();
+			}
+			string val = unquote( value );
+			if ( key == "driver" )
+				conn->driver = val;
+			else if ( key == "url" )
+				conn->url = val;
+		}
 		else if ( currentSection == "deps" )
 		{
 			// Expect inline table: name = { key = "val", ... }

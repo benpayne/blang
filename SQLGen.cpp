@@ -42,9 +42,9 @@ string SQLGen::blangTypeToSQL( const string &blangType )
 	return "TEXT"; // default
 }
 
-string SQLGen::exprToSQL( const Expression *expr, vector<string> &params )
+string SQLGen::exprToSQL( const Expression *expr, vector<const Expression*> &paramExprs )
 {
-	// Handle query field references: .field -> table.field
+	// Handle query field references: .field -> field (column name)
 	const QueryFieldExpression *field = dynamic_cast<const QueryFieldExpression*>( expr );
 	if ( field )
 		return field->getFieldName();
@@ -53,8 +53,8 @@ string SQLGen::exprToSQL( const Expression *expr, vector<string> &params )
 	const OperationsExpression *ops = dynamic_cast<const OperationsExpression*>( expr );
 	if ( ops )
 	{
-		string left = exprToSQL( ops->mOp1, params );
-		string right = exprToSQL( ops->mOp2, params );
+		string left = exprToSQL( ops->mOp1, paramExprs );
+		string right = exprToSQL( ops->mOp2, paramExprs );
 		string op = ops->mOperation;
 
 		// Map BLang operators to SQL operators
@@ -66,36 +66,21 @@ string SQLGen::exprToSQL( const Expression *expr, vector<string> &params )
 		return left + " " + op + " " + right;
 	}
 
-	// Handle constant integers
+	// Numeric constants are inlined directly — safe (no injection risk) and
+	// avoids a runtime bind for a value already known at compile time.
 	const ConstInteger *ci = dynamic_cast<const ConstInteger*>( expr );
 	if ( ci )
-	{
 		return to_string( ci->mValue );
-	}
 
-	// Handle constant strings
-	const ConstString *cs = dynamic_cast<const ConstString*>( expr );
-	if ( cs )
-	{
-		params.push_back( cs->mValue );
-		return "?";
-	}
-
-	// Handle constant floats
 	const ConstFloat *cf = dynamic_cast<const ConstFloat*>( expr );
 	if ( cf )
-	{
 		return to_string( cf->mValue );
-	}
 
-	// Handle variable references (bind as parameters)
-	const VariableExpression *ve = dynamic_cast<const VariableExpression*>( expr );
-	if ( ve )
-	{
-		// Variable references in SQL context become parameter placeholders
-		return "?";
-	}
-
+	// Every other value expression (string literals, variables, field
+	// accesses, calls, ...) becomes a bound `?` parameter so its runtime value
+	// is supplied safely.  The expression is recorded for codegen in
+	// placeholder order.
+	paramExprs.push_back( expr );
 	return "?";
 }
 
@@ -112,33 +97,46 @@ SQLStatement SQLGen::generateSelect( QueryExpression *query, Module *mod )
 	string orderByClause;
 	string limitClause;
 
+	// Collect params per-clause so the final paramExprs order matches the
+	// emitted SQL order (JOIN, WHERE, ORDER BY, LIMIT) rather than the order
+	// the pipeline steps happened to appear in.
+	vector<const Expression*> joinParams;
+	vector<const Expression*> whereParams;
+	vector<const Expression*> orderParams;
+	vector<const Expression*> limitParams;
+
 	for ( auto &step : query->mSteps )
 	{
 		switch ( step.mType )
 		{
 		case QueryPipelineStep::WHERE:
 			if ( !whereClause.empty() ) whereClause += " AND ";
-			whereClause += exprToSQL( step.mExpression, result.params );
+			whereClause += exprToSQL( step.mExpression, whereParams );
 			break;
 
 		case QueryPipelineStep::ORDER_BY:
-			orderByClause = exprToSQL( step.mExpression, result.params );
+			orderByClause = exprToSQL( step.mExpression, orderParams );
 			break;
 
 		case QueryPipelineStep::LIMIT:
 		{
 			ConstInteger *ci = dynamic_cast<ConstInteger*>( (Expression*)step.mExpression );
 			if ( ci )
+			{
 				limitClause = to_string( ci->mValue );
+			}
 			else
+			{
 				limitClause = "?";
+				limitParams.push_back( (const Expression*)step.mExpression );
+			}
 			break;
 		}
 
 		case QueryPipelineStep::JOIN:
 		{
 			string joinTable = tableNameToSQL( step.mJoinTable );
-			string joinCond = exprToSQL( step.mExpression, result.params );
+			string joinCond = exprToSQL( step.mExpression, joinParams );
 			joinClause += " JOIN " + joinTable + " ON " + joinCond;
 			break;
 		}
@@ -156,6 +154,11 @@ SQLStatement SQLGen::generateSelect( QueryExpression *query, Module *mod )
 	if ( !whereClause.empty() ) ss << " WHERE " << whereClause;
 	if ( !orderByClause.empty() ) ss << " ORDER BY " << orderByClause;
 	if ( !limitClause.empty() ) ss << " LIMIT " << limitClause;
+
+	result.paramExprs.insert( result.paramExprs.end(), joinParams.begin(), joinParams.end() );
+	result.paramExprs.insert( result.paramExprs.end(), whereParams.begin(), whereParams.end() );
+	result.paramExprs.insert( result.paramExprs.end(), orderParams.begin(), orderParams.end() );
+	result.paramExprs.insert( result.paramExprs.end(), limitParams.begin(), limitParams.end() );
 
 	result.sql = ss.str();
 	return result;
@@ -181,6 +184,7 @@ SQLStatement SQLGen::generateInsert( InsertExpression *insert, Module *mod )
 	{
 		if ( i > 0 ) ss << ", ";
 		ss << "?";
+		result.paramExprs.push_back( (const Expression*)insert->mFieldValues[i] );
 	}
 
 	ss << ")";
@@ -197,8 +201,13 @@ SQLStatement SQLGen::generateUpdate( UpdateExpression *update, Module *mod )
 
 	ss << "UPDATE " << tableName;
 
+	// Collect SET and WHERE params separately: in the emitted SQL, SET precedes
+	// WHERE, so their `?` placeholders (and thus paramExprs) must be ordered
+	// SET-first regardless of pipeline step order.
 	string setClauses;
 	string whereClause;
+	vector<const Expression*> setParams;
+	vector<const Expression*> whereParams;
 
 	for ( auto &step : update->mSteps )
 	{
@@ -206,7 +215,7 @@ SQLStatement SQLGen::generateUpdate( UpdateExpression *update, Module *mod )
 		{
 		case QueryPipelineStep::WHERE:
 			if ( !whereClause.empty() ) whereClause += " AND ";
-			whereClause += exprToSQL( step.mExpression, result.params );
+			whereClause += exprToSQL( step.mExpression, whereParams );
 			break;
 
 		case QueryPipelineStep::SET:
@@ -214,7 +223,7 @@ SQLStatement SQLGen::generateUpdate( UpdateExpression *update, Module *mod )
 			{
 				if ( !setClauses.empty() ) setClauses += ", ";
 				setClauses += field.first + " = " +
-					exprToSQL( field.second, result.params );
+					exprToSQL( field.second, setParams );
 			}
 			break;
 
@@ -225,6 +234,9 @@ SQLStatement SQLGen::generateUpdate( UpdateExpression *update, Module *mod )
 
 	if ( !setClauses.empty() ) ss << " SET " << setClauses;
 	if ( !whereClause.empty() ) ss << " WHERE " << whereClause;
+
+	result.paramExprs.insert( result.paramExprs.end(), setParams.begin(), setParams.end() );
+	result.paramExprs.insert( result.paramExprs.end(), whereParams.begin(), whereParams.end() );
 
 	result.sql = ss.str();
 	return result;
@@ -245,7 +257,7 @@ SQLStatement SQLGen::generateDelete( DeleteExpression *del, Module *mod )
 		if ( step.mType == QueryPipelineStep::WHERE )
 		{
 			if ( !whereClause.empty() ) whereClause += " AND ";
-			whereClause += exprToSQL( step.mExpression, result.params );
+			whereClause += exprToSQL( step.mExpression, result.paramExprs );
 		}
 	}
 

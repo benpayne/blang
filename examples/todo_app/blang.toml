@@ -1,0 +1,12 @@
+[project]
+name = "todo_app"
+version = "0.1.0"
+type = "bin"
+
+# The default database connection. Opened automatically in main() at startup and
+# used by query/insert/update/delete on the Todo table. A relative path stores
+# the SQLite database in the working directory; "env:DATABASE_URL" would resolve
+# the connection string from the environment at runtime instead.
+[database]
+driver = "sqlite"
+url = "todos.db"

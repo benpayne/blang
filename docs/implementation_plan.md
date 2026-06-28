@@ -252,13 +252,13 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 147 | Parse `insert T { field: value }` | impl | YES | `InsertExpression` AST node |
 | 148 | Parse `update T |> where { } |> set { }` | impl | YES | `UpdateExpression` AST node |
 | 149 | Parse `delete T |> where { }` | impl | YES | `DeleteExpression` AST node |
-| 150 | Compile-time field validation | impl | PARTIAL | Query field references parsed; full compile-time field existence checking pending |
+| 150 | Compile-time field validation | impl | YES | Query/update/delete field refs and insert field names validated against the table struct (`validateQueryFields`/`validateInsertFields`); unknown field is a compile error. Test: cgfail/query_bad_field.b. (JOIN field refs validated against primary table only.) |
 | 151 | SQL generation backend | impl | YES | `SQLGen` translates query AST to parameterized SQL (SELECT/INSERT/UPDATE/DELETE, CREATE TABLE) |
 | 152 | Implement database runtime library | impl | YES | `blang_db` library with connection, query, result APIs; optional SQLite backend |
-| 153 | Support `@db("name")` annotation for named connections | impl | PARTIAL | Annotation parsing works; runtime multi-database dispatch pending |
+| 153 | Support `@db("name")` annotation for named connections | impl | YES | `[database.<name>]` parsed and registered via `__blang_db_register`; query codegen routes through `__blang_db_get("name")` when the table struct carries `@db("name")`, else the default connection |
 | 154 | Add pass tests for queries | test | YES | table_struct.b, query_basic.b, query_insert.b, query_update.b, query_delete.b, query_join.b |
 | 155 | Add fail tests for queries | test | YES | query_missing_table.b, insert_missing_brace.b, table_missing_struct.b |
-| 156 | Add end-to-end test with SQLite | test | — | Parse → SQL → execute against real database |
+| 156 | Add end-to-end test with SQLite | test | YES | `test_files/codegen_db_query.b` — insert/update/delete/select with bound WHERE/SET params against in-memory SQLite (run via test_codegen.sh, gated on SQLite) |
 | 157 | Document query system | docs | YES | Documented in CLAUDE.md |
 
 ### 3.3 Automatic Migrations
@@ -269,12 +269,12 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 159 | Implement schema diff engine | impl | YES | Compares current table structs against stored snapshot |
 | 160 | Generate `CREATE TABLE` for new tables | impl | YES | `SchemaMigration` generates CREATE TABLE SQL |
 | 161 | Generate `ALTER TABLE ADD COLUMN` for new fields | impl | YES | `SchemaMigration` generates ALTER TABLE ADD COLUMN |
-| 162 | Detect and flag destructive changes | impl | PARTIAL | Detection implemented; `@drop` annotation enforcement pending |
+| 162 | Detect and flag destructive changes | impl | YES | Detection implemented; `bcc migrate --apply` refuses destructive steps unless `--allow-destructive` is passed |
 | 163 | Implement `blang migrate --preview` | impl | YES | `bcc migrate --preview` shows pending SQL |
 | 164 | Implement `blang migrate --apply` | impl | YES | `bcc migrate --apply` executes migrations |
 | 165 | Implement `blang migrate --generate` | impl | YES | `bcc migrate --generate` writes SQL to file |
-| 166 | Add `@drop` annotation for confirmed removals | impl | — | Not yet implemented |
-| 167 | Add tests for migration generation | test | — | Pending |
+| 166 | Add `@drop` annotation for confirmed removals | impl | PARTIAL | Destructive removals gated behind the `--allow-destructive` CLI confirmation; a per-entity `@drop` annotation (vs. the global flag) is still future |
+| 167 | Add tests for migration generation | test | YES | `test_migrate.sh` — create table, add column, destructive-guard refuse/allow, end to end against SQLite |
 | 168 | Document migration system | docs | YES | Documented in CLAUDE.md |
 
 ### 3.4 Serialization Annotations
@@ -331,11 +331,11 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
 | 198 | Implement `blang.toml` project configuration | impl | YES | `ProjectConfig` class parses blang.toml for project metadata, type (bin/lib), and dependencies |
-| 199 | Implement Postgres driver in stdlib | impl | — | libpq-based or native protocol |
-| 200 | Implement SQLite driver in stdlib | impl | — | For local development and testing |
-| 201 | Implement connection pooling | impl | — | Shared connection pool with configurable size |
-| 202 | Add database integration tests | test | — | Full roundtrip: table struct → migrate → query → validate |
-| 203 | Document database configuration | docs | — | Update CLAUDE.md |
+| 199 | Implement Postgres driver in stdlib | impl | PARTIAL | libpq backend implemented (`pg_open`/`pg_query`/`pg_exec` with `?`→`$n` rewrite), compile-guarded behind `BLANG_HAS_POSTGRES`; not yet exercised in CI (requires libpq-dev) |
+| 200 | Implement SQLite driver in stdlib | impl | YES | SQLite backend with runtime parameter binding behind a driver-dispatch layer; tested via codegen_db_query.b + test_migrate.sh |
+| 201 | Implement connection pooling | impl | — | Deferred; process uses a single shared default/named connection (sufficient for SQLite/single-threaded). Pooling for file/Postgres connections is future |
+| 202 | Add database integration tests | test | YES | `test_migrate.sh` (migrate → apply against SQLite) + `codegen_db_query.b` (insert/update/delete/query roundtrip with bound params) |
+| 203 | Document database configuration | docs | YES | CLAUDE.md: `[database]`/`[database.<name>]` blang.toml format, BLANG_DATABASE_URL fallback, migrate workflow, driver status |
 
 ---
 
@@ -447,10 +447,10 @@ These tasks span multiple phases and should be addressed incrementally.
 |-------|-------|-------|------|---------|----------|-----------|
 | Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 75 | 0 | 1 | 0 |
 | Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 50 | 1 | 0 | 6 |
-| Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 43 | 3 | 0 | 24 |
+| Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 51 | 2 | 0 | 17 |
 | Phase 4 | 218–250 | Build system: .bmod, blang.toml, deps, cache | 33 | 0 | 0 | 0 |
 | Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 9 | 3 | 0 | 2 |
-| **Total** | **250** | | **210** | **7** | **1** | **32** |
+| **Total** | **250** | | **218** | **6** | **1** | **25** |
 
 ### Phase 1 Complete
 
