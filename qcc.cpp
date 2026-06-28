@@ -158,6 +158,32 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				structDef->setIsTable( true );
 				structDef->setAnnotations( annotations );
 				mod->mStructList.push_back( structDef );
+
+				// A table struct may also be @json (serialized over the wire);
+				// register the generated to_json/from_json forward declarations
+				// just like a plain @json struct so they resolve at parse time.
+				for ( const auto &ann : annotations )
+				{
+					if ( ann.mName == "json" )
+					{
+						if ( structDef->isGeneric() )
+							COMPILE_ERROR( l, "@json is not yet supported on generic struct '" + structDef->getName() + "' (requires monomorphization)" );
+
+						FunctionDefinition *toJson = new FunctionDefinition( structDef->getName() + "_to_json" );
+						toJson->mReturnType = new Type( "string" );
+						toJson->mParameters.push_back( new VariableDefinition( new Type( structDef->getName() ), "self" ) );
+						toJson->mIsExtern = true;
+						s->addSymbol( toJson );
+
+						FunctionDefinition *fromJson = new FunctionDefinition( structDef->getName() + "_from_json" );
+						fromJson->mReturnType = new Type( structDef->getName() );
+						fromJson->mParameters.push_back( new VariableDefinition( new Type( "string" ), "input" ) );
+						fromJson->mIsExtern = true;
+						s->addSymbol( fromJson );
+						break;
+					}
+				}
+
 				cout << "Completed table struct " << structDef->getName() << endl;
 				continue;
 			}
