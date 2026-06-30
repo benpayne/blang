@@ -1136,6 +1136,11 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		}
 	}
 
+	// Channel locals are tracked per body; save/clear so a generic function
+	// instantiated mid-codegen doesn't disturb the enclosing body's set.
+	std::vector<llvm::AllocaInst*> savedFunctionChannels = mFunctionChannels;
+	mFunctionChannels.clear();
+
 	// Push a function-level scope for parameter tracking. This scope is
 	// released in genReturnStatement and popped after genBlock returns.
 	mStringScopeStack.push_back( {} );
@@ -1284,6 +1289,10 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		if ( isMain && mUsesConcurrency )
 			mBuilder->CreateCall( getOrDeclareRuntimeShutdown(), {} );
 
+		// Release this body's channel locals (in main, after shutdown has joined
+		// the spawns; refcounting makes the order irrelevant either way).
+		releaseFunctionChannels();
+
 		if ( retType->isVoidTy() )
 		{
 			mBuilder->CreateRetVoid();
@@ -1310,6 +1319,7 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	mResultAlloca = nullptr;
 	mVariableMap.clear();
 	mMovedVariables.clear();
+	mFunctionChannels = savedFunctionChannels;
 
 	return llvmFunc;
 }
@@ -1876,6 +1886,9 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 				getOrDeclareChanCreate(), { sizeVal, capVal }, "chan.ptr" );
 			mBuilder->CreateStore( chanPtr, alloca );
 
+			// Track for release at body exit (the creating scope's reference).
+			mFunctionChannels.push_back( alloca );
+
 			mUsesConcurrency = true;
 			continue;
 		}
@@ -2222,6 +2235,9 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 	{
 		mBuilder->CreateCall( getOrDeclareRuntimeShutdown(), {} );
 	}
+
+	// Release channel locals (the creating scope's reference) before returning.
+	releaseFunctionChannels();
 
 	// Emit ARC releases for all in-scope shared/sync variables before returning
 	for ( auto it = mArcScopeStack.rbegin(); it != mArcScopeStack.rend(); ++it )
@@ -5464,6 +5480,47 @@ llvm::Function *CodeGen::getOrDeclareChanClose()
 		ft, llvm::Function::ExternalLinkage, "__blang_chan_close", mModule.get() );
 }
 
+llvm::Function *CodeGen::getOrDeclareChanRetain()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_chan_retain" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_chan_retain", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareChanRelease()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_chan_release" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_chan_release", mModule.get() );
+}
+
+// Emit __blang_chan_release for each channel local declared in the current
+// body. Loads the current channel pointer from each tracked alloca and releases
+// the creating scope's reference. Called at each exit path of the body.
+void CodeGen::releaseFunctionChannels()
+{
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	for ( llvm::AllocaInst *alloca : mFunctionChannels )
+	{
+		llvm::Value *chanPtr = mBuilder->CreateLoad( ptrTy, alloca, "chan.rel" );
+		mBuilder->CreateCall( getOrDeclareChanRelease(), { chanPtr } );
+	}
+}
+
 llvm::Function *CodeGen::getOrDeclareChanDestroy()
 {
 	llvm::Function *f = mModule->getFunction( "__blang_chan_destroy" );
@@ -5639,6 +5696,10 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 
 	// Track which captures are shared/sync for RC retain/release
 	std::vector<size_t> rcCaptureIndices;
+	// Track which captures are channels: each capturing spawn retains the
+	// channel and releases it on completion, so the channel outlives the
+	// spawn even if the creating scope releases its reference first.
+	std::vector<size_t> chanCaptureIndices;
 	for ( size_t i = 0; i < captures.size(); i++ )
 	{
 		OwnershipQualifier capOwnership = captures[i].first->getOwnership();
@@ -5647,6 +5708,9 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 		{
 			rcCaptureIndices.push_back( i );
 		}
+		Type *capType = captures[i].first->getVariableType();
+		if ( capType != nullptr && capType->getName() == "chan" )
+			chanCaptureIndices.push_back( i );
 	}
 
 	// Create the context struct type
@@ -5686,6 +5750,7 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	auto savedTempStrings = mTempStrings;
 	auto savedTempLambdaCtxs = mTempLambdaCtxs;
 	auto savedSpawnOwnVars = mSpawnOuterOwnVars;
+	auto savedFunctionChannels = mFunctionChannels;
 
 	// Generate the spawn function body
 	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(
@@ -5693,6 +5758,7 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	mBuilder->SetInsertPoint( entryBB );
 
 	mVariableMap.clear();
+	mFunctionChannels.clear();
 	mMovedVariables.clear();
 	mLoopStack.clear();
 	mArcScopeStack.clear();
@@ -5744,6 +5810,18 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 				llvm::PointerType::get( *mContext, 0 ), localAlloca, "rc.spawn.rel" );
 			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
 		}
+
+		// Release this spawn's reference to each captured channel.
+		for ( size_t idx : chanCaptureIndices )
+		{
+			llvm::AllocaInst *localAlloca = mVariableMap[captures[idx].first];
+			llvm::Value *chanPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), localAlloca, "chan.spawn.rel" );
+			mBuilder->CreateCall( getOrDeclareChanRelease(), { chanPtr } );
+		}
+
+		// Release any channels declared inside the spawn body itself.
+		releaseFunctionChannels();
 	}
 
 	// Add implicit return
@@ -5764,6 +5842,7 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 	mTempStrings = savedTempStrings;
 	mTempLambdaCtxs = savedTempLambdaCtxs;
 	mSpawnOuterOwnVars = savedSpawnOwnVars;
+	mFunctionChannels = savedFunctionChannels;
 
 	// Back in the caller: allocate context, populate, and call __blang_spawn
 	llvm::DataLayout dl( mModule.get() );
@@ -5794,6 +5873,15 @@ llvm::Value *CodeGen::genSpawnStatement( SpawnStatement *spawn )
 		llvm::Value *val = mBuilder->CreateLoad(
 			alloca->getAllocatedType(), alloca, "rc.spawn.ret" );
 		mBuilder->CreateCall( getOrDeclareRcRetain(), { val } );
+	}
+
+	// Retain each captured channel so it survives until this spawn releases it.
+	for ( size_t idx : chanCaptureIndices )
+	{
+		llvm::AllocaInst *alloca = captures[idx].second;
+		llvm::Value *val = mBuilder->CreateLoad(
+			alloca->getAllocatedType(), alloca, "chan.spawn.ret" );
+		mBuilder->CreateCall( getOrDeclareChanRetain(), { val } );
 	}
 
 	// Call __blang_spawn(spawn_body, ctx) — returns BlangSpawnTask*

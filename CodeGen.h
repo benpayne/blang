@@ -299,6 +299,11 @@ private:
 	llvm::Function *getOrDeclareChanSend();
 	llvm::Function *getOrDeclareChanRecv();
 	llvm::Function *getOrDeclareChanClose();
+	llvm::Function *getOrDeclareChanRetain();
+	llvm::Function *getOrDeclareChanRelease();
+	// Emit __blang_chan_release for every channel local tracked in the current
+	// body (used at each exit path).
+	void releaseFunctionChannels();
 	llvm::Function *getOrDeclareChanDestroy();
 	llvm::Function *getOrDeclareEventOn();
 	llvm::Function *getOrDeclareAsyncCall();
@@ -444,6 +449,12 @@ private:
 
 	// Buffer refcount tracking: buffer variables per scope depth
 	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mBufferScopeStack;
+
+	// Channel (chan<T>) refcount tracking: the channel allocas declared in the
+	// current function/spawn/lambda body. Released (the creating-scope's
+	// reference) at every exit path of that body. Saved/cleared/restored around
+	// nested bodies so each body manages only its own channels.
+	std::vector<llvm::AllocaInst*> mFunctionChannels;
 
 	// Lambda/fn-typed variable tracking: release ctx on scope exit
 	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mLambdaScopeStack;

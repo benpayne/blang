@@ -388,6 +388,7 @@ struct BlangChan
 	size_t tail;           /* write position */
 	size_t count;          /* current number of elements */
 	int closed;            /* 1 if channel is closed */
+	int refcount;          /* references held (creator + capturing spawns) */
 	pthread_mutex_t mutex;
 	pthread_cond_t not_empty;
 	pthread_cond_t not_full;
@@ -408,6 +409,7 @@ BlangChan *__blang_chan_create( size_t elem_size, size_t capacity )
 	ch->tail = 0;
 	ch->count = 0;
 	ch->closed = 0;
+	ch->refcount = 1;
 	pthread_mutex_init( &ch->mutex, NULL );
 	pthread_cond_init( &ch->not_empty, NULL );
 	pthread_cond_init( &ch->not_full, NULL );
@@ -482,6 +484,21 @@ void __blang_chan_destroy( BlangChan *ch )
 	pthread_cond_destroy( &ch->not_full );
 	free( ch->buffer );
 	free( ch );
+}
+
+void __blang_chan_retain( BlangChan *ch )
+{
+	if ( ch == NULL )
+		return;
+	__atomic_add_fetch( &ch->refcount, 1, __ATOMIC_SEQ_CST );
+}
+
+void __blang_chan_release( BlangChan *ch )
+{
+	if ( ch == NULL )
+		return;
+	if ( __atomic_sub_fetch( &ch->refcount, 1, __ATOMIC_SEQ_CST ) == 0 )
+		__blang_chan_destroy( ch );
 }
 
 /* ========================================================================

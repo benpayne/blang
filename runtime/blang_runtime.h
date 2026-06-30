@@ -132,6 +132,14 @@ void __blang_chan_close( BlangChan *ch );
 /* Destroy the channel and free all resources. */
 void __blang_chan_destroy( BlangChan *ch );
 
+/* Reference counting: a channel is created with refcount 1 (the creating
+   scope's reference). Each spawn that captures it retains it; the capturing
+   scope and every spawn release it when done. The channel is destroyed when
+   the count reaches 0, so it survives until both the creator and all capturing
+   green threads are finished — regardless of which finishes last. */
+void __blang_chan_retain( BlangChan *ch );
+void __blang_chan_release( BlangChan *ch );
+
 /* ---- Async / Event Loop ---- */
 
 /* Signature for an async task: void*(*)(void*). */
