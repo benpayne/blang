@@ -6866,21 +6866,36 @@ llvm::Value *CodeGen::genIndirectCallExpression( IndirectCallExpression *indCall
 	// Build argument list: ctx_ptr, then user args
 	std::vector<llvm::Value*> args;
 	args.push_back( ctxPtr );
+	// Struct-literal arguments are owned temporaries the callee borrows; the
+	// caller must release them after the call (same as direct calls — e.g. a
+	// selector callback invoked as `callback(Socket { fd: fd })`).
+	std::vector<llvm::Value*> structLiteralTempArgs;
 	for ( auto &paramExpr : indCall->mParams )
 	{
 		llvm::Value *argVal = genExpression( paramExpr );
 		if ( argVal == nullptr )
 			return nullptr;
+		if ( argVal->getType()->isPointerTy() &&
+			 dynamic_cast<StructLiteralExpression*>( (Expression*)paramExpr ) != nullptr )
+			structLiteralTempArgs.push_back( argVal );
 		args.push_back( argVal );
 	}
+
+	auto releaseStructLiteralTempArgs = [&]() {
+		for ( llvm::Value *st : structLiteralTempArgs )
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { st } );
+	};
 
 	if ( retType->isVoidTy() )
 	{
 		mBuilder->CreateCall( callType, fnPtr, args );
+		releaseStructLiteralTempArgs();
 		return nullptr;
 	}
 
-	return mBuilder->CreateCall( callType, fnPtr, args, "indcall" );
+	llvm::Value *indResult = mBuilder->CreateCall( callType, fnPtr, args, "indcall" );
+	releaseStructLiteralTempArgs();
+	return indResult;
 }
 
 // ---- Wait statement codegen ----
