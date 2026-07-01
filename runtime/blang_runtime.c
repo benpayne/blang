@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <setjmp.h>
 
 #ifdef BLANG_HAS_LIBUV
 #include <uv.h>
@@ -639,3 +640,91 @@ void __blang_task_destroy( BlangTask *task )
 }
 
 #endif /* BLANG_HAS_LIBUV */
+
+/* ========================================================================
+   Test Framework
+
+   BLang's built-in test runner. Each `test "name" { }` block compiles to a
+   void(void) function; the generated test `main` calls __blang_run_one_test
+   for each. A failed `assert` inside a test longjmps back to the runner so one
+   failing test reports and the suite continues (per-test isolation), instead of
+   the whole process exit(1)-ing. An assert outside any test still exits(1),
+   preserving behavior for asserts in normal code and requires/ensures clauses.
+   Single-threaded by design: state is plain globals, not thread-local.
+   ======================================================================== */
+
+static jmp_buf g_test_jmp;          /* landing pad for a failed assert */
+static int g_test_active = 0;       /* 1 while a test body is running */
+static int g_tests_passed = 0;
+static int g_tests_failed = 0;
+static char g_fail_msg[512];        /* stored failure message */
+static char g_fail_loc[256];        /* stored failure location (file:line) */
+
+int __blang_run_one_test( const char *name, blang_test_fn testfn )
+{
+	if ( name == NULL )
+		name = "(unnamed)";
+
+	g_fail_msg[0] = '\0';
+	g_fail_loc[0] = '\0';
+
+	if ( setjmp( g_test_jmp ) == 0 )
+	{
+		/* First return from setjmp: run the test. */
+		g_test_active = 1;
+		testfn();
+		g_test_active = 0;
+		g_tests_passed++;
+		printf( "  PASS: %s\n", name );
+		return 1;
+	}
+	else
+	{
+		/* Returned here via longjmp from __blang_assert_fail. */
+		g_test_active = 0;
+		g_tests_failed++;
+		if ( g_fail_loc[0] != '\0' )
+			printf( "  FAIL: %s\n    %s (%s)\n", name, g_fail_msg, g_fail_loc );
+		else
+			printf( "  FAIL: %s\n    %s\n", name, g_fail_msg );
+		return 0;
+	}
+}
+
+void __blang_assert_fail( const char *msg, const char *loc )
+{
+	if ( msg == NULL )
+		msg = "assertion failed";
+
+	if ( g_test_active )
+	{
+		/* Inside a test: stash the failure and unwind to the runner so the
+		   remaining tests still run. */
+		strncpy( g_fail_msg, msg, sizeof( g_fail_msg ) - 1 );
+		g_fail_msg[sizeof( g_fail_msg ) - 1] = '\0';
+		if ( loc != NULL )
+		{
+			strncpy( g_fail_loc, loc, sizeof( g_fail_loc ) - 1 );
+			g_fail_loc[sizeof( g_fail_loc ) - 1] = '\0';
+		}
+		else
+		{
+			g_fail_loc[0] = '\0';
+		}
+		longjmp( g_test_jmp, 1 );
+	}
+
+	/* Outside any test (normal code / requires / ensures): preserve the
+	   historical behavior of printing the message and exiting. */
+	if ( loc != NULL && loc[0] != '\0' )
+		fprintf( stderr, "%s (%s)\n", msg, loc );
+	else
+		fprintf( stderr, "%s\n", msg );
+	exit( 1 );
+}
+
+int __blang_test_report( void )
+{
+	printf( "\n%d passed, %d failed\n", g_tests_passed, g_tests_failed );
+	return g_tests_failed > 0 ? 1 : 0;
+}

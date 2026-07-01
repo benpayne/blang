@@ -451,6 +451,7 @@ static void printUsage( const char *progName )
 	std::cerr << "  -o, --output FILE Output file name" << std::endl;
 	std::cerr << "  --parse-only      Parse only, no code generation" << std::endl;
 	std::cerr << "  --combine         Combine all .b files into a single .ll output" << std::endl;
+	std::cerr << "  --test-main       Emit the test runner as main() (for `bcc test`)" << std::endl;
 #endif
 	std::cerr << "  --emit-bmod FILE  Emit .bmod interface file" << std::endl;
 	std::cerr << "  -h, --help        Show this help" << std::endl;
@@ -468,6 +469,7 @@ int main( int argc, char *argv[] )
 	bool emitObj = false;
 	bool parseOnly = false;
 	bool combineMode = false;
+	bool testMainMode = false;
 	std::string outputFile;
 	std::string emitBmodFile;
 	std::string emitSchemaFile;
@@ -489,6 +491,8 @@ int main( int argc, char *argv[] )
 			parseOnly = true;
 		else if ( arg == "--combine" )
 			combineMode = true;
+		else if ( arg == "--test-main" )
+			testMainMode = true;
 		else if ( arg == "--emit-bmod" )
 		{
 			if ( i + 1 < argc )
@@ -863,6 +867,7 @@ int main( int argc, char *argv[] )
 
 			QLang::CodeGen codegen( combinedName.c_str() );
 			codegen.registerExternalTypes( allStructs, allEnums );
+			codegen.setTestMainMode( testMainMode );
 			codegen.setDbConfig( dbDriver, dbUrl );
 			for ( auto &c : dbNamedConns )
 				codegen.addDbNamedConn( c.name, c.driver, c.url );
@@ -953,6 +958,7 @@ int main( int argc, char *argv[] )
 
 				const std::string &inputFile = inputFiles[ idx ];
 				QLang::CodeGen codegen( inputFile.c_str() );
+				codegen.setTestMainMode( testMainMode );
 				codegen.setDbConfig( dbDriver, dbUrl );
 				for ( auto &c : dbNamedConns )
 					codegen.addDbNamedConn( c.name, c.driver, c.url );

@@ -768,6 +768,11 @@ bool CodeGen::generate( Module *mod )
 		if ( func->isGeneric() )
 			continue;
 
+		// In --test-main mode the test runner becomes `main`, so skip the user's
+		// own main to avoid a duplicate symbol.
+		if ( mTestMainMode && func->getName() == "main" )
+			continue;
+
 		if ( genFunction( func ) == nullptr )
 			return false;
 	}
@@ -5171,6 +5176,51 @@ llvm::Value *CodeGen::genIndexExpression( IndexExpression *expr )
 
 // ---- Phase 2: Runtime helper declarations ----
 
+llvm::Function *CodeGen::getOrDeclareRunOneTest()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_run_one_test" );
+	if ( f != nullptr )
+		return f;
+
+	// int __blang_run_one_test( const char *name, void (*testfn)(void) )
+	llvm::PointerType *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ),
+		{ ptrTy, ptrTy },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_run_one_test", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareAssertFail()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_assert_fail" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_assert_fail( const char *msg, const char *loc )
+	llvm::PointerType *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ),
+		{ ptrTy, ptrTy },
+		false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_assert_fail", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareTestReport()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_test_report" );
+	if ( f != nullptr )
+		return f;
+
+	// int __blang_test_report( void )
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getInt32Ty( *mContext ), {}, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_test_report", mModule.get() );
+}
+
 llvm::Function *CodeGen::getOrDeclarePuts()
 {
 	llvm::Function *f = mModule->getFunction( "puts" );
@@ -5603,18 +5653,26 @@ void CodeGen::genAssertStatement( AssertStatement *assertStmt )
 
 	mBuilder->CreateCondBr( condVal, passBB, failBB );
 
-	// Fail block: print message and exit(1)
+	// Fail block: report the failure via the runtime. When run inside a `test`
+	// block this longjmps back to the runner (per-test isolation); otherwise it
+	// prints the message and exit(1)s (asserts in normal code / requires /
+	// ensures keep their historical behavior).
 	mBuilder->SetInsertPoint( failBB );
 
-	llvm::Function *putsFunc = getOrDeclarePuts();
-	llvm::Function *exitFunc = getOrDeclareExit();
+	llvm::Function *assertFailFunc = getOrDeclareAssertFail();
 
 	std::string msg = assertStmt->mMessage.empty()
 		? "Assertion failed" : assertStmt->mMessage;
 	llvm::Value *msgVal = mBuilder->CreateGlobalStringPtr( msg, "assert.msg" );
-	mBuilder->CreateCall( putsFunc, { msgVal } );
-	mBuilder->CreateCall( exitFunc,
-		{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 1 ) } );
+
+	// Location string: "line N" (the lexer does not track source filenames).
+	std::string loc = assertStmt->mLine > 0
+		? ( "line " + std::to_string( assertStmt->mLine ) ) : std::string();
+	llvm::Value *locVal = loc.empty()
+		? llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) )
+		: mBuilder->CreateGlobalStringPtr( loc, "assert.loc" );
+
+	mBuilder->CreateCall( assertFailFunc, { msgVal, locVal } );
 	mBuilder->CreateUnreachable();
 
 	// Continue in pass block
@@ -10043,34 +10101,36 @@ llvm::Function *CodeGen::genTestBlock( TestBlock *testBlock )
 void CodeGen::genTestRunner( const std::vector<llvm::Function*> &testFunctions,
 	const std::vector<SmartPtr<TestBlock>> &testBlocks )
 {
-	// Create void __blang_run_tests() that calls each test function
+	// The runner returns an int process exit code (0 = all passed, 1 = any
+	// failed). In --test-main mode it IS the program's `main` (so `bcc test`
+	// produces a runnable binary); otherwise it is a callable helper
+	// `__blang_run_tests`.
 	llvm::FunctionType *ft = llvm::FunctionType::get(
-		llvm::Type::getVoidTy( *mContext ), {}, false );
+		llvm::Type::getInt32Ty( *mContext ), {}, false );
+	const char *runnerName = mTestMainMode ? "main" : "__blang_run_tests";
 	llvm::Function *runTests = llvm::Function::Create(
-		ft, llvm::Function::ExternalLinkage, "__blang_run_tests", mModule.get() );
+		ft, llvm::Function::ExternalLinkage, runnerName, mModule.get() );
 
 	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", runTests );
 	mBuilder->SetInsertPoint( entryBB );
 
-	llvm::Function *putsFunc = getOrDeclarePuts();
+	llvm::Function *runOne = getOrDeclareRunOneTest();
+	llvm::Function *report = getOrDeclareTestReport();
+	llvm::PointerType *ptrTy = llvm::PointerType::get( *mContext, 0 );
 
 	for ( size_t i = 0; i < testFunctions.size(); i++ )
 	{
-		// Print test name
-		std::string msg = "Running test: " + testBlocks[i]->getName();
-		llvm::Value *msgVal = mBuilder->CreateGlobalStringPtr( msg, "testmsg" );
-		mBuilder->CreateCall( putsFunc, { msgVal } );
-
-		// Call the test function
-		mBuilder->CreateCall( testFunctions[i], {} );
-
-		// Print pass (if assert failed inside, exit() already terminated)
-		std::string passMsg = "  PASSED: " + testBlocks[i]->getName();
-		llvm::Value *passMsgVal = mBuilder->CreateGlobalStringPtr( passMsg, "passmsg" );
-		mBuilder->CreateCall( putsFunc, { passMsgVal } );
+		// __blang_run_one_test( name, testfn ) runs the test in isolation and
+		// prints PASS/FAIL itself.
+		llvm::Value *nameVal = mBuilder->CreateGlobalStringPtr(
+			testBlocks[i]->getName(), "testname" );
+		llvm::Value *fnPtr = mBuilder->CreateBitCast( testFunctions[i], ptrTy );
+		mBuilder->CreateCall( runOne, { nameVal, fnPtr } );
 	}
 
-	mBuilder->CreateRetVoid();
+	// Print the summary and return its exit code.
+	llvm::Value *exitCode = mBuilder->CreateCall( report, {}, "testexit" );
+	mBuilder->CreateRet( exitCode );
 }
 
 // Builtin to_json(value): resolve the argument's struct type at compile time

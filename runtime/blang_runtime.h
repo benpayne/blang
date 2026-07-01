@@ -140,6 +140,31 @@ void __blang_chan_destroy( BlangChan *ch );
 void __blang_chan_retain( BlangChan *ch );
 void __blang_chan_release( BlangChan *ch );
 
+/* ---- Test Framework ---- */
+
+/* Signature for a compiled `test "name" { }` block: void(*)(void). */
+typedef void (*blang_test_fn)( void );
+
+/* Run a single test in isolation.  Marks a test active, sets a setjmp landing
+   pad, and calls `testfn`.  On normal return prints "  PASS: name" and counts a
+   pass.  If an `assert` inside the test fails, __blang_assert_fail longjmps back
+   here; this prints "  FAIL: name" plus the stored failure message + location
+   and counts a failure.  Returns 1 if the test passed, 0 if it failed. */
+int __blang_run_one_test( const char *name, blang_test_fn testfn );
+
+/* Called by generated code on a failed `assert`.  `msg` is the assertion
+   message (never NULL); `loc` is a "file:line" location string (may be NULL).
+   If a test is currently active, the failure is stored and control longjmps
+   back to __blang_run_one_test (per-test isolation).  Otherwise (an assert in
+   normal code, or in requires/ensures) the message is printed and the process
+   exits with status 1 — preserving the pre-framework behavior. */
+void __blang_assert_fail( const char *msg, const char *loc );
+
+/* Print the run summary ("N passed, M failed") and return a process exit code:
+   0 if every test passed, 1 if any failed.  Generated test `main` returns
+   this value. */
+int __blang_test_report( void );
+
 /* ---- Async / Event Loop ---- */
 
 /* Signature for an async task: void*(*)(void*). */

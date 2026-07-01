@@ -378,6 +378,7 @@ namespace QLang
 	private:
 		SmartPtr<Expression> mExpression;
 		std::string mMessage;  // optional assertion message
+		int mLine = 0;         // source line of the assert (for failure reports)
 		friend class CodeGen;
 	};
 

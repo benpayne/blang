@@ -24,6 +24,7 @@ AssertStatement *AssertStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	AssertStatement *stmt = new AssertStatement;
+	stmt->mLine = (int)l.getLineNumber();
 
 	stmt->mExpression = Expression::ParseExpr( l, scope, 0 );
 	if ( stmt->mExpression == nullptr )

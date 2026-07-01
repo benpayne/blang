@@ -32,6 +32,11 @@ public:
 	// Set a module prefix for name mangling (e.g. "sys" → functions become "sys__funcName")
 	void setModulePrefix( const std::string &prefix ) { mModulePrefix = prefix; }
 
+	// Test-main mode: emit the test runner as the program's `main` (and skip the
+	// user's own `main`) so `bcc test` can build a runnable test binary from a
+	// file that also defines main. Set by qcc's --test-main flag.
+	void setTestMainMode( bool on ) { mTestMainMode = on; }
+
 	// Configure the default database connection opened in main() (from the
 	// [database] section of blang.toml, forwarded by bcc via qcc flags).
 	// An empty url leaves the connection to the runtime's lazy env fallback.
@@ -234,6 +239,11 @@ private:
 		const std::vector<SmartPtr<TestBlock>> &testBlocks );
 	void genContractCheck( Expression *condition, const std::string &message );
 
+	// Test framework runtime declarations
+	llvm::Function *getOrDeclareRunOneTest();
+	llvm::Function *getOrDeclareAssertFail();
+	llvm::Function *getOrDeclareTestReport();
+
 	// Runtime helper declarations
 	llvm::Function *getOrDeclarePuts();
 	llvm::Function *getOrDeclareExit();
@@ -426,6 +436,10 @@ private:
 
 	// Module prefix for namespace name mangling (empty for user code)
 	std::string mModulePrefix;
+
+	// When true, the test runner is emitted as `main` and the user's own `main`
+	// is skipped (see setTestMainMode).
+	bool mTestMainMode = false;
 
 	// Database configuration (from blang.toml [database], forwarded by bcc).
 	std::string mDbDriver;   // "sqlite" / "postgres" (default sqlite)
