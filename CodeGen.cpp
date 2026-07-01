@@ -596,6 +596,12 @@ bool CodeGen::generate( Module *mod )
 		if ( func->isGeneric() )
 			continue;
 
+		// In --test-main mode the test runner becomes `main`; skip declaring the
+		// user's own main so LLVM does not rename the runner (which would leave
+		// `main` declared-but-undefined and break linking).
+		if ( mTestMainMode && func->getName() == "main" )
+			continue;
+
 		// Build LLVM function type — must expand fn-typed params into
 		// (fn_ptr, ctx_ptr) pairs, matching genFunction's ABI.
 		llvm::Type *retType = getLLVMType( func->mReturnType );
@@ -3003,6 +3009,59 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 
 llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 {
+	// Short-circuit logical operators must evaluate the right operand ONLY when
+	// the left does not already decide the result. This is both a semantic
+	// guarantee (right-side side effects are skipped) and a safety one: a guard
+	// like `i < n && s[i] == c` must not index the string when `i >= n`.
+	// Handle these before evaluating any operand, since the whole point is to
+	// keep the right operand unevaluated on the short path.
+	if ( ops->mOperation == "&&" || ops->mOperation == "||" )
+	{
+		bool isAnd = ( ops->mOperation == "&&" );
+		llvm::Type *i1Ty = llvm::Type::getInt1Ty( *mContext );
+
+		auto toBool = [&]( llvm::Value *v ) -> llvm::Value * {
+			if ( v->getType()->isFloatingPointTy() )
+				return mBuilder->CreateFCmpONE(
+					v, llvm::ConstantFP::get( v->getType(), 0.0 ), "tobool" );
+			return mBuilder->CreateICmpNE(
+				v, llvm::ConstantInt::get( v->getType(), 0 ), "tobool" );
+		};
+
+		llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+
+		llvm::Value *left = genExpression( ops->mOp1 );
+		if ( left == nullptr )
+			return nullptr;
+		llvm::Value *lBool = toBool( left );
+		llvm::BasicBlock *lhsEndBB = mBuilder->GetInsertBlock();
+
+		llvm::BasicBlock *rhsBB = llvm::BasicBlock::Create( *mContext, "sc.rhs", func );
+		llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create( *mContext, "sc.merge", func );
+
+		// &&: evaluate RHS only if LHS is true; ||: only if LHS is false.
+		if ( isAnd )
+			mBuilder->CreateCondBr( lBool, rhsBB, mergeBB );
+		else
+			mBuilder->CreateCondBr( lBool, mergeBB, rhsBB );
+
+		mBuilder->SetInsertPoint( rhsBB );
+		llvm::Value *right = genExpression( ops->mOp2 );
+		if ( right == nullptr )
+			return nullptr;
+		llvm::Value *rBool = toBool( right );
+		llvm::BasicBlock *rhsEndBB = mBuilder->GetInsertBlock();
+		mBuilder->CreateBr( mergeBB );
+
+		mBuilder->SetInsertPoint( mergeBB );
+		llvm::PHINode *phi = mBuilder->CreatePHI( i1Ty, 2, isAnd ? "landtmp" : "lortmp" );
+		// Short path: && short-circuits to false, || short-circuits to true.
+		phi->addIncoming(
+			llvm::ConstantInt::get( i1Ty, isAnd ? 0 : 1 ), lhsEndBB );
+		phi->addIncoming( rBool, rhsEndBB );
+		return phi;
+	}
+
 	llvm::Value *left = genExpression( ops->mOp1 );
 	llvm::Value *right = genExpression( ops->mOp2 );
 
@@ -3101,27 +3160,7 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 	if ( op == "<=" ) return isFloat ? mBuilder->CreateFCmpOLE( left, right, "letmp" ) : mBuilder->CreateICmpSLE( left, right, "letmp" );
 	if ( op == ">=" ) return isFloat ? mBuilder->CreateFCmpOGE( left, right, "getmp" ) : mBuilder->CreateICmpSGE( left, right, "getmp" );
 
-	// Logical (treat operands as booleans via != 0)
-	if ( op == "&&" )
-	{
-		llvm::Value *lBool = isFloat
-			? mBuilder->CreateFCmpONE( left, llvm::ConstantFP::get( left->getType(), 0.0 ), "lbool" )
-			: mBuilder->CreateICmpNE( left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
-		llvm::Value *rBool = isFloat
-			? mBuilder->CreateFCmpONE( right, llvm::ConstantFP::get( right->getType(), 0.0 ), "rbool" )
-			: mBuilder->CreateICmpNE( right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
-		return mBuilder->CreateAnd( lBool, rBool, "landtmp" );
-	}
-	if ( op == "||" )
-	{
-		llvm::Value *lBool = isFloat
-			? mBuilder->CreateFCmpONE( left, llvm::ConstantFP::get( left->getType(), 0.0 ), "lbool" )
-			: mBuilder->CreateICmpNE( left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
-		llvm::Value *rBool = isFloat
-			? mBuilder->CreateFCmpONE( right, llvm::ConstantFP::get( right->getType(), 0.0 ), "rbool" )
-			: mBuilder->CreateICmpNE( right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
-		return mBuilder->CreateOr( lBool, rBool, "lortmp" );
-	}
+	// Logical && / || are handled above with short-circuit evaluation.
 
 	cerr << "CodeGen: unknown binary operator '" << op << "'" << endl;
 	return nullptr;
@@ -4399,14 +4438,37 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 			// Store the value through the byte pointer
 			mBuilder->CreateStore( argVal, bytePtr );
 
-			// If storing a string into the enum payload, untrack the temp —
-			// ownership transfers to the enum value.  Detect strings by the
-			// argument's own type (isStringType), not the declared associated
-			// type: for generic enums (Option<T>/Result<T,E>) the declared type
-			// is an erased param like "T"/"E", so a name check would miss it and
-			// the string would be released at scope exit -> use-after-free.
+			// A refcounted heap payload stored into the enum escapes inside the
+			// enum value, which releases it when the enum goes out of scope
+			// (emitEnumPayloadRelease covers string/Array/Buffer/struct). The enum
+			// therefore needs to own a reference. Detect the payload kind by the
+			// argument's own static type, NOT the declared associated type: generic
+			// enums (Option<T>/Result<T,E>) declare an erased param like "T"/"E",
+			// so a name check on the associated type would miss it.
+			//   - string: transfer ownership of the temp (untrack) — keeps the
+			//     existing, tested behavior for string temps.
+			//   - Array/Buffer/struct: retain, so the origin scope's release
+			//     (e.g. a local array returned via Result.ok(a)) does not free the
+			//     value out from under the enum. Without this, an Array put into a
+			//     Result is freed early -> use-after-free on unwrap.
 			if ( argType->isPointerTy() && isStringType( expr->mArgs[i] ) )
+			{
 				untrackTempString( argVal );
+			}
+			else if ( argType->isPointerTy() && isArrayType( expr->mArgs[i] ) )
+			{
+				mBuilder->CreateCall( getOrDeclareArrayRetain(), { argVal } );
+			}
+			else if ( argType->isPointerTy() && isBufferType( expr->mArgs[i] ) )
+			{
+				mBuilder->CreateCall( getOrDeclareBufferRetain(), { argVal } );
+			}
+			else if ( argType->isPointerTy() )
+			{
+				Type *argQType = resolveExpressionQType( expr->mArgs[i] );
+				if ( argQType != nullptr && isUserStructType( argQType->getName() ) )
+					mBuilder->CreateCall( getOrDeclareRcRetain(), { argVal } );
+			}
 
 			uint64_t typeSize = dl.getTypeAllocSize( argType );
 			if ( typeSize == 0 ) typeSize = 4; // fallback
