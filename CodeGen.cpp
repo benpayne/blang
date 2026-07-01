@@ -2902,11 +2902,20 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 
 	// Generate argument values with FFI conversion for extern functions
 	std::vector<llvm::Value*> args;
+	// Struct-literal arguments are owned temporaries: the callee borrows them
+	// (retaining if it stores them, per genStructLiteral's ownership rules), so
+	// the caller must release them after the call or they leak. Collect them
+	// here and release once the call returns.
+	std::vector<llvm::Value*> structLiteralTempArgs;
 	for ( size_t argIdx = 0; argIdx < call->mParams.size(); argIdx++ )
 	{
 		llvm::Value *argVal = genExpression( call->mParams[argIdx] );
 		if ( argVal == nullptr )
 			return nullptr;
+
+		if ( argVal->getType()->isPointerTy() &&
+			 dynamic_cast<StructLiteralExpression*>( (Expression*)call->mParams[argIdx] ) != nullptr )
+			structLiteralTempArgs.push_back( argVal );
 
 		// FFI: if calling extern fn and param is cstring but arg is string,
 		// extract the .data field from BlangString*
@@ -3025,13 +3034,20 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		}
 	}
 
+	auto releaseStructLiteralTempArgs = [&]() {
+		for ( llvm::Value *st : structLiteralTempArgs )
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { st } );
+	};
+
 	if ( llvmFunc->getReturnType()->isVoidTy() )
 	{
 		mBuilder->CreateCall( llvmFunc, args );
+		releaseStructLiteralTempArgs();
 		return nullptr;
 	}
 
 	llvm::Value *callResult = mBuilder->CreateCall( llvmFunc, args, "calltmp" );
+	releaseStructLiteralTempArgs();
 
 	// Track string-returning function calls as temps
 	if ( funcDef->getReturnType() != nullptr &&
