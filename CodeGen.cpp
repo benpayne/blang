@@ -1431,7 +1431,7 @@ void CodeGen::genBlock( Block *block )
 		// Release refcounted payloads in enum variables declared in this scope
 		for ( auto &entry : mEnumScopeStack.back() )
 		{
-			emitEnumPayloadRelease( entry.first, entry.second );
+			emitEnumPayloadRelease( entry.alloca, entry.def, entry.concreteType );
 		}
 	}
 
@@ -1455,10 +1455,27 @@ bool CodeGen::isUserStructType( const std::string &typeName )
 	return mStructDefMap.find( typeName ) != mStructDefMap.end();
 }
 
-void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef )
+void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef,
+	Type *concreteType )
 {
 	if ( enumDef == nullptr )
 		return;
+
+	// Resolve a variant's effective payload type name: for a generic enum the
+	// declared associated type is an erased param (T/E), so recover the concrete
+	// type from concreteType's type args. Enum payloads occupy a single 8-byte
+	// slot (one binding), so the first associated type is what matters.
+	auto payloadTypeName = [&]( size_t vi ) -> string {
+		if ( enumDef->mVariants[vi].mAssociatedTypes.empty() )
+			return "";
+		if ( concreteType != nullptr )
+		{
+			Type *c = resolveVariantBindingQType( enumDef, (int)vi, concreteType );
+			if ( c != nullptr )
+				return c->getName();
+		}
+		return enumDef->mVariants[vi].mAssociatedTypes[0]->getName();
+	};
 
 	llvm::StructType *enumType = getOrCreateEnumType( enumDef );
 	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
@@ -1483,17 +1500,9 @@ void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *
 	for ( size_t vi = 0; vi < enumDef->mVariants.size(); vi++ )
 	{
 		auto &variant = enumDef->mVariants[vi];
-		bool hasRef = false;
-		for ( auto &at : variant.mAssociatedTypes )
-		{
-			string atn = at->getName();
-			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
-				 isUserStructType( atn ) )
-			{
-				hasRef = true;
-				break;
-			}
-		}
+		string atn = payloadTypeName( vi );
+		bool hasRef = ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+			 isUserStructType( atn ) );
 		if ( !hasRef )
 			continue;
 
@@ -1513,10 +1522,8 @@ void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *
 				enumType->getElementType( 1 )->getArrayNumElements() ),
 			payloadPtr, 0, 0, "enum.cleanup.payload.byte" );
 
-		// Release each refcounted payload field
-		for ( auto &at : variant.mAssociatedTypes )
+		// Release the refcounted payload (single 8-byte slot)
 		{
-			string atn = at->getName();
 			if ( atn == "string" )
 			{
 				llvm::Value *strVal = mBuilder->CreateLoad(
@@ -2077,25 +2084,30 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 				auto enumIt = mEnumDefMap.find( enumTypeName );
 				if ( enumIt != mEnumDefMap.end() )
 				{
-					// Check if any variant has a refcounted payload
+					// Check if any variant has a refcounted payload. Resolve the
+					// concrete payload type from the variable's type args so a
+					// generic enum (Result<int, string>) is recognized — its
+					// declared associated types are erased params (T/E).
 					EnumDefinition *ed = enumIt->second;
 					bool hasRefPayload = false;
-					for ( auto &variant : ed->mVariants )
+					for ( size_t vi = 0; vi < ed->mVariants.size(); vi++ )
 					{
-						for ( auto &assocType : variant.mAssociatedTypes )
+						if ( ed->mVariants[vi].mAssociatedTypes.empty() )
+							continue;
+						Type *concrete = resolveVariantBindingQType(
+							ed, (int)vi, varType );
+						string atn = ( concrete != nullptr )
+							? concrete->getName()
+							: ed->mVariants[vi].mAssociatedTypes[0]->getName();
+						if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+							 isUserStructType( atn ) )
 						{
-							string atn = assocType->getName();
-							if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
-								 isUserStructType( atn ) )
-							{
-								hasRefPayload = true;
-								break;
-							}
+							hasRefPayload = true;
+							break;
 						}
-						if ( hasRefPayload ) break;
 					}
 					if ( hasRefPayload )
-						mEnumScopeStack.back().push_back( { alloca, ed } );
+						mEnumScopeStack.back().push_back( { alloca, ed, varType } );
 				}
 			}
 
@@ -2201,6 +2213,98 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 	}
 }
 
+void CodeGen::emitScopeStackReleases()
+{
+	// Emit ARC releases for all in-scope shared/sync variables
+	for ( auto it = mArcScopeStack.rbegin(); it != mArcScopeStack.rend(); ++it )
+	{
+		for ( auto *alloca : *it )
+		{
+			llvm::Value *heapPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), alloca, "rc.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
+		}
+	}
+
+	// Release string variables (skip moved vars)
+	for ( auto it = mStringScopeStack.rbegin(); it != mStringScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *strPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "str.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareStringRelease(), { strPtr } );
+		}
+	}
+
+	// Release array variables (skip moved vars)
+	for ( auto it = mArrayScopeStack.rbegin(); it != mArrayScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *arrPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "arr.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrPtr } );
+		}
+	}
+
+	// Release buffer variables (skip moved vars)
+	for ( auto it = mBufferScopeStack.rbegin(); it != mBufferScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *bufPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "buf.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufPtr } );
+		}
+	}
+
+	// Release lambda/fn-typed variable contexts (skip moved vars)
+	for ( auto it = mLambdaScopeStack.rbegin(); it != mLambdaScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Type *pairType = llvm::StructType::get( *mContext, {
+				llvm::PointerType::get( *mContext, 0 ),
+				llvm::PointerType::get( *mContext, 0 )
+			} );
+			llvm::Value *pairVal = mBuilder->CreateLoad(
+				pairType, entry.first, "fn.ret.pair" );
+			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+				pairVal, 1, "fn.ret.ctx" );
+			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { ctxPtr } );
+		}
+	}
+
+	// Release heap-allocated struct variables
+	for ( auto it = mStructScopeStack.rbegin(); it != mStructScopeStack.rend(); ++it )
+	{
+		for ( auto *structAlloca : *it )
+		{
+			llvm::Value *structPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), structAlloca, "struct.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { structPtr } );
+		}
+	}
+
+	// Release enum variables with refcounted payloads
+	for ( auto it = mEnumScopeStack.rbegin(); it != mEnumScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			emitEnumPayloadRelease( entry.alloca, entry.def, entry.concreteType );
+		}
+	}
+}
+
 void CodeGen::genReturnStatement( ReturnStatement *ret )
 {
 	// Generate the return value FIRST, before releasing scope variables.
@@ -2267,94 +2371,9 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 	// Release channel locals (the creating scope's reference) before returning.
 	releaseFunctionChannels();
 
-	// Emit ARC releases for all in-scope shared/sync variables before returning
-	for ( auto it = mArcScopeStack.rbegin(); it != mArcScopeStack.rend(); ++it )
-	{
-		for ( auto *alloca : *it )
-		{
-			llvm::Value *heapPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), alloca, "rc.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
-		}
-	}
-
-	// Release string variables before returning (skip moved vars)
-	for ( auto it = mStringScopeStack.rbegin(); it != mStringScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Value *strPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), entry.first, "str.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareStringRelease(), { strPtr } );
-		}
-	}
-
-	// Release array variables before returning (skip moved vars)
-	for ( auto it = mArrayScopeStack.rbegin(); it != mArrayScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Value *arrPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), entry.first, "arr.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrPtr } );
-		}
-	}
-
-	// Release buffer variables before returning (skip moved vars)
-	for ( auto it = mBufferScopeStack.rbegin(); it != mBufferScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Value *bufPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), entry.first, "buf.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufPtr } );
-		}
-	}
-
-	// Release lambda/fn-typed variable contexts before returning (skip moved vars)
-	for ( auto it = mLambdaScopeStack.rbegin(); it != mLambdaScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Type *pairType = llvm::StructType::get( *mContext, {
-				llvm::PointerType::get( *mContext, 0 ),
-				llvm::PointerType::get( *mContext, 0 )
-			} );
-			llvm::Value *pairVal = mBuilder->CreateLoad(
-				pairType, entry.first, "fn.ret.pair" );
-			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
-				pairVal, 1, "fn.ret.ctx" );
-			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { ctxPtr } );
-		}
-	}
-
-	// Release heap-allocated struct variables before returning
-	for ( auto it = mStructScopeStack.rbegin(); it != mStructScopeStack.rend(); ++it )
-	{
-		for ( auto *structAlloca : *it )
-		{
-			llvm::Value *structPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), structAlloca, "struct.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareRcRelease(), { structPtr } );
-		}
-	}
-
-	// Release enum variables with refcounted payloads before returning
-	for ( auto it = mEnumScopeStack.rbegin(); it != mEnumScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			emitEnumPayloadRelease( entry.first, entry.second );
-		}
-	}
+	// Release every in-scope local (shared/sync, string, array, buffer, lambda,
+	// struct, enum payload) before returning.
+	emitScopeStackReleases();
 
 	// In an async wrapper, return statements store the value and branch to exit
 	if ( mAsyncExitBB != nullptr )
@@ -4796,6 +4815,29 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 
 	// Continue at merge
 	mBuilder->SetInsertPoint( mergeBB );
+
+	// If the subject was an owned temporary enum (e.g. `match divide(a, b) { ... }`
+	// where divide returns Result<int, string>), nothing else releases its
+	// refcounted payload — a match on a *variable* is cleaned up at the variable's
+	// scope exit, but a temp has no owner. Release it here. Bindings are borrows
+	// used inside the arms (already generated), and any value that escapes via a
+	// binding is retained on copy, so this is safe. Only owned-temp producers
+	// (calls / method calls / enum construction) qualify — a variable / field /
+	// index subject is a borrow owned elsewhere and must NOT be released here.
+	if ( isEnumStruct && matchedEnum != nullptr && subjectAlloca != nullptr )
+	{
+		Expression *subj = (Expression *)expr->mSubject;
+		bool isOwnedTemp =
+			dynamic_cast<CallExpression*>( subj ) != nullptr ||
+			dynamic_cast<MethodCallExpression*>( subj ) != nullptr ||
+			dynamic_cast<EnumConstructExpression*>( subj ) != nullptr;
+		if ( isOwnedTemp )
+		{
+			Type *subjType = resolveExpressionQType( subj );
+			emitEnumPayloadRelease( subjectAlloca, matchedEnum, subjType );
+		}
+	}
+
 	return nullptr;
 }
 
@@ -4947,6 +4989,48 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 
 	// ---- Error branch: propagate the error by returning early ----
 	mBuilder->SetInsertPoint( errBB );
+
+	// An early return via `?` must run the same scope cleanup a normal `return`
+	// runs, or every refcounted local on the error path leaks (this is the root
+	// cause of leaks on error branches — e.g. an Array/struct built before the
+	// failing `?`). The operand's own enum is usually a temp (a function-call
+	// result), which is not tracked in any scope stack, so cleanup leaves the
+	// forwarded error untouched. But if the operand is a tracked local enum
+	// variable, the cleanup WOULD release its payload — so retain the forwarded
+	// payload first to keep the caller's copy valid.
+	{
+		if ( dynamic_cast<VariableExpression*>( (Expression*)expr->mOperand ) != nullptr )
+		{
+			Type *errBindQType = resolveVariantBindingQType(
+				enumDef, errorIdx, operandQType );
+			if ( errBindQType != nullptr )
+			{
+				std::string en = errBindQType->getName();
+				llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+				llvm::Type *payloadArrType = enumType->getElementType( 1 );
+				llvm::Value *pPtr = mBuilder->CreateStructGEP(
+					enumType, enumAlloca, 1, "try.err.retain.payload" );
+				llvm::Value *pByte = mBuilder->CreateGEP( payloadArrType, pPtr,
+					{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+					  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+					"try.err.retain.byte" );
+				llvm::Function *retainFn = nullptr;
+				if ( en == "string" )      retainFn = getOrDeclareStringRetain();
+				else if ( en == "Array" )  retainFn = getOrDeclareArrayRetain();
+				else if ( en == "Buffer" ) retainFn = getOrDeclareBufferRetain();
+				else if ( isUserStructType( en ) ) retainFn = getOrDeclareRcRetain();
+				if ( retainFn != nullptr )
+				{
+					llvm::Value *pv = mBuilder->CreateLoad( ptrTy, pByte, "try.err.retain.val" );
+					mBuilder->CreateCall( retainFn, { pv } );
+				}
+			}
+		}
+
+		releaseTempStrings();
+		releaseFunctionChannels();
+		emitScopeStackReleases();
+	}
 
 	// Determine the current function's return type at the QLang level
 	// to construct a matching error enum value for early return.

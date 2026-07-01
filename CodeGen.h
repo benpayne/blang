@@ -239,6 +239,13 @@ private:
 		const std::vector<SmartPtr<TestBlock>> &testBlocks );
 	void genContractCheck( Expression *condition, const std::string &message );
 
+	// Emit ARC releases for every in-scope local (shared/sync, string, array,
+	// buffer, lambda ctx, struct, enum payload) across all open scopes. Shared by
+	// genReturnStatement and the `?` operator's early-return path so an error
+	// propagated by `?` runs the same cleanup a normal return does (otherwise
+	// locals on the error path leak).
+	void emitScopeStackReleases();
+
 	// Test framework runtime declarations
 	llvm::Function *getOrDeclareRunOneTest();
 	llvm::Function *getOrDeclareAssertFail();
@@ -491,11 +498,24 @@ private:
 	bool isUserStructType( const std::string &typeName );
 
 	// Enum variable tracking: release refcounted payloads at scope exit.
-	// Each entry pairs an alloca with the enum definition for tag-based cleanup.
-	std::vector<std::vector<std::pair<llvm::AllocaInst*, EnumDefinition*>>> mEnumScopeStack;
+	// Each entry carries the alloca, the enum definition (for tag-based cleanup),
+	// and the variable's concrete QLang type (with type args) so a generic enum
+	// like Result<int, string> can recover its concrete payload type — the enum
+	// definition alone only has the erased param names (T/E).
+	struct EnumScopeVar
+	{
+		llvm::AllocaInst *alloca;
+		EnumDefinition *def;
+		Type *concreteType;  // variable's declared type with type args (may be null)
+	};
+	std::vector<std::vector<EnumScopeVar>> mEnumScopeStack;
 
-	// Emit cleanup code for an enum variable's refcounted payload
-	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef );
+	// Emit cleanup code for an enum variable's refcounted payload. When
+	// concreteType is provided, generic payload types (T/E) are resolved to their
+	// concrete types from it; otherwise the enum's declared associated types are
+	// used (correct for non-generic user enums).
+	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef,
+		Type *concreteType = nullptr );
 
 	// Runtime declaration for __blang_rc_alloc_dtor
 	llvm::Function *getOrDeclareRcAllocDtor();
