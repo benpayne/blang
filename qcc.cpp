@@ -42,6 +42,11 @@ Module *Module::Parse( Lexer &l, Scope *s )
 	Module *mod = new Module();
 	mod->mScope = s;
 	SmartPtr<FunctionDefinition> def;
+	// Top-level functions are parsed signature-first with their bodies deferred,
+	// so every function is registered before any body is parsed (forward
+	// references / mutual recursion). Bodies are parsed after the declaration
+	// loop below.
+	std::vector<FunctionDefinition*> deferredFuncs;
 	try {
 		while( !l.isEOF() )
 		{
@@ -288,8 +293,10 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			// functions automatically satisfy this requirement. No additional
 			// validation is required here.
 
-			def = FunctionDefinition::Parse( l, s, isExtern, isPublic );
+			def = FunctionDefinition::Parse( l, s, isExtern, isPublic, /*deferBody=*/true );
 			def->setAnnotations( annotations );
+			if ( def->hasDeferredBody() )
+				deferredFuncs.push_back( def );
 
 			// Validate @format annotation
 			for ( const auto &ann : annotations )
@@ -308,6 +315,11 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
 		}
+
+		// Second pass: parse the deferred function bodies now that every
+		// top-level function signature is registered in scope.
+		for ( FunctionDefinition *f : deferredFuncs )
+			f->ParseDeferredBody( l );
 	} catch( CompileError &err ) {
 		cerr << err.getMessage() << endl;
 		return nullptr;

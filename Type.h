@@ -264,7 +264,18 @@ namespace QLang
 	{
 	public:
 
-		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false, bool isPublic = false );
+		// When deferBody is true, the signature is parsed and registered but the
+		// body block is skipped (its start position recorded in mBodyPos) so it
+		// can be parsed later via ParseDeferredBody. This lets Module::Parse
+		// register every top-level function signature before parsing any body,
+		// enabling forward references and mutual recursion.
+		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false,
+			bool isPublic = false, bool deferBody = false );
+
+		// Parse the previously-skipped body (see deferBody above) into this same
+		// function object, using its already-built scope.
+		void ParseDeferredBody( Lexer &l );
+		bool hasDeferredBody() const { return mBodyPos >= 0; }
 
 		// Create a builtin function definition (for compiler-provided builtins)
 		static FunctionDefinition *CreateBuiltin( const std::string &name, Type *returnType,
@@ -317,6 +328,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mRequiresClauses;
 		std::vector<SmartPtr<Expression>> mEnsuresClauses;
 		std::vector<AnnotationNode> mAnnotations;
+		int mBodyPos = -1;   // lexer position of a deferred body's '{', else -1
 
 		friend class CodeGen;
 		friend class Module;
