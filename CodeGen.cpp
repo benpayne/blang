@@ -1856,7 +1856,24 @@ void CodeGen::genStatement( Statement *stmt )
 	}
 	else if ( auto *expr = dynamic_cast<Expression*>( stmt ) )
 	{
-		genExpression( expr );
+		llvm::Value *result = genExpression( expr );
+
+		// A `query T |> ...` used as a bare statement (its Array<T> result
+		// discarded) still allocates a result set. When assigned to a variable
+		// the array is released at scope exit; a discarded query has no owner, so
+		// register its result in the current array scope to get the same
+		// scope-exit release (deep, via the array's element destructor). Only the
+		// discarded-statement path reaches here — an assigned query goes through
+		// genVariableDeclaration — so this cannot double-release.
+		if ( result != nullptr && result->getType()->isPointerTy() &&
+			 dynamic_cast<QueryExpression*>( expr ) != nullptr &&
+			 !mArrayScopeStack.empty() )
+		{
+			llvm::AllocaInst *tmp = mBuilder->CreateAlloca(
+				llvm::PointerType::get( *mContext, 0 ), nullptr, "query.discard" );
+			mBuilder->CreateStore( result, tmp );
+			mArrayScopeStack.back().push_back( { tmp, nullptr } );
+		}
 	}
 }
 
@@ -9714,10 +9731,24 @@ llvm::Value *CodeGen::paramToCString( llvm::Value *val )
 		return buf;
 	}
 
-	// Pointers are BlangString* — extract the underlying C string.
+	// Pointers are BlangString* — borrow the underlying C string. BlangString's
+	// `.data` is always NUL-terminated (both create and create_static guarantee
+	// it), so we can hand its pointer straight to the DB layer, which copies the
+	// bound value (SQLite uses SQLITE_TRANSIENT). Using `.data` avoids the fresh
+	// heap allocation __blang_string_to_cstring makes — that copy was never freed
+	// after the query, leaking one buffer per string parameter.
 	if ( t->isPointerTy() )
-		return mBuilder->CreateCall(
-			getOrDeclareStringToCstring(), { val }, "param.cstr" );
+	{
+		// BlangString: { char* data, i64 length, i64 capacity, i32 refcount }
+		llvm::StructType *bsType = llvm::StructType::get( *mContext,
+			{ llvm::PointerType::get( *mContext, 0 ),
+			  llvm::Type::getInt64Ty( *mContext ),
+			  llvm::Type::getInt64Ty( *mContext ),
+			  llvm::Type::getInt32Ty( *mContext ) } );
+		llvm::Value *dataPtr = mBuilder->CreateStructGEP(
+			bsType, val, 0, "param.str.data.ptr" );
+		return mBuilder->CreateLoad( ptrTy, dataPtr, "param.str.data" );
+	}
 
 	// Unknown type → bind SQL NULL.
 	return llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
