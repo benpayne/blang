@@ -141,4 +141,10 @@ devbot:
   runs:
     - run_id: 404b2b30-6c90-4218-be88-8f71143642ad
       launched: 2026-07-13
-      outcome: pending
+      outcome: halted   # no-progress halt at turn 4 (session/usage-limit terminations)
+    - run_id: 5c582362-7090-46ad-9fed-7fd4d86333b5
+      launched: 2026-07-14
+      outcome: pending  # active resume run; U1-U3 already merged, verifying/advancing to U4
+  # Note: the epic advanced past the initial halt via a series of resume runs
+  # (visible in `devbot runs`); U1, U2, U3 are merged to master. Only the
+  # original launch and the current active run are tracked here by id.
