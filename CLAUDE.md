@@ -548,6 +548,9 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
   build modes; new features carry pass/fail/codegen tests; runtime/ARC
   changes pass `./test_codegen.sh --leak-check`.
 - **Active epics**:
-  - `blang-ast` (`docs/epics/blang-ast/`) — status: launched (devbot run
-    `404b2b30-6c90-4218-be88-8f71143642ad`). Semantic analysis pass +
-    located diagnostics + safety enforcement.
+  - `blang-ast` (`docs/epics/blang-ast/`) — status: **complete** (U1-U8 merged
+    to local master; epic done-condition verified). Dedicated `Sema` pass
+    enforces the type system, ownership/move, and concurrency rules in all build
+    modes with clean `file:line:col: error:` diagnostics; silent codegen
+    coercions removed; `test_files/fail/sema/` has 26 negative fixtures
+    including audit_01..10.
