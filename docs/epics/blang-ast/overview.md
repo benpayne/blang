@@ -40,39 +40,44 @@ test suites, stdlib, and demos to be correct under the new checker.
 
 ## Requirements
 
-| ID | Requirement |
-|----|-------------|
-| REQ-001 | Every AST node carries a source location (file, line, column). The lexer tracks column (currently dead — `charPos` never incremented) and retains the source filename. |
-| REQ-002 | All user-facing compile errors are formatted `<file>:<line>:<col>: error: <message>`, include the offending token text where applicable, and never expose compiler-internal C++ `__FILE__:__LINE__` locations or raw LLVM verifier output. LLVM verifier failure is reported as an internal compiler error with a report request. |
-| REQ-003 | Compiles are quiet by default: no per-token dumps, `[TRACE]` lines, or AST dumps on stdout/stderr unless a verbosity flag is passed. |
-| REQ-004 | A semantic-analysis pass runs between parsing and codegen in ALL build modes, including `--parse-only` and non-LLVM builds. Semantic errors do not require LLVM to be detected. |
-| REQ-005 | Type checking enforced: call arity and argument types, assignment and initializer compatibility, binary/unary operand validity, return-path correctness (type match, `return;` in non-void, missing return). Only documented implicit conversions (integer width promotion) are permitted; all other mismatches are errors — no value fabrication, no dropped initializers. |
-| REQ-006 | Name and member resolution is enforced: undefined variables, functions, fields, and methods produce located errors; nothing resolves to a silent `nullptr`. |
-| REQ-007 | `match` exhaustiveness is enforced (all variants covered or a `_` arm present), and `match` used as an expression produces a value of a checked, consistent type. |
-| REQ-008 | Generic constraints are enforced at instantiation: using `T: Protocol` with a type argument that does not implement `Protocol` is a located error. |
-| REQ-009 | Ownership/move analysis is correct and lives in the semantic pass: reassignment clears moved state, moves through fields/elements are tracked, branch merges are handled without spurious errors, and use-after-move is reported with the location of both the use and the move. |
-| REQ-010 | Concurrency safety is enforced: field assignment through `shared` values is a compile error; `sync` field reads/writes acquire the lock in codegen; capturing a non-`own` heap value (string/Array/struct) in `spawn` requires it to be `shared` or `sync`, otherwise a compile error. |
-| REQ-011 | Negative tests assert diagnostic content, not just exit codes: the test harness supports expected-error matching, and a `sema_*` negative suite encodes every soundness hole from the audit (minimum: the 10 documented miscompile/crash programs) plus each new diagnostic added by this epic. |
-| REQ-012 | Codegen is hardened: an unhandled AST node type or ill-typed input reaching codegen is a loud internal compiler error, never a silent skip. |
-| REQ-013 | Strict migration: `test_files/`, `stdlib/*.b`, and `demos/*.b` are made type-correct under the new checker; `./run_tests.sh` and `./test_codegen.sh` pass fully in both build modes. |
+| ID | Requirement | Verified by |
+|----|-------------|-------------|
+| REQ-001 | Every AST node carries a source location (file, line, column). The lexer tracks column (currently dead — `charPos` never incremented) and retains the source filename. | U1 golden-location diff (evaluation.md §U1 check) |
+| REQ-002 | All user-facing compile errors are formatted `<file>:<line>:<col>: error: <message>`, include the offending token text where applicable, and never expose compiler-internal C++ `__FILE__:__LINE__` locations or raw LLVM verifier output. LLVM verifier failure is reported as an internal compiler error with a report request. | Format regex on every `fail/` + `fail/sema/` test (done condition #3) |
+| REQ-003 | Compiles are quiet by default: no per-token dumps, `[TRACE]` lines, or AST dumps on stdout/stderr unless a verbosity flag is passed. | Quiet-compile check (done condition #4) |
+| REQ-004 | A semantic-analysis pass runs between parsing and codegen in ALL build modes, including `--parse-only` and non-LLVM builds. Semantic errors do not require LLVM to be detected. | Parse-only build runs `fail/sema/` suite green (done conditions #2, #3) |
+| REQ-005 | Type checking enforced: call arity and argument types, assignment and initializer compatibility, binary/unary operand validity, return-path correctness (type match, `return;` in non-void, missing return). Only documented implicit conversions (integer width promotion) are permitted; all other mismatches are errors — no value fabrication, no dropped initializers. | `audit_01..05.b` rejected (design.md table); grep proxies in U4 done-when |
+| REQ-006 | Name and member resolution is enforced: undefined variables, functions, fields, and methods produce located errors; nothing resolves to a silent `nullptr`. | `audit_10.b` + U3's `fail/sema/` resolution tests |
+| REQ-007 | `match` exhaustiveness is enforced (all variants covered or a `_` arm present), and `match` used as an expression produces a value of a checked, consistent type. | `audit_09.b` rejected; value-producing match `codegen_*.b` E2E test |
+| REQ-008 | Generic constraints are enforced at instantiation: using `T: Protocol` with a type argument that does not implement `Protocol` is a located error. | `audit_08.b` rejected in parse-only mode |
+| REQ-009 | Ownership/move analysis is correct and lives in the semantic pass: reassignment clears moved state, moves through fields/elements are tracked, branch merges are handled without spurious errors, and use-after-move is reported with the location of both the use and the move. | Relocated `own_*.b` tests green in parse-only build + U6's accept/reject tests |
+| REQ-010 | Concurrency safety is enforced: field assignment through `shared` values is a compile error; `sync` field reads/writes acquire the lock in codegen; capturing a non-`own` heap value (string/Array/struct) in `spawn` requires it to be `shared` or `sync`, otherwise a compile error. | `audit_06.b`, `audit_07.b` rejected; sync-RMW IR grep (U7 done-when); leak subset (done condition #5) |
+| REQ-011 | Negative tests assert diagnostic content, not just exit codes: the test harness supports expected-error matching, and the `fail/sema/` suite encodes every soundness hole from the audit (minimum: the 10 audit programs) plus each new diagnostic added by this epic. | `run_tests.sh` expected-error mode (U2); count + coverage check (done condition #3) |
+| REQ-012 | Codegen is hardened: an unhandled AST node type or ill-typed input reaching codegen is a loud internal compiler error, never a silent skip. | Grep proxies in U4 done-when + code-review rubric item 4 |
+| REQ-013 | Strict migration: `test_files/`, `stdlib/*.b`, and `demos/*.b` are made type-correct under the new checker; `./run_tests.sh` and `./test_codegen.sh` pass fully in both build modes. | Done conditions #1 and #2 |
 
 ## Done condition (epic level, machine-checkable)
 
-All of the following, on a clean checkout of the epic's final state:
+All of the following commands succeed on a clean checkout of the epic's
+final state, run from the repo root:
 
-1. `./run_tests.sh` exits 0 in both a parse-only build and an LLVM build,
-   with expected-error assertion mode active for `fail/` and `cgfail/`.
-2. `./test_codegen.sh` exits 0 on the LLVM build.
-3. `test_files/fail/sema/` contains ≥ 25 negative tests (including the 10
-   audit miscompile programs); for each, `qcc --parse-only` exits non-zero
-   AND its stderr matches the regex `^[^:]+\.b:[0-9]+:[0-9]+: error: ` AND
-   matches the per-test expected-message pattern.
-4. `qcc test_files/pass/func_simple.b` (no flags) produces zero bytes on
-   stdout and zero bytes on stderr other than nothing (exit 0, silent).
-5. `grep -rn "inttoptr" <generated .ll for the audit return-mismatch
-   programs>` is impossible because those programs no longer compile; and
-   `./test_codegen.sh --leak-check` exits 0 for the concurrency test subset
-   (`codegen_spawn*.b`, `codegen_sync*.b`, `codegen_shared*.b`).
+1. LLVM build, full suites:
+   `cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm && cmake --build build -j"$(nproc)" && ./run_tests.sh && ./test_codegen.sh`
+   exits 0 (with expected-error assertion mode active for `fail/` and
+   `cgfail/`, which is part of `run_tests.sh` from U2 onward).
+2. Parse-only build, parse+sema suite:
+   `cmake -S . -B build-parse -DBLANG_ENABLE_LLVM=OFF && cmake --build build-parse -j"$(nproc)" && BUILD_DIR=build-parse ./run_tests.sh`
+   exits 0.
+3. `ls test_files/fail/sema/*.b | wc -l` reports ≥ 25, and the set includes
+   `audit_01.b` through `audit_10.b` per the numbered table in `design.md`
+   §"The 10 audit programs". For every file in `fail/sema/`, `run_tests.sh`
+   verifies: `build/qcc --parse-only <file>` exits non-zero AND stderr
+   matches the regex `^[^:]+\.b:[0-9]+:[0-9]+: error: ` AND matches the
+   test's own expected-message pattern.
+4. `out=$(./build/qcc --parse-only test_files/pass/func_simple.b 2>&1); test -z "$out"`
+   succeeds (quiet by default; exit 0).
+5. `./test_codegen.sh --leak-check test_files/codegen_spawn*.b test_files/codegen_sync*.b test_files/codegen_shared*.b`
+   exits 0 with 0 leaks reported.
 
 ## Execution model
 
@@ -96,24 +101,42 @@ with the devbot manager gating each transition:
 Git mechanics, parallel-unit rules (U5–U7), and merge serialization are
 specified in `workplan.md` §Unit lifecycle and `manifest.yaml` §execution.
 
-**Pre-launch prerequisite:** the epic assumes unit branches cut from a clean,
-committed `master`. The repo currently carries substantial uncommitted work
-(new CG*.cpp split, fs/io/buffer stdlib, etc.) — that must be committed (or
-stashed deliberately) before `/devbot-launch`, or U1's baseline is undefined.
+**Pre-launch prerequisite (machine-checkable):** `git status --porcelain`
+is empty and `git branch --show-current` is `master`. Record the launch SHA
+in the status log below. Launch baseline (verified 2026-07-13): 162/162
+parse tests (LLVM build), 154/154 (parse-only build; 8 cgfail skipped),
+63/63 codegen E2E tests, leak-check concurrency subset 6/6 with 0 leaks.
+
+## Non-goals (explicitly out of scope)
+
+- Multi-error reporting / parser error recovery, caret/snippet rendering,
+  `--json` diagnostics, and a warning system — deferred to a follow-up
+  diagnostics epic. This epic delivers correct single-error reporting with
+  locations.
+- Channel send/recv syntax, stdlib growth, optimization passes, debug info
+  (DWARF), and Windows support — separate epics.
+- The legacy Bison/Flex path (`parser.yy`, `parse_helpers.cpp`) is untouched
+  dead code and gets no semantic pass.
 
 ## Assumptions (recorded, not asked)
 
 - Pre-1.0 language: breaking changes to accepted programs are acceptable and
   expected ("strict" migration chosen by the user, 2026-07-13).
-- Multi-error reporting, caret snippets, `--json` diagnostics, and a warning
-  system are explicitly OUT of scope — deferred to a follow-up diagnostics
-  epic. This epic delivers correct single-error reporting with locations.
 - Integer width promotion (existing documented behavior) remains the only
   implicit conversion.
-- The legacy Bison/Flex path (`parser.yy`, `parse_helpers.cpp`) is untouched
-  dead code and gets no semantic pass.
-- Channel send/recv syntax, stdlib growth, optimization, and debug info are
-  separate epics.
+
+## Open questions
+
+| # | Question | Raised by | Resolution |
+|---|----------|-----------|------------|
+| — | (none currently) | | |
+
+## Status log
+
+| Date | Event |
+|------|-------|
+| 2026-07-13 | Epic planned (overview, workplan U1–U8, design, evaluation, manifest). |
+| 2026-07-13 | Readiness review round 1: 15 findings (script/gate mismatches, non-runnable done conditions, unnumbered audit programs, baseline red). Fixes applied; `codegen_http.b` hang root-caused and fixed in `runtime/blang_net.c` (`__blang_tcp_read_into_byte_array` looped to max_len instead of read-once); test scripts gained `BUILD_DIR` override + multi-file args; constitution amended to 1.1.0. Baseline recorded green. |
 
 ## Source documents
 

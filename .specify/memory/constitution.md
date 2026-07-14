@@ -14,7 +14,11 @@ Known Issues.
 language feature adds, at minimum: positive parse tests (`test_files/pass/`),
 negative tests for its failure modes (`test_files/fail/` or `cgfail/`), and an
 end-to-end `codegen_*.b` test that exercises the feature in a compiled,
-running binary. Bug fixes add a regression test that fails without the fix.
+running binary. For reject-only checks (diagnostics whose purpose is that the
+program never compiles), a negative test with an expected-message pattern in
+`test_files/fail/` or `cgfail/` satisfies the end-to-end requirement in lieu
+of a `codegen_*.b` test. Bug fixes add a regression test that fails without
+the fix.
 
 ### III. Reject, Don't Coerce
 The compiler MUST reject invalid programs with a diagnostic that points at the
@@ -70,4 +74,7 @@ This constitution supersedes other practices for devbot-directed work.
 Amendments are made by PR to this file with the user's approval and take
 effect on merge. Where this document is silent, `CLAUDE.md` governs.
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-13 | **Last Amended**: 2026-07-13
+**Version**: 1.1.0 | **Ratified**: 2026-07-13 | **Last Amended**: 2026-07-13
+(1.1.0: Principle II — negative expected-message tests satisfy the E2E
+requirement for reject-only checks; approved by Ben Payne during blang-ast
+review.)

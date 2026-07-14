@@ -1,12 +1,13 @@
 # devbot epic manifest — blang-ast
 # Compiled into a run by /devbot-launch; the devbot: section is filled then.
 
+manifest_version: 1
 epic: blang-ast
 title: "True language enforcement via semantic analysis"
 archetype: evolve
 status: planning
 docs_root: docs/epics/blang-ast
-entry_point: overview.md
+entry: overview.md
 constitution: .specify/memory/constitution.md
 
 description: >
@@ -15,41 +16,62 @@ description: >
   in all build modes, with clean file:line:col diagnostics, and migrate the
   existing tests, stdlib, and demos to be correct under the new checker.
 
-# Duplicated verbatim from overview.md — keep in sync.
-done_condition: |
-  All of the following, on a clean checkout of the epic's final state:
-  1. ./run_tests.sh exits 0 in both a parse-only build and an LLVM build,
-     with expected-error assertion mode active for fail/ and cgfail/.
-  2. ./test_codegen.sh exits 0 on the LLVM build.
-  3. test_files/fail/sema/ contains >= 25 negative tests (including the 10
-     audit miscompile programs); for each, qcc --parse-only exits non-zero
-     AND its stderr matches the regex '^[^:]+\.b:[0-9]+:[0-9]+: error: '
-     AND matches the per-test expected-message pattern.
-  4. qcc test_files/pass/func_simple.b (no flags) produces zero bytes of
-     output on stdout and stderr (exit 0, silent).
-  5. The audit return-mismatch programs no longer compile; and
-     ./test_codegen.sh --leak-check exits 0 for the concurrency test subset
-     (codegen_spawn*.b, codegen_sync*.b, codegen_shared*.b).
+run:
+  # Duplicated verbatim from overview.md "Done condition" — keep in sync.
+  done_condition: |
+    All of the following commands succeed on a clean checkout of the epic's
+    final state, run from the repo root:
+
+    1. LLVM build, full suites:
+       `cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm && cmake --build build -j"$(nproc)" && ./run_tests.sh && ./test_codegen.sh`
+       exits 0 (with expected-error assertion mode active for `fail/` and
+       `cgfail/`, which is part of `run_tests.sh` from U2 onward).
+    2. Parse-only build, parse+sema suite:
+       `cmake -S . -B build-parse -DBLANG_ENABLE_LLVM=OFF && cmake --build build-parse -j"$(nproc)" && BUILD_DIR=build-parse ./run_tests.sh`
+       exits 0.
+    3. `ls test_files/fail/sema/*.b | wc -l` reports ≥ 25, and the set includes
+       `audit_01.b` through `audit_10.b` per the numbered table in `design.md`
+       §"The 10 audit programs". For every file in `fail/sema/`, `run_tests.sh`
+       verifies: `build/qcc --parse-only <file>` exits non-zero AND stderr
+       matches the regex `^[^:]+\.b:[0-9]+:[0-9]+: error: ` AND matches the
+       test's own expected-message pattern.
+    4. `out=$(./build/qcc --parse-only test_files/pass/func_simple.b 2>&1); test -z "$out"`
+       succeeds (quiet by default; exit 0).
+    5. `./test_codegen.sh --leak-check test_files/codegen_spawn*.b test_files/codegen_sync*.b test_files/codegen_shared*.b`
+       exits 0 with 0 leaks reported.
+
+  # Limits sized ~2x honest estimates (8 units, focused PRs; U8 is a
+  # corpus-wide migration sweep and gets its own file cap + stacked PRs).
+  limits:
+    max_units: 8
+    max_open_prs: 3
+    max_iterations_per_unit: 6        # spec->implement->review cycles
+    max_review_rounds_per_pr: 4
+    max_files_changed_per_pr: 60      # honest estimate 5-25
+    max_files_changed_per_pr_u8: 300  # U8 sweeps a 251-file .b corpus
+    u8_stacked_prs: true              # U8 may land as multiple sequential PRs
+    wallclock_days: 14                # honest estimate ~1 week
+    escalation: pause_and_ask         # surface blockers via /devbot-status
 
 workplan: workplan.md
 units: [U1, U2, U3, U4, U5, U6, U7, U8]
-parallelizable:
-  - [U5, U6, U7]   # independent after U4
+parallel_groups:
+  - [U5, U6, U7]   # independent after U4; merges serialized by the manager
 
 hires:
-  # Roster compiled into the run at /devbot-launch. The manager is devbot
-  # itself (directs phases, gates transitions, serializes merges) — not a hire.
+  # The manager is devbot itself (directs phases, gates transitions,
+  # serializes merges) — not a hire.
   - role: implementer
-    count: 1..3                 # one per unit in flight; up to 3 only during
-                                # the U5/U6/U7 parallel window
+    min_count: 1
+    max_count: 3                # >1 only during the U5/U6/U7 parallel window
     assignment: one unit at a time, per the workplan dependency map
     duties: >
       Phase 1 (speckit ceremony: specify/clarify/plan/tasks) and Phase 3
       (speckit implement) for their unit; run per-unit gates locally before
       requesting review; address spec-audit and code-review findings.
   - role: secondary-reviewer
-    count: 1                    # single reviewer for the whole epic, for
-                                # consistent standards across units
+    min_count: 1
+    max_count: 1                # single reviewer for the whole epic
     independence: must not implement any unit it reviews
     duties: >
       Phase 2 spec audits and Phase 4 code audits per evaluation.md rubrics;
@@ -62,19 +84,19 @@ execution:
   # Full definition: workplan.md "Unit lifecycle"; rubrics: evaluation.md.
   unit_lifecycle:
     - phase: create_spec       # speckit: specify -> clarify? -> plan -> tasks
-      actor: implementer-hire
+      actor: implementer
       output: "specs/<NNN>-<slug>/ committed on unit branch; draft PR opened"
     - phase: audit_spec        # gate: no implementation until approved
-      actor: secondary-reviewer-hire
+      actor: secondary-reviewer
       rubric: "evaluation.md 'Spec audit rubric'"
     - phase: implement         # speckit: implement, on the same branch
-      actor: implementer-hire
+      actor: implementer
       exit: "per-unit gates pass locally; PR marked ready"
     - phase: audit_code        # gate: reviewer re-runs gates independently
-      actor: secondary-reviewer-hire
+      actor: secondary-reviewer
       rubric: "evaluation.md 'Code review rubric'"
     - phase: merge
-      actor: secondary-reviewer-hire
+      actor: secondary-reviewer
       action: "rebase onto master, re-run gates if changed, squash-merge, delete branch"
   git:
     base_branch: master
@@ -89,27 +111,14 @@ execution:
       cut_from: "master after U4 merges"
       merge_serialization: manager    # U6 before U7 on conflict; rebase + re-gate after each merge
 
-# Limits sized ~2x honest estimates (8 units, focused PRs).
-limits:
-  max_units: 8
-  max_open_prs: 3
-  max_iterations_per_unit: 6        # spec->implement->review cycles
-  max_review_rounds_per_pr: 4
-  max_files_changed_per_pr: 60      # honest estimate 5-25
-  wallclock_days: 14                # honest estimate ~1 week
-  escalation: pause_and_ask         # surface blockers via /devbot-status
-
 gates:
+  # Literal commands; expanded definitions in evaluation.md.
   per_unit:
-    - "./run_tests.sh"                     # both build modes
-    - "./test_codegen.sh"
-    - "quiet-compile check (evaluation.md #5, from U2 onward)"
-    - "./test_codegen.sh --leak-check (units touching runtime/ARC/concurrency)"
+    - 'cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm && cmake --build build -j"$(nproc)" && ./run_tests.sh && ./test_codegen.sh'
+    - 'cmake -S . -B build-parse -DBLANG_ENABLE_LLVM=OFF && cmake --build build-parse -j"$(nproc)" && BUILD_DIR=build-parse ./run_tests.sh'
+    - '# U6/U7/runtime-touching units only: ./test_codegen.sh --leak-check test_files/codegen_spawn*.b test_files/codegen_sync*.b test_files/codegen_shared*.b'
+    - '# From U2 onward: out=$(./build/qcc --parse-only test_files/pass/func_simple.b 2>&1); test -z "$out"'
   epic:
     - "evaluation.md 'Epic-level acceptance' block, executed literally"
 
-devbot:
-  run_id: null
-  project_id: null
-  manager: null
-  launched_at: null
+devbot: null

@@ -89,10 +89,14 @@ Scope: store the filename in the lexer; make column tracking real
 add a `SourceLocation {file, line, col}` to the AST base (`Statement` in
 `Type.h`) captured at parse time in every `Parse` method; `CompileError`
 carries a `SourceLocation` instead of leaning on the live lexer.
-Done when: every AST node constructed from any `test_files/pass/*.b` has a
-non-zero line and column and the correct filename (verified by a debug dump
-mode compared against known positions for a fixture file); all existing
-suites green.
+Done when: U1 delivers a `--dump-locations` flag on qcc (prints one
+`<file>:<line>:<col> <NodeKind>` line per AST node, deterministic order) and
+two committed golden files; the checks
+`build/qcc --dump-locations test_files/pass/func_simple.b | diff - test_files/golden/func_simple.locations`
+and
+`build/qcc --dump-locations test_files/pass/match_basic.b | diff - test_files/golden/match_basic.locations`
+both exit 0, no node in either dump has line 0 or column 0, and all
+existing suites are green.
 
 ### U2 — Diagnostics engine and expected-error test harness
 Covers: REQ-002, REQ-003, REQ-011 (harness half).
@@ -133,11 +137,14 @@ checking — type match (kill `inttoptr`/`getNullValue` fabrication,
 `CGStatements.cpp:521-541`), `return;` in non-void, missing return on a
 path. Codegen hardening: unhandled node types or ill-typed input reaching
 codegen (`CodeGen.cpp:1118`) become loud ICEs.
-Done when: the audit's miscompile programs 1–5 and 10 (wrong returns,
-`string s = 42`, arity, field typo) are each rejected with a located error
-(added to `fail/sema/` with expected messages); no remaining code path in
-`CG*.cpp` fabricates a value or silently skips on type mismatch; all suites
-green.
+Done when: audit programs 1–5 and 10 (numbered table in `design.md`) exist
+as `fail/sema/audit_{01..05,10}.b` and are each rejected with a located
+error matching their expected-message pattern; the specific coercion sites
+are gone — `grep -c "CreateIntToPtr" CGStatements.cpp` returns 0 and the
+dropped-initializer branch (`initVal = nullptr` fallback) no longer exists
+in `CGStatements.cpp`; the "no other silent fallback path remains" judgment
+is the reviewer's (code-review rubric item 4), not a machine check; all
+suites green.
 
 ### U5 — Match and generics soundness
 Covers: REQ-007, REQ-008.
@@ -170,23 +177,33 @@ currently allows it); emit lock/unlock around `sync` field reads and
 read-modify-writes in codegen; sema rule that non-`own` heap values
 (string/Array/struct) captured by `spawn` must be `shared` or `sync` —
 otherwise a located error naming the variable and the fix.
-Done when: new `fail/sema/` tests for shared-field mutation and unguarded
-spawn capture are rejected with expected messages; a `sync` field-increment
-E2E test is data-race-clean (generated IR contains lock/unlock around the
-RMW, verified in the test); `./test_codegen.sh --leak-check` passes for
-`codegen_spawn*.b`, `codegen_sync*.b`, `codegen_shared*.b`; all suites green.
+Done when: `fail/sema/audit_06.b` (shared-field mutation) and
+`fail/sema/audit_07.b` (unguarded spawn capture) are rejected with their
+expected messages; a new `codegen_sync_field_rmw.b` E2E test passes AND its
+generated IR contains the lock around the field RMW, checked mechanically:
+`grep -c "__blang_sync_lock" test_files/codegen_sync_field_rmw.ll` ≥ 1 after
+`./test_codegen.sh test_files/codegen_sync_field_rmw.b`;
+`./test_codegen.sh --leak-check test_files/codegen_spawn*.b
+test_files/codegen_sync*.b test_files/codegen_shared*.b` exits 0; all suites
+green.
 
 ### U8 — Strict migration and negative-suite completeness
 Covers: REQ-013, REQ-011 (suite half).
-Scope: sweep `test_files/`, `stdlib/*.b`, `demos/*.b` for code the new
-checker rejects and fix it to be type-correct (per the strict decision);
-ensure every diagnostic introduced in U3–U7 has at least one `fail/sema/`
-test with an expected-message pattern; bring the suite to ≥ 25 sema
-negative tests including all 10 audit programs; update `CLAUDE.md` test
-counts and known-issues (remove the ones this epic fixes) and
-`docs/language_design.md` where enforcement semantics are now real.
-Done when: the epic-level done condition in `overview.md` holds verbatim,
-checked by the commands in `evaluation.md`.
+Scope: sweep `test_files/` (231 `.b` files), `stdlib/*.b` (6), and
+`demos/*.b` (14) for code the new checker rejects and fix it to be
+type-correct (per the strict decision); ensure every diagnostic introduced
+in U3–U7 has at least one `fail/sema/` test with an expected-message
+pattern; bring the suite to ≥ 25 sema negative tests including all 10 audit
+programs (design.md table); update `CLAUDE.md` test counts and known-issues
+(remove the ones this epic fixes) and `docs/language_design.md` where
+enforcement semantics are now real.
+Sizing: before starting, the hire runs the U7-complete compiler over the
+full corpus and records the rejection count in the PR description. U8 is
+pre-authorized to land as **multiple stacked PRs** (each through the normal
+audit-code/merge phases) and is exempt from the per-PR file cap up to
+`max_files_changed_per_pr_u8` in `manifest.yaml`.
+Done when: the epic-level done condition in `overview.md` holds, checked by
+running the "Epic-level acceptance" commands in `evaluation.md` literally.
 
 ## Requirement coverage
 

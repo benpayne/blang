@@ -35,34 +35,51 @@ finding.
 
 ## Per-unit gates (every PR, all must pass)
 
-Run from the repo root on the PR branch:
+Run from the repo root on the PR branch. Both scripts honor a `BUILD_DIR`
+environment override (added 2026-07-13); `test_codegen.sh` accepts multiple
+test-file arguments. The default `build/` directory is the LLVM build;
+`build-parse/` is the parse-only build.
 
 ```bash
-# 1. Both build configurations compile clean
-rm -rf build && mkdir build && cd build && cmake .. && make -j"$(nproc)" && cd ..
-rm -rf build-llvm && mkdir build-llvm && cd build-llvm && \
-  cmake .. -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm && make -j"$(nproc)" && cd ..
-
-# 2. Full parse/sema suite green (LLVM build AND parse-only build)
+# Gate A — LLVM build; full parse suite + full codegen E2E suite
+cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+cmake --build build -j"$(nproc)"
 ./run_tests.sh
-
-# 3. Codegen E2E suite green
 ./test_codegen.sh
 
-# 4. Units touching runtime, ARC, ownership, or concurrency codegen
-#    (U6, U7, and any unit whose diff touches runtime/ or CG*.cpp ARC paths):
-./test_codegen.sh --leak-check
+# Gate B — parse-only build; parse+sema suite (cgfail auto-skips pre-U3)
+cmake -S . -B build-parse -DBLANG_ENABLE_LLVM=OFF
+cmake --build build-parse -j"$(nproc)"
+BUILD_DIR=build-parse ./run_tests.sh
+
+# Gate C — leak check, for units touching runtime/, ARC, ownership, or
+# concurrency codegen (U6, U7, and any diff touching those paths):
+./test_codegen.sh --leak-check test_files/codegen_spawn*.b \
+  test_files/codegen_sync*.b test_files/codegen_shared*.b
 ```
 
 Plus, from U2 onward:
 
 ```bash
-# 5. Quiet-compile check — zero output without flags on a passing file
-out=$(./build-llvm/qcc test_files/pass/func_simple.b 2>&1); test -z "$out"
+# Gate D — quiet-compile check: zero output, exit 0, no flags beyond
+# --parse-only (avoids the .ll side effect of an LLVM-build compile)
+out=$(./build/qcc --parse-only test_files/pass/func_simple.b 2>&1)
+test -z "$out"
 
-# 6. Expected-error mode — negative tests must match their declared message
-./run_tests.sh   # (expected-error matching is part of the suite after U2)
+# Gate E — expected-error mode: negative tests must match their declared
+# message (part of run_tests.sh from U2; Gates A and B re-run it)
 ```
+
+## Unit-specific checks
+
+- **U1** golden-location diff:
+  `./build/qcc --dump-locations test_files/pass/func_simple.b | diff - test_files/golden/func_simple.locations`
+  and the same for `match_basic`; both exit 0.
+- **U4** coercion-site removal: `grep -c "CreateIntToPtr" CGStatements.cpp`
+  returns 0.
+- **U7** sync-RMW lock proof:
+  `./test_codegen.sh test_files/codegen_sync_field_rmw.b` passes and
+  `grep -c "__blang_sync_lock" test_files/codegen_sync_field_rmw.ll` ≥ 1.
 
 A PR that requires relaxing or deleting an existing test to pass must say so
 in its description with rationale; the reviewer treats an unexplained test
@@ -96,26 +113,33 @@ before the reviewer merges to `master`. Unresolved findings block the merge.
 The done condition in `overview.md`, executed literally:
 
 ```bash
-# (1)+(2) suites, both builds
+# (1) LLVM build, full suites
+cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+cmake --build build -j"$(nproc)"
 ./run_tests.sh && ./test_codegen.sh
 
-# (3) sema negative suite: count and per-test format check
-ls test_files/fail/sema/*.b | wc -l          # ≥ 25
-# each test: exit non-zero, stderr matches '^[^:]+\.b:[0-9]+:[0-9]+: error: '
-# and the test's own expected pattern (enforced by run_tests.sh)
+# (2) parse-only build, parse+sema suite
+cmake -S . -B build-parse -DBLANG_ENABLE_LLVM=OFF
+cmake --build build-parse -j"$(nproc)"
+BUILD_DIR=build-parse ./run_tests.sh
+
+# (3) sema negative suite: count, audit coverage, per-test format check
+test "$(ls test_files/fail/sema/*.b | wc -l)" -ge 25
+for n in 01 02 03 04 05 06 07 08 09 10; do
+  test -f "test_files/fail/sema/audit_$n.b"
+done
+# per-test exit/format/message assertions are enforced by run_tests.sh (Gate E)
 
 # (4) silence
-out=$(./build-llvm/qcc test_files/pass/func_simple.b 2>&1); test -z "$out"
+out=$(./build/qcc --parse-only test_files/pass/func_simple.b 2>&1); test -z "$out"
 
 # (5) concurrency subset leak-clean
 ./test_codegen.sh --leak-check test_files/codegen_spawn*.b \
   test_files/codegen_sync*.b test_files/codegen_shared*.b
 ```
 
-Additionally the manager verifies the 10 audit programs (catalogued in
-`design.md` §Context and encoded as `fail/sema/audit_01..10.b`) are all
-rejected, and that `CLAUDE.md` known-issues no longer lists the holes this
-epic closed.
+Additionally the manager verifies that `CLAUDE.md` known-issues no longer
+lists the holes this epic closed.
 
 ## Budget guardrails
 

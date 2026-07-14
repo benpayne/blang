@@ -35,6 +35,27 @@ Load-bearing facts for this epic:
   (`FileLexer.cpp:321`, `qcc.cpp:282,681`); `bcc` grep-filters some stderr
   but not stdout (`bcc.cpp:948-981`).
 
+### The 10 audit programs (canonical numbering)
+
+These are the audit's documented miscompile/crash programs. Units U4, U5,
+and U7 reference them **by this number**; U8 verifies all ten exist as
+`test_files/fail/sema/audit_NN.b` with expected-message patterns. Exact
+diagnostic wording is locked in U2's spec; the "expected diagnostic" column
+names the required *category*.
+
+| # | File | Program essence | Expected diagnostic | Unit |
+|---|------|-----------------|---------------------|------|
+| 1 | `audit_01.b` | `fn origin() -> Point { return 5; }` — struct return, int returned | return type mismatch | U4 |
+| 2 | `audit_02.b` | `fn s() -> string { return 42; }` — today emits `inttoptr 42` | return type mismatch | U4 |
+| 3 | `audit_03.b` | `fn f() -> int { return; }` — today crashes LLVM | return missing a value in non-void function | U4 |
+| 4 | `audit_04.b` | `int x = "hello";` — today initializer silently dropped | incompatible initializer type | U4 |
+| 5 | `audit_05.b` | `fn f(int a) -> int` called as `f(1, 2, 3)` | wrong number of arguments | U4 |
+| 6 | `audit_06.b` | `shared Point p = ...; p.x = 9;` — today allowed | cannot assign through shared value | U7 |
+| 7 | `audit_07.b` | plain `string`/`Array` captured in `spawn` — today raw pointer copy | spawn capture requires shared/sync | U7 |
+| 8 | `audit_08.b` | `fn lt<T: Comparable>(...)` instantiated with a non-conforming struct | generic constraint not satisfied | U5 |
+| 9 | `audit_09.b` | `int r = match tag { <one arm, no _> };` | non-exhaustive match | U5 |
+| 10 | `audit_10.b` | `p.nonexistent` — today silent nullptr, statement dropped | unknown field | U4 |
+
 ## Target architecture
 
 ```
@@ -79,8 +100,10 @@ Key structural decisions (fixed):
 - **Parser shape stays.** `Parse(Lexer&, Scope*)` factories, `SmartPtr`
   ownership, and the `QLang` namespace remain; U1 adds location capture but
   does not restructure parsing.
-- **The 109 `pass/` tests, 47+ codegen E2E tests, and 14 demos** define
-  current correct behavior. Any newly rejected program among them is either
+- **The test corpus defines current correct behavior.** Counts as of launch
+  (commit the launch SHA in the status log): `pass/` = 113, `fail/` = 41,
+  `cgfail/` = 8, `codegen_*.b` = 63 (all green), `demos/` = 14 `.b` files;
+  231 `.b` files under `test_files/` total. Any newly rejected program among them is either
   fixed in the same PR (small) or documented and fixed in U8 (bulk) — but
   suites must be green at every unit boundary (constitution, Principle II).
 - **`--combine` / multi-module builds** (stdlib is compiled with user code
