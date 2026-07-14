@@ -81,6 +81,7 @@ private:
 		FunctionDefinition *genericDef,
 		const std::vector<SmartPtr<Type>> &typeArgs );
 	llvm::Value *genStructLiteral( StructLiteralExpression *expr );
+	llvm::Value *genConstructExpression( ConstructExpression *expr );
 	llvm::Value *genFieldAccess( FieldAccessExpression *expr );
 	llvm::Value *genFieldAssignment( FieldAssignmentExpression *expr );
 	llvm::Value *genIndexAssignment( IndexAssignmentExpression *expr );
@@ -133,6 +134,9 @@ private:
 	// Array type helper
 	bool isArrayType( Expression *expr );
 	int getElementSize( Type *elemType );
+
+	// Byte type helper (for unsigned extension)
+	bool isByteExpression( Expression *expr );
 
 	// Buffer type helper
 	bool isBufferType( Expression *expr );
@@ -318,6 +322,10 @@ private:
 	// Type mapping
 	llvm::Type *getLLVMType( Type *type );
 
+	// Shared helper for declaring external functions (reduces getOrDeclare boilerplate)
+	llvm::Function *declareExtern( const char *name, llvm::Type *retType,
+		std::initializer_list<llvm::Type*> paramTypes, bool isVariadic = false );
+
 	// LLVM state
 	std::unique_ptr<llvm::LLVMContext> mContext;
 	std::unique_ptr<llvm::Module> mModule;
@@ -421,6 +429,13 @@ private:
 	void trackTempLambdaCtx( llvm::Value *ctxPtr );
 	void releaseTempLambdaCtxs();
 	void untrackTempLambdaCtx( llvm::Value *ctxPtr );
+
+	// Temporary struct tracking: struct literals created as expression temporaries
+	// (e.g., function arguments) that need to be released after the enclosing statement.
+	std::vector<llvm::Value*> mTempStructs;
+	void trackTempStruct( llvm::Value *structPtr );
+	void releaseTempStructs();
+	void untrackTempStruct( llvm::Value *structPtr );
 
 	// Ownership move tracking: own variables that have been moved
 	std::set<VariableDefinition*> mMovedVariables;

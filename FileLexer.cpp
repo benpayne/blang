@@ -347,7 +347,9 @@ int Lexer::getSymbolFromFile()
 					return KEYWORD_AWAIT;
 				break;
 			case 'b':
-				if ( matchKeyword( "bool" ) )
+				if ( matchKeyword( "byte" ) )
+					return BUILTIN_TYPE;
+				else if ( matchKeyword( "bool" ) )
 					return BOOL;
 				else if ( matchKeyword( "break" ) )
 					return KEYWORD_BREAK;
@@ -393,16 +395,18 @@ int Lexer::getSymbolFromFile()
 					return KEYWORD_FN;
 				break;
 			case 'i':
-				if ( matchKeyword( "int" ) )
+				if ( matchKeyword( "import" ) )
+					return KEYWORD_IMPORT;
+				else if ( matchKeyword( "insert" ) )
+					return KEYWORD_INSERT;
+				else if ( matchKeyword( "init" ) )
+					return KEYWORD_INIT;
+				else if ( matchKeyword( "int" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "if" ) )
 					return KEYWORD_IF;
 				else if ( matchKeyword( "impl" ) )
 					return KEYWORD_IMPL;
-				else if ( matchKeyword( "import" ) )
-					return KEYWORD_IMPORT;
-				else if ( matchKeyword( "insert" ) )
-					return KEYWORD_INSERT;
 				else if ( matchKeyword( "in" ) )
 					return KEYWORD_IN;
 				break;
@@ -438,7 +442,7 @@ int Lexer::getSymbolFromFile()
 				else if ( matchKeyword( "struct" ) )
 					return KEYWORD_STRUCT;
 				else if ( matchKeyword( "static" ) )
-					return TYPE_MODIFIER;
+					return KEYWORD_STATIC;
 				else if ( matchKeyword( "signed" ) )
 					return TYPE_MODIFIER;
 				else if ( matchKeyword( "shared" ) )

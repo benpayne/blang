@@ -71,7 +71,9 @@ set(QCC_SOURCES
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
-	list(APPEND QCC_SOURCES CodeGen.cpp)
+	list(APPEND QCC_SOURCES
+		CodeGen.cpp CGStatements.cpp CGExpressions.cpp CGTypes.cpp
+		CGStruct.cpp CGEnum.cpp CGLambda.cpp CGRuntime.cpp)
 endif()
 
 add_executable(qcc ${QCC_SOURCES})
@@ -120,6 +122,12 @@ add_library(blang_net STATIC runtime/blang_net.c)
 set_target_properties(blang_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_link_libraries(blang_net blang_string blang_buffer)
+
+# BLang filesystem runtime library (file I/O + directory ops)
+add_library(blang_fs STATIC runtime/blang_fs.c)
+set_target_properties(blang_fs PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_fs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_fs blang_string blang_buffer blang_array)
 
 # BLang sys runtime library (argc/argv capture for sys.args)
 add_library(blang_sys STATIC runtime/blang_sys.c)
@@ -188,13 +196,16 @@ target_compile_definitions(bcc PRIVATE BCC_ARRAY_LIB="${CMAKE_BINARY_DIR}/libbla
 target_compile_definitions(bcc PRIVATE BCC_BUFFER_LIB="${CMAKE_BINARY_DIR}/libblang_buffer.a")
 target_compile_definitions(bcc PRIVATE BCC_JSON_LIB="${CMAKE_BINARY_DIR}/libblang_json.a")
 target_compile_definitions(bcc PRIVATE BCC_NET_LIB="${CMAKE_BINARY_DIR}/libblang_net.a")
+target_compile_definitions(bcc PRIVATE BCC_FS_LIB="${CMAKE_BINARY_DIR}/libblang_fs.a")
 target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang_sys.a")
 message(STATUS "bcc: C compiler = ${CMAKE_C_COMPILER}")
 message(STATUS "bcc: host arch = ${CMAKE_SYSTEM_PROCESSOR}")
 
 # Copy stdlib .b files alongside executables for --combine auto-include
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/stdlib)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/buffer.b ${CMAKE_BINARY_DIR}/stdlib/buffer.b COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/net.b ${CMAKE_BINARY_DIR}/stdlib/net.b COPYONLY)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/fs.b ${CMAKE_BINARY_DIR}/stdlib/fs.b COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/sys.b ${CMAKE_BINARY_DIR}/stdlib/sys.b COPYONLY)
 
 if(LIBUV_FOUND)

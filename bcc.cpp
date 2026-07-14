@@ -775,7 +775,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 
 		const char *bkRuntime = nullptr, *bkString = nullptr, *bkArray = nullptr;
 		const char *bkBuffer = nullptr;
-		const char *bkJson = nullptr, *bkNet = nullptr, *bkSys = nullptr;
+		const char *bkJson = nullptr, *bkNet = nullptr, *bkFs = nullptr, *bkSys = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bkRuntime = BCC_RUNTIME_LIB;
 #endif
@@ -794,12 +794,16 @@ static int buildProject( const string &projectDir, const string &exeDir,
 #ifdef BCC_NET_LIB
 		bkNet = BCC_NET_LIB;
 #endif
+#ifdef BCC_FS_LIB
+		bkFs = BCC_FS_LIB;
+#endif
 #ifdef BCC_SYS_LIB
 		bkSys = BCC_SYS_LIB;
 #endif
 
 		for ( const auto &lib : {
 			findBuildLib( bkSys, "blang_sys" ),
+			findBuildLib( bkFs, "blang_fs" ),
 			findBuildLib( bkNet, "blang_net" ),
 			findBuildLib( bkJson, "blang_json" ),
 			findBuildLib( bkBuffer, "blang_buffer" ),
@@ -913,9 +917,20 @@ int main( int argc, char *argv[] )
 	string qcc = exeDir + "/qcc";
 
 	// Check for stdlib files to include via --combine
+	// Order matters: buffer.b must come before fs.b and net.b (they use Buffer)
 	vector<string> stdlibFiles;
 	{
 		string candidate = exeDir + "/stdlib/sys.b";
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			stdlibFiles.push_back( candidate );
+	}
+	{
+		string candidate = exeDir + "/stdlib/buffer.b";
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			stdlibFiles.push_back( candidate );
+	}
+	{
+		string candidate = exeDir + "/stdlib/fs.b";
 		if ( access( candidate.c_str(), F_OK ) == 0 )
 			stdlibFiles.push_back( candidate );
 	}
@@ -1086,6 +1101,7 @@ int main( int argc, char *argv[] )
 		const char *bakedBuffer = nullptr;
 		const char *bakedJson = nullptr;
 		const char *bakedNet = nullptr;
+		const char *bakedFs = nullptr;
 		const char *bakedSys = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bakedRuntime = BCC_RUNTIME_LIB;
@@ -1105,13 +1121,17 @@ int main( int argc, char *argv[] )
 #ifdef BCC_NET_LIB
 		bakedNet = BCC_NET_LIB;
 #endif
+#ifdef BCC_FS_LIB
+		bakedFs = BCC_FS_LIB;
+#endif
 #ifdef BCC_SYS_LIB
 		bakedSys = BCC_SYS_LIB;
 #endif
 
-		// Push in dependency order: sys→net→json→array→string→runtime
+		// Push in dependency order: sys→fs→net→json→buffer→array→string→runtime
 		for ( const auto &lib : {
 			findLib( bakedSys, "blang_sys" ),
+			findLib( bakedFs, "blang_fs" ),
 			findLib( bakedNet, "blang_net" ),
 			findLib( bakedJson, "blang_json" ),
 			findLib( bakedBuffer, "blang_buffer" ),

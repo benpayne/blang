@@ -505,6 +505,20 @@ namespace QLang
 		friend class CodeGen;
 	};
 
+	class ConstructExpression : public Expression
+	{
+	public:
+		ConstructExpression( StructDefinition *structDef ) : mStructDef( structDef ) {}
+		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
+		void addTypeArg( Type *typeArg ) { mTypeArgs.push_back( typeArg ); }
+
+	private:
+		SmartPtr<StructDefinition> mStructDef;
+		std::vector<SmartPtr<Type>> mTypeArgs;
+		std::vector<SmartPtr<Expression>> mArgs;
+		friend class CodeGen;
+	};
+
 	class EnumConstructExpression : public Expression
 	{
 	public:

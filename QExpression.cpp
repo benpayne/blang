@@ -395,6 +395,109 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 			}
 		}
 
+		// Check for constructor call: StructName(args)
+		if ( result == nullptr && structSym != nullptr )
+		{
+			StructDefinition *sd = dynamic_cast<StructDefinition*>( (Symbol*)structSym );
+			if ( sd != nullptr && sd->hasInit() )
+			{
+				l.getSymbol(); // consume SYMBOL (struct name)
+				int nextSym = l.peekSymbol();
+				if ( nextSym == '(' )
+				{
+					l.getSymbol(); // consume '('
+					ConstructExpression *ctor = new ConstructExpression( sd );
+					if ( l.peekSymbol() != ')' )
+					{
+						do {
+							Expression *arg = ParseExpr( l, scope, 0 );
+							if ( arg == nullptr )
+								COMPILE_ERROR( l, "Expected expression in constructor call" );
+							ctor->addArg( arg );
+							sym = l.getSymbol();
+						} while ( sym == ',' );
+						if ( sym != ')' )
+							COMPILE_ERROR( l, "Expected ')' in constructor call" );
+					}
+					else
+					{
+						l.getSymbol(); // consume ')'
+					}
+					result = ctor;
+				}
+				else
+				{
+					l.setCurrentPos( pos ); // restore, not a constructor call
+				}
+			}
+		}
+
+		// Check for static method call: StructName.staticMethod(args)
+		if ( result == nullptr && structSym != nullptr )
+		{
+			StructDefinition *sd = dynamic_cast<StructDefinition*>( (Symbol*)structSym );
+			if ( sd != nullptr )
+			{
+				l.getSymbol(); // consume SYMBOL (struct name)
+				if ( l.peekSymbol() == '.' )
+				{
+					l.getSymbol(); // consume '.'
+					int fieldSym = l.getSymbol();
+					if ( fieldSym == Lexer::SYMBOL )
+					{
+						string methodName = l.getSymbolText();
+						// Find static method in struct
+						FunctionDefinition *staticMethod = nullptr;
+						const auto &methods = sd->getMethods();
+						for ( size_t mi = 0; mi < methods.size(); mi++ )
+						{
+							FunctionDefinition *m = const_cast<FunctionDefinition*>( (const FunctionDefinition*)methods[mi] );
+							if ( m->getName() == methodName && m->isStatic() )
+							{
+								staticMethod = m;
+								break;
+							}
+						}
+						if ( staticMethod != nullptr && l.peekSymbol() == '(' )
+						{
+							l.getSymbol(); // consume '('
+							CallExpression *callExpr = new CallExpression( staticMethod );
+							callExpr->setMangledName( sd->getName() + "_" + methodName );
+							if ( l.peekSymbol() != ')' )
+							{
+								do {
+									Expression *arg = ParseExpr( l, scope, 0 );
+									if ( arg == nullptr )
+										COMPILE_ERROR( l, "Expected expression in static method call" );
+									callExpr->addParam( arg );
+									sym = l.getSymbol();
+								} while ( sym == ',' );
+								if ( sym != ')' )
+									COMPILE_ERROR( l, "Expected ')' in static method call" );
+							}
+							else
+							{
+								l.getSymbol(); // consume ')'
+							}
+							result = callExpr;
+						}
+						else
+						{
+							l.setCurrentPos( pos ); // restore
+						}
+					}
+					else
+					{
+						l.setCurrentPos( pos ); // restore
+					}
+				}
+				else
+				{
+					l.setCurrentPos( pos ); // restore
+				}
+			}
+		}
+
 		// Check for enum variant construction: EnumName.variant or EnumName.variant(args)
 		if ( result == nullptr && structSym != nullptr )
 		{

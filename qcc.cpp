@@ -497,6 +497,7 @@ int main( int argc, char *argv[] )
 	gScope->addType( new Type( "double" ) );
 	gScope->addType( new Type( "long" ) );
 	gScope->addType( new Type( "short" ) );
+	gScope->addType( new Type( "byte" ) );
 	gScope->addType( new Type( "Task" ) );
 	gScope->addType( new Type( "Array" ) );
 	gScope->addType( new Type( "Buffer" ) );
@@ -583,8 +584,11 @@ int main( int argc, char *argv[] )
 
 			// Last source file is the user's code — use combineScope directly.
 			// Stdlib files (not last) get their own namespace scope.
+			// Buffer is a special case — it defines a fundamental type that
+			// should be directly visible without namespace qualification.
 			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
-			if ( isUserFile )
+			bool isBufferLib = ( moduleName == "buffer" );
+			if ( isUserFile || isBufferLib )
 			{
 				fileScope = combineScope;
 			}
@@ -592,7 +596,7 @@ int main( int argc, char *argv[] )
 			{
 				// Create a namespace scope for this stdlib module
 				Scope *nsScope = new Scope( Scope::kScope_Namespace );
-				nsScope->setParent( gScope );
+				nsScope->setParent( combineScope );
 				combineScope->addNamespace( moduleName, nsScope );
 				moduleNamespaces[moduleName] = nsScope;
 				fileScope = nsScope;

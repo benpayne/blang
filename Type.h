@@ -265,6 +265,7 @@ namespace QLang
 	public:
 
 		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false, bool isPublic = false );
+		static FunctionDefinition *ParseInit( Lexer &l, Scope *s );
 
 		// Create a builtin function definition (for compiler-provided builtins)
 		static FunctionDefinition *CreateBuiltin( const std::string &name, Type *returnType,
@@ -294,6 +295,9 @@ namespace QLang
 		bool isPublic() const { return mIsPublic; }
 		bool isAsync() const { return mIsAsync; }
 		bool isBuiltin() const { return mIsBuiltin; }
+		bool isStatic() const { return mIsStatic; }
+		void setStatic( bool s ) { mIsStatic = s; }
+		bool isInit() const { return mIsInit; }
 		const std::vector<GenericParam> &getGenericParams() const { return mGenericParams; }
 		bool hasRequires() const { return !mRequiresClauses.empty(); }
 		bool hasEnsures() const { return !mEnsuresClauses.empty(); }
@@ -313,6 +317,8 @@ namespace QLang
 		bool mIsPublic = false;
 		bool mIsAsync = false;
 		bool mIsBuiltin = false;
+		bool mIsStatic = false;
+		bool mIsInit = false;
 		std::vector<GenericParam> mGenericParams;
 		std::vector<SmartPtr<Expression>> mRequiresClauses;
 		std::vector<SmartPtr<Expression>> mEnsuresClauses;
@@ -342,6 +348,7 @@ namespace QLang
 
 		Type *getVariableType() { return mType; }
 		const Type *getVariableType() const { return mType; }
+		void setType( Type *type ) { mType = type; }
 
 		bool isConst() const { return mIsConst; }
 		void setConst( bool isConst ) { mIsConst = isConst; }
@@ -368,6 +375,9 @@ namespace QLang
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
 
 		void addMethod( FunctionDefinition *method ) { mMethods.push_back( method ); }
+		void setInitMethod( FunctionDefinition *method ) { mInitMethod = method; }
+		FunctionDefinition *getInitMethod() { return mInitMethod; }
+		bool hasInit() const { return mInitMethod != nullptr; }
 		bool isGeneric() const { return !mGenericParams.empty(); }
 		bool isPublic() const { return mIsPublic; }
 		bool isTable() const { return mIsTable; }
@@ -385,6 +395,7 @@ namespace QLang
 
 		std::vector<SmartPtr<VariableDefinition> > mFields;
 		std::vector<SmartPtr<FunctionDefinition> > mMethods;
+		SmartPtr<FunctionDefinition> mInitMethod;
 		std::vector<GenericParam> mGenericParams;
 		std::vector<AnnotationNode> mAnnotations;
 		bool mIsPublic = false;

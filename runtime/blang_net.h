@@ -3,6 +3,7 @@
 
 #include "blang_string.h"
 #include "blang_buffer.h"
+#include "blang_array.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,19 @@ int64_t __blang_tcp_read_into_buffer( int fd, BlangBuffer *buf, int64_t max_len 
 
 /* Write buffer contents to socket. Returns bytes written (-1 = error). */
 int64_t __blang_tcp_write_buffer( int fd, BlangBuffer *buf );
+
+/* Read from socket into a byte array. Returns bytes read (0 = EOF, -1 = error). */
+int64_t __blang_tcp_read_into_byte_array( int fd, BlangArray *arr, int64_t max_len );
+
+/* Write byte array contents to socket. Returns bytes written (-1 = error). */
+int64_t __blang_tcp_write_byte_array( int fd, BlangArray *arr );
+
+/* Write all bytes from a string, retrying on partial writes. */
+int64_t __blang_tcp_write_all( int fd, const BlangString *data );
+
+/* Stream a file to a socket. Reads from file_fd at offset, writes count bytes
+   to sock_fd using 8KB kernel-space chunks. Returns total bytes, -1 on error. */
+int64_t __blang_sendfile( int sock_fd, int file_fd, int64_t offset, int64_t count );
 
 /* ========================================================================
    Selector — poll-based event loop

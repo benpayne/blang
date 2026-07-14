@@ -6,7 +6,7 @@ DEMOS = 01_fibonacci 02_primes 03_collatz 04_result_calculator \
         08_json_addressbook 09_traffic_light 10_math_library
 
 # Network demos build but don't auto-run (server is long-running, client needs args)
-NET_DEMOS = 11_echo_server 12_tcp_client 13_http_server
+NET_DEMOS = 11_echo_server 12_tcp_client 13_http_server 14_file_server
 
 BINS = $(addprefix $(BINDIR)/, $(DEMOS) $(NET_DEMOS))
 
