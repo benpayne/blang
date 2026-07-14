@@ -57,6 +57,11 @@ namespace QLang
 		bool isCheckableType( Type *t );
 		bool typesCompatible( Type *from, Type *to );
 
+		// U5 match/generics helpers.
+		EnumDefinition *enumForType( Type *t );
+		void checkConstraint( Type *arg, const std::string &constraint,
+			const std::string &paramName, const SourceLocation &loc );
+
 		Scope *mScope;
 		DiagnosticEngine &mDiag;
 		bool mReported = false;  // any sema diagnostic emitted this run

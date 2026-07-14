@@ -1,6 +1,7 @@
 #include "Sema.h"
 
 #include <cctype>
+#include <set>
 
 using namespace QLang;
 using namespace std;
@@ -323,6 +324,22 @@ Type *Sema::visitExpr( Expression *expr )
 				}
 			}
 		}
+
+		// Generic constraint checking (REQ-008): for an explicit-type-argument call
+		// to a generic function, each type argument bound to a constrained generic
+		// parameter must satisfy that protocol constraint. Inferred (no explicit
+		// type args) instantiations are left unchecked in U5.
+		if ( callee != nullptr && callee->isGeneric() && !ce->mTypeArgs.empty() )
+		{
+			const auto &gps = callee->getGenericParams();
+			for ( size_t i = 0; i < gps.size() && i < ce->mTypeArgs.size(); i++ )
+			{
+				if ( gps[i].mConstraint.empty() )
+					continue;
+				checkConstraint( ce->mTypeArgs[i], gps[i].mConstraint, gps[i].mName,
+					ce->getLocation() );
+			}
+		}
 		return t;
 	}
 	if ( auto *ic = dynamic_cast<IndirectCallExpression *>( expr ) )
@@ -486,9 +503,40 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( auto *mt = dynamic_cast<MatchExpression *>( expr ) )
 	{
-		visitExpr( mt->mSubject );
+		Type *subjType = visitExpr( mt->mSubject );
 		for ( auto &arm : mt->mArms )
 			visitStmt( arm.mBody );
+
+		// Exhaustiveness (REQ-007): when the subject is a determinable enum and no
+		// wildcard `_` arm is present, every variant must be covered by an arm.
+		// Non-enum subjects (literals, `var`-inferred bindings) are left unchecked.
+		EnumDefinition *ed = enumForType( subjType );
+		if ( ed != nullptr )
+		{
+			bool hasWildcard = false;
+			std::set<string> covered;
+			for ( auto &arm : mt->mArms )
+			{
+				if ( arm.mIsWildcard )
+					hasWildcard = true;
+				else
+					covered.insert( arm.mPattern );
+			}
+			if ( !hasWildcard )
+			{
+				for ( auto &v : ed->getVariants() )
+				{
+					if ( covered.find( v.mName ) == covered.end() )
+					{
+						mDiag.error( mt->getLocation(),
+							"non-exhaustive match: variant '" + v.mName + "' of enum '" +
+							ed->getName() + "' is not handled" );
+						mReported = true;
+						break;
+					}
+				}
+			}
+		}
 		return nullptr;
 	}
 	if ( auto *lm = dynamic_cast<LambdaExpression *>( expr ) )
@@ -577,4 +625,53 @@ void Sema::resolveMethodCall( MethodCallExpression *mc, Type *baseType )
 	mDiag.error( mc->getLocation(),
 		"type '" + baseType->getName() + "' has no method '" + name + "'" );
 	mReported = true;
+}
+
+// ---------------------------------------------------------------------------
+// U5: match/generics helpers
+// ---------------------------------------------------------------------------
+
+EnumDefinition *Sema::enumForType( Type *t )
+{
+	if ( t == nullptr )
+		return nullptr;
+	return dynamic_cast<EnumDefinition *>( mScope->findSymbol( t->getName() ) );
+}
+
+void Sema::checkConstraint( Type *arg, const string &constraint,
+	const string &paramName, const SourceLocation &loc )
+{
+	if ( arg == nullptr || constraint.empty() )
+		return;
+	// Only a concrete user struct is judged; builtins / generic parameters /
+	// unknown type arguments are left unchecked to avoid false positives.
+	StructDefinition *sd = dynamic_cast<StructDefinition *>( mScope->findSymbol( arg->getName() ) );
+	if ( sd == nullptr )
+		return;
+	ProtocolDefinition *pd = dynamic_cast<ProtocolDefinition *>( mScope->findSymbol( constraint ) );
+	if ( pd == nullptr )
+		return;  // unknown protocol — not judged
+	// Structural conformance: the struct must implement every required method by
+	// name (conformance is not otherwise recorded on StructDefinition).
+	for ( auto &req : pd->getRequiredMethods() )
+	{
+		if ( req == nullptr )
+			continue;
+		bool found = false;
+		for ( auto &m : sd->getMethods() )
+			if ( m != nullptr && m->getName() == req->getName() )
+			{
+				found = true;
+				break;
+			}
+		if ( !found )
+		{
+			mDiag.error( loc,
+				"type '" + arg->getName() + "' does not satisfy constraint '" + constraint +
+				"' on generic parameter '" + paramName + "': missing method '" +
+				req->getName() + "'" );
+			mReported = true;
+			return;
+		}
+	}
 }

@@ -658,7 +658,11 @@ int Lexer::getSymbolFromFile()
 				break;
 			
 			default:
-				printf( "Unknown Charater %d\n", mReader->peekChar() );
+				// Quiet by default (REQ-003): only trace this under -v. ':' and
+				// other single characters reach here via valid constructs
+				// (e.g. generic constraints `<T: Comparable>`) during parsing.
+				if ( mTraceEnabled )
+					printf( "Unknown Charater %d\n", mReader->peekChar() );
 				return mReader->popChar();
 				break;
 		}			
