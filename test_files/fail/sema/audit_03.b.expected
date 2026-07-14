@@ -1,0 +1,2 @@
+# audit_03: return with no value in a non-void function.
+^[^:]+\.b:[0-9]+:[0-9]+: error: return with no value in function 'f' returning 'int'$

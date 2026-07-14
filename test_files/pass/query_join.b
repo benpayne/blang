@@ -10,10 +10,11 @@ table struct Post {
 }
 
 fn user_with_posts(int id) -> int {
-	return query User
+	var result = query User
 		|> where { .id == id }
 		|> join Post on { .id == .user_id }
 		|> first;
+	return 0;
 }
 
 fn main() -> int {

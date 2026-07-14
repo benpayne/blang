@@ -11,11 +11,11 @@ enum Option<T> {
 }
 
 fn divide(int a, int b) -> Result<int, string> {
-	return 42;
+	return Result.ok(42);
 }
 
 fn find_item(int id) -> Option<int> {
-	return 0;
+	return Option.some(0);
 }
 
 fn handle_result() -> int {

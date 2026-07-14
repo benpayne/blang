@@ -1,5 +1,7 @@
 #include "Sema.h"
 
+#include <cctype>
+
 using namespace QLang;
 using namespace std;
 
@@ -20,21 +22,85 @@ static bool isGenericParamName( StructDefinition *structDef, const string &typeN
 }
 
 // ---------------------------------------------------------------------------
+// U4: type compatibility (closed conversion set — design decision 6)
+// ---------------------------------------------------------------------------
+
+// Scalar primitives that interconvert implicitly. Integer-width promotion is the
+// documented implicit conversion; float<->double and the fact that bool/char are
+// lowered to integers (true/false parse as ConstInteger "int") make the scalar
+// family mutually compatible — matching codegen's existing coercions. Rejecting
+// within this set would false-positive on pervasive bool/int/char/float mixing.
+static bool isScalarTypeName( const string &n )
+{
+	return n == "int" || n == "long" || n == "short" || n == "byte" ||
+	       n == "char" || n == "bool" || n == "float" || n == "double";
+}
+
+// A single upper-case letter is, by house convention, a generic type parameter
+// (T, U, K, V). Treat it as compatible so U4 never rejects generic code (U5 owns
+// constraint checking).
+static bool looksGenericParam( const string &n )
+{
+	return n.size() == 1 && isupper( (unsigned char)n[0] );
+}
+
+// isCheckableType: a type whose values U4 can confidently compare. Scalars,
+// string, and concrete user structs qualify. Enums (Result/Option/user), generic
+// parameters, inferred `var`, `fn` function types, Array<T>, and unknown names do
+// NOT — their values are not fully typed by U3, so U4 must not judge them.
+bool Sema::isCheckableType( Type *t )
+{
+	if ( t == nullptr )
+		return false;
+	const string &n = t->getName();
+	if ( n.empty() )
+		return false;
+	if ( isScalarTypeName( n ) || n == "string" )
+		return true;
+	return dynamic_cast<StructDefinition *>( mScope->findSymbol( n ) ) != nullptr;
+}
+
+// typesCompatible returns true (do NOT reject) unless BOTH types are concretely
+// checkable and provably incompatible. nullptr / empty / non-checkable / generic
+// types are never rejected — U3 leaves many nodes untyped and later units type
+// them; U4 only fires on clearly determinable, clearly incompatible pairs to
+// avoid false positives (FR-001/004/006). The only implicit conversions are the
+// scalar family (integer width promotion + bool/char/float interchange).
+bool Sema::typesCompatible( Type *from, Type *to )
+{
+	if ( from == nullptr || to == nullptr )
+		return true;
+	const string &f = from->getName();
+	const string &t = to->getName();
+	if ( f.empty() || t.empty() )
+		return true;
+	if ( f == t )
+		return true;
+	if ( looksGenericParam( f ) || looksGenericParam( t ) )
+		return true;
+	if ( !isCheckableType( from ) || !isCheckableType( to ) )
+		return true;
+	if ( isScalarTypeName( f ) && isScalarTypeName( t ) )
+		return true;
+	return false;
+}
+
+static string typeName( Type *t )
+{
+	return ( t != nullptr && !t->getName().empty() ) ? t->getName() : string( "<unknown>" );
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 bool Sema::analyze( Module *module, Scope *scope, DiagnosticEngine &diag )
 {
-	// Extern-only modules (.bmod) provide types for resolution but are not
-	// analyzed as user code (contracts/sema-pass.md).
 	if ( module == nullptr || module->isExtern() )
 		return true;
 
 	Sema sema( scope, diag );
 
-	// Struct/impl method bodies, then module-level function bodies, then test
-	// blocks. Order is not observable (sema emits nothing on success); it just
-	// needs to reach every reachable expression.
 	for ( auto &s : module->mStructList )
 		sema.visitStruct( s );
 	for ( auto &f : module->mFunctionList )
@@ -59,15 +125,20 @@ void Sema::visitStruct( StructDefinition *structDef )
 
 void Sema::visitFunction( FunctionDefinition *func )
 {
-	if ( func == nullptr )
+	if ( func == nullptr || func->isExtern() )
 		return;
-	// requires/ensures clauses are expressions; the body is a Block.
+
 	for ( auto &req : func->mRequiresClauses )
 		visitExpr( req );
 	for ( auto &ens : func->mEnsuresClauses )
 		visitExpr( ens );
+
+	FunctionDefinition *saved = mCurrentFunc;
+	mCurrentFunc = func;
 	if ( func->mFuncBody != nullptr )
 		visitStmt( func->mFuncBody );
+
+	mCurrentFunc = saved;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,9 +150,6 @@ void Sema::visitStmt( Statement *stmt )
 	if ( stmt == nullptr )
 		return;
 
-	// Expressions ARE statements (Expression : Statement). Route them through
-	// the expression walk, which recurses into every sub-expression and any
-	// nested block (lambda/match/spawn bodies).
 	if ( auto *e = dynamic_cast<Expression *>( stmt ) )
 	{
 		visitExpr( e );
@@ -95,7 +163,29 @@ void Sema::visitStmt( Statement *stmt )
 	}
 	else if ( auto *s = dynamic_cast<ReturnStatement *>( stmt ) )
 	{
-		visitExpr( s->mExpression );
+		Type *vt = visitExpr( s->mExpression );
+		// Return-type checking (FR-001, FR-002). mCurrentFunc is null inside a
+		// lambda body (see visitExpr LambdaExpression) so lambda returns are not
+		// checked against the enclosing function.
+		if ( mCurrentFunc != nullptr )
+		{
+			Type *rt = mCurrentFunc->getReturnType();  // nullptr = void
+			bool hasValue = ( s->mExpression != nullptr );
+			if ( rt != nullptr && !hasValue )
+			{
+				mDiag.error( s->getLocation(),
+					"return with no value in function '" + mCurrentFunc->getName() +
+					"' returning '" + typeName( rt ) + "'" );
+				mReported = true;
+			}
+			else if ( rt != nullptr && hasValue && !typesCompatible( vt, rt ) )
+			{
+				mDiag.error( s->getLocation(),
+					"cannot return '" + typeName( vt ) + "' from function '" +
+					mCurrentFunc->getName() + "' returning '" + typeName( rt ) + "'" );
+				mReported = true;
+			}
+		}
 	}
 	else if ( auto *s = dynamic_cast<IfStatement *>( stmt ) )
 	{
@@ -116,7 +206,22 @@ void Sema::visitStmt( Statement *stmt )
 	else if ( auto *s = dynamic_cast<VariableDeclaration *>( stmt ) )
 	{
 		for ( auto &decl : s->mVariables )
-			visitExpr( decl.mInitialValue );
+		{
+			Type *initType = visitExpr( decl.mInitialValue );
+			// Initializer compatibility (FR-004). Only when both types are
+			// determinable and provably incompatible.
+			if ( decl.mInitialValue != nullptr && decl.mVaribale != nullptr )
+			{
+				Type *declType = decl.mVaribale->getVariableType();
+				if ( declType != nullptr && !typesCompatible( initType, declType ) )
+				{
+					mDiag.error( decl.mInitialValue->getLocation(),
+						"cannot initialize '" + typeName( declType ) +
+						"' from a value of type '" + typeName( initType ) + "'" );
+					mReported = true;
+				}
+			}
+		}
 	}
 	else if ( auto *s = dynamic_cast<AssertStatement *>( stmt ) )
 	{
@@ -131,7 +236,6 @@ void Sema::visitStmt( Statement *stmt )
 		visitExpr( s->mEventExpression );
 		visitStmt( s->mBody );
 	}
-	// Leaf statements (Break/Continue/WaitAll) need no recursion.
 }
 
 // ---------------------------------------------------------------------------
@@ -143,10 +247,8 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( expr == nullptr )
 		return nullptr;
 
-	// --- Literals: annotate with the primitive type (FR-010). ---
 	if ( dynamic_cast<ConstInteger *>( expr ) )
 	{
-		// true/false are parsed as ConstInteger; int is a safe annotation here.
 		Type *t = mScope->findType( "int" );
 		expr->setResolvedType( t );
 		return t;
@@ -159,7 +261,6 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( dynamic_cast<ConstString *>( expr ) || dynamic_cast<StringInterpolation *>( expr ) )
 	{
-		// Recurse into interpolation parts.
 		if ( auto *si = dynamic_cast<StringInterpolation *>( expr ) )
 			for ( auto &p : si->mParts )
 				visitExpr( p );
@@ -174,7 +275,6 @@ Type *Sema::visitExpr( Expression *expr )
 		return t;
 	}
 
-	// --- Variable reference: type is the variable's declared type. ---
 	if ( auto *ve = dynamic_cast<VariableExpression *>( expr ) )
 	{
 		VariableDefinition *var = ve->getVariable();
@@ -183,13 +283,46 @@ Type *Sema::visitExpr( Expression *expr )
 		return t;
 	}
 
-	// --- Function call: type is the callee's return type. ---
 	if ( auto *ce = dynamic_cast<CallExpression *>( expr ) )
 	{
 		for ( auto &p : ce->mParams )
 			visitExpr( p );
-		Type *t = ( ce->mFunction != nullptr ) ? ce->mFunction->getReturnType() : nullptr;
+		FunctionDefinition *callee = ce->mFunction;
+		Type *t = ( callee != nullptr ) ? callee->getReturnType() : nullptr;
 		expr->setResolvedType( t );
+
+		// Call arity + argument-type checking (FR-005, FR-006). Skip variadic,
+		// generic, and builtin callees (their own paths validate). Argument-TYPE
+		// checking additionally skips extern callees, whose string<->cstring /
+		// carray FFI conversions are legitimate at the boundary.
+		if ( callee != nullptr && !callee->isVariadic() && !callee->isGeneric() &&
+		     !callee->isBuiltin() )
+		{
+			int np = callee->getNumberParams();
+			int na = (int)ce->mParams.size();
+			if ( na != np )
+			{
+				mDiag.error( ce->getLocation(),
+					"wrong number of arguments to '" + callee->getName() +
+					"': expected " + to_string( np ) + ", got " + to_string( na ) );
+				mReported = true;
+			}
+			else if ( !callee->isExtern() )
+			{
+				for ( int i = 0; i < np; i++ )
+				{
+					Type *at = ce->mParams[i]->getResolvedType();
+					Type *pt = callee->getParamType( i );
+					if ( pt != nullptr && !typesCompatible( at, pt ) )
+					{
+						mDiag.error( ce->mParams[i]->getLocation(),
+							"argument " + to_string( i + 1 ) + " to '" + callee->getName() +
+							"': cannot pass '" + typeName( at ) + "' as '" + typeName( pt ) + "'" );
+						mReported = true;
+					}
+				}
+			}
+		}
 		return t;
 	}
 	if ( auto *ic = dynamic_cast<IndirectCallExpression *>( expr ) )
@@ -206,7 +339,6 @@ Type *Sema::visitExpr( Expression *expr )
 		return t;
 	}
 
-	// --- Field access: resolve the member against the base's struct type. ---
 	if ( auto *fa = dynamic_cast<FieldAccessExpression *>( expr ) )
 	{
 		Type *baseType = visitExpr( fa->getObject() );
@@ -214,7 +346,6 @@ Type *Sema::visitExpr( Expression *expr )
 		return fa->getResolvedType();
 	}
 
-	// --- Method call: resolve the method against the base's struct type. ---
 	if ( auto *mc = dynamic_cast<MethodCallExpression *>( expr ) )
 	{
 		Type *baseType = visitExpr( mc->mObject );
@@ -224,7 +355,6 @@ Type *Sema::visitExpr( Expression *expr )
 		return mc->getResolvedType();
 	}
 
-	// --- Index: element type is best-effort (element of Array<T>). ---
 	if ( auto *ie = dynamic_cast<IndexExpression *>( expr ) )
 	{
 		Type *baseType = visitExpr( ie->getObject() );
@@ -237,13 +367,42 @@ Type *Sema::visitExpr( Expression *expr )
 		return t;
 	}
 
-	// --- Operators: type follows the left operand (best-effort). ---
 	if ( auto *op = dynamic_cast<OperationsExpression *>( expr ) )
 	{
 		Type *lt = visitExpr( op->mOp1 );
-		visitExpr( op->mOp2 );
-		expr->setResolvedType( lt );
-		return lt;
+		Type *rt = visitExpr( op->mOp2 );
+		// Operand validity (FR-007), conservative: reject arithmetic operators
+		// applied to a determinable NON-scalar, NON-string operand (a struct/enum
+		// value) — BLang has no operator overloading, so this is always invalid.
+		// String '+' (concat) and any operand of unknown type are left alone.
+		const string &oper = op->mOperation;
+		bool isArith = ( oper == "+" || oper == "-" || oper == "*" ||
+		                 oper == "/" || oper == "%" );
+		// Comparison and logical operators yield bool, not the operand type.
+		bool isBoolResult = ( oper == "==" || oper == "!=" || oper == "<" ||
+		                      oper == ">" || oper == "<=" || oper == ">=" ||
+		                      oper == "&&" || oper == "||" );
+		if ( isArith )
+		{
+			for ( Type *o : { lt, rt } )
+			{
+				if ( o != nullptr && !o->getName().empty() &&
+				     !isScalarTypeName( o->getName() ) &&
+				     o->getName() != "string" && o->getName() != "Array" &&
+				     !looksGenericParam( o->getName() ) &&
+				     structForType( o ) != nullptr )
+				{
+					mDiag.error( op->getLocation(),
+						"operator '" + oper +
+						"' cannot be applied to a value of type '" + typeName( o ) + "'" );
+					mReported = true;
+					break;
+				}
+			}
+		}
+		Type *resultType = isBoolResult ? mScope->findType( "bool" ) : lt;
+		expr->setResolvedType( resultType );
+		return resultType;
 	}
 	if ( auto *un = dynamic_cast<UnaryExpression *>( expr ) )
 	{
@@ -252,7 +411,6 @@ Type *Sema::visitExpr( Expression *expr )
 		return t;
 	}
 
-	// --- Assignments: type follows the assigned target (best-effort). ---
 	if ( auto *as = dynamic_cast<AssignmentExpression *>( expr ) )
 	{
 		visitExpr( as->mValue );
@@ -274,7 +432,6 @@ Type *Sema::visitExpr( Expression *expr )
 		return nullptr;
 	}
 
-	// --- Composite expressions: recurse; type left for later units. ---
 	if ( auto *al = dynamic_cast<ArrayLiteralExpression *>( expr ) )
 	{
 		for ( auto &el : al->mElements )
@@ -336,8 +493,14 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( auto *lm = dynamic_cast<LambdaExpression *>( expr ) )
 	{
+		// Returns inside a lambda are checked against the lambda's own return
+		// type, not the enclosing function; U4 defers lambda return checking, so
+		// suppress the enclosing-function check while walking the lambda body.
+		FunctionDefinition *saved = mCurrentFunc;
+		mCurrentFunc = nullptr;
 		visitStmt( lm->mBody );
-		return lm->mReturnType;
+		mCurrentFunc = saved;
+		return nullptr;
 	}
 	if ( auto *sp = dynamic_cast<SpawnStatement *>( expr ) )
 	{
@@ -345,28 +508,17 @@ Type *Sema::visitExpr( Expression *expr )
 		return nullptr;
 	}
 
-	// Query/insert/update/delete expressions carry `.field` query pseudo-
-	// references (QueryFieldExpression), NOT struct member access — they are
-	// deliberately not walked here so sema never mistakes a query field for an
-	// unknown struct field. FunctionRefExpression and other leaves: no type.
 	return nullptr;
 }
 
 // ---------------------------------------------------------------------------
-// Member resolution
+// Member resolution (U3)
 // ---------------------------------------------------------------------------
 
 StructDefinition *Sema::structForType( Type *baseType )
 {
 	if ( baseType == nullptr )
 		return nullptr;
-
-	// findSymbol only returns real Symbols (structs/enums/functions/variables);
-	// builtin types (string/Array/Buffer/int/…) are registered via addType and
-	// are therefore invisible here. A generic struct instance (Box<int>) names
-	// "Box", whose template struct carries the field/method NAMES unchanged, so
-	// name-based lookup is correct across monomorphization. A generic PARAMETER
-	// base (e.g. "T") is not a Symbol → nullptr → left unchecked (R5).
 	Symbol *sym = mScope->findSymbol( baseType->getName() );
 	return dynamic_cast<StructDefinition *>( sym );
 }
@@ -375,31 +527,25 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 {
 	StructDefinition *structDef = structForType( baseType );
 	if ( structDef == nullptr )
-		return;  // builtin/generic/unknown base — not our error to raise (R5)
+		return;
 
 	const string &name = fa->getFieldName();
 
-	// A hit annotates the access with the field's declared type — the same
-	// Type identity codegen uses (FR-012), so the annotation and codegen agree.
 	for ( auto &field : structDef->mFields )
 	{
 		if ( field->getName() == name )
 		{
 			Type *ft = field->getVariableType();
 			if ( !isGenericParamName( structDef, ft->getName() ) )
-				fa->setResolvedType( ft );  // concrete only (see helper)
+				fa->setResolvedType( ft );
 			return;
 		}
 	}
 
-	// A name that is a METHOD (referenced without a call) is a valid member;
-	// do not reject it as an unknown field (leave its typing to a later unit).
 	for ( auto &method : structDef->mMethods )
 		if ( method->getName() == name )
 			return;
 
-	// Genuinely absent on a concrete struct → the located rejection this unit
-	// adds (FR-006). This is the site that returned a silent nullptr in codegen.
 	mDiag.error( fa->getLocation(),
 		"type '" + baseType->getName() + "' has no field '" + name + "'" );
 	mReported = true;
@@ -409,7 +555,7 @@ void Sema::resolveMethodCall( MethodCallExpression *mc, Type *baseType )
 {
 	StructDefinition *structDef = structForType( baseType );
 	if ( structDef == nullptr )
-		return;  // builtin (string/Array/Buffer) or unknown base — leave it (R5)
+		return;
 
 	const string &name = mc->mMethodName;
 
@@ -419,14 +565,11 @@ void Sema::resolveMethodCall( MethodCallExpression *mc, Type *baseType )
 		{
 			Type *rt = method->getReturnType();
 			if ( rt != nullptr && !isGenericParamName( structDef, rt->getName() ) )
-				mc->setResolvedType( rt );  // concrete only (see helper)
+				mc->setResolvedType( rt );
 			return;
 		}
 	}
 
-	// A fn-typed field invoked as a method (obj.callback(...)) is valid; codegen
-	// lowers it as an indirect call. Any field with this name is enough to defer
-	// (its call-validity is not U3's concern).
 	for ( auto &field : structDef->mFields )
 		if ( field->getName() == name )
 			return;

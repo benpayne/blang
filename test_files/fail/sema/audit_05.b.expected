@@ -1,0 +1,2 @@
+# audit_05: wrong number of arguments.
+^[^:]+\.b:[0-9]+:[0-9]+: error: wrong number of arguments to 'f': expected 1, got 3$

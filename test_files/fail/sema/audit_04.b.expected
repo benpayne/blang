@@ -1,0 +1,2 @@
+# audit_04: incompatible initializer (int from string).
+^[^:]+\.b:[0-9]+:[0-9]+: error: cannot initialize 'int' from a value of type 'string'$

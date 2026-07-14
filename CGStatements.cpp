@@ -282,8 +282,10 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 							initVal = mBuilder->CreateFPTrunc( initVal, llvmType, "fptrunc" );
 						else if ( llvmType->isDoubleTy() && initVal->getType()->isFloatTy() )
 							initVal = mBuilder->CreateFPExt( initVal, llvmType, "fpext" );
-						else
-							initVal = nullptr;
+						// U4 (REQ-012): the silent dropped-initializer fallback (a null
+						// assignment followed by a skipped store) is deleted. Incompatible
+						// initializers are rejected by sema before codegen; only the
+						// documented numeric conversions above remain.
 					}
 					if ( initVal != nullptr )
 					{
@@ -526,18 +528,10 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 				retVal = mBuilder->CreateFPExt( retVal, expectedType, "fpext" );
 			else if ( expectedType->isIntegerTy() && retVal->getType()->isIntegerTy() )
 				retVal = mBuilder->CreateIntCast( retVal, expectedType, true, "icast" );
-			else if ( expectedType->isStructTy() && retVal->getType()->isIntegerTy() )
-			{
-				retVal = llvm::Constant::getNullValue( expectedType );
-			}
-			else if ( expectedType->isIntegerTy() && retVal->getType()->isPointerTy() )
-			{
-				retVal = mBuilder->CreatePtrToInt( retVal, expectedType, "ptrtoint" );
-			}
-			else if ( expectedType->isPointerTy() && retVal->getType()->isIntegerTy() )
-			{
-				retVal = mBuilder->CreateIntToPtr( retVal, expectedType, "inttoptr" );
-			}
+			// U4 (REQ-012): the return-type fabrication coercions (getNullValue for
+			// a struct return, ptrtoint, inttoptr) are deleted. Return-type
+			// mismatches are rejected by sema before codegen; only the documented
+			// numeric conversions above remain.
 		}
 
 		// Store return value and check ensures (postcondition) clauses

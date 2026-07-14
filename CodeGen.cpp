@@ -1118,6 +1118,12 @@ llvm::Value *CodeGen::genExpression( Expression *expr )
 	else if ( auto *indCall = dynamic_cast<IndirectCallExpression*>( expr ) )
 		return genIndirectCallExpression( indCall );
 
+	// U4 (REQ-012): an expression node reaching here is unhandled by code
+	// generation. After the semantic pass this cannot happen for a valid
+	// program, so it is a loud internal compiler error — never a silent skip.
+	std::cerr << "internal compiler error: unhandled expression node in code "
+	             "generation \u2014 please report" << std::endl;
+	mHasError = true;
 	return nullptr;
 }
 

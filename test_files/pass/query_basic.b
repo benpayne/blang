@@ -5,10 +5,11 @@ table struct User {
 }
 
 fn get_users() -> int {
-	return query User
+	var users = query User
 		|> where { .active == true }
 		|> order_by { .name }
 		|> limit(100);
+	return 0;
 }
 
 fn main() -> int {

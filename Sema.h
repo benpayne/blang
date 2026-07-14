@@ -53,9 +53,14 @@ namespace QLang
 		// sema never fabricates an "unknown member" error on such bases.
 		StructDefinition *structForType( Type *baseType );
 
+		// U4 type-compatibility (members: use mScope to classify a type).
+		bool isCheckableType( Type *t );
+		bool typesCompatible( Type *from, Type *to );
+
 		Scope *mScope;
 		DiagnosticEngine &mDiag;
 		bool mReported = false;  // any sema diagnostic emitted this run
+		FunctionDefinition *mCurrentFunc = nullptr;  // U4: enclosing fn for return checks
 	};
 
 } // namespace QLang
