@@ -2,7 +2,7 @@
 
 **Archetype**: evolve (hardening existing test infrastructure) + a bounded discover slice (fuzzing)
 
-**Status**: planning
+**Status**: launched
 
 **Owner**: Ben Payne
 
@@ -149,3 +149,5 @@ run from the repo root. Every clause is a runnable teeth-proof, not just an
 |------|-----|-------|-------|
 | 2026-07-14 | — | epic created | Phase 2 of the production roadmap; scope confirmed: all five buckets, bounded fuzzing, all-63 goldens |
 | 2026-07-14 | — | readiness review round 1 | 17 findings (fresh-context + self audit); core theme: vacuous/teeth-free gates a testing epic must not ship. Fixes applied: --leak-check confirmed exits 0 with leaks today (F1) → U4 now fixes it + injected-leak proof; quarantine floor bounded to a pinned 6-test list + >=55 goldens (F13); U1/U5/U6 done-conditions given runnable teeth-proofs; U3 acceptance greps output not just exit codes; 'smoke' filter → named add_two fixture; stale 162 baseline → measured-at-launch (186 observed); CI gate = jobs run green, not grep. |
+| 2026-07-14 | — | readiness review passed (10/10); status → ready | All 17 findings resolved; teeth-proofs runnable; quarantine pinned; baseline measured-at-launch. |
+| 2026-07-14 | 0e8fef6a | launched on devbot | endpoint http://localhost:8000, dir a6b2f628, fully_autonomous, no_progress_threshold 10, 50M tokens, max 400 turns / 14 days. Baseline to be recorded by first turns. |
