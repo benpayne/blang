@@ -65,14 +65,10 @@ llvm::Value *CodeGen::genVariableExpression( VariableExpression *var )
 		return nullptr;
 	}
 
-	// Check for use-after-move on own variables
-	if ( varDef->getOwnership() == OwnershipQualifier::kOwnership_Own &&
-		 mMovedVariables.count( varDef ) )
-	{
-		cerr << "Error: use of moved variable '" << varDef->getName() << "'" << endl;
-		mHasError = true;
-		return nullptr;
-	}
+	// U6: use-after-move / move analysis was lifted into the semantic pass
+	// (Sema.cpp), which runs before codegen in all build modes and reports located
+	// diagnostics (and correctly clears moved state on reassignment). Codegen no
+	// longer re-checks moves here — sema is authoritative.
 
 	llvm::AllocaInst *alloca = it->second;
 	OwnershipQualifier ownership = varDef->getOwnership();

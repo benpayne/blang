@@ -3,6 +3,7 @@
 
 #include <string>
 #include <set>
+#include <map>
 
 #include "Type.h"
 #include "Expression.h"
@@ -73,6 +74,12 @@ namespace QLang
 		DiagnosticEngine &mDiag;
 		bool mReported = false;  // any sema diagnostic emitted this run
 		FunctionDefinition *mCurrentFunc = nullptr;  // U4: enclosing fn for return checks
+		// U6 ownership/move analysis (bounded flow analysis, per function).
+		std::set<VariableDefinition*> mMoved;
+		std::map<VariableDefinition*, int> mDeclLoopDepth;
+		std::map<VariableDefinition*, int> mDeclSpawnDepth;
+		int mLoopDepth = 0;
+		int mSpawnDepth = 0;
 	};
 
 } // namespace QLang

@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <set>
+#include <map>
 
 using namespace QLang;
 using namespace std;
@@ -136,6 +137,11 @@ void Sema::visitFunction( FunctionDefinition *func )
 
 	FunctionDefinition *saved = mCurrentFunc;
 	mCurrentFunc = func;
+	mMoved.clear();
+	mDeclLoopDepth.clear();
+	mDeclSpawnDepth.clear();
+	mLoopDepth = 0;
+	mSpawnDepth = 0;
 	if ( func->mFuncBody != nullptr )
 		visitStmt( func->mFuncBody );
 
@@ -197,12 +203,16 @@ void Sema::visitStmt( Statement *stmt )
 	else if ( auto *s = dynamic_cast<WhileStatement *>( stmt ) )
 	{
 		visitExpr( s->mLoopExpression );
+		mLoopDepth++;
 		visitStmt( s->mLoopStatement );
+		mLoopDepth--;
 	}
 	else if ( auto *s = dynamic_cast<ForInStatement *>( stmt ) )
 	{
 		visitExpr( s->mIterableExpression );
+		mLoopDepth++;
 		visitStmt( s->mBody );
+		mLoopDepth--;
 	}
 	else if ( auto *s = dynamic_cast<VariableDeclaration *>( stmt ) )
 	{
@@ -220,6 +230,31 @@ void Sema::visitStmt( Statement *stmt )
 						"cannot initialize '" + typeName( declType ) +
 						"' from a value of type '" + typeName( initType ) + "'" );
 					mReported = true;
+				}
+			}
+			// U6: record the declaration's loop/spawn nesting for this variable.
+			if ( decl.mVaribale != nullptr )
+			{
+				mDeclLoopDepth[ decl.mVaribale ] = mLoopDepth;
+				mDeclSpawnDepth[ decl.mVaribale ] = mSpawnDepth;
+			}
+			// U6: an `own` value initialised from another `own` variable moves the
+			// source. Moving in a loop (source declared outside the loop) is a
+			// located error; otherwise the source is marked moved.
+			if ( auto *ve = dynamic_cast<VariableExpression *>( (Expression *)decl.mInitialValue ) )
+			{
+				VariableDefinition *src = ve->getVariable();
+				if ( src != nullptr && src->getOwnership() == OwnershipQualifier::kOwnership_Own )
+				{
+					int declDepth = mDeclLoopDepth.count( src ) ? mDeclLoopDepth[ src ] : 0;
+					if ( mLoopDepth > declDepth )
+					{
+						mDiag.error( decl.mInitialValue->getLocation(),
+							"move of own variable '" + src->getName() + "' inside a loop" );
+						mReported = true;
+					}
+					else
+						mMoved.insert( src );
 				}
 			}
 		}
@@ -279,6 +314,25 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *ve = dynamic_cast<VariableExpression *>( expr ) )
 	{
 		VariableDefinition *var = ve->getVariable();
+		if ( var != nullptr && var->getOwnership() == OwnershipQualifier::kOwnership_Own )
+		{
+			// U6: use of a moved own value.
+			if ( mMoved.count( var ) )
+			{
+				mDiag.error( ve->getLocation(),
+					"use of moved variable '" + var->getName() + "'" );
+				mReported = true;
+			}
+			// U6: an own value cannot be captured across a spawn boundary.
+			int declSpawn = mDeclSpawnDepth.count( var ) ? mDeclSpawnDepth[ var ] : 0;
+			if ( mSpawnDepth > declSpawn )
+			{
+				mDiag.error( ve->getLocation(),
+					"cannot capture own variable '" + var->getName() +
+					"' across a spawn boundary" );
+				mReported = true;
+			}
+		}
 		Type *t = ( var != nullptr ) ? var->getVariableType() : nullptr;
 		expr->setResolvedType( t );
 		return t;
@@ -321,6 +375,26 @@ Type *Sema::visitExpr( Expression *expr )
 							"': cannot pass '" + typeName( at ) + "' as '" + typeName( pt ) + "'" );
 						mReported = true;
 					}
+				}
+			}
+		}
+
+		// U6: passing an `own` variable to an `own` parameter moves it (mirrors
+		// codegen's move-on-own-argument). Params were visited above, so a
+		// use-after-move on the argument itself is already reported.
+		if ( callee != nullptr )
+		{
+			int np2 = callee->getNumberParams();
+			for ( int i = 0; i < (int)ce->mParams.size() && i < np2; i++ )
+			{
+				VariableDefinition *pd = callee->getParam( i );
+				if ( pd == nullptr || pd->getOwnership() != OwnershipQualifier::kOwnership_Own )
+					continue;
+				if ( auto *ve = dynamic_cast<VariableExpression *>( (Expression *)ce->mParams[i] ) )
+				{
+					VariableDefinition *av = ve->getVariable();
+					if ( av != nullptr && av->getOwnership() == OwnershipQualifier::kOwnership_Own )
+						mMoved.insert( av );
 				}
 			}
 		}
@@ -431,6 +505,9 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *as = dynamic_cast<AssignmentExpression *>( expr ) )
 	{
 		visitExpr( as->mValue );
+		// U6: reassigning a variable clears its moved state (it holds a value again).
+		if ( as->mVariable != nullptr )
+			mMoved.erase( as->mVariable );
 		Type *t = ( as->mVariable != nullptr ) ? as->mVariable->getVariableType() : nullptr;
 		expr->setResolvedType( t );
 		return t;
@@ -566,7 +643,9 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( auto *sp = dynamic_cast<SpawnStatement *>( expr ) )
 	{
+		mSpawnDepth++;
 		visitStmt( sp->mBody );
+		mSpawnDepth--;
 		// Concurrency safety (REQ-010): a non-`own` heap value (string/Array/
 		// Buffer/struct) captured by a spawn must be `shared` or `sync`; a plain
 		// (value-ownership) capture would cross the spawn boundary by raw pointer

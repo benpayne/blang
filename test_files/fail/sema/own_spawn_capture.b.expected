@@ -1,0 +1,2 @@
+# U6: own value captured across a spawn boundary.
+^[^:]+\.b:[0-9]+:[0-9]+: error: cannot capture own variable 'data' across a spawn boundary$
