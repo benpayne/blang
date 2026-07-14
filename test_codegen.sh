@@ -4,19 +4,21 @@
 #
 # Usage:
 #   ./test_codegen.sh                   # Run ALL codegen_*.b tests
-#   ./test_codegen.sh [test_file]       # Run a single test file
+#   ./test_codegen.sh [test_file...]    # Run specific test file(s)
 #   ./test_codegen.sh --verbose         # Run all tests with IR output
+#   BUILD_DIR=path ./test_codegen.sh    # Use a different build directory
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-QCC="${SCRIPT_DIR}/build/qcc"
-RUNTIME_LIB="${SCRIPT_DIR}/build/libblang_runtime.a"
-STRING_LIB="${SCRIPT_DIR}/build/libblang_string.a"
-ARRAY_LIB="${SCRIPT_DIR}/build/libblang_array.a"
-BUFFER_LIB="${SCRIPT_DIR}/build/libblang_buffer.a"
-JSON_LIB="${SCRIPT_DIR}/build/libblang_json.a"
-NET_LIB="${SCRIPT_DIR}/build/libblang_net.a"
-FS_LIB="${SCRIPT_DIR}/build/libblang_fs.a"
-SYS_LIB="${SCRIPT_DIR}/build/libblang_sys.a"
+BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/build}"
+QCC="${BUILD_DIR}/qcc"
+RUNTIME_LIB="${BUILD_DIR}/libblang_runtime.a"
+STRING_LIB="${BUILD_DIR}/libblang_string.a"
+ARRAY_LIB="${BUILD_DIR}/libblang_array.a"
+BUFFER_LIB="${BUILD_DIR}/libblang_buffer.a"
+JSON_LIB="${BUILD_DIR}/libblang_json.a"
+NET_LIB="${BUILD_DIR}/libblang_net.a"
+FS_LIB="${BUILD_DIR}/libblang_fs.a"
+SYS_LIB="${BUILD_DIR}/libblang_sys.a"
 STDLIB_IO="${SCRIPT_DIR}/stdlib/io.b"
 STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
 STDLIB_FS="${SCRIPT_DIR}/stdlib/fs.b"
@@ -31,7 +33,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 VERBOSE=0
-SINGLE_FILE=""
+FILE_ARGS=()
 LEAK_CHECK=0
 VALGRIND=0
 
@@ -41,16 +43,17 @@ for arg in "$@"; do
 		--leak-check) LEAK_CHECK=1 ;;
 		--valgrind) VALGRIND=1 ;;
 		--help)
-			echo "Usage: $0 [--verbose] [--leak-check] [--valgrind] [test_file]"
+			echo "Usage: $0 [--verbose] [--leak-check] [--valgrind] [test_file...]"
 			echo "  --verbose     Show IR output for each test"
 			echo "  --leak-check  Link with AddressSanitizer and report memory leaks"
 			echo "  --valgrind    Run each binary under Valgrind to detect memory leaks"
-			echo "  test_file     Run only the specified test file"
+			echo "  test_file...  Run only the specified test file(s)"
 			echo ""
-			echo "With no arguments, runs all test_files/codegen_*.b tests."
+			echo "With no test files, runs all test_files/codegen_*.b tests."
+			echo "Environment: BUILD_DIR overrides the build directory (default: ./build)."
 			exit 0
 			;;
-		*) SINGLE_FILE="$arg" ;;
+		*) FILE_ARGS+=("$arg") ;;
 	esac
 done
 
@@ -324,10 +327,16 @@ echo " BLang Codegen E2E Test Suite"
 echo "==========================================="
 echo ""
 
-if [ -n "$SINGLE_FILE" ]; then
+if [ ${#FILE_ARGS[@]} -eq 1 ]; then
 	# Single-file mode: show IR by default
-	echo -e "${CYAN}--- Single test: ${SINGLE_FILE} ---${NC}"
-	run_one_test "$SINGLE_FILE" 1
+	echo -e "${CYAN}--- Single test: ${FILE_ARGS[0]} ---${NC}"
+	run_one_test "${FILE_ARGS[0]}" 1
+elif [ ${#FILE_ARGS[@]} -gt 1 ]; then
+	# Explicit file list
+	echo -e "${CYAN}--- Selected tests (${#FILE_ARGS[@]} files) ---${NC}"
+	for f in "${FILE_ARGS[@]}"; do
+		run_one_test "$f" "$VERBOSE"
+	done
 else
 	# Multi-file mode: run all codegen_*.b tests
 	TEST_FILES=$(find "$SCRIPT_DIR/test_files" -maxdepth 1 -name 'codegen_*.b' 2>/dev/null | sort)

@@ -202,23 +202,22 @@ int64_t __blang_tcp_read_into_byte_array( int fd, BlangArray *arr, int64_t max_l
 	if ( arr == NULL || max_len <= 0 )
 		return -1;
 
+	/* Single read() per call: callers poll for protocol delimiters
+	 * (e.g. HTTP's \r\n\r\n) between calls, so looping until max_len
+	 * here would block on peers that keep the connection open. */
 	uint8_t tmp[4096];
-	int64_t total = 0;
-	while ( total < max_len )
-	{
-		int64_t chunk = max_len - total;
-		if ( chunk > 4096 )
-			chunk = 4096;
-		ssize_t n = read( fd, tmp, (size_t)chunk );
-		if ( n < 0 )
-			return ( total > 0 ) ? total : -1;
-		if ( n == 0 )
-			break;
-		for ( ssize_t i = 0; i < n; i++ )
-			__blang_array_push( arr, &tmp[i] );
-		total += n;
-	}
-	return total;
+	int64_t chunk = max_len;
+	if ( chunk > 4096 )
+		chunk = 4096;
+
+	ssize_t n = read( fd, tmp, (size_t)chunk );
+	if ( n < 0 )
+		return -1;
+
+	for ( ssize_t i = 0; i < n; i++ )
+		__blang_array_push( arr, &tmp[i] );
+
+	return (int64_t)n;
 }
 
 int64_t __blang_tcp_write_byte_array( int fd, BlangArray *arr )

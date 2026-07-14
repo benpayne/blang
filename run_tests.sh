@@ -8,9 +8,10 @@
 #   test_files/xfail/ - Known-broken features, expected to fail (exit non-zero)
 #
 # Usage: ./run_tests.sh [--verbose] [--build]
+#        BUILD_DIR=path ./run_tests.sh   # Use a different build directory
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/build"
+BUILD_DIR="${BUILD_DIR:-$SCRIPT_DIR/build}"
 QCC="$BUILD_DIR/qcc"
 
 VERBOSE=0
