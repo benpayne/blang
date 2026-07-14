@@ -1,0 +1,9 @@
+hex: ff
+HEX: FF
+oct: 377
+bin: 11111111
+fixed: 3.14
+fixed4: 3.1416
+sci: 3.141590e+00
+val=255 hex=ff fixed=3.14
+print format codegen test passed!

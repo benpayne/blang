@@ -595,13 +595,45 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *mt = dynamic_cast<MatchExpression *>( expr ) )
 	{
 		Type *subjType = visitExpr( mt->mSubject );
+		EnumDefinition *ed = enumForType( subjType );
+
+		// Resolve each destructuring arm's binding to its variant's associated
+		// type BEFORE walking the arm body. The parser can only stamp a
+		// placeholder `var` type on the binding (the subject's enum is not known
+		// at parse time); leaving it `var` means string/Array payloads are not
+		// recognized as such downstream — e.g. `err(msg)` where msg is a string
+		// would be passed to an extern `cstring` parameter without the .data
+		// extraction, printing the BlangString header as garbage. Setting the
+		// resolved type here (all build modes) fixes the typed AST codegen reads.
+		if ( ed != nullptr )
+		{
+			for ( auto &arm : mt->mArms )
+			{
+				if ( arm.mBindingName.empty() || arm.mBody == nullptr ||
+					 arm.mBody->mScope == nullptr )
+					continue;
+				for ( auto &v : ed->getVariants() )
+				{
+					if ( v.mName == arm.mPattern && !v.mAssociatedTypes.empty() )
+					{
+						Symbol *s = arm.mBody->mScope->findSymbol( arm.mBindingName );
+						if ( auto *vd = dynamic_cast<VariableDefinition *>( s ) )
+						{
+							SmartPtr<Type> at = v.mAssociatedTypes[0];
+							vd->setType( (Type *)at );
+						}
+						break;
+					}
+				}
+			}
+		}
+
 		for ( auto &arm : mt->mArms )
 			visitStmt( arm.mBody );
 
 		// Exhaustiveness (REQ-007): when the subject is a determinable enum and no
 		// wildcard `_` arm is present, every variant must be covered by an arm.
 		// Non-enum subjects (literals, `var`-inferred bindings) are left unchecked.
-		EnumDefinition *ed = enumForType( subjType );
 		if ( ed != nullptr )
 		{
 			bool hasWildcard = false;

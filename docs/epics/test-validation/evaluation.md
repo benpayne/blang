@@ -85,7 +85,12 @@ set -e
 # 1. goldens with teeth (bounded quarantine, asserted floor, real teeth)
 test "$(ls test_files/codegen_*.expected.out | wc -l)" -ge 55
 diff <(sort -u test_files/codegen_quarantine.txt | grep -vE '^\s*#|^\s*$') \
-     <(sort -u docs/epics/test-validation/approved_quarantine.txt)      # empty diff
+     <(sort -u docs/epics/test-validation/approved_quarantine.txt | grep -vE '^\s*#|^\s*$')  # empty diff
+# (U2 fix: strip comments/blanks on BOTH operands — the "comments/blank lines
+# ignored" semantics both files state. The prior form stripped only the left,
+# so approved_quarantine.txt's comment header leaked in and made a CORRECT
+# 6-name list diff non-empty. Symmetric strip preserves teeth: any widening of
+# codegen_quarantine.txt still yields a non-empty diff.)
 ./test_codegen.sh                                     # exit 0, goldens matched
 ./test_codegen.sh --selfcheck; test $? -ne 0          # corrupts a real golden, must go red
 ./test_codegen.sh --selfcheck 2>&1 | grep -q 'SELFCHECK: OK'  # proves it ran, not `exit 1`
