@@ -17,6 +17,7 @@ using namespace std;
 
 AssertStatement *AssertStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_ASSERT )
 	{
@@ -24,6 +25,7 @@ AssertStatement *AssertStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	AssertStatement *stmt = new AssertStatement;
+	stmt->setLocation( loc );
 
 	stmt->mExpression = Expression::ParseExpr( l, scope, 0 );
 	if ( stmt->mExpression == nullptr )

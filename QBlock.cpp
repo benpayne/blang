@@ -14,9 +14,11 @@ using namespace std;
 
 Block *Block::Parse( Lexer &l, Scope *block_scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	Block *block = new Block;
+	block->setLocation( loc );
 	block->mScope = block_scope;
-	
+
 	int sym = l.getSymbol();
 	if ( sym != '{' )
 	{

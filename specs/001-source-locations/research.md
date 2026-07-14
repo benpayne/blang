@@ -38,7 +38,7 @@ verified by reading the sources on branch `epic/blang-ast/u1-source-locations`
   for definitions (FunctionDefinition, StructDefinition, EnumDefinition,
   ProtocolDefinition, VariableDefinition); `Type : virtual public RefCount`
   (Type.h:39). There is no single common AST base below `RefCount`.
-- ~413 `COMPILE_ERROR`/`throw CompileError` sites across the parser.
+- ~215 `COMPILE_ERROR`/`throw CompileError` sites across the parser.
 - `BmodEmitter` (BmodEmitter.h) is the house precedent for a standalone
   AST-walking emitter class separate from the nodes.
 - `qcc.cpp` flag parsing is a simple `argv` string-compare chain
@@ -143,11 +143,11 @@ reference may remain only if something else needs it — target: remove).
 The C++ `__FILE__`/`__LINE__` members stay (U2 will expose them only
 under `--debug-compiler`). `getMessage()` keeps its current shape but
 reads the line from the stored location — token-accurate, no live-lexer
-dependency (spec FR-005). All ~413 throw sites keep the same macro
+dependency (spec FR-005). All ~215 throw sites keep the same macro
 invocation; only the macro body changes.
 
 **Rationale**: Snapshot-at-throw is exactly what "stop leaning on the
-live lexer" means; keeping the macro signature makes the 413 sites a
+live lexer" means; keeping the macro signature makes the 215 sites a
 zero-touch migration.
 
 **Alternatives considered**: Rewriting each site to pass explicit

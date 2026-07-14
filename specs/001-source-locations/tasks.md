@@ -148,7 +148,7 @@ reported lines token-accurate.
       message)` macro captures `(l).getTokenLocation()` at throw; remove
       the `Lexer&` member from the reporting path (keep C++
       `__FILE__`/`__LINE__` fields for U2's `--debug-compiler`). All
-      ~413 call sites compile unchanged. (research R5, spec FR-005)
+      ~215 call sites compile unchanged. (research R5, spec FR-005)
 - [ ] T016 [US3] `qcc.cpp:27-33`: `CompileError::getMessage()` reads the
       stored `mLocation` (token-accurate line) instead of
       `mLexer.getLineNumber()`; keep the existing message shape

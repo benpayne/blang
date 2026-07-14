@@ -13,6 +13,7 @@
 #include "logging.h"
 
 #include "BmodEmitter.h"
+#include "LocationDumper.h"
 
 #ifdef BLANG_HAS_LLVM
 #include "CodeGen.h"
@@ -26,9 +27,13 @@ Scope *gScope;
 
 string CompileError::getMessage() const
 {
+	// Token-accurate line comes from the snapshotted location, not the live
+	// lexer. The user-facing message SHAPE is unchanged here; reformatting
+	// to <file>:<line>:<col>: error: is U2's scope (FR-005). The compiler's
+	// own __FILE__:__LINE__ is retained for a future --debug-compiler mode.
 	stringstream s;
-	s << "Compiler Error in " << mFilename << ":" << mLineno << endl;
-	s << mMessage << " at line: " << mLexer.getLineNumber();
+	s << "Compiler Error in " << getInternalFile() << ":" << getInternalLine() << endl;
+	s << mMessage << " at line: " << mLocation.line;
 	return s.str();
 }
 
@@ -52,6 +57,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			// Handle import statements
 			if ( nextSym == Lexer::KEYWORD_IMPORT )
 			{
+				SourceLocation importLoc = l.getTokenLocation();
 				l.getSymbol(); // consume 'import'
 				int importSym = l.getSymbol();
 				if ( importSym != Lexer::SYMBOL )
@@ -74,7 +80,11 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				if ( semi != ';' )
 					COMPILE_ERROR( l, "Expected ';' after import statement" );
 
-				mod->mImports.push_back( new ImportStatement( moduleName ) );
+				{
+					ImportStatement *imp = new ImportStatement( moduleName );
+					imp->setLocation( importLoc );
+					mod->mImports.push_back( imp );
+				}
 
 				// Validate and register the import for qualified access
 				Scope *ns = s->findNamespace( moduleName );
@@ -291,6 +301,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 
 WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_WHILE )
 	{
@@ -298,6 +309,7 @@ WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	WhileStatement *statement = new WhileStatement;
+	statement->setLocation( loc );
 
 	statement->mLoopExpression = Expression::ParseExpr( l, scope, 0 );
 
@@ -319,6 +331,7 @@ WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 
 IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_IF )
 	{
@@ -326,6 +339,7 @@ IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	IfStatement *statement = new IfStatement;
+	statement->setLocation( loc );
 
 	statement->mIfExpression = Expression::ParseExpr( l, scope, 0 );
 
@@ -359,6 +373,7 @@ IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 
 ForStatement *ForStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_FOR )
 	{
@@ -372,6 +387,7 @@ ForStatement *ForStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	ForStatement *statement = new ForStatement;
+	statement->setLocation( loc );
 
 	statement->mInitialExpression = Expression::Parse( l, scope );
 	if ( statement->mInitialExpression == nullptr )
@@ -413,6 +429,7 @@ static void printUsage( const char *progName )
 	std::cerr << "  --parse-only      Parse only, no code generation" << std::endl;
 	std::cerr << "  --combine         Combine all .b files into a single .ll output" << std::endl;
 #endif
+	std::cerr << "  --dump-locations  Print <file>:<line>:<col> <NodeKind> per AST node and exit" << std::endl;
 	std::cerr << "  --emit-bmod FILE  Emit .bmod interface file" << std::endl;
 	std::cerr << "  -h, --help        Show this help" << std::endl;
 }
@@ -429,6 +446,7 @@ int main( int argc, char *argv[] )
 	bool emitObj = false;
 	bool parseOnly = false;
 	bool combineMode = false;
+	bool dumpLocations = false;
 	std::string outputFile;
 	std::string emitBmodFile;
 	std::vector<std::string> inputFiles;
@@ -442,6 +460,13 @@ int main( int argc, char *argv[] )
 			emitObj = true;
 		else if ( arg == "--parse-only" )
 			parseOnly = true;
+		else if ( arg == "--dump-locations" )
+		{
+			// Print one <file>:<line>:<col> <NodeKind> line per AST node,
+			// then exit. Implies parse-only; no LLVM dependency.
+			dumpLocations = true;
+			parseOnly = true;
+		}
 		else if ( arg == "--combine" )
 			combineMode = true;
 		else if ( arg == "--emit-bmod" )
@@ -560,6 +585,15 @@ int main( int argc, char *argv[] )
 		combineScope->setParent( gScope );
 	}
 
+	// In --dump-locations mode the only output is the location dump. Divert
+	// the parser's informational stdout to a discard sink during parsing;
+	// it is restored before the dump is written. (Global quiet-by-default
+	// is U2's scope; this is the minimal carve-out so the dump is clean.)
+	std::ostringstream dumpDiscardSink;
+	std::streambuf *savedCoutBuf = nullptr;
+	if ( dumpLocations )
+		savedCoutBuf = std::cout.rdbuf( dumpDiscardSink.rdbuf() );
+
 	for ( std::size_t fileIdx = 0; fileIdx < inputFiles.size(); fileIdx++ )
 	{
 		const auto &inputFile = inputFiles[fileIdx];
@@ -657,6 +691,8 @@ int main( int argc, char *argv[] )
 
 		LexerReader reader( inputFile.c_str() );
 		Lexer l( &reader );
+		if ( dumpLocations )
+			l.setTraceEnabled( false );
 
 		SmartPtr<Module> mod = Module::Parse( l, fileScope );
 		if ( mod == nullptr )
@@ -679,6 +715,20 @@ int main( int argc, char *argv[] )
 
 		modules.push_back( mod );
 		cout << "Completed parse" << endl;
+	}
+
+	// --dump-locations: restore stdout and print one line per AST node for
+	// each parsed source module (command-line order), then exit. This is
+	// the entire stdout of a dump run.
+	if ( dumpLocations )
+	{
+		std::cout.rdbuf( savedCoutBuf );
+		for ( auto &mod : modules )
+		{
+			if ( !mod->isExtern() )
+				LocationDumper::dump( (Module*)mod, std::cout );
+		}
+		return 0;
 	}
 
 	// Emit .bmod interface file if requested (runs after parsing, before codegen)

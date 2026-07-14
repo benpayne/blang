@@ -41,6 +41,16 @@ diff <(build/qcc --dump-locations test_files/pass/match_basic.b) \
 diff <(build/qcc --dump-locations test_files/pass/match_basic.b) \
      <(build-parse/qcc --dump-locations test_files/pass/match_basic.b)
 
+# 4b. Corpus-wide FR-004 smoke check: no AST node in ANY pass file has a
+#     zero line/col (goes beyond the two goldens).
+fail=0
+for f in test_files/pass/*.b; do
+  if build/qcc --dump-locations "$f" 2>/dev/null \
+       | grep -qE ':0:[0-9]+ |:[0-9]+:0 '; then
+    echo "ZERO-LOC in $f"; fail=1
+  fi
+done; test "$fail" -eq 0 && echo "corpus: no zero locations"
+
 # 5. Token-accurate error locations (behavioral spot check): a fail-suite
 #    file still fails, and the reported line matches the offending token
 build/qcc test_files/fail/missing_brace.b; echo "exit=$? (expect non-zero)"

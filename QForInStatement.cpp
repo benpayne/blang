@@ -22,6 +22,7 @@ ForInStatement *ForInStatement::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume 'for' keyword
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_FOR )
@@ -30,6 +31,7 @@ ForInStatement *ForInStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	ForInStatement *statement = new ForInStatement;
+	statement->setLocation( loc );
 
 	Scope *loop_scope = new Scope( Scope::kScope_Loop );
 	loop_scope->setParent( scope );

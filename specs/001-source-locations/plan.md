@@ -48,7 +48,7 @@ redesign deferred to U2
 
 **Scale/Scope**: ~30 `Q*.cpp` parser files stamp locations; 3 AST base
 classes gain a member; 1 new header, 1 new walker class, 1 new CLI flag,
-2 golden files; ~413 `COMPILE_ERROR` sites migrate via a single macro change
+2 golden files; ~215 `COMPILE_ERROR` sites migrate via a single macro change
 
 ## Constitution Check
 

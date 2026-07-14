@@ -17,6 +17,7 @@ using namespace std;
 
 BreakStatement *BreakStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_BREAK )
 	{
@@ -29,11 +30,14 @@ BreakStatement *BreakStatement::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected ';' after break" );
 	}
 
-	return new BreakStatement;
+	BreakStatement *statement = new BreakStatement;
+	statement->setLocation( loc );
+	return statement;
 }
 
 ContinueStatement *ContinueStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_CONTINUE )
 	{
@@ -46,5 +50,7 @@ ContinueStatement *ContinueStatement::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected ';' after continue" );
 	}
 
-	return new ContinueStatement;
+	ContinueStatement *statement = new ContinueStatement;
+	statement->setLocation( loc );
+	return statement;
 }

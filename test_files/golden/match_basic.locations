@@ -1,0 +1,17 @@
+test_files/pass/match_basic.b:1:1 FunctionDefinition
+test_files/pass/match_basic.b:1:14 VariableDefinition
+test_files/pass/match_basic.b:2:1 Block
+test_files/pass/match_basic.b:3:2 MatchExpression
+test_files/pass/match_basic.b:3:8 VariableExpression
+test_files/pass/match_basic.b:5:5 Block
+test_files/pass/match_basic.b:5:7 ReturnStatement
+test_files/pass/match_basic.b:5:14 ConstInteger
+test_files/pass/match_basic.b:6:5 Block
+test_files/pass/match_basic.b:6:7 ReturnStatement
+test_files/pass/match_basic.b:6:14 ConstInteger
+test_files/pass/match_basic.b:8:2 ReturnStatement
+test_files/pass/match_basic.b:8:9 VariableExpression
+test_files/pass/match_basic.b:11:1 FunctionDefinition
+test_files/pass/match_basic.b:12:1 Block
+test_files/pass/match_basic.b:13:2 ReturnStatement
+test_files/pass/match_basic.b:13:9 ConstInteger

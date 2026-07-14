@@ -67,6 +67,7 @@ set(QCC_SOURCES
 	QQueryExpression.cpp
 	QLambdaExpression.cpp
 	BmodEmitter.cpp
+	LocationDumper.cpp
 	FormatString.cpp)
 
 # Add LLVM code generation when available
