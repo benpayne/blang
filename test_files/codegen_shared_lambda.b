@@ -8,8 +8,8 @@ fn apply_twice(fn() f) {
 }
 
 fn main() -> int {
-    // shared qualifier ensures ARC manages the struct
-    shared Counter c = Counter { value: 0 };
+    // sync qualifier: mutable shared state (shared is immutable through fields; U7)
+    sync Counter c = Counter { value: 0 };
 
     // Lambda captures c by value — but for shared (ptr-typed) variables,
     // this copies the pointer, so mutations through the pointer are visible

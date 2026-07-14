@@ -2,6 +2,7 @@
 #define BLANG_SEMA_H_
 
 #include <string>
+#include <set>
 
 #include "Type.h"
 #include "Expression.h"
@@ -61,6 +62,12 @@ namespace QLang
 		EnumDefinition *enumForType( Type *t );
 		void checkConstraint( Type *arg, const std::string &constraint,
 			const std::string &paramName, const SourceLocation &loc );
+
+		// U7 spawn-capture helpers.
+		bool isHeapType( Type *t );
+		void collectSpawnRefs( Statement *stmt,
+			std::set<VariableDefinition*> &refs,
+			std::set<VariableDefinition*> &locals );
 
 		Scope *mScope;
 		DiagnosticEngine &mDiag;

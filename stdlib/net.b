@@ -175,8 +175,10 @@ impl Selector {
 pub fn selector_create() -> Selector {
 	int h = __blang_selector_create();
 	Selector sel = Selector { handle: h };
-	// The event loop runs on a dedicated spawned thread.
-	spawn { __blang_selector_run(sel.handle); }
+	// The event loop runs on a dedicated spawned thread. Capture only the int
+	// handle (not the Selector struct) so nothing crosses the spawn boundary that
+	// would require shared/sync (U7 concurrency safety).
+	spawn { __blang_selector_run(h); }
 	return sel;
 }
 

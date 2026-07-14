@@ -439,6 +439,20 @@ Type *Sema::visitExpr( Expression *expr )
 	{
 		visitExpr( fas->mObject );
 		visitExpr( fas->mValue );
+		// Concurrency safety (REQ-010): a `shared` value is immutable through its
+		// fields — assigning to a field of a shared variable is a located error.
+		// (`sync` values are mutated under a lock in codegen and are allowed.)
+		if ( auto *ve = dynamic_cast<VariableExpression *>( (Expression *)fas->mObject ) )
+		{
+			VariableDefinition *v = ve->getVariable();
+			if ( v != nullptr && v->getOwnership() == OwnershipQualifier::kOwnership_Shared )
+			{
+				mDiag.error( fas->getLocation(),
+					"cannot assign to field '" + fas->mFieldName + "' through shared value '" +
+					v->getName() + "'" );
+				mReported = true;
+			}
+		}
 		return nullptr;
 	}
 	if ( auto *ias = dynamic_cast<IndexAssignmentExpression *>( expr ) )
@@ -553,6 +567,26 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *sp = dynamic_cast<SpawnStatement *>( expr ) )
 	{
 		visitStmt( sp->mBody );
+		// Concurrency safety (REQ-010): a non-`own` heap value (string/Array/
+		// Buffer/struct) captured by a spawn must be `shared` or `sync`; a plain
+		// (value-ownership) capture would cross the spawn boundary by raw pointer
+		// copy — a located error naming the variable and the fix.
+		std::set<VariableDefinition *> refs, locals;
+		collectSpawnRefs( sp->mBody, refs, locals );
+		for ( auto *v : refs )
+		{
+			if ( v == nullptr || locals.count( v ) )
+				continue;
+			if ( v->getOwnership() != OwnershipQualifier::kOwnership_Value )
+				continue;  // own handled at use-site; shared/sync are safe
+			if ( isHeapType( v->getVariableType() ) )
+			{
+				mDiag.error( sp->getLocation(),
+					"captured variable '" + v->getName() +
+					"' must be declared shared or sync to cross a spawn boundary" );
+				mReported = true;
+			}
+		}
 		return nullptr;
 	}
 
@@ -673,5 +707,163 @@ void Sema::checkConstraint( Type *arg, const string &constraint,
 			mReported = true;
 			return;
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// U7: spawn-capture helpers
+// ---------------------------------------------------------------------------
+
+bool Sema::isHeapType( Type *t )
+{
+	if ( t == nullptr )
+		return false;
+	const string &n = t->getName();
+	if ( n == "string" || n == "Array" || n == "Buffer" )
+		return true;
+	return dynamic_cast<StructDefinition *>( mScope->findSymbol( n ) ) != nullptr;
+}
+
+// Collect variables referenced in a spawn body (refs) and variables declared
+// inside it (locals). A captured variable is one referenced but not local. The
+// walk is conservative: unrecognized nodes are simply not descended (a missed
+// reference yields a false negative, never a false positive).
+void Sema::collectSpawnRefs( Statement *stmt,
+	std::set<VariableDefinition *> &refs, std::set<VariableDefinition *> &locals )
+{
+	if ( stmt == nullptr )
+		return;
+
+	if ( auto *ve = dynamic_cast<VariableExpression *>( stmt ) )
+	{
+		if ( ve->getVariable() != nullptr )
+			refs.insert( ve->getVariable() );
+		return;
+	}
+	if ( auto *vd = dynamic_cast<VariableDeclaration *>( stmt ) )
+	{
+		for ( auto &decl : vd->mVariables )
+		{
+			if ( decl.mVaribale != nullptr )
+				locals.insert( decl.mVaribale );
+			collectSpawnRefs( decl.mInitialValue, refs, locals );
+		}
+		return;
+	}
+	if ( auto *ae = dynamic_cast<AssignmentExpression *>( stmt ) )
+	{
+		if ( ae->mVariable != nullptr )
+			refs.insert( ae->mVariable );
+		collectSpawnRefs( ae->mValue, refs, locals );
+		return;
+	}
+	if ( auto *ic = dynamic_cast<IndirectCallExpression *>( stmt ) )
+	{
+		if ( ic->mFnVariable != nullptr )
+			refs.insert( ic->mFnVariable );
+		for ( auto &p : ic->mParams )
+			collectSpawnRefs( p, refs, locals );
+		return;
+	}
+	if ( auto *b = dynamic_cast<Block *>( stmt ) )
+	{
+		for ( auto &c : b->mStatementList )
+			collectSpawnRefs( c, refs, locals );
+		return;
+	}
+	if ( auto *i = dynamic_cast<IfStatement *>( stmt ) )
+	{
+		collectSpawnRefs( i->mIfExpression, refs, locals );
+		collectSpawnRefs( i->mStatement, refs, locals );
+		collectSpawnRefs( i->mElseStatement, refs, locals );
+		return;
+	}
+	if ( auto *w = dynamic_cast<WhileStatement *>( stmt ) )
+	{
+		collectSpawnRefs( w->mLoopExpression, refs, locals );
+		collectSpawnRefs( w->mLoopStatement, refs, locals );
+		return;
+	}
+	if ( auto *f = dynamic_cast<ForInStatement *>( stmt ) )
+	{
+		collectSpawnRefs( f->mIterableExpression, refs, locals );
+		collectSpawnRefs( f->mBody, refs, locals );
+		return;
+	}
+	if ( auto *r = dynamic_cast<ReturnStatement *>( stmt ) )
+	{
+		collectSpawnRefs( r->mExpression, refs, locals );
+		return;
+	}
+	if ( auto *call = dynamic_cast<CallExpression *>( stmt ) )
+	{
+		for ( auto &p : call->mParams )
+			collectSpawnRefs( p, refs, locals );
+		return;
+	}
+	if ( auto *mc = dynamic_cast<MethodCallExpression *>( stmt ) )
+	{
+		collectSpawnRefs( mc->mObject, refs, locals );
+		for ( auto &a : mc->mArgs )
+			collectSpawnRefs( a, refs, locals );
+		return;
+	}
+	if ( auto *fa = dynamic_cast<FieldAccessExpression *>( stmt ) )
+	{
+		collectSpawnRefs( fa->mObject, refs, locals );
+		return;
+	}
+	if ( auto *fas = dynamic_cast<FieldAssignmentExpression *>( stmt ) )
+	{
+		collectSpawnRefs( fas->mObject, refs, locals );
+		collectSpawnRefs( fas->mValue, refs, locals );
+		return;
+	}
+	if ( auto *ie = dynamic_cast<IndexExpression *>( stmt ) )
+	{
+		collectSpawnRefs( ie->getObject(), refs, locals );
+		collectSpawnRefs( ie->getIndex(), refs, locals );
+		return;
+	}
+	if ( auto *ias = dynamic_cast<IndexAssignmentExpression *>( stmt ) )
+	{
+		collectSpawnRefs( ias->mObject, refs, locals );
+		collectSpawnRefs( ias->mIndex, refs, locals );
+		collectSpawnRefs( ias->mValue, refs, locals );
+		return;
+	}
+	if ( auto *op = dynamic_cast<OperationsExpression *>( stmt ) )
+	{
+		collectSpawnRefs( op->mOp1, refs, locals );
+		collectSpawnRefs( op->mOp2, refs, locals );
+		return;
+	}
+	if ( auto *un = dynamic_cast<UnaryExpression *>( stmt ) )
+	{
+		collectSpawnRefs( un->mOperand, refs, locals );
+		return;
+	}
+	if ( auto *al = dynamic_cast<ArrayLiteralExpression *>( stmt ) )
+	{
+		for ( auto &el : al->mElements )
+			collectSpawnRefs( el, refs, locals );
+		return;
+	}
+	if ( auto *si = dynamic_cast<StringInterpolation *>( stmt ) )
+	{
+		for ( auto &p : si->mParts )
+			collectSpawnRefs( p, refs, locals );
+		return;
+	}
+	if ( auto *cons = dynamic_cast<ConstructExpression *>( stmt ) )
+	{
+		for ( auto &a : cons->mArgs )
+			collectSpawnRefs( a, refs, locals );
+		return;
+	}
+	if ( auto *asx = dynamic_cast<AssertStatement *>( stmt ) )
+	{
+		collectSpawnRefs( asx->mExpression, refs, locals );
+		return;
 	}
 }
