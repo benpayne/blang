@@ -10,33 +10,46 @@ run:
   # Duplicated from overview.md "Done condition (epic level)" verbatim.
   done_condition: |
     All of the following succeed on a clean checkout of the epic's final state,
-    run from the repo root (concrete commands and thresholds in evaluation.md):
+    run from the repo root. Every clause is a runnable teeth-proof, not just an
+    "exit 0"; exact commands in evaluation.md Epic-level acceptance.
 
-    1. Goldens with teeth. Every codegen test not on the documented
-       non-deterministic quarantine list has a committed stdout golden
-       (`ls test_files/codegen_*.expected.out | wc -l` >= 63 - |quarantine|,
-       quarantine listed in test_files/codegen_quarantine.txt); ./test_codegen.sh
-       exits 0 comparing captured stdout to each golden; and the harness
-       self-check proves teeth — corrupting any one golden makes the suite exit
-       non-zero (./test_codegen.sh --selfcheck exits non-zero).
-    2. Real bcc test. On the committed fixtures,
-       `bcc test test_files/testblock/all_pass.b` exits 0 and prints a pass count;
-       `bcc test test_files/testblock/has_failure.b` exits non-zero, prints
-       per-test PASS/FAIL, a total, and a <file>.b:<line>: location for the failed
-       assert; `bcc test --filter <name>` runs only matching tests.
-    3. Sanitizers in CI. A sanitizer build of the compiler
-       (`cmake -B build-asan -DBLANG_SANITIZE=address,undefined`) builds clean and
-       `BUILD_DIR=build-asan ./run_tests.sh` exits 0; `./test_codegen.sh --leak-check`
-       exits 0 with 0 leaks over the deterministic suite; both are required CI jobs.
-    4. Runtime unit tests. `ctest --test-dir build` exits 0 with >= 30 runtime
-       unit tests covering blang_array/string/buffer/net/fs/json including
-       bounds/error paths, and the runtime-test target builds and runs under ASan.
-    5. Bounded fuzzing. The libFuzzer target fuzz_parse builds; replaying the
-       committed corpus (`build/fuzz_parse test_files/fuzz/corpus/ -runs=0`) exits 0
-       (no crash); CI runs a fixed-budget campaign leg.
-    6. CI enforces it all. .github/workflows/ci.yml defines required jobs for
-       goldens, bcc test, the ASan/leak legs, ctest runtime units, the fuzz
-       smoke/campaign, and `make -C demos run`; a regression in any one fails CI.
+    1. Goldens with teeth. At least 55 codegen tests have a committed stdout
+       golden (`ls test_files/codegen_*.expected.out | wc -l` >= 55), and the
+       quarantine file test_files/codegen_quarantine.txt diff-equals the approved
+       list in design.md (so the quarantine cannot be widened to nullify goldens);
+       ./test_codegen.sh exits 0 comparing captured stdout to each golden; and the
+       harness self-check proves teeth — ./test_codegen.sh --selfcheck corrupts a
+       real golden internally, asserts the suite goes red, prints SELFCHECK: OK,
+       and exits non-zero, while a scripted wrong-output patch to one test flips
+       ./test_codegen.sh from green to red.
+    2. Real bcc test. `bcc test test_files/testblock/all_pass.b` exits 0 and its
+       output matches [0-9]+ passed; `bcc test test_files/testblock/has_failure.b`
+       exits non-zero and its output matches both FAIL and the location regex
+       [^:]+\.b:[0-9]+:; and `bcc test --filter add_two test_files/testblock/all_pass.b`
+       runs a strict, non-empty subset (its passed count is > 0 and < the
+       unfiltered count).
+    3. Sanitizers in CI, with teeth. `cmake -S . -B build-asan
+       -DBLANG_SANITIZE=address,undefined && cmake --build build-asan` builds clean
+       and `BUILD_DIR=build-asan ./run_tests.sh` exits 0; `./test_codegen.sh
+       --leak-check` exits non-zero when a leak is present (proven by an
+       injected-leak fixture) and exits 0 reporting Leaks: 0 on the deterministic
+       suite; both are CI jobs (see #6).
+    4. Runtime unit tests. `test "$(ctest --test-dir build -N | grep -c 'Test #')"
+       -ge 30` holds, `ctest --test-dir build` exits 0, `ctest --test-dir build-asan`
+       exits 0 (tests run under ASan), and at least one runtime test is proven to
+       fail when its library's bounds check is removed (demonstrated in the U5 PR).
+    5. Bounded fuzzing with teeth. fuzz_parse builds; `ls test_files/fuzz/corpus
+       | wc -l` >= 20 (seeded from pass/fail); replaying the corpus
+       `build/fuzz_parse test_files/fuzz/corpus/ -runs=0` exits 0; the target
+       provably reaches the parser (a committed poison input crashes a
+       deliberately-broken parser, shown in the U6 PR); and CI runs a fixed-budget
+       campaign (-max_total_time=60).
+    6. CI enforces it all. .github/workflows/ci.yml defines jobs that execute the
+       golden compare, bcc test fixtures, the ASan build + leak-check legs, ctest
+       runtime units, the fuzz campaign, and `make -C demos run`; each runs green
+       on the epic's final commit (verified via the CI run, not by grepping ci.yml
+       text). Configuring these as branch-protection required checks is a
+       documented manual manager step.
 
   guidance: |
     Start by reading docs/epics/test-validation/overview.md and its companion
@@ -72,45 +85,45 @@ run:
 units:
   - id: U1
     reqs: [REQ-001]
-    summary: Golden-output harness — capture+compare stdout, --update-goldens, --selfcheck, quarantine mechanism
+    summary: Golden-output harness — capture+compare stdout, --update-goldens, --selfcheck (real teeth), quarantine mechanism, >=1 sample golden
     depends_on: []
-    done: "./test_codegen.sh --selfcheck exits non-zero; goldens compared on normal run; all suites green"
+    done: "--selfcheck corrupts a real golden, asserts suite red, prints SELFCHECK: OK, exits non-zero; scripted wrong-output patch flips suite red; all suites green"
     speckit: golden-harness
   - id: U2
     reqs: [REQ-002]
-    summary: Golden migration — commit stdout goldens for all deterministic codegen tests; populate quarantine list
+    summary: Golden migration — commit stdout goldens for all deterministic codegen tests; quarantine file equals the approved pinned list
     depends_on: [U1]
-    done: "golden count >= 63 - |quarantine|; ./test_codegen.sh exit 0; quarantine file documents each exclusion"
+    done: "golden count >= 55; codegen_quarantine.txt diff-equals approved_quarantine.txt; ./test_codegen.sh exit 0; reviewer correctness spot-check note attached"
     speckit: golden-migration
   - id: U3
     reqs: [REQ-003]
     summary: Real bcc test runner — compile+run test{} blocks, counts, --filter, file:line on failure
     depends_on: []
-    done: "all_pass fixture exit 0; has_failure fixture exit non-zero with PASS/FAIL + file:line; --filter works"
+    done: "all_pass exit 0 matches '[0-9]+ passed'; has_failure exit non-zero matches FAIL + '.b:<line>:'; --filter add_two = strict non-empty subset"
     speckit: bcc-test-runner
   - id: U4
     reqs: [REQ-004]
-    summary: Sanitizer builds (BLANG_SANITIZE) + ASan/LSan and leak-check CI legs
+    summary: Fix --leak-check to be fatal on leaks; add BLANG_SANITIZE build + ASan/LSan CI legs
     depends_on: []
-    done: "build-asan builds; BUILD_DIR=build-asan ./run_tests.sh exit 0; --leak-check 0 leaks; wired in CI"
+    done: "build-asan builds; BUILD_DIR=build-asan run_tests exit 0; --leak-check exits non-zero on injected leak and 0 with Leaks:0 on clean suite; wired in CI"
     speckit: sanitizer-ci
   - id: U5
     reqs: [REQ-005]
-    summary: Runtime C unit tests for array/string/buffer/net/fs/json via CTest, ASan-clean
+    summary: Runtime C unit tests for array/string/buffer/net/fs/json via CTest, in build and build-asan
     depends_on: []
-    done: "ctest --test-dir build exit 0, >= 30 tests; runtime-test target ASan-clean"
+    done: "ctest -N count >= 30 asserted; ctest --test-dir build and build-asan exit 0; a removed-bounds-check test shown failing in PR"
     speckit: runtime-unit-tests
   - id: U6
     reqs: [REQ-006]
-    summary: Bounded libFuzzer target for lexer+parser; seed corpus; fixed campaign; fix-or-quarantine crashes
+    summary: Bounded libFuzzer target for lexer+parser; >=20 seed corpus; -max_total_time=60 campaign; poison-input reachability proof
     depends_on: []
-    done: "fuzz_parse builds; corpus replay -runs=0 exit 0; CI campaign leg; crashes fixed or quarantined"
+    done: "fuzz_parse builds; corpus >=20; replay -runs=0 exit 0; poison-input proof in PR; CI campaign leg; crashes fixed or quarantined"
     speckit: parser-fuzzing
   - id: U7
     reqs: [REQ-007]
-    summary: CI integration of all new checks as required gates + demos run leg + docs/close-out
+    summary: CI integration (jobs that execute each check) + demos run leg + docs/close-out
     depends_on: [U1, U2, U3, U4, U5, U6]
-    done: "evaluation.md Epic-level acceptance block passes; ci.yml has named required jobs; make -C demos run is a CI leg"
+    done: "evaluation.md Epic-level acceptance block passes; each new CI job runs green on the final commit; make -C demos run is a CI leg"
     speckit: ci-integration
 
 foldback:

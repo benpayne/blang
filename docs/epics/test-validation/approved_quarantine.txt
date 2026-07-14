@@ -1,0 +1,12 @@
+# Approved golden-comparison quarantine list for the test-validation epic.
+# These codegen tests are exempt from stdout-golden comparison because their
+# output is timing/order-dependent or binds real sockets; they STILL run for
+# exit code. This set is fixed — U2's test_files/codegen_quarantine.txt must
+# equal it (comments/blank lines ignored). Widening it is an epic-scope
+# decision (raise an Open Question), never a hire's call.
+codegen_http.b
+codegen_http_blang.b
+codegen_http_streaming.b
+codegen_tcp_echo.b
+codegen_selector.b
+codegen_spawn_threaded.b

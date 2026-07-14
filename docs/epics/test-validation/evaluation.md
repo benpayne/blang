@@ -17,9 +17,9 @@ manager. Commands below are literal and runnable.
 | golden teeth self-check | `./test_codegen.sh --selfcheck` | exit **non-zero** (mismatch detected) | U1, U7 |
 | behavioral test runner | `bcc test test_files/testblock/all_pass.b` / `... has_failure.b` | exit 0 / non-zero with counts + `file:line` | U3, U7 |
 | sanitizer compiler build | `cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined && cmake --build build-asan -j"$(nproc)" && BUILD_DIR=build-asan ./run_tests.sh` | exit 0 | U4, U7 |
-| leak check | `./test_codegen.sh --leak-check` | exit 0, 0 leaks (deterministic suite) | U4, U7 |
-| runtime unit tests | `ctest --test-dir build` | exit 0, ≥ 30 tests | U5, U7 |
-| fuzz corpus replay | `build/fuzz_parse test_files/fuzz/corpus/ -runs=0` | exit 0 (no crash) | U6, U7 |
+| leak check (fixed to have teeth) | `./test_codegen.sh --leak-check` | exit 0 + `Leaks: 0` on clean; **exit non-zero** on injected leak | U4, U7 |
+| runtime unit tests | `ctest --test-dir build` and `ctest --test-dir build-asan` | exit 0; count `≥ 30` asserted via `ctest -N` | U5, U7 |
+| fuzz corpus replay | `build/fuzz_parse test_files/fuzz/corpus/ -runs=0` (corpus `≥ 20`) | exit 0 (no crash) | U6, U7 |
 | demos | `make -C demos run` | exit 0 | U7 |
 
 ## Per-unit gates (every PR)
@@ -45,10 +45,15 @@ The reviewer independently runs, on the PR branch:
 
 ## Regression protection (evolve)
 
-- **Baseline (record at launch in the status log):** `./run_tests.sh` = 162
-  (LLVM) / 154 (parse-only); `./test_codegen.sh` = 63/63; demos 14 files,
-  `make -C demos run` result recorded. Only *new* failures are gate failures;
-  an inherited-red must be dispositioned explicitly.
+- **Baseline (measured and recorded at launch in the status log — do not
+  hardcode):** run `./run_tests.sh` (LLVM build), `BUILD_DIR=build-parse
+  ./run_tests.sh` (parse-only), `./test_codegen.sh`, and `make -C demos run`,
+  and write the actual pass/total counts into the status-log baseline row. As
+  of 2026-07-14 the LLVM parse suite is **186** (the earlier "162" was
+  pre-blang-ast and is stale); `test_codegen.sh` is 63/63; `make -C demos run`
+  exercises the **10** runnable demos (the 4 network demos are build-only).
+  Only *new* failures are gate failures; an inherited-red must be dispositioned
+  explicitly.
 - **Must not change:** default build artifacts; existing CI `parse-only` /
   `with-llvm` legs; normal `bcc build` codegen output.
 - A golden that turns a test red must be triaged: correct-output bug fixed, or
@@ -75,34 +80,48 @@ Each completed unit leaves behind, on its PR:
 The `overview.md` done condition, executed literally:
 
 ```bash
-# 1. goldens with teeth
-q=$(grep -vc '^\s*#\|^\s*$' test_files/codegen_quarantine.txt); n=$(ls test_files/codegen_*.expected.out | wc -l)
-test "$n" -ge $((63 - q))
-./test_codegen.sh                      # exit 0, goldens matched
-./test_codegen.sh --selfcheck          # exit non-zero, teeth proven
+set -e
 
-# 2. real bcc test
-bcc test test_files/testblock/all_pass.b        # exit 0, prints pass count
-bcc test test_files/testblock/has_failure.b     # exit non-zero, PASS/FAIL + file:line
-bcc test --filter smoke test_files/testblock/    # runs only matching
+# 1. goldens with teeth (bounded quarantine, asserted floor, real teeth)
+test "$(ls test_files/codegen_*.expected.out | wc -l)" -ge 55
+diff <(sort -u test_files/codegen_quarantine.txt | grep -vE '^\s*#|^\s*$') \
+     <(sort -u docs/epics/test-validation/approved_quarantine.txt)      # empty diff
+./test_codegen.sh                                     # exit 0, goldens matched
+./test_codegen.sh --selfcheck; test $? -ne 0          # corrupts a real golden, must go red
+./test_codegen.sh --selfcheck 2>&1 | grep -q 'SELFCHECK: OK'  # proves it ran, not `exit 1`
 
-# 3. sanitizers in CI
+# 2. real bcc test — assert on OUTPUT, not just exit codes
+bcc test test_files/testblock/all_pass.b | grep -Eq '[0-9]+ passed'
+! bcc test test_files/testblock/has_failure.b            # exits non-zero
+bcc test test_files/testblock/has_failure.b 2>&1 | grep -Eq 'FAIL'
+bcc test test_files/testblock/has_failure.b 2>&1 | grep -Eq '[^:]+\.b:[0-9]+:'
+full=$(bcc test test_files/testblock/all_pass.b | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')
+filt=$(bcc test --filter add_two test_files/testblock/all_pass.b | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')
+test "$filt" -gt 0 && test "$filt" -lt "$full"          # strict non-empty subset
+
+# 3. sanitizers with teeth
 cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined && cmake --build build-asan -j"$(nproc)"
-BUILD_DIR=build-asan ./run_tests.sh    # exit 0
-./test_codegen.sh --leak-check         # exit 0, 0 leaks
+BUILD_DIR=build-asan ./run_tests.sh                     # exit 0
+./test_codegen.sh --leak-check test_files/testblock/leak_probe.b; test $? -ne 0  # leak is fatal
+./test_codegen.sh --leak-check | grep -Eq 'Leaks:[[:space:]]*0'                  # clean suite, 0 leaks
 
-# 4. runtime unit tests
-ctest --test-dir build                 # exit 0, >= 30 tests
+# 4. runtime unit tests — assert the count, run under ASan
+test "$(ctest --test-dir build -N | grep -c 'Test #')" -ge 30
+ctest --test-dir build
+ctest --test-dir build-asan
 
-# 5. bounded fuzzing
-build/fuzz_parse test_files/fuzz/corpus/ -runs=0   # exit 0, crash-free replay
+# 5. bounded fuzzing with teeth
+test "$(ls test_files/fuzz/corpus | wc -l)" -ge 20
+build/fuzz_parse test_files/fuzz/corpus/ -runs=0        # crash-free replay
+# (parser-reachability poison-input proof is a U6 PR artifact the manager confirms)
 
-# 6. CI enforces it — grep the required jobs + demos leg
-grep -Eq 'leak|asan|sanitize' .github/workflows/ci.yml
-grep -Eq 'ctest|runtime.*test' .github/workflows/ci.yml
-grep -Eq 'fuzz' .github/workflows/ci.yml
-grep -Eq 'demos' .github/workflows/ci.yml
+# 6. CI executes each check green on the final commit (not a grep of ci.yml text)
+gh run list --branch master --limit 1 --json conclusion --jq '.[0].conclusion' | grep -qx success
 ```
+
+`docs/epics/test-validation/approved_quarantine.txt` is the pinned list from
+`design.md` §"Quarantine list"; U2 creates it (or the reviewer does at U2) so
+this diff is checkable.
 
 The manager additionally confirms `CLAUDE.md` known-issues no longer lists the
 holes this epic closed (exit-code-only codegen tests; parse-only `bcc test`; no

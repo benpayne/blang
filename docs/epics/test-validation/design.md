@@ -21,8 +21,12 @@ The test infrastructure as it stands:
   `BUILD_DIR`; accepts multiple file args (added 2026-07-13). Checks the
   compiled binary's **exit code** only; it captures `run_output` and discards
   it. Has `--leak-check` (ASan/LSan, `LSAN_OPTIONS=exitcode=23`) and
-  `--valgrind` machinery that works but is unused by CI. Stdlib auto-combine by
-  filename heuristic. 63 `codegen_*.b` tests, all green.
+  `--valgrind` machinery that runs but is unused by CI **and currently has no
+  teeth**: a detected leak (LSan exit 23) is counted as PASS and increments a
+  cosmetic `LEAK_TOTAL` that never affects the script's exit code (final exit
+  keys only on `FAIL_COUNT`) — so `--leak-check` exits 0 with leaks present.
+  U4 must fix this before wiring it into CI. Stdlib auto-combine by filename
+  heuristic. 63 `codegen_*.b` tests, all green.
 - **`.github/workflows/ci.yml`** — two legs: `parse-only`
   (`-DBLANG_ENABLE_LLVM=OFF`) and `with-llvm`. Both run `./run_tests.sh`; only
   `with-llvm` runs `./test_codegen.sh`. **No** sanitizer/leak/fuzz leg; demos
@@ -89,14 +93,38 @@ Fuzzing (new, bounded):
 | D2 | Exact-match goldens + explicit quarantine list | Exact match is the only thing with real teeth; quarantine is honest about non-determinism | Loose/regex matching (hides wrong output); normalizing everything (masks bugs) |
 | D3 | All 63 deterministic tests get goldens (user decision) | Closes the "wrong output passes silently" hole completely, not partially | Subset-only (leaves exit-code-only tests) |
 | D4 | `bcc test` reuses `genTestRunner` + AST SourceLocation | Locations already exist post-blang-ast; keeps failure reporting consistent with the compiler | A separate test-metadata channel |
-| D5 | Wire the **existing** `--leak-check`/`--valgrind` into CI, don't rebuild it | The machinery works; the gap is purely CI integration | New leak tooling |
+| D5 | **Fix** `--leak-check` so a leak is fatal to the exit code (today it is not — see Context), then wire the existing ASan/LSan machinery into CI | The pipeline machinery is reusable, but the gate has no teeth as-is; fixing exit behavior is small and targeted | Rebuild leak tooling from scratch; leave the gate teeth-free |
 | D6 | Fuzzing is bounded (harness + fixed campaign + fix-or-quarantine) | A machine-checkable done condition needs a finite target; open-ended hunts don't converge | Coverage-guided open-ended campaign as a done condition |
 | D7 | No external C test framework | Runtime has zero deps by design; a tiny assert runner keeps it that way | gtest/Unity (adds a dependency + build complexity) |
 
+## Quarantine list (approved — U2 must match this exactly)
+
+`test_files/codegen_quarantine.txt` must equal this set (sorted). These are the
+only codegen tests exempt from stdout-golden comparison, because their output
+is timing/order-dependent or binds real sockets; they still run for exit code.
+Any change to this list is an epic-scope decision, not a hire's call.
+
+| Test | Why quarantined |
+|------|-----------------|
+| `codegen_http.b` | HTTP server+client over a real socket; interleaved output |
+| `codegen_http_blang.b` | as above |
+| `codegen_http_streaming.b` | chunked streaming over a socket; timing-dependent |
+| `codegen_tcp_echo.b` | real TCP echo; ordering nondeterministic |
+| `codegen_selector.b` | poll-based event loop; event ordering nondeterministic |
+| `codegen_spawn_threaded.b` | thread scheduling; interleaved stdout |
+
+That is 6 tests → floor of 63 − 6 = 57 goldens; the done condition requires
+≥ 55 to leave a small margin for a genuinely-nondeterministic test discovered
+during U2 (which must be added to this table via an Open Question, not
+silently). If U2 finds a spawn test with stable output, it should be goldened,
+not quarantined.
+
 ## Invariants — must not break
 
-- `./run_tests.sh` (162 LLVM / 154 parse-only) and `./test_codegen.sh` (63/63)
-  stay green at every unit boundary. A test that goes red under golden
+- `./run_tests.sh` and `./test_codegen.sh` (63/63) stay green at every unit
+  boundary. (Baseline suite counts are measured and recorded at launch — do not
+  hardcode; the pre-blang-ast "162" is stale, the current LLVM count is 186.)
+  A test that goes red under golden
   comparison because it prints genuinely wrong output is a **bug to fix**, not a
   reason to loosen the golden.
 - Default (non-sanitizer, non-fuzz) build configuration and its artifacts are
