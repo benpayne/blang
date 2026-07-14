@@ -69,6 +69,7 @@ set(QCC_SOURCES
 	BmodEmitter.cpp
 	LocationDumper.cpp
 	DiagnosticEngine.cpp
+	Sema.cpp
 	FormatString.cpp)
 
 # Add LLVM code generation when available

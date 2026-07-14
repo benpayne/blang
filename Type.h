@@ -43,6 +43,7 @@ namespace QLang
 		SourceLocation mLocation;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class Type : virtual public RefCount
@@ -70,6 +71,7 @@ namespace QLang
 		std::vector<SmartPtr<Type>> mTypeParams;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class FunctionType : public Type
@@ -91,6 +93,7 @@ namespace QLang
 		std::vector<SmartPtr<Type>> mParamTypes;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class Symbol : virtual public RefCount
@@ -116,6 +119,7 @@ namespace QLang
 		std::string mName;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class Scope : virtual public RefCount
@@ -250,6 +254,7 @@ namespace QLang
 		std::string mModuleName;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class StructDefinition;
@@ -275,6 +280,7 @@ namespace QLang
 		Module() {}
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
 		std::vector<SmartPtr<ImportStatement>> mImports;
@@ -352,6 +358,7 @@ namespace QLang
 
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class Module;
 	};
 
@@ -429,6 +436,7 @@ namespace QLang
 		bool mIsTable = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ProtocolDefinition : public Symbol
@@ -463,6 +471,7 @@ namespace QLang
 		bool mIsPublic = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class EnumDefinition : public Symbol
@@ -498,6 +507,7 @@ namespace QLang
 		bool mIsPublic = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class TestBlock : virtual public RefCount
@@ -518,6 +528,7 @@ namespace QLang
 		SourceLocation mLocation;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 };

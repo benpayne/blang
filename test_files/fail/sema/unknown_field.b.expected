@@ -1,0 +1,4 @@
+# U3 fail/sema fixture: unknown struct field. Pattern combines the canonical
+# located-error format (file:line:col: error: ) with the specific message
+# (derived from real U3 output to avoid drift). Same in both build modes.
+^[^:]+\.b:[0-9]+:[0-9]+: error: type 'Point' has no field 'nonexistent'$

@@ -25,7 +25,20 @@ namespace QLang
 		static Expression *ParseExpr( Lexer &l, Scope *scope, int minPrec = 0 );
 		static Expression *ParsePrimary( Lexer &l, Scope *scope );
 
+		// Typed AST (U3, design decision 3): the single authoritative record of
+		// this expression's resolved type. The semantic pass (Sema) fills it for
+		// expressions whose type is determinable from resolution; codegen reads
+		// it instead of re-deriving on the paths U3 migrates. nullptr means the
+		// type is not yet determined (a leaf a later unit will resolve/check) —
+		// never a fabricated default.
+		void setResolvedType( Type *t ) { mResolvedType = t; }
+		Type *getResolvedType() const
+		{
+			return const_cast<Type *>( static_cast<const Type *>( mResolvedType ) );
+		}
+
 	protected:
+		SmartPtr<Type> mResolvedType;  // NEW U3 slot; default nullptr
 	};
 	
 	class WhileStatement : public Statement
@@ -42,6 +55,7 @@ namespace QLang
 		SmartPtr<Statement> mLoopStatement;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ForStatement : public Statement
@@ -60,6 +74,7 @@ namespace QLang
 		SmartPtr<Statement> mStatement;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ForInStatement : public Statement
@@ -79,6 +94,7 @@ namespace QLang
 		bool mIsInfinite = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class IfStatement : public Statement
@@ -96,6 +112,7 @@ namespace QLang
 		SmartPtr<Statement> mElseStatement;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ReturnStatement : public Statement
@@ -111,6 +128,7 @@ namespace QLang
 		SmartPtr<Expression> mExpression;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 	
 	class ConstExpression : public Expression
@@ -134,6 +152,7 @@ namespace QLang
 		int64_t mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 
@@ -146,6 +165,7 @@ namespace QLang
 		double mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 
@@ -158,6 +178,7 @@ namespace QLang
 		std::string mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 	
@@ -176,6 +197,7 @@ namespace QLang
 		std::string mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class VariableDeclaration : public Statement
@@ -192,6 +214,7 @@ namespace QLang
 		std::vector<DeclData> mVariables;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 	
 	class VariableExpression : public Expression
@@ -210,6 +233,7 @@ namespace QLang
 		SmartPtr<VariableDefinition> mVariable;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class CallExpression : public Expression
@@ -233,6 +257,7 @@ namespace QLang
 		std::string mMangledName;  // namespace-mangled name, empty if not mangled
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 	
 	class Block : public Statement
@@ -245,6 +270,7 @@ namespace QLang
 		std::vector<SmartPtr<Statement> > mStatementList;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class AssignmentExpression : public Expression
@@ -259,6 +285,7 @@ namespace QLang
 		SmartPtr<Expression> mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class FieldAssignmentExpression : public Expression
@@ -275,6 +302,7 @@ namespace QLang
 		SmartPtr<Expression> mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class IndexAssignmentExpression : public Expression
@@ -291,6 +319,7 @@ namespace QLang
 		SmartPtr<Expression> mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class OperationsExpression : public Expression
@@ -305,6 +334,7 @@ namespace QLang
 		SmartPtr<Expression> mOp2;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 
@@ -319,6 +349,7 @@ namespace QLang
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class BreakStatement : public Statement
@@ -333,6 +364,7 @@ namespace QLang
 	private:
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ContinueStatement : public Statement
@@ -347,6 +379,7 @@ namespace QLang
 	private:
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class SpawnStatement : public Expression
@@ -361,6 +394,7 @@ namespace QLang
 		SmartPtr<Block> mBody;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class WaitStatement : public Statement
@@ -375,6 +409,7 @@ namespace QLang
 		SmartPtr<Expression> mExpr;   // the Task expression to wait on
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class WaitAllStatement : public Statement
@@ -388,6 +423,7 @@ namespace QLang
 	private:
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class AssertStatement : public Statement
@@ -403,6 +439,7 @@ namespace QLang
 		std::string mMessage;  // optional assertion message
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class EventHandler : public Statement
@@ -418,6 +455,7 @@ namespace QLang
 		SmartPtr<Block> mBody;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class FieldAccessExpression : public Expression
@@ -436,6 +474,7 @@ namespace QLang
 		std::string mFieldName;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class StructLiteralExpression : public Expression
@@ -460,6 +499,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mFieldValues;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ArrayLiteralExpression : public Expression
@@ -475,6 +515,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mElements;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class IndexExpression : public Expression
@@ -491,6 +532,7 @@ namespace QLang
 		SmartPtr<Expression> mIndex;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class MethodCallExpression : public Expression
@@ -507,6 +549,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class RangeExpression : public Expression
@@ -520,6 +563,7 @@ namespace QLang
 		SmartPtr<Expression> mEnd;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class StringInterpolation : public Expression
@@ -535,6 +579,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mParts;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ConstructExpression : public Expression
@@ -550,6 +595,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class EnumConstructExpression : public Expression
@@ -566,6 +612,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	struct MatchArm
@@ -590,6 +637,7 @@ namespace QLang
 		std::vector<MatchArm> mArms;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class TryExpression : public Expression
@@ -601,6 +649,7 @@ namespace QLang
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class AwaitExpression : public Expression
@@ -612,6 +661,7 @@ namespace QLang
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class FunctionRefExpression : public Expression
@@ -623,6 +673,7 @@ namespace QLang
 		SmartPtr<FunctionDefinition> mFunction;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class LambdaExpression : public Expression
@@ -639,6 +690,7 @@ namespace QLang
 		SmartPtr<Block> mBody;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class IndirectCallExpression : public Expression
@@ -653,6 +705,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mParams;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	// Phase 3: Pipeline expression — a |> b desugars to b(a)
@@ -667,6 +720,7 @@ namespace QLang
 		SmartPtr<Expression> mTransform;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	// Phase 3: Query field reference — .field_name in query context
@@ -681,6 +735,7 @@ namespace QLang
 		std::string mFieldName;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	// Phase 3: Query pipeline step types
@@ -709,6 +764,7 @@ namespace QLang
 		std::vector<QueryPipelineStep> mSteps;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 
@@ -732,6 +788,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mFieldValues;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 
@@ -750,6 +807,7 @@ namespace QLang
 		std::vector<QueryPipelineStep> mSteps;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 
@@ -768,6 +826,7 @@ namespace QLang
 		std::vector<QueryPipelineStep> mSteps;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class Sema;
 		friend class SQLGen;
 	};
 };

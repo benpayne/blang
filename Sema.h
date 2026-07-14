@@ -1,0 +1,63 @@
+#ifndef BLANG_SEMA_H_
+#define BLANG_SEMA_H_
+
+#include <string>
+
+#include "Type.h"
+#include "Expression.h"
+#include "DiagnosticEngine.h"
+
+namespace QLang
+{
+	// The semantic-analysis pass (U3). Runs between Module::Parse and code
+	// generation, in ALL build configurations (no BLANG_HAS_LLVM guard) so
+	// --parse-only becomes "parse + sema". It walks a parsed module's AST,
+	// resolves struct field/method references against the base expression's
+	// resolved type, annotates every determinable expression with its resolved
+	// type (the single shared typed-AST representation codegen reads), and
+	// reports located errors through the U2 DiagnosticEngine.
+	//
+	// Scope split (research R2): the parser already resolves variables and
+	// functions eagerly, throwing located CompileErrors before sema runs. Sema
+	// owns member (field/method) resolution and type annotation only; it never
+	// re-reports the parser's var/func errors (FR-009). It adds no type-CHECKING
+	// rule (arity/compat/coercion/ownership/concurrency) — those are U4–U7.
+	class Sema
+	{
+	public:
+		// Analyze one parsed, non-extern module. Returns true iff no semantic
+		// diagnostic was reported (the driver skips codegen and exits non-zero
+		// on false). Extern .bmod modules are not analyzed (contracts/sema-pass).
+		static bool analyze( Module *module, Scope *scope, DiagnosticEngine &diag );
+
+	private:
+		Sema( Scope *scope, DiagnosticEngine &diag ) : mScope( scope ), mDiag( diag ) {}
+
+		void visitFunction( FunctionDefinition *func );
+		void visitStruct( StructDefinition *structDef );
+		void visitStmt( Statement *stmt );
+
+		// Resolve/annotate an expression bottom-up. Returns its resolved Type
+		// (best-effort, from resolution only), or nullptr when the type is not
+		// determinable in this unit. Also stamps the node via setResolvedType.
+		Type *visitExpr( Expression *expr );
+
+		// Member resolution helpers.
+		void resolveFieldAccess( FieldAccessExpression *fa, Type *baseType );
+		void resolveMethodCall( MethodCallExpression *mc, Type *baseType );
+
+		// The concrete user struct a base type names, or nullptr when the base
+		// is a builtin (string/Array/Buffer/…), a generic parameter, an enum, an
+		// imported/namespaced symbol we cannot see, or otherwise not a concrete
+		// struct in scope. A nullptr result means "leave unchecked" (FR-008/R5):
+		// sema never fabricates an "unknown member" error on such bases.
+		StructDefinition *structForType( Type *baseType );
+
+		Scope *mScope;
+		DiagnosticEngine &mDiag;
+		bool mReported = false;  // any sema diagnostic emitted this run
+	};
+
+} // namespace QLang
+
+#endif // BLANG_SEMA_H_

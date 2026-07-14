@@ -15,6 +15,7 @@
 #include "BmodEmitter.h"
 #include "LocationDumper.h"
 #include "DiagnosticEngine.h"
+#include "Sema.h"
 
 #ifdef BLANG_HAS_LLVM
 #include "CodeGen.h"
@@ -738,6 +739,15 @@ int main( int argc, char *argv[] )
 
 		modules.push_back( mod );
 		cout << "Completed parse" << endl;
+
+		// Semantic analysis (U3): runs in ALL build modes, immediately after a
+		// non-extern module parses and before any code generation, resolving
+		// member references and annotating expression types through the single
+		// DiagnosticEngine. Extern .bmod modules provide types only and are not
+		// analyzed (Sema::analyze skips them). On any sema error the compile
+		// fails (non-zero exit) and codegen is not reached for this file.
+		if ( !isBmod && !Sema::analyze( (Module *)mod, fileScope, *gDiag ) )
+			return -1;
 	}
 
 	// --dump-locations: restore stdout and print one line per AST node for

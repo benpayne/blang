@@ -624,6 +624,15 @@ bool CodeGen::isStringType( Expression *expr )
 
 Type *CodeGen::getFieldType( FieldAccessExpression *fa )
 {
+	// U3 typed AST (FR-011): prefer the field type the semantic pass already
+	// resolved and recorded on this node. Sema records only CONCRETE field
+	// types (it leaves generic-parameter fields nullptr), so consuming the
+	// annotation never bypasses the monomorphization substitution performed
+	// below. When sema left it nullptr — e.g. self-based access, which U3 does
+	// not resolve — fall through to the codegen-local derivation.
+	if ( Type *resolved = fa->getResolvedType() )
+		return resolved;
+
 	// Determine the struct definition for the object
 	StructDefinition *structDef = nullptr;
 	string structName;

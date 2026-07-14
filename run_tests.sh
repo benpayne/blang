@@ -127,9 +127,32 @@ run_test() {
 				echo -e "  ${RED}FAIL${NC}  $file  (expected failure, but parsed OK)"
 				FAIL_COUNT=$((FAIL_COUNT + 1))
 			else
+				# Canonical located-error gate for the fail/sema/ category (U3,
+				# contracts/fail-sema-harness.md, FR-014): every file under
+				# test_files/fail/sema/ must additionally emit a diagnostic
+				# matching "<file>.b:<line>:<col>: error: " — the exact per-file
+				# check the epic done-condition #3 requires. Files elsewhere under
+				# fail/ keep the U2 behavior untouched.
+				local canonical_ok=1
+				case "$file" in
+					*/test_files/fail/sema/*)
+						if ! printf '%s' "$stderr_out" | grep -Eq -- '^[^:]+\.b:[0-9]+:[0-9]+: error: '; then
+							canonical_ok=0
+						fi
+						;;
+				esac
+
 				local pattern
 				pattern="$(resolve_expected_pattern "$file")"
-				if [ -n "$pattern" ]; then
+				if [ "$canonical_ok" -eq 0 ]; then
+					echo -e "  ${RED}FAIL${NC}  $file  (missing canonical file:line:col diagnostic)"
+					FAIL_COUNT=$((FAIL_COUNT + 1))
+					if [ "$VERBOSE" -eq 1 ]; then
+						echo "    expected canonical regex: ^[^:]+\\.b:[0-9]+:[0-9]+: error: "
+						echo "    actual stderr:"
+						printf '%s\n' "$stderr_out" | tail -5 | sed 's/^/    /'
+					fi
+				elif [ -n "$pattern" ]; then
 					if printf '%s' "$stderr_out" | grep -Eq -- "$pattern"; then
 						echo -e "  ${GREEN}PASS${NC}  $file  (correctly rejected, diagnostic matched)"
 						PASS_COUNT=$((PASS_COUNT + 1))

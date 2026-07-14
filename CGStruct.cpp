@@ -992,7 +992,9 @@ llvm::Value *CodeGen::genFieldAccess( FieldAccessExpression *expr )
 	}
 
 	if ( fieldIdx < 0 )
-		return nullptr;
+		return nullptr;  // U3: unreachable for a concrete struct base — sema (Sema.cpp
+		                 // resolveFieldAccess) rejects unknown fields before codegen.
+		                 // Kept as-is; loud-ICE hardening of codegen fallbacks is U4.
 
 	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName );
 	llvm::Value *fieldVal = mBuilder->CreateLoad(
@@ -1004,7 +1006,13 @@ llvm::Value *CodeGen::genFieldAccess( FieldAccessExpression *expr )
 	// (either as a temp string or when the variable storing it goes out of scope).
 	if ( structDef != nullptr && fieldIdx < (int)structDef->mFields.size() )
 	{
-		Type *fType = structDef->mFields[fieldIdx]->getVariableType();
+		// U3 typed AST (FR-011): read the field type the semantic pass resolved
+		// for this access when available; fall back to the struct field's
+		// declared type (sema leaves generic-parameter fields unannotated, and
+		// those still need the substitution the declared type carries).
+		Type *fType = expr->getResolvedType();
+		if ( fType == nullptr )
+			fType = structDef->mFields[fieldIdx]->getVariableType();
 		if ( fType != nullptr )
 		{
 			string fName = fType->getName();
@@ -1423,7 +1431,9 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 	}
 
 	if ( methodDef == nullptr )
-		return nullptr;
+		return nullptr;  // U3: unreachable for a concrete struct base — sema (Sema.cpp
+		                 // resolveMethodCall) rejects unknown methods before codegen.
+		                 // Kept as-is; loud-ICE hardening of codegen fallbacks is U4.
 
 	// Look up the LLVM function for this method
 	llvm::Function *llvmFunc = nullptr;

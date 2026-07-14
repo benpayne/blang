@@ -1,0 +1,2 @@
+# U3 fail/sema fixture: undefined function (parser-resolved, routed via engine).
+^[^:]+\.b:[0-9]+:[0-9]+: error: Failed to find symbol 'no_such_function'$

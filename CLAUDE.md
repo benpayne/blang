@@ -22,6 +22,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 /
 ├── bcc.cpp                    # BLang compiler driver CLI (orchestrates qcc -> llc -> cc pipeline)
 ├── qcc.cpp                    # Main compiler entry point (parses source files into AST, optionally generates LLVM IR)
+├── Sema.h / Sema.cpp          # Semantic-analysis pass (QLang::Sema) — runs between Module::Parse and CodeGen in ALL build modes (no BLANG_HAS_LLVM guard, so --parse-only is parse + sema). Resolves struct field/method references, annotates every determinable Expression with its resolved Type (the typed AST codegen reads), and reports located errors via the DiagnosticEngine
 ├── CodeGen.h                  # LLVM code generation class (QLang::CodeGen) — walks AST, emits IR
 ├── CodeGen.cpp                # CodeGen implementation: functions, statements, expressions, type mapping
 ├── Type.h                     # Core type system, base classes: Statement, Type, Symbol, Scope, Module, FunctionDefinition, VariableDefinition, EnumDefinition, GenericParam
@@ -219,10 +220,19 @@ The project is fully self-contained. `RefCount.h` provides intrusive reference c
 ```
 bcc source.b -o program
  │
- ├─ 1. qcc source.b          → source.ll   (parse + LLVM IR generation)
+ ├─ 1. qcc source.b          → source.ll   (parse + sema + LLVM IR generation)
  ├─ 2. llc -filetype=obj      → source.o    (IR to native object)
  └─ 3. cc source.o -o program → program     (link to executable)
 ```
+
+Inside step 1 the compiler runs `Lexer ─→ Parser (stamps SourceLocation) ─→ Sema ─→ CodeGen`.
+The **Sema** pass (`Sema.h/cpp`) runs in **every** build mode — the LLVM build, the
+non-LLVM (`BLANG_ENABLE_LLVM=OFF`) build, and every `--parse-only` compile — so
+semantic errors are caught without LLVM installed. It resolves struct field/method
+references (unknown field/method → a located `file:line:col: error:` diagnostic, in all
+build modes) and annotates each determinable expression with its resolved `Type`; codegen
+reads those annotations instead of re-deriving. Variable/function resolution stays in the
+parser (already located); sema owns member resolution and does not double-report.
 
 1. **Compiler driver — bcc** (`bcc.cpp`): User-facing CLI that orchestrates the full compilation pipeline. Shells out to `qcc`, `llc`, and `cc`. Handles `-S` (emit IR), `-c` (compile only), `-o` (output name), `-v` (verbose), and linker flags (`-l`, `-L`).
 
@@ -390,6 +400,7 @@ Tests are organized into four categories under `test_files/`:
   - FFI types: `cstring_extern.b`, `carray_extern.b`
   - Lambdas: `fn_type_param.b`, `fn_type_var.b`, `lambda_basic.b`, `lambda_capture.b`, `lambda_indirect_call.b`
 - **`test_files/fail/`** (41 negative tests) — Should fail to parse (exit non-zero): `annotation_missing_name.b`, `assert_missing_semi.b`, `async_missing_fn.b`, `bad_type.b`, `carray_in_fn.b`, `carray_in_var.b`, `const_no_init.b`, `cstring_in_fn.b`, `cstring_in_var.b`, `c_style_func.b`, `duplicate_func.b`, `enum_missing_brace.b`, `fn_missing_arrow_type.b`, `for_c_style.b`, `for_c_style_block.b`, `for_in_missing_in.b`, `generic_duplicate_param.b`, `generic_unknown_constraint.b`, `import_missing_name.b`, `import_missing_semi.b`, `insert_missing_brace.b`, `json_generic_struct.b`, `match_missing_brace.b`, `missing_brace.b`, `missing_paren.b`, `protocol_missing_method.b`, `protocol_no_fn.b`, `query_missing_table.b`, `requires_missing_expr.b`, `spawn_missing_brace.b`, `struct_bad_field.b`, `struct_missing_brace.b`, `table_missing_struct.b`, `test_missing_body.b`, `test_missing_name.b`, `undefined_func.b`, `undefined_var.b`, `var_no_init.b`, `wait_all_missing_semi.b`, `wait_missing_semi.b`
+- **`test_files/fail/sema/`** (semantic-resolution negative tests) — Rejected by the semantic pass (or the parser, for var/func) with a located error, in **both** build modes. One fixture per resolution class: `undefined_variable.b`, `undefined_function.b`, `unknown_field.b`, `unknown_method.b`, each with a companion `<test>.b.expected` pattern. `run_tests.sh` additionally asserts the canonical `^[^:]+\.b:[0-9]+:[0-9]+: error: ` regex for **every** file under `fail/sema/` (the per-file check the epic done-condition requires). This is the category the later units' numbered `audit_NN.b` programs populate.
 - **`test_files/cgfail/`** (8 codegen-fail tests) — Should fail at code generation (only run when built with LLVM, skipped in parse-only mode), including `json_unsupported_field.b`, `own_move_in_loop.b`, `own_spawn_capture.b`, `own_use_after_move.b`
 - **`test_files/codegen_*.b`** (63 end-to-end tests) — Full pipeline tests (parse → IR → compile → link → run) in `test_files/`, including `codegen_array.b`, `codegen_array_methods.b`, `codegen_assert.b`, `codegen_async.b`, `codegen_async_multi.b`, `codegen_binexpr.b`, `codegen_break_continue.b`, `codegen_comprehensive.b`, `codegen_contracts.b`, `codegen_enum_payload.b`, `codegen_features.b`, `codegen_file_io.b`, `codegen_forin.b`, `codegen_fs_convenience.b`, `codegen_generic_fn.b`, `codegen_generic_struct.b`, `codegen_http_blang.b`, `codegen_json.b`, `codegen_json_nested.b`, `codegen_json_roundtrip.b`, `codegen_json_types.b`, `codegen_lambda.b`, `codegen_lambda_callback.b`, `codegen_lambda_named_ref.b`, `codegen_ownership.b`, `codegen_ownership_move.b`, `codegen_phase2.b`, `codegen_pipeline.b`, `codegen_result_type.b`, `codegen_selector.b`, `codegen_shared_spawn.b`, `codegen_simple.b`, `codegen_spawn.b`, `codegen_spawn_threaded.b`, `codegen_string.b`, `codegen_string_interp.b`, `codegen_string_methods.b`, `codegen_sync_locking.b`, `codegen_sync_spawn.b`, `codegen_tcp_echo.b`, `codegen_try_operator.b`, `codegen_type_coercion.b`, `codegen_wait.b`, `codegen_wait_all.b`
 Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `test_files/func_call2.b`, `test_files/func_call3.b`, `test_files/if_call.b`, `test_files/multi_var_decl.b`
