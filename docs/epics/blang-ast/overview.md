@@ -1,6 +1,6 @@
 # Epic: blang-ast — True Language Enforcement via Semantic Analysis
 
-**Status**: planning
+**Status**: launched
 **Archetype**: evolve (restructuring an existing, working compiler)
 **Docs**: this directory (`docs/epics/blang-ast/`)
 
@@ -137,6 +137,8 @@ parse tests (LLVM build), 154/154 (parse-only build; 8 cgfail skipped),
 |------|-------|
 | 2026-07-13 | Epic planned (overview, workplan U1–U8, design, evaluation, manifest). |
 | 2026-07-13 | Readiness review round 1: 15 findings (script/gate mismatches, non-runnable done conditions, unnumbered audit programs, baseline red). Fixes applied; `codegen_http.b` hang root-caused and fixed in `runtime/blang_net.c` (`__blang_tcp_read_into_byte_array` looped to max_len instead of read-once); test scripts gained `BUILD_DIR` override + multi-file args; constitution amended to 1.1.0. Baseline recorded green. |
+| 2026-07-13 | Readiness re-check passed 10/10; status → ready (user confirmed via launch). |
+| 2026-07-13 | Launched on devbot: run `404b2b30-6c90-4218-be88-8f71143642ad` (endpoint http://localhost:8000, directory `a6b2f628-f546-4a5f-a22b-ff73e1dae54b`, fully_autonomous, max 160 turns / 14 days / 2M tokens per session). Status → launched. |
 
 ## Source documents
 

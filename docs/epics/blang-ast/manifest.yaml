@@ -40,6 +40,20 @@ run:
     5. `./test_codegen.sh --leak-check test_files/codegen_spawn*.b test_files/codegen_sync*.b test_files/codegen_shared*.b`
        exits 0 with 0 leaks reported.
 
+  guidance: |
+    Read .specify/memory/constitution.md first — it governs all work; the
+    quality gates and audit pattern are non-negotiable. Follow the five-phase
+    unit lifecycle in docs/epics/blang-ast/workplan.md for every unit: create
+    spec (speckit ceremony) → spec audit → implement → code audit → merge.
+    Use an implementer hire and an independent secondary-reviewer hire per
+    the manifest hires section; the reviewer must not implement what it
+    reviews and is the only actor that merges. All work happens on
+    epic/blang-ast/uN-<slug> branches; squash-merge only; never commit
+    directly to master. Every unit boundary leaves ./run_tests.sh and
+    ./test_codegen.sh green. When ambiguity or a blocker arises, raise a
+    question to the user via run status rather than guessing. Append to the
+    status log in docs/epics/blang-ast/overview.md as units complete.
+
   # Limits sized ~2x honest estimates (8 units, focused PRs; U8 is a
   # corpus-wide migration sweep and gets its own file cap + stacked PRs).
   limits:
@@ -121,4 +135,10 @@ gates:
   epic:
     - "evaluation.md 'Epic-level acceptance' block, executed literally"
 
-devbot: null
+devbot:
+  endpoint: http://localhost:8000
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b
+  runs:
+    - run_id: 404b2b30-6c90-4218-be88-8f71143642ad
+      launched: 2026-07-13
+      outcome: pending
