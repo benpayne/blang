@@ -140,6 +140,7 @@ parse tests (LLVM build), 154/154 (parse-only build; 8 cgfail skipped),
 | 2026-07-13 | Readiness re-check passed 10/10; status → ready (user confirmed via launch). |
 | 2026-07-13 | Launched on devbot: run `404b2b30-6c90-4218-be88-8f71143642ad` (endpoint http://localhost:8000, directory `a6b2f628-f546-4a5f-a22b-ff73e1dae54b`, fully_autonomous, max 160 turns / 14 days / 2M tokens per session). Status → launched. |
 | 2026-07-13 | U1 (source locations) merged to master as b8c4703 after Phase-4 code audit: Gate A 162/162 + 63/63, Gate B 154/154, leak-check 6/6 0 leaks, both goldens (func_simple, match_basic) clean, corpus zero-location clean. REQ-001 satisfied. |
+| 2026-07-13 | U2 (diagnostics engine + expected-error harness) merged to master as 47d4ee9 after Phase-4 code audit: Gate A 162/162 + 63/63, Gate B 154/154 (8 cgfail auto-skipped), Gate D byte-silent both build modes, SC-004 self-check green, 12 fail/ tests annotated with FR-014 canonical patterns, U1 goldens clean, zero accept/reject drift. REQ-002/REQ-003 + harness half of REQ-011 satisfied. |
 
 ## Source documents
 
