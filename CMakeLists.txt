@@ -245,3 +245,62 @@ if(LLVM_FOUND)
 		target_compile_definitions(bcc PRIVATE BCC_LLC_PATH="${LLC_EXECUTABLE}")
 	endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# Runtime C unit tests (CTest). Dependency-free assert harness in runtime/tests/
+# (test_util.h). One add_test() per behavior so `ctest -N` reports each case.
+# These build in every configuration, so a BLANG_SANITIZE build (build-asan)
+# runs them under ASan/UBSan automatically.
+# ---------------------------------------------------------------------------
+enable_testing()
+
+add_executable(test_array runtime/tests/test_array.c)
+target_link_libraries(test_array blang_array blang_string)
+set_target_properties(test_array PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_string runtime/tests/test_string.c)
+target_link_libraries(test_string blang_string blang_array)
+set_target_properties(test_string PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_buffer runtime/tests/test_buffer.c)
+target_link_libraries(test_buffer blang_buffer blang_array blang_string)
+set_target_properties(test_buffer PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_json runtime/tests/test_json.c)
+target_link_libraries(test_json blang_json)
+set_target_properties(test_json PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_fs runtime/tests/test_fs.c)
+target_link_libraries(test_fs blang_fs blang_buffer blang_array blang_string)
+set_target_properties(test_fs PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_net runtime/tests/test_net.c)
+target_link_libraries(test_net blang_net blang_runtime blang_string blang_buffer blang_array Threads::Threads)
+set_target_properties(test_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+# One add_test per case (name must match the case table in each test_*.c).
+set(ARRAY_CASES  create_empty push_length get set pop pop_empty insert_remove concat clear grow get_oob set_oob get_null)
+set(STRING_CASES create_len empty equals concat substring to_upper to_lower trim contains starts_ends index_of compare to_int replace char_at_oob)
+set(BUFFER_CASES create append_byte from_string append_string get_set to_string slice index_of clear get_oob)
+set(JSON_CASES   decode_int decode_string decode_bool decode_error object_roundtrip array_build object_get_missing)
+set(FS_CASES     write_read seek size remove mkdir_list)
+set(NET_CASES    connect_refused connect_bad_host selector_lifecycle close_invalid)
+
+foreach(c ${ARRAY_CASES})
+	add_test(NAME array_${c} COMMAND test_array ${c})
+endforeach()
+foreach(c ${STRING_CASES})
+	add_test(NAME string_${c} COMMAND test_string ${c})
+endforeach()
+foreach(c ${BUFFER_CASES})
+	add_test(NAME buffer_${c} COMMAND test_buffer ${c})
+endforeach()
+foreach(c ${JSON_CASES})
+	add_test(NAME json_${c} COMMAND test_json ${c})
+endforeach()
+foreach(c ${FS_CASES})
+	add_test(NAME fs_${c} COMMAND test_fs ${c})
+endforeach()
+foreach(c ${NET_CASES})
+	add_test(NAME net_${c} COMMAND test_net ${c})
+endforeach()

@@ -141,7 +141,7 @@ run from the repo root. Every clause is a runnable teeth-proof, not just an
 
 | # | Question | Blocking | Status | Answer |
 |---|----------|----------|--------|--------|
-| — | (none currently) | | | |
+| OQ-1 | U4's `--leak-check` surfaced **4 real codegen ARC leaks** — refcounted temporaries allocated by `__blang_rc_alloc` never released: `codegen_method_chain` (128B, pure codegen — an `fn().method()` rvalue struct temporary is not released), `codegen_file_io` (232B), `codegen_fs_convenience` (335B), `codegen_http` (272B). Root cause is codegen ARC (rvalue-temporary release), a large/risky fix. U4 **tracks** them in a minimal justified leak quarantine (`test_files/codegen_leak_quarantine.txt`) so the leak gate has teeth for new/injected leaks, and escalates here rather than guessing. **Should a dedicated ARC-leak-fix unit be spun (recommended), or fixed within a later unit?** | No (U4 proceeds with tracked quarantine) | Open | — |
 
 ## Status log
 
@@ -164,3 +164,6 @@ run from the repo root. Every clause is a runnable teeth-proof, not just an
 | 2026-07-14 | 0e8fef6a | U3 (sanitizer build) spec+audit PASS | `specs/011-sanitizer-build/` — REQ-004 build portion (branch `u3-sanitizers`). `BLANG_SANITIZE` opt-in option; `BUILD_DIR=build-asan ./run_tests.sh` green; teeth (injected fault caught, UBSan fatal). Leak teeth + injected-leak fixture = U4; CI = U7. |
 | 2026-07-14 | 0e8fef6a | U3 code-audit PASS | Reviewer re-created build-asan from scratch: clean build; `BUILD_DIR=build-asan ./run_tests.sh` 186/186, zero sanitizer diagnostics. Teeth both proven & FATAL: ASan heap-overflow → exit 134; UBSan `1<<40` → exit 1 (`shift exponent too large`), fatal via `-fno-sanitize-recover`. Leaks-off did not suppress real errors. Default build unchanged (no `-fsanitize`). No real bug surfaced. |
 | 2026-07-14 | 0e8fef6a | U3 merged | squash-merged to master. REQ-004 build portion satisfied. Unit boundary green: `./run_tests.sh` 186, parse-only 181, `./test_codegen.sh` 63/63, `BUILD_DIR=build-asan ./run_tests.sh` 186. |
+| 2026-07-14 | 0e8fef6a | U4 (runtime units + leak teeth) spec+audit PASS | `specs/012-runtime-unit-tests/` — REQ-005 + REQ-004 leak leg. Recon surfaced 4 real codegen ARC leaks → **OQ-1** raised. Spec audit PASS with 6 hard constraints on the leak quarantine. |
+| 2026-07-14 | 0e8fef6a | U4 code-audit PASS | Fresh clean rebuild of build + build-asan. 54 CTest known-answer runtime tests (`array/string/buffer/json/fs/net`); `ctest -N \| grep -c 'Test #'`=45 (≥30); `ctest --test-dir build` and `--test-dir build-asan` exit 0. Teeth: bounds-removal → `array_get_oob` RED, revert GREEN (F2); leak-quarantine minimal+load-bearing, dropping an entry makes it fatal (F1); corrupting a known-answer → RED (F3). `--leak-check` fatal on injected leak (exit 1) + clean `Leaks: 0` with 4 tracked KNOWN-LEAK. |
+| 2026-07-14 | 0e8fef6a | U4 merged | squash-merged to master. REQ-005 + REQ-004 leak leg satisfied. OQ-1 (4 ARC leaks) remains open for a dedicated unit. Boundary green: run_tests 186/181, test_codegen 63/63, build-asan run_tests 186, ctest build+build-asan 0. |

@@ -132,9 +132,29 @@ is_quarantined() {
 	return 1
 }
 
+# Leak quarantine (U4): a MINIMAL, review-gated list of tests with a KNOWN,
+# tracked leak (see codegen_leak_quarantine.txt + Open Question OQ-1). A leak in
+# a quarantined test is reported as KNOWN-LEAK and does NOT make --leak-check
+# fatal; a leak in ANY OTHER test is fatal (teeth against new/injected leaks).
+LEAK_QUARANTINE_FILE="${SCRIPT_DIR}/test_files/codegen_leak_quarantine.txt"
+is_leak_quarantined() {
+	local name="$1" entry
+	[ -f "$LEAK_QUARANTINE_FILE" ] || return 1
+	while IFS= read -r entry || [ -n "$entry" ]; do
+		entry="${entry%%#*}"
+		entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
+		[ -z "$entry" ] && continue
+		if [ "$entry" = "$name" ] || [ "$entry" = "${name}.b" ]; then
+			return 0
+		fi
+	done < "$LEAK_QUARANTINE_FILE"
+	return 1
+}
+
 PASS_COUNT=0
 FAIL_COUNT=0
 LEAK_TOTAL=0
+KNOWN_LEAK_TOTAL=0
 TOTAL=0
 GOLDEN_PASS_COUNT=0
 NOGOLDEN_COUNT=0
@@ -346,16 +366,24 @@ run_one_test() {
 		run_output="$(cat "${stdout_cap}" "${stderr_cap}" 2>/dev/null)"
 
 		# With leak check, LSan returns exit code 23 (forced via LSAN_OPTIONS=exitcode=23).
-		# Leak semantics are intentionally UNCHANGED here (U4 owns making leaks fatal).
+		# U4: leaks are now FATAL. A leak in a leak-quarantined test (known, tracked
+		# ARC leak — see codegen_leak_quarantine.txt + OQ-1) is reported as
+		# KNOWN-LEAK and does NOT count toward the fatal LEAK_TOTAL; a leak in any
+		# other test increments LEAK_TOTAL, which forces a non-zero script exit.
 		if [ "$LEAK_CHECK" -eq 1 ] && [ $exit_code -eq 23 ]; then
 			local leak_summary
 			leak_summary=$(echo "$run_output" | grep 'SUMMARY:' | head -1)
-			echo -e "  ${YELLOW}LEAK${NC}  ${test_file}  ($leak_summary)"
+			if is_leak_quarantined "${base_name}"; then
+				echo -e "  ${CYAN}KNOWN-LEAK${NC} ${test_file}  ($leak_summary)"
+				KNOWN_LEAK_TOTAL=$((KNOWN_LEAK_TOTAL + 1))
+			else
+				echo -e "  ${YELLOW}LEAK${NC}  ${test_file}  ($leak_summary)"
+				LEAK_TOTAL=$((LEAK_TOTAL + 1))
+			fi
 			if [ "$VERBOSE" -eq 1 ]; then
 				echo "$run_output" | grep -A1 'Direct leak\|Indirect leak' | sed 's/^/    /'
 			fi
 			PASS_COUNT=$((PASS_COUNT + 1))
-			LEAK_TOTAL=$((LEAK_TOTAL + 1))
 			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
 			return 0
 		fi
@@ -553,6 +581,7 @@ echo -e "  ${GREEN}Passed:${NC}  $PASS_COUNT"
 echo -e "  ${RED}Failed:${NC}  $FAIL_COUNT"
 if [ "$LEAK_CHECK" -eq 1 ]; then
 echo -e "  ${YELLOW}Leaks:${NC}   $LEAK_TOTAL"
+echo -e "  ${CYAN}Known-leaks (quarantined):${NC} $KNOWN_LEAK_TOTAL"
 fi
 if [ "$LEAK_CHECK" -eq 0 ] && [ "$VALGRIND" -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
 echo -e "  ${CYAN}Golden-checked:${NC} $GOLDEN_PASS_COUNT   ${YELLOW}No golden:${NC} $NOGOLDEN_COUNT   ${CYAN}Quarantined:${NC} $QUARANTINE_COUNT"
@@ -561,6 +590,10 @@ echo "  Total:   $TOTAL"
 echo "==========================================="
 
 if [ $FAIL_COUNT -gt 0 ]; then
+	exit 1
+fi
+# U4: an UNEXPECTED leak (not leak-quarantined) is fatal to --leak-check's exit.
+if [ "$LEAK_CHECK" -eq 1 ] && [ "$LEAK_TOTAL" -gt 0 ]; then
 	exit 1
 fi
 exit 0
