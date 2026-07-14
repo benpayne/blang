@@ -1,0 +1,2 @@
+# init struct from string
+^[^:]+\.b:[0-9]+:[0-9]+: error: cannot initialize 'Box' from a value of type 'string'$

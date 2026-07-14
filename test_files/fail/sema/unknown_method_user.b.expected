@@ -1,0 +1,2 @@
+# unknown method
+^[^:]+\.b:[0-9]+:[0-9]+: error: type 'User' has no method 'compute'$

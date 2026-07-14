@@ -1,0 +1,2 @@
+# nonexhaustive
+^[^:]+\.b:[0-9]+:[0-9]+: error: non-exhaustive match: variant 'idle' of enum 'Status' is not handled$

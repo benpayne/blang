@@ -1,0 +1,2 @@
+# too few args
+^[^:]+\.b:[0-9]+:[0-9]+: error: wrong number of arguments to 'add': expected 2, got 1$
