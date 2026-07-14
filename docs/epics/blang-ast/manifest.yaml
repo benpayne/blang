@@ -144,7 +144,14 @@ devbot:
       outcome: halted   # no-progress halt at turn 4 (session/usage-limit terminations)
     - run_id: 5c582362-7090-46ad-9fed-7fd4d86333b5
       launched: 2026-07-14
-      outcome: pending  # active resume run; U1-U3 already merged, verifying/advancing to U4
+      outcome: completed  # verified all 5 epic done-conditions on clean master (U1-U8 merged)
   # Note: the epic advanced past the initial halt via a series of resume runs
-  # (visible in `devbot runs`); U1, U2, U3 are merged to master. Only the
-  # original launch and the current active run are tracked here by id.
+  # (visible in `devbot runs`); all of U1-U8 are merged to master and the
+  # done condition was independently verified by run 5c582362. Only the
+  # original launch and the final verifying run are tracked here by id.
+  #
+  # Lesson for future launches: the initial run halted on a no_progress alert
+  # (threshold 3) triggered by Anthropic usage-window pauses terminating
+  # worker turns with no output — NOT by exhausting the devbot session budget.
+  # launch-payload.json now uses no_progress_threshold=10 and
+  # session_token_limit=50M so a transient usage pause doesn't halt the run.
