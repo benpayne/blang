@@ -22,10 +22,6 @@ Block *Block::Parse( Lexer &l, Scope *block_scope )
 	int sym = l.getSymbol();
 	if ( sym != '{' )
 	{
-		if ( sym == 7 )
-			cerr << "Symbol found instead: " << l.getSymbolText() << endl;
-		else
-			cerr << "symbol found is: " << sym << "(" << (char)sym << ")" << endl; 
 		COMPILE_ERROR( l, "expected \'{\'" );
 	}
 	

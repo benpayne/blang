@@ -149,7 +149,10 @@ private:
 	int			mLastSym;
 	uint32_t	lineno;
 	uint32_t	charPos;
-	bool		mTraceEnabled = true;
+	// Quiet by default: the per-token "Symbol …" trace is opt-in via -v
+	// (driver calls setTraceEnabled). Defaulting to false keeps any Lexer
+	// constructed without explicit configuration silent (R5 / FR-007).
+	bool		mTraceEnabled = false;
 	// Position of the first character of the token most recently scanned
 	// from the file; frozen into SymbolInfo so replay/backtracking returns
 	// exact positions.

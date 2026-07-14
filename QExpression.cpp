@@ -935,8 +935,7 @@ VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 		SmartPtr<Symbol> s = scope->findSymbol( l.getSymbolText() );
 		if ( s == nullptr )
 		{
-			cerr << "Symbol Text " << l.getSymbolText() << endl;
-			COMPILE_ERROR( l, "Failed to find Symbol" );
+			COMPILE_ERROR( l, "Failed to find symbol '" + l.getSymbolText() + "'" );
 		}
 
 		LOG( "Found symbol type %d", s->getSymbolType() );

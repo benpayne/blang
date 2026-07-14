@@ -62,17 +62,44 @@ if [ ! -x "$QCC" ]; then
 	exit 1
 fi
 
+# Resolve the expected-error pattern for a negative test (U2 harness).
+# Precedence: companion "<test>.expected" file (first non-empty, non-# line)
+#   > inline "// EXPECT-ERROR: <pattern>" comment in the .b source > none.
+# Prints the ERE pattern (empty if none declared).
+resolve_expected_pattern() {
+	local file="$1"
+	local expfile="${file}.expected"
+	if [ -f "$expfile" ]; then
+		# First line that is non-empty and does not start with '#'.
+		grep -m1 -E '^[[:space:]]*[^#[:space:]]' "$expfile" | sed 's/[[:space:]]*$//'
+		return
+	fi
+	local line
+	line=$(grep -m1 'EXPECT-ERROR:' "$file" 2>/dev/null)
+	if [ -n "$line" ]; then
+		# Everything after the marker, leading/trailing whitespace trimmed.
+		printf '%s' "$line" | sed 's/.*EXPECT-ERROR:[[:space:]]*//; s/[[:space:]]*$//'
+	fi
+}
+
 run_test() {
 	local file="$1"
-	local expect="$2"  # "pass", "fail", or "xfail"
+	local expect="$2"    # "pass", "fail", or "xfail"
+	local qcc_flag="$3"  # optional invocation flag, e.g. "--parse-only"
 	local name
 	name="$(basename "$file")"
 	TOTAL=$((TOTAL + 1))
 
-	# Run qcc with a timeout, discard verbose output
-	local output
-	output=$(timeout 10 "$QCC" "$file" 2>/dev/null)
-	local exit_code=$?
+	# For negative tests we capture stderr so the declared diagnostic pattern
+	# can be asserted; for pass/xfail we only care about the exit code.
+	local exit_code stderr_out
+	if [ "$expect" = "fail" ]; then
+		stderr_out=$(timeout 10 "$QCC" $qcc_flag "$file" 2>&1 >/dev/null)
+		exit_code=$?
+	else
+		timeout 10 "$QCC" $qcc_flag "$file" >/dev/null 2>&1
+		exit_code=$?
+	fi
 
 	local passed=0
 	if [ $exit_code -eq 0 ]; then
@@ -89,17 +116,36 @@ run_test() {
 				FAIL_COUNT=$((FAIL_COUNT + 1))
 				if [ "$VERBOSE" -eq 1 ]; then
 					echo "    stderr:"
-					timeout 10 "$QCC" "$file" 2>&1 >/dev/null | tail -5 | sed 's/^/    /'
+					timeout 10 "$QCC" $qcc_flag "$file" 2>&1 >/dev/null | tail -5 | sed 's/^/    /'
 				fi
 			fi
 			;;
 		fail)
-			if [ $passed -eq 0 ]; then
-				echo -e "  ${GREEN}PASS${NC}  $file  (correctly rejected)"
-				PASS_COUNT=$((PASS_COUNT + 1))
-			else
+			if [ $passed -eq 1 ]; then
+				# A negative test that compiled cleanly is always a failure,
+				# regardless of any declared pattern.
 				echo -e "  ${RED}FAIL${NC}  $file  (expected failure, but parsed OK)"
 				FAIL_COUNT=$((FAIL_COUNT + 1))
+			else
+				local pattern
+				pattern="$(resolve_expected_pattern "$file")"
+				if [ -n "$pattern" ]; then
+					if printf '%s' "$stderr_out" | grep -Eq -- "$pattern"; then
+						echo -e "  ${GREEN}PASS${NC}  $file  (correctly rejected, diagnostic matched)"
+						PASS_COUNT=$((PASS_COUNT + 1))
+					else
+						echo -e "  ${RED}FAIL${NC}  $file  (wrong diagnostic)"
+						FAIL_COUNT=$((FAIL_COUNT + 1))
+						if [ "$VERBOSE" -eq 1 ]; then
+							echo "    expected pattern: $pattern"
+							echo "    actual stderr:"
+							printf '%s\n' "$stderr_out" | tail -5 | sed 's/^/    /'
+						fi
+					fi
+				else
+					echo -e "  ${GREEN}PASS${NC}  $file  (correctly rejected)"
+					PASS_COUNT=$((PASS_COUNT + 1))
+				fi
 			fi
 			;;
 		xfail)
@@ -134,7 +180,7 @@ FAIL_FILES=$(find "$SCRIPT_DIR/test_files/fail" -name '*.b' 2>/dev/null | sort)
 if [ -n "$FAIL_FILES" ]; then
 	echo -e "${CYAN}--- Tests expected to FAIL (negative tests) ---${NC}"
 	while IFS= read -r f; do
-		run_test "$f" "fail"
+		run_test "$f" "fail" "--parse-only"
 	done <<< "$FAIL_FILES"
 	echo ""
 fi
@@ -151,7 +197,7 @@ if [ -n "$CGFAIL_FILES" ]; then
 	if [ "$HAS_LLVM" -eq 1 ]; then
 		echo -e "${CYAN}--- Tests expected to FAIL at codegen (requires LLVM) ---${NC}"
 		while IFS= read -r f; do
-			run_test "$f" "fail"
+			run_test "$f" "fail" ""
 		done <<< "$CGFAIL_FILES"
 		echo ""
 	else

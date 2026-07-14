@@ -68,6 +68,7 @@ set(QCC_SOURCES
 	QLambdaExpression.cpp
 	BmodEmitter.cpp
 	LocationDumper.cpp
+	DiagnosticEngine.cpp
 	FormatString.cpp)
 
 # Add LLVM code generation when available
@@ -78,7 +79,11 @@ if(LLVM_FOUND)
 endif()
 
 add_executable(qcc ${QCC_SOURCES})
-target_compile_definitions(qcc PRIVATE JH_VERBOSE_LOGGING)
+# NOTE: JH_VERBOSE_LOGGING is intentionally NOT defined on qcc. It would enable
+# logging.h's LOG/TRACE_BEGIN macros, which fprintf compiler-developer trace
+# ([TRACE] …, "Saving position", …) to stderr on every parse — incompatible
+# with U2's quiet-by-default contract (FR-007 / Gate D). Compiler developers
+# who want that trace can build with -DJH_VERBOSE_LOGGING.
 set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 if(LLVM_FOUND)

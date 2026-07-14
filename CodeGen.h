@@ -29,6 +29,10 @@ public:
 	void print( llvm::raw_ostream &os );
 	bool verify();
 
+	// Raw LLVM verifier text captured by the most recent failing verify().
+	// The driver surfaces this only under --debug-compiler (U2, FR-010).
+	const std::string &getVerifyError() const { return mVerifyError; }
+
 	// Set a module prefix for name mangling (e.g. "sys" → functions become "sys__funcName")
 	void setModulePrefix( const std::string &prefix ) { mModulePrefix = prefix; }
 
@@ -330,6 +334,10 @@ private:
 	std::unique_ptr<llvm::LLVMContext> mContext;
 	std::unique_ptr<llvm::Module> mModule;
 	std::unique_ptr<llvm::IRBuilder<>> mBuilder;
+
+	// Raw text from the most recent failing verify(); surfaced only under
+	// --debug-compiler (U2, FR-010).
+	std::string mVerifyError;
 
 	// Maps from AST nodes to LLVM values
 	std::map<VariableDefinition*, llvm::AllocaInst*> mVariableMap;

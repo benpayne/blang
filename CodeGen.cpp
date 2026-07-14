@@ -319,8 +319,11 @@ bool CodeGen::verify()
 
 	if ( llvm::verifyModule( *mModule, &errStream ) )
 	{
-		cerr << "Module verification failed:" << endl;
-		cerr << errStr << endl;
+		// Store the raw verifier text; the driver decides whether to surface
+		// it. By default it reports a concise internal-compiler-error line and
+		// hides this (U2, FR-010); the raw text is shown only under
+		// --debug-compiler.
+		mVerifyError = errStream.str();
 		return false;
 	}
 	return true;

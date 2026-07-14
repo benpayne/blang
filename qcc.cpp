@@ -14,6 +14,7 @@
 
 #include "BmodEmitter.h"
 #include "LocationDumper.h"
+#include "DiagnosticEngine.h"
 
 #ifdef BLANG_HAS_LLVM
 #include "CodeGen.h"
@@ -25,16 +26,17 @@ using namespace std;
 
 Scope *gScope;
 
+// The single diagnostic reporting path, owned by main() and referenced here so
+// the top-level parse-catch (inside Module::Parse) renders through it. Null
+// until main() installs it; the catch falls back to a local engine if unset.
+DiagnosticEngine *gDiag = nullptr;
+
 string CompileError::getMessage() const
 {
-	// Token-accurate line comes from the snapshotted location, not the live
-	// lexer. The user-facing message SHAPE is unchanged here; reformatting
-	// to <file>:<line>:<col>: error: is U2's scope (FR-005). The compiler's
-	// own __FILE__:__LINE__ is retained for a future --debug-compiler mode.
-	stringstream s;
-	s << "Compiler Error in " << getInternalFile() << ":" << getInternalLine() << endl;
-	s << mMessage << " at line: " << mLocation.line;
-	return s.str();
+	// Raw message body only. The located "<file>:<line>:<col>: error: " prefix
+	// and any compiler-internal C++ throw-site detail are the DiagnosticEngine's
+	// job (U2, FR-001/FR-003); this accessor no longer formats them.
+	return mMessage;
 }
 
 Module *Module::Parse( Lexer &l, Scope *s )
@@ -292,7 +294,11 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			cout << *def << endl;
 		}
 	} catch( CompileError &err ) {
-		cerr << err.getMessage() << endl;
+		// Render the located diagnostic through the single reporting path.
+		// gDiag is installed by main() before parsing; fall back defensively.
+		DiagnosticEngine fallback;
+		DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
+		eng.reportCompileError( err );
 		return nullptr;
 	}
 
@@ -431,6 +437,8 @@ static void printUsage( const char *progName )
 #endif
 	std::cerr << "  --dump-locations  Print <file>:<line>:<col> <NodeKind> per AST node and exit" << std::endl;
 	std::cerr << "  --emit-bmod FILE  Emit .bmod interface file" << std::endl;
+	std::cerr << "  -v, --verbose     Emit parse-progress/trace output (quiet by default)" << std::endl;
+	std::cerr << "  --debug-compiler  Show compiler-internal detail on errors (throw site, raw IR)" << std::endl;
 	std::cerr << "  -h, --help        Show this help" << std::endl;
 }
 
@@ -447,6 +455,8 @@ int main( int argc, char *argv[] )
 	bool parseOnly = false;
 	bool combineMode = false;
 	bool dumpLocations = false;
+	bool verbose = false;
+	bool debugCompiler = false;
 	std::string outputFile;
 	std::string emitBmodFile;
 	std::vector<std::string> inputFiles;
@@ -469,6 +479,10 @@ int main( int argc, char *argv[] )
 		}
 		else if ( arg == "--combine" )
 			combineMode = true;
+		else if ( arg == "-v" || arg == "--verbose" )
+			verbose = true;
+		else if ( arg == "--debug-compiler" )
+			debugCompiler = true;
 		else if ( arg == "--emit-bmod" )
 		{
 			if ( i + 1 < argc )
@@ -510,6 +524,12 @@ int main( int argc, char *argv[] )
 		std::cerr << "Error: no input file specified" << std::endl;
 		return -1;
 	}
+
+	// Install the single diagnostic reporting path for this process. The
+	// top-level parse-catch (Module::Parse) renders located errors through it.
+	DiagnosticEngine diagnostics;
+	diagnostics.setDebugCompiler( debugCompiler );
+	gDiag = &diagnostics;
 
 	// Set up the global scope with built-in types. All per-file module scopes
 	// will parent to this scope so they share the same primitive type set.
@@ -585,14 +605,17 @@ int main( int argc, char *argv[] )
 		combineScope->setParent( gScope );
 	}
 
-	// In --dump-locations mode the only output is the location dump. Divert
-	// the parser's informational stdout to a discard sink during parsing;
-	// it is restored before the dump is written. (Global quiet-by-default
-	// is U2's scope; this is the minimal carve-out so the dump is clean.)
-	std::ostringstream dumpDiscardSink;
+	// Quiet by default (FR-007): the parser and codegen emit informational
+	// stdout — per-file "Completed …" progress, "Wrote IR to …", and the
+	// lexer's per-token trace. Divert all of it to a discard sink unless -v
+	// was passed. --dump-locations always diverts here regardless of -v and
+	// restores std::cout just before writing its node dump, so its output is
+	// exactly the dump (U1 golden contract). Error diagnostics are unaffected:
+	// they go to std::cerr, never std::cout.
+	std::ostringstream discardSink;
 	std::streambuf *savedCoutBuf = nullptr;
-	if ( dumpLocations )
-		savedCoutBuf = std::cout.rdbuf( dumpDiscardSink.rdbuf() );
+	if ( !verbose || dumpLocations )
+		savedCoutBuf = std::cout.rdbuf( discardSink.rdbuf() );
 
 	for ( std::size_t fileIdx = 0; fileIdx < inputFiles.size(); fileIdx++ )
 	{
@@ -691,8 +714,8 @@ int main( int argc, char *argv[] )
 
 		LexerReader reader( inputFile.c_str() );
 		Lexer l( &reader );
-		if ( dumpLocations )
-			l.setTraceEnabled( false );
+		// Per-token "Symbol …" trace only under -v, never in --dump-locations.
+		l.setTraceEnabled( verbose && !dumpLocations );
 
 		SmartPtr<Module> mod = Module::Parse( l, fileScope );
 		if ( mod == nullptr )
@@ -819,7 +842,9 @@ int main( int argc, char *argv[] )
 
 			if ( !codegen.verify() )
 			{
-				cerr << "Module verification failed (combined)" << endl;
+				cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
+				if ( debugCompiler )
+					cerr << codegen.getVerifyError() << endl;
 				return -1;
 			}
 
@@ -883,7 +908,9 @@ int main( int argc, char *argv[] )
 
 				if ( !codegen.verify() )
 				{
-					cerr << "Module verification failed for " << inputFile << endl;
+					cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
+					if ( debugCompiler )
+						cerr << codegen.getVerifyError() << endl;
 					return -1;
 				}
 
