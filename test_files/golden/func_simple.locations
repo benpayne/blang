@@ -1,0 +1,10 @@
+test_files/pass/func_simple.b:3:1 FunctionDefinition
+test_files/pass/func_simple.b:3:14 VariableDefinition
+test_files/pass/func_simple.b:4:1 Block
+test_files/pass/func_simple.b:5:2 ReturnStatement
+test_files/pass/func_simple.b:5:9 VariableExpression
+test_files/pass/func_simple.b:8:1 FunctionDefinition
+test_files/pass/func_simple.b:8:12 VariableDefinition
+test_files/pass/func_simple.b:9:1 Block
+test_files/pass/func_simple.b:10:2 ReturnStatement
+test_files/pass/func_simple.b:10:9 VariableExpression

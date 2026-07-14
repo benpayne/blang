@@ -37,6 +37,7 @@ std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &fun
 
 FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern, bool isPublic )
 {
+	SourceLocation loc = l.getTokenLocation();
 	FunctionDefinition *func;
 
 	// All function declarations use the fn keyword:
@@ -68,6 +69,7 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 		COMPILE_ERROR( l, "Expected function name after 'fn'" );
 
 	func = new FunctionDefinition( l.getSymbolText() );
+	func->setLocation( loc );
 	func->mIsExtern = isExtern;
 	func->mIsPublic = isPublic;
 	func->mIsAsync = isAsync;
@@ -248,6 +250,7 @@ FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s )
 	// Creates a method named "init" with implicit self parameter.
 
 	FunctionDefinition *func = new FunctionDefinition( "init" );
+	func->setLocation( l.getTokenLocation() );
 	func->mIsInit = true;
 	func->mFuncScope = new Scope( Scope::kScope_Function, "init" );
 	func->mFuncScope->setParent( s );
@@ -255,6 +258,7 @@ FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s )
 	// Add implicit self parameter
 	Type *selfType = new Type( "self" );
 	VariableDefinition *selfParam = new VariableDefinition( selfType, "self" );
+	selfParam->setLocation( func->getLocation() );
 	func->mParameters.push_back( selfParam );
 	func->mFuncScope->addSymbol( selfParam );
 

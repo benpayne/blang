@@ -21,6 +21,7 @@ EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume 'enum' keyword
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_ENUM )
@@ -37,6 +38,7 @@ EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 	string enumName = l.getSymbolText();
 
 	EnumDefinition *enumDef = new EnumDefinition( enumName );
+	enumDef->setLocation( loc );
 	enumDef->mIsPublic = isPublic;
 
 	// Check for generic parameters: <T> or <T: Constraint>

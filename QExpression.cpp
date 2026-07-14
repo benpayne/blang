@@ -75,6 +75,17 @@ static string getOperatorString( int sym, const string &symText )
 Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 {
 	Expression *result = nullptr;
+	// Location of this primary's first token. Every node ParsePrimary
+	// constructs directly (unary/postfix/inline calls/literals) begins at
+	// this token; recursive sub-parses capture their own. A tiny helper
+	// stamps any node this function returns or wraps, so none escapes with
+	// an unset (0:0) location — spec FR-004.
+	SourceLocation ploc = l.getTokenLocation();
+	auto S = [&]( Expression *e ) -> Expression * {
+		if ( e != nullptr && !e->getLocation().isSet() )
+			e->setLocation( ploc );
+		return e;
+	};
 	int sym = l.peekSymbol();
 
 	// await expression: await EXPR
@@ -84,7 +95,7 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		Expression *operand = ParsePrimary( l, scope );
 		if ( operand == nullptr )
 			COMPILE_ERROR( l, "Expected expression after 'await'" );
-		return new AwaitExpression( operand );
+		return S( new AwaitExpression( operand ) );
 	}
 
 	// Lambda expression: fn(params) -> RetType { body }
@@ -136,7 +147,7 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		Expression *operand = ParsePrimary( l, scope );
 		if ( operand == nullptr )
 			COMPILE_ERROR( l, "Expected expression after unary operator" );
-		return new UnaryExpression( opStr, operand );
+		return S( new UnaryExpression( opStr, operand ) );
 	}
 
 	// Parenthesized expression
@@ -637,6 +648,10 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		}
 	}
 
+	// Stamp the base primary before any postfix wrapping so wrapped children
+	// keep their own location and never escape unset.
+	result = S( result );
+
 	// Postfix operators: field access (.field), method calls (.method()), indexing ([expr])
 	while ( result != nullptr )
 	{
@@ -675,11 +690,11 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 					if ( sym != ')' )
 						COMPILE_ERROR( l, "Expected ',' or ')' in method call" );
 				}
-				result = methodCall;
+				result = S( methodCall );
 			}
 			else
 			{
-				result = new FieldAccessExpression( result, fieldName );
+				result = S( new FieldAccessExpression( result, fieldName ) );
 			}
 		}
 		else if ( l.peekSymbol() == '[' )
@@ -691,12 +706,12 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 			int closeBracket = l.getSymbol();
 			if ( closeBracket != ']' )
 				COMPILE_ERROR( l, "Expected ']'" );
-			result = new IndexExpression( result, index );
+			result = S( new IndexExpression( result, index ) );
 		}
 		else if ( l.peekSymbol() == Lexer::QUESTION_MARK )
 		{
 			l.getSymbol(); // consume '?'
-			result = new TryExpression( result );
+			result = S( new TryExpression( result ) );
 		}
 		else
 		{
@@ -714,6 +729,15 @@ Expression *Expression::ParseExpr( Lexer &l, Scope *scope, int minPrec )
 	Expression *left = ParsePrimary( l, scope );
 	if ( left == nullptr )
 		return nullptr;
+
+	// A binary/range/pipeline node spans from the first operand's first
+	// token; give each such node the leftmost location (spec assumption).
+	SourceLocation startLoc = left->getLocation();
+	auto S = [&]( Expression *e ) -> Expression * {
+		if ( e != nullptr && !e->getLocation().isSet() )
+			e->setLocation( startLoc );
+		return e;
+	};
 
 	while ( true )
 	{
@@ -770,7 +794,7 @@ Expression *Expression::ParseExpr( Lexer &l, Scope *scope, int minPrec )
 						}
 					}
 
-					left = call;
+					left = S( call );
 				}
 				else
 				{
@@ -779,7 +803,7 @@ Expression *Expression::ParseExpr( Lexer &l, Scope *scope, int minPrec )
 					Expression *right = ParsePrimary( l, scope );
 					if ( right == nullptr )
 						COMPILE_ERROR( l, "Expected expression after '|>'" );
-					left = new PipelineExpression( left, right );
+					left = S( new PipelineExpression( left, right ) );
 				}
 			}
 			else
@@ -808,7 +832,7 @@ Expression *Expression::ParseExpr( Lexer &l, Scope *scope, int minPrec )
 			Expression *right = ParseExpr( l, scope, prec + 1 );
 			if ( right == nullptr )
 				COMPILE_ERROR( l, "Expected expression after '..'" );
-			left = new RangeExpression( left, right );
+			left = S( new RangeExpression( left, right ) );
 			continue;
 		}
 
@@ -817,7 +841,7 @@ Expression *Expression::ParseExpr( Lexer &l, Scope *scope, int minPrec )
 		if ( right == nullptr )
 			COMPILE_ERROR( l, "Expected expression after operator" );
 
-		left = new OperationsExpression( opStr, left, right );
+		left = S( new OperationsExpression( opStr, left, right ) );
 	}
 
 	return left;
@@ -853,6 +877,8 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 
 		if ( isAssign )
 		{
+			// The assignment node spans from the LHS's first token.
+			SourceLocation assignLoc = exp->getLocation();
 			VariableExpression *varExpr = dynamic_cast<VariableExpression*>( exp );
 			FieldAccessExpression *fieldExpr = dynamic_cast<FieldAccessExpression*>( exp );
 			IndexExpression *indexExpr = dynamic_cast<IndexExpression*>( exp );
@@ -864,6 +890,7 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 				if ( value == nullptr )
 					COMPILE_ERROR( l, "Expected expression after assignment operator" );
 				exp = new AssignmentExpression( assignOp, varExpr->getVariable(), value );
+				exp->setLocation( assignLoc );
 			}
 			else if ( fieldExpr != nullptr )
 			{
@@ -872,6 +899,7 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 				if ( value == nullptr )
 					COMPILE_ERROR( l, "Expected expression after assignment operator" );
 				exp = new FieldAssignmentExpression( assignOp, fieldExpr->getObject(), fieldExpr->getFieldName(), value );
+				exp->setLocation( assignLoc );
 			}
 			else if ( indexExpr != nullptr )
 			{
@@ -880,6 +908,7 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 				if ( value == nullptr )
 					COMPILE_ERROR( l, "Expected expression after assignment operator" );
 				exp = new IndexAssignmentExpression( assignOp, indexExpr->getObject(), indexExpr->getIndex(), value );
+				exp->setLocation( assignLoc );
 			}
 			else
 			{
@@ -898,6 +927,7 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
+	SourceLocation loc = l.getTokenLocation();
 	VariableExpression *exp = nullptr;
 	int sym = l.getSymbol();
 	if ( sym == Lexer::SYMBOL )
@@ -914,7 +944,10 @@ VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 		{
 			VariableDefinition *def = dynamic_cast<VariableDefinition*>( (Symbol*)s );
 			if ( def != nullptr )
+			{
 				exp = new VariableExpression( def );
+				exp->setLocation( loc );
+			}
 		}
 	}
 
@@ -924,6 +957,7 @@ VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 
 CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	CallExpression *exp = nullptr;
 	int sym  = l.getSymbol();
 	if ( sym == Lexer::SYMBOL )
@@ -938,6 +972,7 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 		{
 			FunctionDefinition *def = dynamic_cast<FunctionDefinition*>( (Symbol*)s );
 			exp = new CallExpression( def );
+			exp->setLocation( loc );
 
 			// Check for generic type arguments: fn<int>(args)
 			if ( l.peekSymbol() == '<' )
@@ -989,6 +1024,7 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 
 ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	ConstExpression *exp = nullptr;
 	int sym = l.getSymbol();
 	switch( sym )
@@ -1012,6 +1048,9 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 		return nullptr;
 	}
 
+	if ( exp != nullptr )
+		exp->setLocation( loc );
+
 	return exp;
 }
 
@@ -1019,7 +1058,11 @@ ConstExpression *ConstExpression::Parse( Lexer &l, Scope *scope )
 // Creates alternating ConstString and VariableExpression parts.
 StringInterpolation *StringInterpolation::Parse( Lexer &l, Scope *scope, const string &rawString )
 {
+	// Interpolation parts are synthesized from the raw string; give them a
+	// real (non-zero) location near the string token (FR-004 inheritance).
+	SourceLocation loc = l.getTokenLocation();
 	StringInterpolation *interp = new StringInterpolation();
+	interp->setLocation( loc );
 	size_t pos = 0;
 
 	while ( pos < rawString.size() )
@@ -1073,6 +1116,13 @@ StringInterpolation *StringInterpolation::Parse( Lexer &l, Scope *scope, const s
 		pos = braceEnd + 1;
 	}
 
+	// Ensure every synthesized part carries a real location.
+	for ( auto &part : interp->mParts )
+	{
+		if ( part != nullptr && !part->getLocation().isSet() )
+			part->setLocation( loc );
+	}
+
 	return interp;
 }
 
@@ -1080,6 +1130,7 @@ StructLiteralExpression *StructLiteralExpression::Parse( Lexer &l, Scope *scope,
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume the struct type name
 	int sym = l.getSymbol();
 	if ( sym != Lexer::SYMBOL )
@@ -1109,6 +1160,7 @@ StructLiteralExpression *StructLiteralExpression::Parse( Lexer &l, Scope *scope,
 		COMPILE_ERROR( l, "Expected '{' in struct literal" );
 
 	StructLiteralExpression *expr = new StructLiteralExpression( typeName );
+	expr->setLocation( loc );
 
 	// Store generic type arguments if present
 	for ( auto &arg : typeArgs )

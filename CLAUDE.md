@@ -301,8 +301,17 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 
 ### Error handling
 
-- `CompileError` exception class carries the error message, source file, and line number.
-- `COMPILE_ERROR(lexer, message)` macro throws a `CompileError` with `__FILE__` and `__LINE__`.
+- Every AST node carries a `SourceLocation {file, line, col}` (`SourceLocation.h`),
+  stamped at parse time by each `Parse` factory. The lexer freezes each token's
+  1-based line/column into its symbol-replay list (`FileLexer.*`,
+  `LexerReader.cpp` counts in `popChar`), so `Lexer::getTokenLocation()` is
+  accurate even after parser backtracking. `--dump-locations` renders these.
+- `CompileError` exception class carries the offending token's `SourceLocation`
+  (snapshotted at throw time via `COMPILE_ERROR`) plus the compiler-internal
+  `__FILE__`/`__LINE__` (retained for a future `--debug-compiler` mode). Error
+  reporting no longer reads the live lexer.
+- `COMPILE_ERROR(lexer, message)` macro throws a `CompileError` with the token
+  location and `__FILE__`/`__LINE__`.
 - The top-level `Module::Parse` has a try/catch that prints the error and returns `nullptr`.
 
 ## Code Conventions
@@ -487,7 +496,7 @@ This is an active work-in-progress. The recursive-descent parser can parse BLang
 
 **Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`, `table`, `query`, `insert`, `update`, `delete`, `cstring`, `carray`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), `|>` (pipeline), `@` (annotation), `true`/`false` (boolean constants), float constants.
 
-**CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--emit-bmod <file>`, `--combine` (compile multiple `.b` files into a single `.ll` with shared scope), `--help` flags and multiple input files (`.b` and `.bmod`). `bcc build` reads `blang.toml`, resolves dependencies, and builds projects (lib→.a+.bmod, bin→executable) with content-addressable caching. `bcc clean` removes the build cache. `bcc test` subcommand discovers and runs test files. `bcc migrate` subcommand supports `--preview`, `--apply`, and `--generate` modes for schema migrations.
+**CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--emit-bmod <file>`, `--combine` (compile multiple `.b` files into a single `.ll` with shared scope), `--dump-locations` (print one `<file>:<line>:<col> <NodeKind>` line per AST node in deterministic pre-order, then exit; parse-only, no LLVM dependency; locked by the golden files under `test_files/golden/`), `--help` flags and multiple input files (`.b` and `.bmod`). `bcc build` reads `blang.toml`, resolves dependencies, and builds projects (lib→.a+.bmod, bin→executable) with content-addressable caching. `bcc clean` removes the build cache. `bcc test` subcommand discovers and runs test files. `bcc migrate` subcommand supports `--preview`, `--apply`, and `--generate` modes for schema migrations.
 
 **Runtime libraries**: `blang_string` (safe immutable string type — `BlangString` with refcounting, heap allocation, and bounds-checked access), `blang_array` (safe generic array type — `BlangArray` with refcounting, bounds-checked access, and dynamic growth), `blang_json` (C library for JSON encode/decode), `blang_net` (TCP sockets + poll-based Selector event loop — listen/accept/connect/read/write/close, event-driven I/O with fd-based handle table), `blang_fs` (file I/O + directory operations — open/close/read/write/seek/flush, stat/remove/mkdir/list_dir), `blang_db` (database abstraction with optional SQLite backend).
 

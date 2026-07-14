@@ -99,9 +99,6 @@ void Lexer::readStringConst()
 	
 	while ( !mReader->isEOF() )
 	{
-		if ( mReader->peekChar() == '\n' )
-			printf( "Multi-line string constant on line %d\n", lineno );
-		
 		if ( mReader->peekChar() == '\\' )
 		{
 			switch ( (*mReader)[ 1 ] )
@@ -171,10 +168,7 @@ void Lexer::readCharacterConst()
 	
 	while ( !mReader->isEOF() )
 	{
-		if ( mReader->peekChar() == '\n' )
-			printf( "Multi-line char constant on line %d\n", lineno );
-
-		// could improve the proper grammmer for the constant value.		
+		// could improve the proper grammmer for the constant value.
 		if ( mReader->peekChar() != '\'' )
 		{
 			mMatchString.append( 1, mReader->popChar() );
@@ -310,7 +304,7 @@ int Lexer::getSymbolInternal()
 	if ( mCurrentPos == mSymbolList.size() )
 	{
 		sym = getSymbolFromFile();
-		mSymbolList.push_back( SymbolInfo( sym, mMatchString ) );
+		mSymbolList.push_back( SymbolInfo( sym, mMatchString, mScanLine, mScanCol ) );
 	}
 	else
 	{
@@ -318,23 +312,50 @@ int Lexer::getSymbolInternal()
 		mMatchString = mSymbolList[ mCurrentPos ].symbolText;
 	}
 
-	if ( sym <= Lexer::QUESTION_MARK || (sym >= 256 && sym < Lexer::NUM_SYMBOLS) )
-		std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
-	else
-		std::cout << "Symbol " << (char)sym << std::endl;
-	
+	if ( mTraceEnabled )
+	{
+		if ( sym <= Lexer::QUESTION_MARK || (sym >= 256 && sym < Lexer::NUM_SYMBOLS) )
+			std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
+		else
+			std::cout << "Symbol " << (char)sym << std::endl;
+	}
+
 	return sym;
+}
+
+SourceLocation Lexer::getTokenLocation()
+{
+	// Ensure the token at the current parse position has been scanned into
+	// the symbol list (peekSymbol reads at mCurrentPos without advancing).
+	peekSymbol();
+	if ( mCurrentPos >= 0 && (std::size_t)mCurrentPos < mSymbolList.size() )
+	{
+		const SymbolInfo &info = mSymbolList[ mCurrentPos ];
+		return SourceLocation( mReader->getFileName(), info.line, info.col );
+	}
+	// Fallback: position at end of input (e.g. missing closing brace).
+	return SourceLocation( mReader->getFileName(), mReader->getLine(), mReader->getCol() );
 }
 
 int Lexer::getSymbolFromFile()
 {
 	mMatchString.clear();
 	mLastSym = -1;
-	
+
+	// Position used if we fall through to EOF without recognizing a token.
+	mScanLine = mReader->getLine();
+	mScanCol = mReader->getCol();
+
 	while ( !mReader->isEOF() )
 	{
 		//std::cout << "Lexer Symbol " << (int)mReader->peekChar() << std::endl;
-		
+
+		// Snapshot the position of this candidate token's first character.
+		// Whitespace/comment branches below consume and re-loop, so the
+		// snapshot that survives to a return is the real token start.
+		mScanLine = mReader->getLine();
+		mScanCol = mReader->getCol();
+
 		// check for keywords
 		switch ( mReader->peekChar() )
 		{

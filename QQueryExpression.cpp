@@ -155,6 +155,7 @@ QueryExpression *QueryExpression::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol(); // consume 'query'
 	assert( sym == Lexer::KEYWORD_QUERY );
 
@@ -164,6 +165,7 @@ QueryExpression *QueryExpression::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected table name after 'query'" );
 
 	QueryExpression *expr = new QueryExpression( l.getSymbolText() );
+	expr->setLocation( loc );
 
 	// Parse pipeline steps
 	parsePipelineSteps( l, scope, expr->mSteps );
@@ -176,6 +178,7 @@ InsertExpression *InsertExpression::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol(); // consume 'insert'
 	assert( sym == Lexer::KEYWORD_INSERT );
 
@@ -185,6 +188,7 @@ InsertExpression *InsertExpression::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected table name after 'insert'" );
 
 	InsertExpression *expr = new InsertExpression( l.getSymbolText() );
+	expr->setLocation( loc );
 
 	// Expect '{' for field assignments
 	sym = l.getSymbol();
@@ -227,6 +231,7 @@ UpdateExpression *UpdateExpression::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol(); // consume 'update'
 	assert( sym == Lexer::KEYWORD_UPDATE );
 
@@ -236,6 +241,7 @@ UpdateExpression *UpdateExpression::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected table name after 'update'" );
 
 	UpdateExpression *expr = new UpdateExpression( l.getSymbolText() );
+	expr->setLocation( loc );
 
 	// Parse pipeline steps (where, set)
 	parsePipelineSteps( l, scope, expr->mSteps );
@@ -248,6 +254,7 @@ DeleteExpression *DeleteExpression::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol(); // consume 'delete'
 	assert( sym == Lexer::KEYWORD_DELETE );
 
@@ -257,6 +264,7 @@ DeleteExpression *DeleteExpression::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected table name after 'delete'" );
 
 	DeleteExpression *expr = new DeleteExpression( l.getSymbolText() );
+	expr->setLocation( loc );
 
 	// Parse pipeline steps (where)
 	parsePipelineSteps( l, scope, expr->mSteps );
