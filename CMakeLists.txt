@@ -33,6 +33,22 @@ else()
 	message(STATUS "LLVM not found -- building without code generation support")
 endif()
 
+# Optional sanitizer instrumentation (opt-in; OFF by default so normal/CI
+# non-sanitizer builds are byte-for-byte unchanged). Comma-separated list, e.g.
+#   cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined
+# Flags are added to BOTH compile and link lines and, because this block precedes
+# every target definition, apply uniformly to the compiler (qcc/bcc/lexer) and
+# the C runtime libraries. UBSan is made FATAL (-fno-sanitize-recover) so real UB
+# fails the build's test run rather than printing and continuing.
+set(BLANG_SANITIZE "" CACHE STRING
+	"Comma-separated sanitizers to instrument with (e.g. address,undefined). Empty = off.")
+if(BLANG_SANITIZE)
+	message(STATUS "Sanitizers enabled: ${BLANG_SANITIZE}")
+	add_compile_options(-fsanitize=${BLANG_SANITIZE} -fno-sanitize-recover=all
+		-fno-omit-frame-pointer -g)
+	add_link_options(-fsanitize=${BLANG_SANITIZE})
+endif()
+
 # Lexer test targets
 add_executable(lexerTest LexerTest.cpp FileLexer.cpp LexerReader.cpp)
 set_target_properties(lexerTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

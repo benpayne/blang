@@ -14,6 +14,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-$SCRIPT_DIR/build}"
 QCC="$BUILD_DIR/qcc"
 
+# Default sanitizer runtime options. run_tests.sh is a parse/sema CORRECTNESS
+# gate, not a leak gate (leak-checking is test_codegen.sh --leak-check, U4), and
+# qcc links LLVM which does not free everything at exit — so LeakSanitizer is
+# turned OFF here to avoid non-bug "leak" noise, while real memory errors (ASan)
+# and undefined behavior (UBSan) stay FATAL. These env vars are ignored by
+# uninstrumented binaries, so this is a strict no-op for the default/parse-only
+# builds. Respect any values the caller already exported.
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1:halt_on_error=1}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
+
 VERBOSE=0
 DO_BUILD=0
 
