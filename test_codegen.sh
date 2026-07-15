@@ -25,12 +25,19 @@ STDLIB_FS="${SCRIPT_DIR}/stdlib/fs.b"
 STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
 STDLIB_BUFFER="${SCRIPT_DIR}/stdlib/buffer.b"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# Colors — emitted only to a terminal. When stdout is a pipe/file (CI, and the
+# epic-acceptance greps like `grep -Eq 'Leaks:[[:space:]]*0'`), ANSI codes are
+# suppressed so the summary text is plain and machine-greppable (an ESC[0m reset
+# between "Leaks:" and the count would otherwise defeat the grep).
+if [ -t 1 ]; then
+	RED='\033[0;31m'
+	GREEN='\033[0;32m'
+	YELLOW='\033[0;33m'
+	CYAN='\033[0;36m'
+	NC='\033[0m'
+else
+	RED='' GREEN='' YELLOW='' CYAN='' NC=''
+fi
 
 VERBOSE=0
 FILE_ARGS=()
