@@ -456,6 +456,16 @@ private:
 	void releaseTempStructs();
 	void untrackTempStruct( llvm::Value *structPtr );
 
+	// Temporary array tracking: arrays produced as expression rvalues (a call or
+	// method that returns Array<T>) that are not bound to a variable and must be
+	// released after the enclosing statement. Mirrors the struct-temp discipline:
+	// tracked at the producing call/method, untracked when ownership transfers
+	// (stored into a variable / struct field / enum payload / returned).
+	std::vector<llvm::Value*> mTempArrays;
+	void trackTempArray( llvm::Value *arrPtr );
+	void releaseTempArrays();
+	void untrackTempArray( llvm::Value *arrPtr );
+
 	// Ownership move tracking: own variables that have been moved
 	std::set<VariableDefinition*> mMovedVariables;
 

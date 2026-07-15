@@ -447,6 +447,11 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 					mBuilder->CreateCall( getOrDeclareStringRetain(), { fieldVal } );
 				else if ( fTypeName == "Array" && srcIsExistingOwner )
 					mBuilder->CreateCall( getOrDeclareArrayRetain(), { fieldVal } );
+				else if ( fTypeName == "Array" && !srcIsExistingOwner )
+					// Fresh array rvalue (call/method result) transfers ownership
+					// into the struct field — untrack so it is not also released as
+					// a statement temporary (which would double-free).
+					untrackTempArray( fieldVal );
 				else if ( fTypeName == "Buffer" && srcIsExistingOwner )
 					mBuilder->CreateCall( getOrDeclareBufferRetain(), { fieldVal } );
 				else if ( isUserStructType( fTypeName ) && srcIsExistingOwner )
@@ -1184,6 +1189,13 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 
 	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName + ".ptr" );
 	mBuilder->CreateStore( val, fieldPtr );
+
+	// If a fresh Array<T> rvalue temporary is stored into a field, ownership
+	// transfers to the struct — untrack it so it is not also released as a
+	// statement temporary (which would leave the field pointing at freed memory).
+	if ( fieldType != nullptr && fieldType->getName() == "Array" )
+		untrackTempArray( val );
+
 	return val;
 }
 
@@ -1522,7 +1534,28 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		return nullptr;
 	}
 
-	return mBuilder->CreateCall( llvmFunc, args, "methodcall" );
+	llvm::Value *methodResult = mBuilder->CreateCall( llvmFunc, args, "methodcall" );
+
+	// Track a struct-returning method result as a temporary — a fresh refcount-1
+	// heap struct that must be released at statement end unless it is stored /
+	// transferred (see genCallExpression for the full ownership rationale). This
+	// covers chained method calls and struct-returning convenience methods.
+	if ( methodDef->getReturnType() != nullptr )
+	{
+		string mRetName = methodDef->getReturnType()->getName();
+		auto subIt = mTypeSubstitution.find( mRetName );
+		if ( subIt != mTypeSubstitution.end() )
+			mRetName = subIt->second->getName();
+		if ( isUserStructType( mRetName ) )
+			trackTempStruct( methodResult );
+		// Track an Array<T>-returning method result as a temporary (e.g.
+		// Buffer.get_bytes()): the caller receives an owned array reference that
+		// must be released at statement end unless it is stored / transferred.
+		else if ( mRetName == "Array" )
+			trackTempArray( methodResult );
+	}
+
+	return methodResult;
 }
 
 llvm::Value *CodeGen::genBufferFieldAccess( FieldAccessExpression *expr )

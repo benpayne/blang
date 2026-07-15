@@ -796,6 +796,8 @@ void CodeGen::genBlock( Block *block )
 			releaseTempLambdaCtxs();
 			// Release any temporary struct literals created during this statement
 			releaseTempStructs();
+			// Release any temporary arrays (rvalue Array<T> from a call/method)
+			releaseTempArrays();
 		}
 	}
 
@@ -975,6 +977,38 @@ void CodeGen::untrackTempStruct( llvm::Value *structPtr )
 		if ( *it == structPtr )
 		{
 			mTempStructs.erase( it );
+			return;
+		}
+	}
+}
+
+void CodeGen::trackTempArray( llvm::Value *arrPtr )
+{
+	if ( arrPtr != nullptr )
+		mTempArrays.push_back( arrPtr );
+}
+
+void CodeGen::releaseTempArrays()
+{
+	if ( mTempArrays.empty() )
+		return;
+	if ( mBuilder->GetInsertBlock()->getTerminator() != nullptr )
+	{
+		mTempArrays.clear();
+		return;
+	}
+	for ( auto *val : mTempArrays )
+		mBuilder->CreateCall( getOrDeclareArrayRelease(), { val } );
+	mTempArrays.clear();
+}
+
+void CodeGen::untrackTempArray( llvm::Value *arrPtr )
+{
+	for ( auto it = mTempArrays.begin(); it != mTempArrays.end(); ++it )
+	{
+		if ( *it == arrPtr )
+		{
+			mTempArrays.erase( it );
 			return;
 		}
 	}

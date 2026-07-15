@@ -181,6 +181,14 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		if ( funcDef->getReturnType() != nullptr &&
 			 funcDef->getReturnType()->getName() == "string" )
 			trackTempString( callResult );
+		// Track struct-returning generic calls as temporaries (see the non-generic
+		// path below for the ownership rationale).
+		if ( funcDef->getReturnType() != nullptr &&
+			 isUserStructType( funcDef->getReturnType()->getName() ) )
+			trackTempStruct( callResult );
+		if ( funcDef->getReturnType() != nullptr &&
+			 funcDef->getReturnType()->getName() == "Array" )
+			trackTempArray( callResult );
 		return callResult;
 	}
 
@@ -344,6 +352,30 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		 funcDef->getReturnType()->getName() == "string" )
 	{
 		trackTempString( callResult );
+	}
+
+	// Track struct-returning function calls as temporaries so the fresh
+	// refcount-1 heap struct (allocated by __blang_rc_alloc inside the callee,
+	// then untracked at its `return`) is released at the end of the enclosing
+	// statement — unless it is stored into a variable / struct field / enum
+	// payload / returned, each of which untracks it (ownership transfers).
+	// This mirrors the temp-tracking of struct literals (genStructLiteral /
+	// genConstructExpression) so an rvalue struct from a call and one from a
+	// literal have identical ARC lifetimes. Without this, an unstored struct
+	// rvalue — e.g. `make_info(...).has_flag()` — leaks.
+	if ( funcDef->getReturnType() != nullptr &&
+		 isUserStructType( funcDef->getReturnType()->getName() ) )
+	{
+		trackTempStruct( callResult );
+	}
+
+	// Track Array<T>-returning calls as temporaries (see genReturnStatement for
+	// the matching ownership contract): a function returns an owned array
+	// reference, released at statement end unless it is stored / transferred.
+	if ( funcDef->getReturnType() != nullptr &&
+		 funcDef->getReturnType()->getName() == "Array" )
+	{
+		trackTempArray( callResult );
 	}
 
 	return callResult;
@@ -561,6 +593,17 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 				llvm::PointerType::get( *mContext, 0 ), alloca, "struct.old" );
 			mBuilder->CreateCall( getOrDeclareRcRelease(), { oldVal } );
 			untrackTempStruct( rhs );
+		}
+
+		// If reassigning an array variable, release the old value and untrack the
+		// new (the variable now owns it; released at scope exit).
+		if ( varDef->getVariableType() != nullptr &&
+			 varDef->getVariableType()->getName() == "Array" )
+		{
+			llvm::Value *oldVal = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), alloca, "arr.old" );
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { oldVal } );
+			untrackTempArray( rhs );
 		}
 
 		mBuilder->CreateStore( rhs, alloca );

@@ -70,6 +70,8 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 				string assocTypeName = variant.mAssociatedTypes[i]->getName();
 				if ( assocTypeName == "string" )
 					untrackTempString( argVal );
+				else if ( assocTypeName == "Array" )
+					untrackTempArray( argVal );
 				else if ( isUserStructType( assocTypeName ) )
 					untrackTempStruct( argVal );
 			}

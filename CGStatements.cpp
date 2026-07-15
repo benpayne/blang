@@ -299,6 +299,11 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 						if ( isStructVar )
 							untrackTempStruct( initVal );
 
+						// If storing an array, untrack it from temps — the variable now
+						// owns it (released at scope exit via mArrayScopeStack).
+						if ( varType != nullptr && varType->getName() == "Array" )
+							untrackTempArray( initVal );
+
 						// If storing a fn-typed value, untrack its lambda context from temps.
 						// The variable now owns the context via mLambdaScopeStack.
 						if ( varType != nullptr && varType->isFunctionType() &&
@@ -349,9 +354,21 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 		if ( retVal != nullptr && isStringType( ret->mExpression ) )
 			mBuilder->CreateCall( getOrDeclareStringRetain(), { retVal } );
 
-		// If returning an array, retain it so scope release doesn't free it
+		// If returning an array sourced from an existing owner (a local array
+		// variable or a struct field), retain it so it survives the scope
+		// cleanup below (local var) / so the caller receives its own owned
+		// reference (field). A fresh array from a call/method result already
+		// carries an owned reference (tracked as a temp at its producing site and
+		// untracked below), so it must NOT be retained again — that double count
+		// is the source of the Buffer.get_bytes()/list_dir array leaks. This
+		// mirrors the struct-return retain policy immediately below.
 		if ( retVal != nullptr && isArrayType( ret->mExpression ) )
-			mBuilder->CreateCall( getOrDeclareArrayRetain(), { retVal } );
+		{
+			Expression *retRawExpr = (Expression *)ret->mExpression;
+			if ( dynamic_cast<VariableExpression*>( retRawExpr ) != nullptr ||
+				 dynamic_cast<FieldAccessExpression*>( retRawExpr ) != nullptr )
+				mBuilder->CreateCall( getOrDeclareArrayRetain(), { retVal } );
+		}
 
 		// If returning a fn-typed value (lambda/callback pair), retain the
 		// context so scope cleanup doesn't free it before the caller gets it
@@ -391,15 +408,28 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 	// Release temporary strings created during expression evaluation
 	releaseTempStrings();
 
-	// If returning a struct literal, untrack it — ownership transfers to caller
-	if ( retVal != nullptr && mCurrentFunction != nullptr &&
-		 mCurrentFunction->getReturnType() != nullptr )
-	{
-		string retTypeName = mCurrentFunction->getReturnType()->getName();
-		if ( isUserStructType( retTypeName ) )
-			untrackTempStruct( retVal );
-	}
+	// Untrack the returned value if it is a tracked temporary struct: ownership
+	// transfers to the caller, so releaseTempStructs() below must NOT release it
+	// (that would return an already-freed pointer — a use-after-free). This is
+	// done UNCONDITIONALLY rather than gated on mCurrentFunction->getReturnType()
+	// because mCurrentFunction is null while generating a lambda body (see
+	// CGLambda.cpp) — the old gate silently skipped the untrack for lambdas that
+	// return a struct rvalue (e.g. `return http_ok("OK");`), releasing the value
+	// just before `ret`. untrackTempStruct only removes the exact returned
+	// pointer if it is present in the temp list, and a value being returned is
+	// never also a statement-local temporary, so the unconditional form is safe
+	// for every return (non-struct returns are a no-op).
+	if ( retVal != nullptr )
+		untrackTempStruct( retVal );
 	releaseTempStructs();
+
+	// Same ownership transfer for a returned array temporary: untrack it (so the
+	// statement-end release below does not free the value being returned) and
+	// release any other array temporaries produced while evaluating the return
+	// expression.
+	if ( retVal != nullptr )
+		untrackTempArray( retVal );
+	releaseTempArrays();
 
 	// Insert runtime shutdown before ARC releases in main() — threads must
 	// finish before we free shared/sync memory they may be using
