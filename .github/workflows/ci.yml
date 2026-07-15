@@ -2,50 +2,215 @@ name: BLang CI
 
 on:
   push:
-    branches: [ master, main, 'claude/**' ]
+    branches: [ master, main, 'claude/**', 'epic/**' ]
   pull_request:
     branches: [ master, main ]
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+# All jobs below EXECUTE a check (they do not grep ci.yml). A regression in any
+# leg fails CI. Configuring these as branch-protection "required" checks is a
+# manual manager step — see docs/ci.md.
 
+jobs:
+  # ---- Existing legs (preserved): parse/sema suite in both build modes ----
+  parse-suite:
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         build_type: [parse-only, with-llvm]
-
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev
+          if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
+            sudo apt-get install -y llvm-18-dev llvm-18 libzstd-dev
+          fi
+      - name: Configure & build
+        run: |
+          if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
+            cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          else
+            cmake -S . -B build -DBLANG_ENABLE_LLVM=OFF
+          fi
+          cmake --build build -j"$(nproc)"
+      - name: run_tests.sh
+        run: ./run_tests.sh
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake build-essential libuv1-dev
-        if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
-          sudo apt-get install -y llvm-18-dev libzstd-dev
-        fi
+  # ---- 1. Golden-output codegen compare + teeth (--selfcheck) ----
+  golden-codegen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Anti-widening teeth — golden floor >= 55 + quarantine == approved
+        run: |
+          # The epic's most load-bearing gate. There MUST be >= 55 committed
+          # stdout goldens, and codegen_quarantine.txt MUST exactly equal the
+          # approved list (symmetric comment/blank strip, per evaluation.md
+          # clause 1) so the quarantine cannot be widened to nullify goldens.
+          n=$(ls test_files/codegen_*.expected.out | wc -l)
+          echo "goldens: $n"
+          test "$n" -ge 55
+          if ! diff <(sort -u test_files/codegen_quarantine.txt | grep -vE '^\s*#|^\s*$') \
+                    <(sort -u docs/epics/test-validation/approved_quarantine.txt | grep -vE '^\s*#|^\s*$'); then
+            echo "FAIL: codegen_quarantine.txt diverges from the approved list (widening?)"
+            exit 1
+          fi
+          echo "Anti-widening verified: >= 55 goldens; quarantine == approved list."
+      - name: Golden compare (./test_codegen.sh)
+        run: ./test_codegen.sh
+      - name: Golden teeth (--selfcheck must flip red)
+        run: |
+          # --selfcheck corrupts a real golden internally and MUST exit non-zero,
+          # printing SELFCHECK: OK. A zero exit here means the comparator has no
+          # teeth — fail the job.
+          if ./test_codegen.sh --selfcheck > selfcheck.log 2>&1; then
+            echo "FAIL: --selfcheck exited 0 (golden comparator has no teeth)"
+            cat selfcheck.log
+            exit 1
+          fi
+          grep -q 'SELFCHECK: OK' selfcheck.log || {
+            echo "FAIL: --selfcheck did not print SELFCHECK: OK"; cat selfcheck.log; exit 1; }
+          echo "Golden teeth verified: --selfcheck flipped red as designed."
 
-    - name: Configure CMake
-      run: |
-        mkdir -p build
-        cd build
-        if [ "${{ matrix.build_type }}" = "with-llvm" ]; then
-          cmake .. -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
-        else
-          cmake .. -DBLANG_ENABLE_LLVM=OFF
-        fi
+  # ---- 2. Real bcc test runner (fixtures) ----
+  bcc-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: all_pass — exit 0 and 'N passed'
+        run: |
+          ./build/bcc test test_files/testblock/all_pass.b
+          ./build/bcc test test_files/testblock/all_pass.b | grep -Eq '[0-9]+ passed'
+      - name: has_failure — exit non-zero, FAIL + file:line
+        run: |
+          if ./build/bcc test test_files/testblock/has_failure.b > hf.log 2>&1; then
+            echo "FAIL: has_failure.b exited 0"; cat hf.log; exit 1
+          fi
+          grep -Eq 'FAIL' hf.log
+          grep -Eq '[^:]+\.b:[0-9]+:' hf.log
+      - name: --filter — strict non-empty subset
+        run: |
+          full=$(./build/bcc test test_files/testblock/all_pass.b | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')
+          filt=$(./build/bcc test --filter add_two test_files/testblock/all_pass.b | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')
+          echo "full=$full filt=$filt"
+          test "$filt" -gt 0 && test "$filt" -lt "$full"
 
-    - name: Build
-      run: |
-        cd build
-        make -j$(nproc)
+  # ---- 3. Sanitizer (ASan/UBSan) build + leak-check with teeth ----
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev
+      - name: Build (with LLVM) — needed by test_codegen.sh --leak-check
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Build sanitizer compiler (build-asan)
+        run: |
+          cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build-asan -j"$(nproc)"
+      - name: Parse suite under ASan
+        run: BUILD_DIR=build-asan ./run_tests.sh
+      - name: Leak-check teeth — injected leak must be fatal
+        run: |
+          if ./test_codegen.sh --leak-check test_files/testblock/leak_probe.b > probe.log 2>&1; then
+            echo "FAIL: injected-leak fixture did not fail --leak-check"; cat probe.log; exit 1
+          fi
+          echo "Leak-check teeth verified: injected leak is fatal."
+      - name: "Leak-check clean suite — Leaks: 0"
+        run: |
+          ./test_codegen.sh --leak-check | tee leak.log
+          grep -Eq 'Leaks:[[:space:]]*0' leak.log
 
-    - name: Run tests
-      run: ./run_tests.sh
+  # ---- 4. Runtime C-library unit tests (ctest), normal + under ASan ----
+  runtime-units:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Build sanitizer config (build-asan)
+        run: |
+          cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build-asan -j"$(nproc)"
+      - name: ctest count >= 30 and green (build)
+        run: |
+          n=$(ctest --test-dir build -N | grep -c 'Test #')
+          echo "runtime tests: $n"
+          test "$n" -ge 30
+          ctest --test-dir build --output-on-failure
+      - name: ctest green under ASan (build-asan)
+        run: ctest --test-dir build-asan --output-on-failure
 
-    - name: Run codegen tests
-      if: matrix.build_type == 'with-llvm'
-      run: |
-        if [ -f ./test_codegen.sh ]; then
-          ./test_codegen.sh
-        fi
+  # ---- 5. Bounded parser fuzzing (libFuzzer, clang) ----
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential clang llvm
+      - name: Build fuzz_parse (clang, libFuzzer)
+        run: |
+          # libFuzzer needs clang; the fuzz target lives in a dedicated clang
+          # build dir build-fuzz (BLANG_ENABLE_LLVM=OFF, BLANG_FUZZ=ON) — it
+          # cannot live in the gcc default build/. This is why the acceptance
+          # command uses build-fuzz/fuzz_parse (see docs/epics/.../evaluation.md).
+          cmake -S . -B build-fuzz -DBLANG_ENABLE_LLVM=OFF -DBLANG_FUZZ=ON \
+                -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-fuzz --target fuzz_parse -j"$(nproc)"
+      - name: Corpus count >= 20
+        run: test "$(ls test_files/fuzz/corpus | wc -l)" -ge 20
+      - name: Corpus replay (crash-free, -runs=0)
+        run: build-fuzz/fuzz_parse test_files/fuzz/corpus/ -runs=0
+      - name: Bounded campaign (-max_total_time=60)
+        # -max_total_time bounds the campaign between inputs, but only -timeout
+        # bounds a single input: if a mutation drives the parser into an
+        # infinite loop, libFuzzer cannot honour -max_total_time and the job
+        # would hang to the 20-minute cap. -timeout=30 makes any such hang fail
+        # fast and loud (libFuzzer reports it as a crash) instead of hanging.
+        run: build-fuzz/fuzz_parse test_files/fuzz/corpus/ -max_total_time=60 -timeout=30
+
+  # ---- 6. Demos ----
+  demos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: make -C demos run
+        run: make -C demos run
