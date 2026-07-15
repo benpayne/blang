@@ -192,7 +192,12 @@ jobs:
       - name: Corpus replay (crash-free, -runs=0)
         run: build-fuzz/fuzz_parse test_files/fuzz/corpus/ -runs=0
       - name: Bounded campaign (-max_total_time=60)
-        run: build-fuzz/fuzz_parse test_files/fuzz/corpus/ -max_total_time=60
+        # -max_total_time bounds the campaign between inputs, but only -timeout
+        # bounds a single input: if a mutation drives the parser into an
+        # infinite loop, libFuzzer cannot honour -max_total_time and the job
+        # would hang to the 20-minute cap. -timeout=30 makes any such hang fail
+        # fast and loud (libFuzzer reports it as a crash) instead of hanging.
+        run: build-fuzz/fuzz_parse test_files/fuzz/corpus/ -max_total_time=60 -timeout=30
 
   # ---- 6. Demos ----
   demos:

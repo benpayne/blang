@@ -147,6 +147,16 @@ void Lexer::readStringConst()
 					mMatchString.append( 1, '\0' );
 					mReader->popChar( 2 );
 					break;
+				default:
+					// Unrecognized escape (e.g. "\l") or a backslash at
+					// end-of-input: consume the backslash literally so the
+					// lexer always makes forward progress. Without this the
+					// loop would spin forever (peekChar() keeps returning
+					// '\\' and isEOF() stays false), hanging the parser on
+					// crafted input. The following character is handled by
+					// the next loop iteration.
+					mMatchString.append( 1, mReader->popChar() );
+					break;
 			}
 		}
 		else if ( mReader->peekChar() != '\"' )
