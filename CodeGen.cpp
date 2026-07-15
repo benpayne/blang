@@ -271,10 +271,15 @@ bool CodeGen::generate( Module *mod )
 			testFunctions.push_back( testFunc );
 	}
 
-	// Generate test runner function if there are tests
+	// Generate test runner function if there are tests. In test-runner mode
+	// (qcc --emit-test-main) emit a real main() that dispatches to the C test
+	// driver; otherwise keep the legacy __blang_run_tests path unchanged.
 	if ( !testFunctions.empty() )
 	{
-		genTestRunner( testFunctions, mod->mTestBlocks );
+		if ( mTestMode )
+			genTestMain( testFunctions, mod->mTestBlocks );
+		else
+			genTestRunner( testFunctions, mod->mTestBlocks );
 	}
 
 	// Return false if any ownership or other codegen errors occurred

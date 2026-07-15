@@ -36,6 +36,13 @@ public:
 	// Set a module prefix for name mangling (e.g. "sys" → functions become "sys__funcName")
 	void setModulePrefix( const std::string &prefix ) { mModulePrefix = prefix; }
 
+	// Test-runner mode (qcc --emit-test-main). When set, a module carrying
+	// test{} blocks emits a real main() that registers each test with the C
+	// test driver and dispatches to __blang_test_main; asserts inside test mode
+	// print a located <file>:<line>: diagnostic on failure. Off by default, so
+	// normal (bcc build / single-file) codegen is byte-for-byte unchanged.
+	void setTestMode( bool on ) { mTestMode = on; }
+
 	// Multi-module support: register struct/enum defs from other modules
 	void registerExternalTypes(
 		const std::vector<SmartPtr<StructDefinition>> &structs,
@@ -211,6 +218,10 @@ private:
 	// Phase 2 test block and contract codegen
 	llvm::Function *genTestBlock( TestBlock *testBlock );
 	void genTestRunner( const std::vector<llvm::Function*> &testFunctions,
+		const std::vector<SmartPtr<TestBlock>> &testBlocks );
+	// Test-mode entry point (qcc --emit-test-main): emits main() that registers
+	// each test with the C driver and returns __blang_test_main(argc, argv).
+	void genTestMain( const std::vector<llvm::Function*> &testFunctions,
 		const std::vector<SmartPtr<TestBlock>> &testBlocks );
 	void genContractCheck( Expression *condition, const std::string &message );
 
@@ -459,6 +470,9 @@ private:
 
 	// Flag indicating a codegen error occurred (e.g., ownership violation)
 	bool mHasError = false;
+
+	// Test-runner mode (qcc --emit-test-main); see setTestMode().
+	bool mTestMode = false;
 
 	// Current function context (for contract support)
 	FunctionDefinition *mCurrentFunction = nullptr;

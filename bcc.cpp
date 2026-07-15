@@ -256,94 +256,268 @@ static vector<string> collectTestFiles( const string &searchRoot )
 	return files;
 }
 
-// Run qcc on a single file; return true on success (exit 0)
-static bool parseFile( const string &qcc, const string &file, bool verbose )
+// Compile a single .b test file with the test-runner entry point and run it.
+//
+// Mirrors the normal bcc pipeline (qcc --combine <stdlib> <file>
+// --emit-test-main -> llc -> cc) but links the fork-isolated test driver
+// (libblang_testrunner.a). The produced binary registers each test{} block and
+// dispatches to __blang_test_main, forwarding `--filter <name>` when set.
+// Returns the test binary's exit code (non-zero iff a test failed), or a
+// non-zero sentinel on a compile/link failure.
+static int compileAndRunTestFile( const string &exeDir, const string &qcc,
+	const string &file, const string &filter, bool verbose )
 {
-	string cmd = "\"" + qcc + "\" \"" + file + "\" >/dev/null 2>/dev/null";
-	int ret = system( cmd.c_str() );
-	if ( WIFEXITED( ret ) )
-		return WEXITSTATUS( ret ) == 0;
-	return false;
+	string baseName = getBaseName( file );
+	string srcDir = getDirName( file );
+
+	// Collect stdlib .b files for --combine (same order as normal bcc).
+	vector<string> stdlibFiles;
+	for ( const char *name : { "sys.b", "buffer.b", "fs.b", "net.b" } )
+	{
+		string candidate = exeDir + "/stdlib/" + name;
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			stdlibFiles.push_back( candidate );
+	}
+
+	// Step 1: qcc --combine <stdlib...> <file> --emit-test-main
+	{
+		vector<string> cmd = { qcc, "--combine" };
+		for ( const auto &sf : stdlibFiles )
+			cmd.push_back( sf );
+		cmd.push_back( file );
+		cmd.push_back( "--emit-test-main" );
+		int ret = runCommand( cmd, verbose, !verbose );
+		if ( ret != 0 )
+		{
+			cerr << "bcc test: compilation failed for " << file << endl;
+			return 2;
+		}
+	}
+
+	// qcc (combine mode) writes IR derived from the last source file (the user
+	// file) as <file-with-.ll>.
+	string irFile = srcDir + "/" + baseName + ".ll";
+	if ( access( irFile.c_str(), F_OK ) != 0 )
+	{
+		cerr << "bcc test: no .ll generated for " << file
+		     << " (is qcc built with LLVM?)" << endl;
+		return 2;
+	}
+
+	// Step 2: llc -> object
+	string llc;
+#ifdef BCC_LLC_PATH
+	if ( access( BCC_LLC_PATH, X_OK ) == 0 )
+		llc = BCC_LLC_PATH;
+#endif
+	if ( llc.empty() )
+		llc = findTool( "llc-18", { "llc" } );
+	if ( llc.empty() )
+	{
+		cerr << "bcc test: llc not found" << endl;
+		remove( irFile.c_str() );
+		return 2;
+	}
+
+	string objFile = "/tmp/" + baseName + "_bcctest.o";
+	{
+		vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
+#if defined(BCC_HOST_ARCH)
+#if defined(PLATFORM_DARWIN)
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+#elif defined(PLATFORM_LINUX)
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
+#endif
+#endif
+		cmd.push_back( irFile );
+		cmd.push_back( "-o" );
+		cmd.push_back( objFile );
+		int ret = runCommand( cmd, verbose );
+		remove( irFile.c_str() );
+		if ( ret != 0 )
+		{
+			cerr << "bcc test: IR compilation failed for " << file << endl;
+			return 2;
+		}
+	}
+
+	// Step 3: link with the test driver + BLang runtime libs
+	string binFile = "/tmp/" + baseName + "_bcctest_bin";
+	{
+		string cc = "cc";
+#ifdef BCC_CC_PATH
+		cc = BCC_CC_PATH;
+#endif
+		vector<string> cmd = { cc };
+#if defined(BCC_HOST_ARCH) && defined(PLATFORM_DARWIN)
+		cmd.push_back( "-arch" );
+		cmd.push_back( BCC_HOST_ARCH );
+#endif
+		cmd.push_back( objFile );
+
+		auto findLib = [&]( const char *baked, const char *name ) -> string {
+			string lib;
+			if ( baked != nullptr )
+				lib = baked;
+			if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
+			{
+				string fallback = exeDir + "/lib" + name + ".a";
+				if ( access( fallback.c_str(), F_OK ) == 0 )
+					lib = fallback;
+				else
+					lib.clear();
+			}
+			return lib;
+		};
+
+		const char *bakedTestRunner = nullptr;
+		const char *bakedRuntime = nullptr, *bakedString = nullptr;
+		const char *bakedArray = nullptr, *bakedBuffer = nullptr;
+		const char *bakedJson = nullptr, *bakedNet = nullptr;
+		const char *bakedFs = nullptr, *bakedSys = nullptr;
+#ifdef BCC_TESTRUNNER_LIB
+		bakedTestRunner = BCC_TESTRUNNER_LIB;
+#endif
+#ifdef BCC_RUNTIME_LIB
+		bakedRuntime = BCC_RUNTIME_LIB;
+#endif
+#ifdef BCC_STRING_LIB
+		bakedString = BCC_STRING_LIB;
+#endif
+#ifdef BCC_ARRAY_LIB
+		bakedArray = BCC_ARRAY_LIB;
+#endif
+#ifdef BCC_BUFFER_LIB
+		bakedBuffer = BCC_BUFFER_LIB;
+#endif
+#ifdef BCC_JSON_LIB
+		bakedJson = BCC_JSON_LIB;
+#endif
+#ifdef BCC_NET_LIB
+		bakedNet = BCC_NET_LIB;
+#endif
+#ifdef BCC_FS_LIB
+		bakedFs = BCC_FS_LIB;
+#endif
+#ifdef BCC_SYS_LIB
+		bakedSys = BCC_SYS_LIB;
+#endif
+		// Driver first (referenced by the emitted main), then higher-level libs
+		// before their base libs.
+		for ( const auto &lib : {
+			findLib( bakedTestRunner, "blang_testrunner" ),
+			findLib( bakedSys, "blang_sys" ),
+			findLib( bakedFs, "blang_fs" ),
+			findLib( bakedNet, "blang_net" ),
+			findLib( bakedJson, "blang_json" ),
+			findLib( bakedBuffer, "blang_buffer" ),
+			findLib( bakedArray, "blang_array" ),
+			findLib( bakedString, "blang_string" ),
+			findLib( bakedRuntime, "blang_runtime" ),
+		} )
+		{
+			if ( !lib.empty() )
+				cmd.push_back( lib );
+		}
+
+		cmd.push_back( "-lpthread" );
+		cmd.push_back( "-o" );
+		cmd.push_back( binFile );
+#ifdef BCC_HAS_LIBUV
+		cmd.push_back( "-luv" );
+#endif
+		int ret = runCommand( cmd, verbose );
+		remove( objFile.c_str() );
+		if ( ret != 0 )
+		{
+			cerr << "bcc test: linking failed for " << file << endl;
+			return 2;
+		}
+	}
+
+	// Step 4: run the test binary, forwarding --filter. Its stdout/stderr are
+	// inherited so per-test PASS/FAIL, located failures, and the summary appear.
+	int exitCode;
+	{
+		string runCmd = "\"" + binFile + "\"";
+		if ( !filter.empty() )
+			runCmd += " --filter \"" + filter + "\"";
+		int ret = system( runCmd.c_str() );
+		if ( WIFEXITED( ret ) )
+			exitCode = WEXITSTATUS( ret );
+		else
+			exitCode = 3; // crashed / signaled
+	}
+	remove( binFile.c_str() );
+	return exitCode;
 }
 
 // bcc test subcommand
 //
-// Discovery strategy:
-//   1. If a tests/ subdirectory exists in the current directory, search there.
-//   2. Otherwise search the current directory for *_test.b files.
+//   bcc test [--filter <name>] <file.b> [<file2.b> ...]
+//     Compile each file with the test-runner entry point and run its test{}
+//     blocks, reporting per-test PASS/FAIL with file:line on failure. Exit code
+//     is non-zero iff any test fails.
 //
-// Each discovered .b file is passed to qcc for parse-only verification.
-// Results are reported with a summary line at the end; exit code is non-zero
-// when any test fails.
-static int runTests( int argc, char *argv[] )
+//   bcc test [--filter <name>]        (no file given)
+//     Legacy discovery: search tests/ (or the current directory) and run each
+//     discovered .b file the same way.
+static int runTests( int argc, char *argv[], const string &exeDir )
 {
 	bool verbose = false;
+	string filter;
+	vector<string> fileArgs;
+
 	for ( int i = 2; i < argc; i++ )
 	{
 		string arg = argv[i];
 		if ( arg == "--verbose" || arg == "-v" )
 			verbose = true;
+		else if ( arg == "--filter" && i + 1 < argc )
+			filter = argv[++i];
+		else if ( arg.rfind( "--filter=", 0 ) == 0 )
+			filter = arg.substr( 9 );
+		else if ( !arg.empty() && arg[0] != '-' )
+			fileArgs.push_back( arg );
 	}
 
-	// Locate qcc alongside bcc
-	char exeBuf[4096];
-	string exeDir = ".";
-	ssize_t len = readlink( "/proc/self/exe", exeBuf, sizeof( exeBuf ) - 1 );
-	if ( len > 0 )
-	{
-		exeBuf[len] = '\0';
-		string exePath = exeBuf;
-		size_t slash = exePath.rfind( '/' );
-		if ( slash != string::npos )
-			exeDir = exePath.substr( 0, slash );
-	}
 	string qcc = exeDir + "/qcc";
 
-	// Determine search root
-	string searchRoot;
-	bool testsSubdirExists = isDirectory( "tests" );
-	if ( testsSubdirExists )
-	{
-		searchRoot = "tests";
-		cerr << "bcc test: searching tests/ directory" << endl;
-	}
-	else
-	{
-		searchRoot = ".";
-		cerr << "bcc test: no tests/ directory found, searching current directory for *.b files" << endl;
-	}
-
-	vector<string> files = collectTestFiles( searchRoot );
-
+	// Determine the set of files to run: explicit args, else discovery.
+	vector<string> files = fileArgs;
 	if ( files.empty() )
 	{
-		cerr << "bcc test: no .b files found in " << searchRoot << endl;
-		return 0;
-	}
-
-	int passed = 0;
-	int failed = 0;
-
-	for ( const auto &file : files )
-	{
-		bool ok = parseFile( qcc, file, verbose );
-		if ( ok )
+		string searchRoot;
+		if ( isDirectory( "tests" ) )
 		{
-			passed++;
-			cerr << "  PASS  " << file << endl;
+			searchRoot = "tests";
+			cerr << "bcc test: searching tests/ directory" << endl;
 		}
 		else
 		{
-			failed++;
-			cerr << "  FAIL  " << file << endl;
+			searchRoot = ".";
+			cerr << "bcc test: no tests/ directory found, searching current directory for *.b files" << endl;
 		}
+		files = collectTestFiles( searchRoot );
 	}
 
-	cerr << endl;
-	cerr << "Results: " << passed << " passed, " << failed << " failed"
-	     << " (" << ( passed + failed ) << " total)" << endl;
+	if ( files.empty() )
+	{
+		cerr << "bcc test: no .b files found" << endl;
+		return 0;
+	}
 
-	return ( failed > 0 ) ? 1 : 0;
+	int worstExit = 0;
+	for ( const auto &file : files )
+	{
+		if ( files.size() > 1 )
+			cout << "=== " << file << " ===" << endl;
+		int rc = compileAndRunTestFile( exeDir, qcc, file, filter, verbose );
+		if ( rc != 0 )
+			worstExit = rc;
+	}
+
+	return worstExit;
 }
 
 // bcc migrate subcommand
@@ -896,7 +1070,7 @@ int main( int argc, char *argv[] )
 	}
 	if ( argc >= 2 && string( argv[1] ) == "test" )
 	{
-		return runTests( argc, argv );
+		return runTests( argc, argv, exeDir );
 	}
 	if ( argc >= 2 && string( argv[1] ) == "migrate" )
 	{

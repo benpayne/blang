@@ -186,6 +186,11 @@ set_target_properties(blang_sys PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_sys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_link_libraries(blang_sys blang_string blang_array)
 
+# BLang test-runner driver (behind `bcc test`): fork-isolated test dispatch.
+add_library(blang_testrunner STATIC runtime/blang_testrunner.c)
+set_target_properties(blang_testrunner PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_testrunner PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
 # BLang database runtime library
 add_library(blang_db STATIC runtime/blang_db.c)
 set_target_properties(blang_db PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -249,6 +254,9 @@ target_compile_definitions(bcc PRIVATE BCC_JSON_LIB="${CMAKE_BINARY_DIR}/libblan
 target_compile_definitions(bcc PRIVATE BCC_NET_LIB="${CMAKE_BINARY_DIR}/libblang_net.a")
 target_compile_definitions(bcc PRIVATE BCC_FS_LIB="${CMAKE_BINARY_DIR}/libblang_fs.a")
 target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang_sys.a")
+target_compile_definitions(bcc PRIVATE BCC_TESTRUNNER_LIB="${CMAKE_BINARY_DIR}/libblang_testrunner.a")
+# Ensure the test-runner driver lib is built before bcc links against it via `bcc test`.
+add_dependencies(bcc blang_testrunner)
 message(STATUS "bcc: C compiler = ${CMAKE_C_COMPILER}")
 message(STATUS "bcc: host arch = ${CMAKE_SYSTEM_PROCESSOR}")
 

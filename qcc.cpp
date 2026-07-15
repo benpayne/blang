@@ -435,6 +435,7 @@ static void printUsage( const char *progName )
 	std::cerr << "  -o, --output FILE Output file name" << std::endl;
 	std::cerr << "  --parse-only      Parse only, no code generation" << std::endl;
 	std::cerr << "  --combine         Combine all .b files into a single .ll output" << std::endl;
+	std::cerr << "  --emit-test-main  Emit a main() that runs test{} blocks via the test driver" << std::endl;
 #endif
 	std::cerr << "  --dump-locations  Print <file>:<line>:<col> <NodeKind> per AST node and exit" << std::endl;
 	std::cerr << "  --emit-bmod FILE  Emit .bmod interface file" << std::endl;
@@ -463,6 +464,7 @@ int main( int argc, char *argv[] )
 	bool dumpLocations = false;
 	bool verbose = false;
 	bool debugCompiler = false;
+	bool emitTestMain = false;
 	std::string outputFile;
 	std::string emitBmodFile;
 	std::vector<std::string> inputFiles;
@@ -485,6 +487,8 @@ int main( int argc, char *argv[] )
 		}
 		else if ( arg == "--combine" )
 			combineMode = true;
+		else if ( arg == "--emit-test-main" )
+			emitTestMain = true;
 		else if ( arg == "-v" || arg == "--verbose" )
 			verbose = true;
 		else if ( arg == "--debug-compiler" )
@@ -821,6 +825,7 @@ int main( int argc, char *argv[] )
 			}
 
 			QLang::CodeGen codegen( combinedName.c_str() );
+			codegen.setTestMode( emitTestMain );
 			codegen.registerExternalTypes( allStructs, allEnums );
 
 			for ( std::size_t idx = 0; idx < modules.size(); idx++ )
@@ -911,6 +916,7 @@ int main( int argc, char *argv[] )
 
 				const std::string &inputFile = inputFiles[ idx ];
 				QLang::CodeGen codegen( inputFile.c_str() );
+				codegen.setTestMode( emitTestMain );
 
 				// Register types from all other modules before generating
 				codegen.registerExternalTypes( allStructs, allEnums );
@@ -970,6 +976,7 @@ int main( int argc, char *argv[] )
 	(void)emitObj;
 	(void)parseOnly;
 	(void)combineMode;
+	(void)emitTestMain;
 #endif
 
 	return 0;

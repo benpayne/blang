@@ -922,6 +922,60 @@ void CodeGen::genTestRunner( const std::vector<llvm::Function*> &testFunctions,
 	mBuilder->CreateRetVoid();
 }
 
+// Test-runner mode (qcc --emit-test-main): emit a real entry point that
+// registers each test{} block with the C test driver and dispatches to it.
+//
+//   int main(int argc, char **argv) {
+//       __blang_test_register("name0", __blang_test_name0);
+//       ...
+//       return __blang_test_main(argc, argv);
+//   }
+//
+// The driver forks per test for isolation, counts pass/fail, honors
+// --filter, and returns non-zero iff any test failed.
+void CodeGen::genTestMain( const std::vector<llvm::Function*> &testFunctions,
+	const std::vector<SmartPtr<TestBlock>> &testBlocks )
+{
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+
+	// void __blang_test_register(i8* name, void()* fn)
+	llvm::FunctionType *regTy = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), { ptrTy, ptrTy }, false );
+	llvm::FunctionCallee regFn = mModule->getOrInsertFunction(
+		"__blang_test_register", regTy );
+
+	// i32 __blang_test_main(i32 argc, i8** argv)
+	llvm::FunctionType *tmainTy = llvm::FunctionType::get(
+		i32Ty, { i32Ty, ptrTy }, false );
+	llvm::FunctionCallee tmainFn = mModule->getOrInsertFunction(
+		"__blang_test_main", tmainTy );
+
+	// int main(int argc, char **argv)
+	llvm::FunctionType *mainTy = llvm::FunctionType::get(
+		i32Ty, { i32Ty, ptrTy }, false );
+	llvm::Function *mainFunc = llvm::Function::Create(
+		mainTy, llvm::Function::ExternalLinkage, "main", mModule.get() );
+	mainFunc->getArg( 0 )->setName( "argc" );
+	mainFunc->getArg( 1 )->setName( "argv" );
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", mainFunc );
+	mBuilder->SetInsertPoint( entryBB );
+
+	// Register each test by name with its generated function.
+	for ( size_t i = 0; i < testFunctions.size(); i++ )
+	{
+		llvm::Value *nameVal = mBuilder->CreateGlobalStringPtr(
+			testBlocks[i]->getName(), "testname" );
+		mBuilder->CreateCall( regFn, { nameVal, testFunctions[i] } );
+	}
+
+	// return __blang_test_main(argc, argv);
+	llvm::Value *rc = mBuilder->CreateCall(
+		tmainFn, { mainFunc->getArg( 0 ), mainFunc->getArg( 1 ) }, "test.rc" );
+	mBuilder->CreateRet( rc );
+}
+
 // ---- JSON codegen (@json annotation) ----
 
 bool CodeGen::genJsonToJson( StructDefinition *structDef )

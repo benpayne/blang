@@ -761,6 +761,22 @@ void CodeGen::genAssertStatement( AssertStatement *assertStmt )
 
 	std::string msg = assertStmt->mMessage.empty()
 		? "Assertion failed" : assertStmt->mMessage;
+
+	// In test-runner mode, prefix the failure with the assert's source location
+	// (<file>:<line>:) so `bcc test` reports where a test failed. The path is
+	// emitted verbatim from the AST SourceLocation and contains no ':' before
+	// the extension, so it matches the epic's `[^:]+\.b:[0-9]+:` regex. Outside
+	// test mode the message is unchanged (normal-build codegen invariant).
+	if ( mTestMode )
+	{
+		const SourceLocation &loc = assertStmt->getLocation();
+		if ( loc.isSet() )
+		{
+			msg = loc.file + ":" + std::to_string( loc.line ) + ":" +
+				std::to_string( loc.col ) + ": assertion failed: " + msg;
+		}
+	}
+
 	llvm::Value *msgVal = mBuilder->CreateGlobalStringPtr( msg, "assert.msg" );
 	mBuilder->CreateCall( putsFunc, { msgVal } );
 	mBuilder->CreateCall( exitFunc,
