@@ -443,6 +443,11 @@ static void printUsage( const char *progName )
 	std::cerr << "  -h, --help        Show this help" << std::endl;
 }
 
+// The libFuzzer harness (fuzz/fuzz_parse.cpp, U5) reuses this translation unit's
+// Module::Parse and the file-scope gScope/gDiag globals, but must NOT provide a
+// second `main` (libFuzzer supplies its own). Building fuzz_parse defines
+// BLANG_FUZZ_HARNESS to compile out qcc's main. No-op for normal qcc/bcc builds.
+#ifndef BLANG_FUZZ_HARNESS
 int main( int argc, char *argv[] )
 {
 	if ( argc < 2 )
@@ -969,3 +974,4 @@ int main( int argc, char *argv[] )
 
 	return 0;
 }
+#endif // BLANG_FUZZ_HARNESS

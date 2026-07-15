@@ -3,3 +3,4 @@ build-parse/
 build-asan/
 *.ll
 docs/epics/*/launch-payload.json
+build-fuzz/

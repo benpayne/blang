@@ -108,6 +108,34 @@ if(LLVM_FOUND)
 	target_link_libraries(qcc ${llvm_libs} blang_sqlgen)
 endif()
 
+# ---------------------------------------------------------------------------
+# Bounded parser fuzzing (libFuzzer) — opt-in, clang-only (U5, REQ-006).
+# Configure a dedicated clang build:
+#   cmake -S . -B build-fuzz -DBLANG_ENABLE_LLVM=OFF -DBLANG_FUZZ=ON \
+#         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+#   cmake --build build-fuzz --target fuzz_parse
+# Uses the PARSE-ONLY compiler sources (QCC_SOURCES here has no CodeGen because
+# the fuzz build sets BLANG_ENABLE_LLVM=OFF) with qcc's main() compiled out.
+# ---------------------------------------------------------------------------
+option(BLANG_FUZZ "Build the libFuzzer parser target fuzz_parse (requires clang)" OFF)
+if(BLANG_FUZZ)
+	if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+		message(FATAL_ERROR "BLANG_FUZZ requires clang (libFuzzer). Reconfigure with -DCMAKE_CXX_COMPILER=clang++.")
+	endif()
+	add_executable(fuzz_parse ${QCC_SOURCES} fuzz/fuzz_parse.cpp)
+	set_target_properties(fuzz_parse PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+	target_include_directories(fuzz_parse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	target_compile_definitions(fuzz_parse PRIVATE BLANG_FUZZ_HARNESS)
+	target_compile_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address -fno-omit-frame-pointer -g)
+	target_link_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address)
+	if(LLVM_FOUND)
+		# The parser needs no LLVM; keep fuzz_parse lean. (Normally the fuzz build
+		# is configured BLANG_ENABLE_LLVM=OFF so this branch is not taken.)
+		target_compile_definitions(fuzz_parse PRIVATE BLANG_HAS_LLVM)
+		target_link_libraries(fuzz_parse ${llvm_libs} blang_sqlgen)
+	endif()
+endif()
+
 # BLang runtime library (ARC, thread pool, channels, async)
 add_library(blang_runtime STATIC runtime/blang_runtime.c)
 set_target_properties(blang_runtime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)

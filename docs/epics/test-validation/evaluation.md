@@ -19,7 +19,7 @@ manager. Commands below are literal and runnable.
 | sanitizer compiler build | `cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined && cmake --build build-asan -j"$(nproc)" && BUILD_DIR=build-asan ./run_tests.sh` | exit 0 | U4, U7 |
 | leak check (fixed to have teeth) | `./test_codegen.sh --leak-check` | exit 0 + `Leaks: 0` on clean; **exit non-zero** on injected leak | U4, U7 |
 | runtime unit tests | `ctest --test-dir build` and `ctest --test-dir build-asan` | exit 0; count `≥ 30` asserted via `ctest -N` | U5, U7 |
-| fuzz corpus replay | `build/fuzz_parse test_files/fuzz/corpus/ -runs=0` (corpus `≥ 20`) | exit 0 (no crash) | U6, U7 |
+| fuzz corpus replay | `build-fuzz/fuzz_parse test_files/fuzz/corpus/ -runs=0` (corpus `≥ 20`) | exit 0 (no crash) | U6, U7 |
 | demos | `make -C demos run` | exit 0 | U7 |
 
 ## Per-unit gates (every PR)
@@ -116,9 +116,15 @@ ctest --test-dir build
 ctest --test-dir build-asan
 
 # 5. bounded fuzzing with teeth
+# libFuzzer requires clang; the fuzz target lives in a dedicated clang build dir
+# build-fuzz (BLANG_ENABLE_LLVM=OFF, BLANG_FUZZ=ON), mirroring build-asan — a
+# libFuzzer target cannot live in the gcc default build/. Configure with:
+#   cmake -S . -B build-fuzz -DBLANG_ENABLE_LLVM=OFF -DBLANG_FUZZ=ON \
+#         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+#   cmake --build build-fuzz --target fuzz_parse
 test "$(ls test_files/fuzz/corpus | wc -l)" -ge 20
-build/fuzz_parse test_files/fuzz/corpus/ -runs=0        # crash-free replay
-# (parser-reachability poison-input proof is a U6 PR artifact the manager confirms)
+build-fuzz/fuzz_parse test_files/fuzz/corpus/ -runs=0   # crash-free replay
+# (parser-reachability poison-input proof is a U5 PR artifact the manager confirms)
 
 # 6. CI executes each check green on the final commit (not a grep of ci.yml text)
 gh run list --branch master --limit 1 --json conclusion --jq '.[0].conclusion' | grep -qx success
