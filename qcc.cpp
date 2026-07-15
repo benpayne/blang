@@ -624,6 +624,27 @@ int main( int argc, char *argv[] )
 	// they go to std::cerr, never std::cout.
 	std::ostringstream discardSink;
 	std::streambuf *savedCoutBuf = nullptr;
+	// RAII: guarantee std::cout's original buffer is restored on EVERY exit
+	// path from here on — the two early `return -1` failures below, and the
+	// normal success return. Without this, a quiet (non-verbose) compile left
+	// std::cout pointing at the stack-local `discardSink` after this function
+	// returned; the standard-stream teardown in std::ios_base::Init::~Init()
+	// then flushed that dangling stack streambuf at process exit — an invalid
+	// read that is benign on some hosts but SIGSEGVs on others (surfaced by CI,
+	// invisible locally). Declared after `discardSink` so the guard destructs
+	// FIRST (restoring the real buffer) and `discardSink` dies afterward.
+	struct CoutBufGuard
+	{
+		std::streambuf **saved;
+		~CoutBufGuard()
+		{
+			if ( *saved != nullptr )
+			{
+				std::cout.rdbuf( *saved );
+				*saved = nullptr;
+			}
+		}
+	} coutBufGuard{ &savedCoutBuf };
 	if ( !verbose || dumpLocations )
 		savedCoutBuf = std::cout.rdbuf( discardSink.rdbuf() );
 
@@ -764,7 +785,13 @@ int main( int argc, char *argv[] )
 	// the entire stdout of a dump run.
 	if ( dumpLocations )
 	{
-		std::cout.rdbuf( savedCoutBuf );
+		// Restore now (the dump below writes to the real std::cout) and disarm
+		// the RAII guard so it does not restore a second time.
+		if ( savedCoutBuf != nullptr )
+		{
+			std::cout.rdbuf( savedCoutBuf );
+			savedCoutBuf = nullptr;
+		}
 		for ( auto &mod : modules )
 		{
 			if ( !mod->isExtern() )
