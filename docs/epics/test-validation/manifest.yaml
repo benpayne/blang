@@ -143,3 +143,6 @@ devbot:
     - run_id: 0e8fef6a-a9b3-417f-8596-0c8efc7d1ef3
       launched: 2026-07-14
       outcome: halted   # transient worker usage-window pause at turn 10; U1-U6 + U8 merged (7/8 REQs); only U7 (CI capstone) remained. Continue via a scoped resume run.
+    - run_id: 68a2b35a-c441-473f-8c77-0c807014895c
+      launched: 2026-07-15
+      outcome: pending  # scoped resume run: U7 CI capstone + epic acceptance
