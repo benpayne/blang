@@ -186,6 +186,27 @@ gate). The manager serializes merges and rebases in-flight branches after each.
 - **Team hint**: capstone, after all others.
 - **Speckit**: `NNN-ci-integration`
 
+### U8 — ARC-leak fix (from OQ-1)
+
+- **Covers**: REQ-008
+- **Preconditions**: U4 merged (leak quarantine + fatal leak-check exist)
+- **Work**: fix the 4 real codegen ARC leaks U4 surfaced — refcounted rvalue
+  temporaries from `__blang_rc_alloc` that are never released (e.g. the
+  `fn().method()` rvalue struct temporary in `codegen_method_chain`, plus
+  `codegen_file_io`, `codegen_fs_convenience`, `codegen_http`). Root cause is
+  codegen ARC (rvalue-temporary release); this is the large/risky fix flagged in
+  OQ-1 — treat with care and full audit. Then empty
+  `test_files/codegen_leak_quarantine.txt` (comment-only) so the leak gate is
+  fully clean with nothing quarantined.
+- **Done condition**: `./test_codegen.sh --leak-check` exits 0 with `Leaks: 0`
+  and the 4 tests leak-free; `grep -vcE '^\\s*#|^\\s*$' test_files/codegen_leak_quarantine.txt`
+  is 0 (no active entries); all suites green; leak gate still fatal on an
+  injected leak (teeth preserved).
+- **Audit**: per constitution; **memory-safety evidence required**.
+- **Budget hint**: medium-large (codegen ARC change; risk of regressions).
+- **Team hint**: sequence before U7 so CI enforces an unquarantined leak gate.
+- **Speckit**: `NNN-arc-leak-fix`
+
 ## Sequencing notes for the manager
 
 - U1 must merge before U2 (the migration needs the harness).
@@ -195,6 +216,8 @@ gate). The manager serializes merges and rebases in-flight branches after each.
 - U6 (fuzzing) may surface parser bugs. If a crash requires a **language/parser
   semantics** decision to fix (not a clear crash bug), raise an Open Question
   rather than guessing — one thread blocks, the rest continues.
+- U8 (ARC-leak fix, from OQ-1) must merge before U7 so the CI capstone
+  enforces a clean, unquarantined leak gate.
 - U7 is strictly last; it turns the new checks into required gates, so it must
   see all prior units merged or it will gate on absent artifacts.
 - If U2 or U4 surfaces a genuine wrong-output or memory bug in existing code,

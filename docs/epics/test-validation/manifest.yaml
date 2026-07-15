@@ -122,9 +122,16 @@ units:
   - id: U7
     reqs: [REQ-007]
     summary: CI integration (jobs that execute each check) + demos run leg + docs/close-out
-    depends_on: [U1, U2, U3, U4, U5, U6]
+    depends_on: [U1, U2, U3, U4, U5, U6, U8]
     done: "evaluation.md Epic-level acceptance block passes; each new CI job runs green on the final commit; make -C demos run is a CI leg"
     speckit: ci-integration
+
+  - id: U8
+    reqs: [REQ-008]
+    summary: Fix the 4 codegen ARC leaks from OQ-1 (rvalue-temporary release); empty the leak quarantine
+    depends_on: [U4]
+    done: "./test_codegen.sh --leak-check exit 0 Leaks:0; codegen_leak_quarantine.txt has 0 active entries; injected-leak still fatal; suites green"
+    speckit: arc-leak-fix
 
 foldback:
   status_into: overview.md
