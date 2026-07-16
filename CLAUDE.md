@@ -560,7 +560,7 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     modes with clean `file:line:col: error:` diagnostics; silent codegen
     coercions removed; `test_files/fail/sema/` has 26 negative fixtures
     including audit_01..10.
-  - `test-validation` (`docs/epics/test-validation/`) — status: **launched** (devbot run `0e8fef6a-a9b3-417f-8596-0c8efc7d1ef3`).
+  - `test-validation` (`docs/epics/test-validation/`) — status: **complete** (all 8 units merged to local master; done-condition verified — golden-output tests, real `bcc test`, ASan/leak + fuzzing CI, runtime unit tests).
     Phase 2 of the production roadmap ("trust the tests"): golden-output
     codegen tests, a real `bcc test` runner, ASan/LSan + fuzzing in CI, and
     C-runtime unit tests.

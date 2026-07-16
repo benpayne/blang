@@ -2,7 +2,7 @@
 
 **Archetype**: evolve (hardening existing test infrastructure) + a bounded discover slice (fuzzing)
 
-**Status**: launched
+**Status**: complete (all 8 units merged; epic done-condition independently verified)
 
 **Owner**: Ben Payne
 
@@ -178,6 +178,8 @@ run from the repo root. Every clause is a runnable teeth-proof, not just an
 | 2026-07-14 | 0e8fef6a | /devbot-status check | 5 of 8 REQs merged (goldens, migration, sanitizer build, runtime units + leak teeth, fuzzing). Fuzzing found+fixed a real qcc SEGV (null param type). Reviewer-independence deviation (OQ-2) accepted by PM: single-hire self-audit stands. Remaining: bcc test (REQ-003), U8 ARC-leak (REQ-008), CI (REQ-007). |
 | 2026-07-15 | 0e8fef6a | run halted (transient) | Halted at turn 10 with no_progress=False and no limit tripped (worker usage-window pause). 7 of 8 REQs merged: bcc test runner (REQ-003, 19d4118) and U8 ARC-leak fix (REQ-008, db7d412 — leak quarantine emptied to 0) both landed after the last check. Only U7 (CI capstone, REQ-007) remains; not started. Resuming via a scoped follow-on run. |
 | 2026-07-15 | 68a2b35a | scoped resume launched | Fresh run to execute the final unit U7 (CI integration capstone) + the epic acceptance block. Same limits (no_progress_threshold 10, 50M tokens, 400 turns). |
+| 2026-07-15 | 68a2b35a | U7 merged; EPIC COMPLETE | Resume run completed with a two-hire team (impl + independent reviewer 'rev'). U7 CI capstone merged (4b21c98); all 8 units done. CI surfaced + fixed 2 more real bugs (lexer infinite-loop on bad string escape; qcc exit-time SIGSEGV). |
+| 2026-07-16 | — | done-condition independently verified | PM/assistant ran evaluation.md acceptance block on local master: (1) 57 goldens, quarantine==approved, selfcheck teeth ✓; (2) bcc test all_pass/has_failure/file:line/filter ✓; (3) build-asan run_tests 186, --leak-check fatal on injected leak (rc=1) + clean-suite Leaks:0 (U8 ARC fix confirmed) ✓; (4) ctest 45 on build+build-asan ✓; (5) fuzz corpus 32 + replay ✓; (6) all 6 CI jobs present + BLang CI ran green on the U7 branch ✓. All clauses PASS. |
 | 2026-07-14 | 0e8fef6a | U6 (real `bcc test`) spec+audit PASS | `specs/014-bcc-test-runner/` — REQ-003 (workplan U3). Opt-in `qcc --emit-test-main` → `CodeGen::genTestMain` emits a real `main()` dispatching to a fork-isolated C driver (`runtime/blang_testrunner.c`); test-mode assert prints located `<file>:<line>:col:`; legacy `__blang_run_tests` retained for the no-flag path (normal codegen unchanged). Spec audit PASS with carried findings F3 (plain/greppable output) + F5 (fixture must have ≥1 non-`add_two` test for a strict subset). |
 | 2026-07-14 | 0e8fef6a | U6 implemented + code-audit PASS | Reviewer re-ran fresh from a clean `build/` rebuild: clause-2 all green — `all_pass.b` exit 0 + `4 passed`; `has_failure.b` exit 1 + `FAIL` + `has_failure.b:17:2:`; `--filter add_two` strict subset (filt 1 < full 4). Teeth: failure isolated (`passes_after` still PASS via fork-per-test); a scripted wrong-output patch flips green→red (`3 passed, 1 failed`, exit 1). Findings F1/F3/F5/F6 resolved; audit-round fix `fflush(NULL)` before child `_exit`. Boundary: run_tests 186/181, test_codegen 63/63, build-asan run_tests 186, `--leak-check` Leaks:0. |
 | 2026-07-14 | 0e8fef6a | U6 merged | squash-merged to master (`19d4118`). REQ-003 satisfied. Clean-rebuild acceptance re-verified on master: clause-2 + teeth green; boundary run_tests 186/181, test_codegen 63/63, build-asan run_tests 186. Remaining: U8 (ARC-leak fix, before capstone) → U7 (CI capstone). |
