@@ -1,0 +1,5 @@
+# U2 fail/sema fixture: channels carry value types only. A refcounted heap
+# element type (string/Array/Buffer/struct) is rejected by Sema in ALL build
+# modes with a located error — the byte-copy channel transport cannot own a
+# reference-counted element. (reject, don't coerce/crash/leak)
+^[^:]+\.b:[0-9]+:[0-9]+: error: channel element type '[A-Za-z_<>0-9 ]+' is not supported: channels carry value types only

@@ -1,0 +1,6 @@
+# U2 fail/sema fixture (relocated from origin's cgfail/): chan<T>.recv() returns
+# the built-in Option<T>; a match that handles only some() and ignores the none
+# (closed/empty) case is non-exhaustive and is rejected by Sema in ALL build
+# modes. This is the safety payoff of surfacing the closed signal as Option —
+# it depends on Sema annotating ch.recv() with Option<T> (resolveMethodCall).
+^[^:]+\.b:[0-9]+:[0-9]+: error: non-exhaustive match: variant 'none' of enum 'Option' is not handled$

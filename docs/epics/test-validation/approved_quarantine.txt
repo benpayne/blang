@@ -10,3 +10,4 @@ codegen_http_streaming.b
 codegen_tcp_echo.b
 codegen_selector.b
 codegen_spawn_threaded.b
+codegen_channel_spawn.b

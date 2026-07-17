@@ -1294,8 +1294,156 @@ llvm::Value *CodeGen::genIndexAssignment( IndexAssignmentExpression *expr )
 	return nullptr;
 }
 
+bool CodeGen::isChanType( Expression *expr )
+{
+	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		return varType != nullptr && varType->getName() == "chan";
+	}
+	return false;
+}
+
+// Resolve the QLang element type T of a chan<T> object expression.
+// Returns nullptr if the type parameter is missing (treated as int-sized).
+Type *CodeGen::getChanElementQType( Expression *expr )
+{
+	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
+	{
+		Type *varType = ve->mVariable->getVariableType();
+		if ( varType != nullptr && varType->getNumTypeParams() > 0 )
+			return varType->getTypeParam( 0 );
+	}
+	return nullptr;
+}
+
+// Codegen for channel method calls: send(value), recv(), close().
+//   chan<T> declarations store a BlangChan* (see genVariableDeclaration).
+//   send marshals the element through a stack slot of T's LLVM type;
+//   recv returns the built-in Option<T> (some(value) on success, none on
+//   closed+empty), matching the byte-copy contract of __blang_chan_send/recv.
+// (Ported from origin's monolithic CodeGen.cpp into the CG* structure; recv
+// depends on the built-in Option registered in U4.)
+llvm::Value *CodeGen::genChanMethodCall( MethodCallExpression *expr )
+{
+	const string &method = expr->mMethodName;
+
+	// Load the BlangChan* from the channel variable.
+	llvm::Value *chanVal = genExpression( expr->mObject );
+	if ( chanVal == nullptr )
+		return nullptr;
+
+	// Determine the element LLVM type (default to i32 when unparameterized,
+	// consistent with the default element size used at channel creation).
+	Type *elemQType = getChanElementQType( expr->mObject );
+	llvm::Type *elemType = elemQType != nullptr
+		? getLLVMType( elemQType )
+		: llvm::Type::getInt32Ty( *mContext );
+	if ( elemType == nullptr )
+		elemType = llvm::Type::getInt32Ty( *mContext );
+
+	// close() -> void
+	if ( method == "close" && expr->mArgs.empty() )
+	{
+		mBuilder->CreateCall( getOrDeclareChanClose(), { chanVal } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// send(value) -> void  (void __blang_chan_send(BlangChan*, const void*))
+	if ( method == "send" && expr->mArgs.size() == 1 )
+	{
+		llvm::Value *valVal = genExpression( expr->mArgs[0] );
+		if ( valVal == nullptr )
+			return nullptr;
+
+		// Coerce integer widths to the channel element type so the byte copy
+		// transfers exactly elem_size bytes (e.g. an i32 literal into chan<long>).
+		// Element types are restricted to value types (Sema rejects refcounted
+		// element types — see Sema channel-element check), so no retain is needed:
+		// the byte copy fully transfers a primitive value into the channel.
+		if ( valVal->getType()->isIntegerTy() && elemType->isIntegerTy() &&
+			 valVal->getType() != elemType )
+			valVal = mBuilder->CreateIntCast( valVal, elemType, true, "chan.val" );
+
+		llvm::Value *slot = mBuilder->CreateAlloca( elemType, nullptr, "chan.send.slot" );
+		mBuilder->CreateStore( valVal, slot );
+		mBuilder->CreateCall( getOrDeclareChanSend(), { chanVal, slot } );
+		return llvm::Constant::getNullValue( llvm::Type::getInt32Ty( *mContext ) );
+	}
+
+	// recv() -> Option<T>
+	//   int __blang_chan_recv(BlangChan*, void* out) returns 1 on success, 0 if
+	//   the channel is closed and empty.  We recv directly into the payload area
+	//   of an Option<T> enum, then set the tag from the success flag: some(value)
+	//   on success, none on closed+empty.  Exhaustive match then forces callers
+	//   to handle the closed case.
+	if ( method == "recv" && expr->mArgs.empty() )
+	{
+		EnumDefinition *optEnum = nullptr;
+		auto optIt = mEnumDefMap.find( "Option" );
+		if ( optIt != mEnumDefMap.end() )
+			optEnum = optIt->second;
+		if ( optEnum == nullptr )
+			return nullptr;
+
+		int someIdx = -1, noneIdx = -1;
+		for ( size_t v = 0; v < optEnum->mVariants.size(); v++ )
+		{
+			if ( optEnum->mVariants[v].mName == "some" ) someIdx = (int)v;
+			else if ( optEnum->mVariants[v].mName == "none" ) noneIdx = (int)v;
+		}
+		if ( someIdx < 0 || noneIdx < 0 )
+			return nullptr;
+
+		llvm::StructType *optType = getOrCreateEnumType( optEnum );
+		llvm::AllocaInst *resultAlloca = mBuilder->CreateAlloca(
+			optType, nullptr, "chan.recv.opt" );
+
+		// GEP to the payload byte area (field 1, byte 0) and zero-initialize it,
+		// so the none case has a defined payload.
+		llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+			optType, resultAlloca, 1, "opt.payload.ptr" );
+		llvm::Type *payloadArrType = optType->getElementType( 1 );
+		llvm::Value *bytePtr = mBuilder->CreateGEP(
+			payloadArrType, payloadPtr,
+			{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+			  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+			"opt.payload.byte" );
+		mBuilder->CreateStore( llvm::Constant::getNullValue( elemType ), bytePtr );
+
+		// Receive directly into the payload; flag is 1 on success, 0 on closed+empty.
+		llvm::Value *flag = mBuilder->CreateCall(
+			getOrDeclareChanRecv(), { chanVal, bytePtr }, "chan.recv.flag" );
+
+		// tag = success ? some : none
+		llvm::Value *isSuccess = mBuilder->CreateICmpNE(
+			flag, llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 ),
+			"chan.recv.ok" );
+		llvm::Value *tagVal = mBuilder->CreateSelect(
+			isSuccess,
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), someIdx ),
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), noneIdx ),
+			"opt.tag" );
+		llvm::Value *tagPtr = mBuilder->CreateStructGEP(
+			optType, resultAlloca, 0, "opt.tag.ptr" );
+		mBuilder->CreateStore( tagVal, tagPtr );
+
+		return mBuilder->CreateLoad( optType, resultAlloca, "chan.recv.opt.val" );
+	}
+
+	return nullptr;
+}
+
 llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 {
+	// Built-in channel method calls: send/recv/close on a chan<T>.
+	if ( isChanType( expr->mObject ) )
+	{
+		llvm::Value *result = genChanMethodCall( expr );
+		if ( result != nullptr )
+			return result;
+	}
+
 	// Built-in string method calls
 	if ( isStringType( expr->mObject ) )
 	{

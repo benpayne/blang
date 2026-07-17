@@ -8,11 +8,6 @@
 # Blank lines and lines beginning with '#' are ignored. One test basename (with
 # or without the .b suffix) per line.
 
-# --- U2: channels (send/recv) ---
-codegen_channel.b
-codegen_channel_closed.b
-codegen_channel_spawn.b
-
 # --- U3: event loop + timers ---
 codegen_timer_event.b
 codegen_timer_cancel.b

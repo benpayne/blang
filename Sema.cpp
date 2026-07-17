@@ -232,6 +232,30 @@ void Sema::visitStmt( Statement *stmt )
 					mReported = true;
 				}
 			}
+			// Channel element types are restricted to value types. A channel
+			// transfers elements by raw byte copy (__blang_chan_send/recv), so a
+			// refcounted heap element (string/Array/Buffer/struct) would be
+			// copied without a reference count — its owner releases it at scope
+			// exit, leaving the channel (and any recv) with a dangling pointer,
+			// and undrained elements would leak at channel teardown. Origin's
+			// channel feature only supports value elements; reject the rest with a
+			// located diagnostic (reject, don't coerce) rather than crashing/leaking.
+			if ( decl.mVaribale != nullptr )
+			{
+				Type *vt = decl.mVaribale->getVariableType();
+				if ( vt != nullptr && vt->getName() == "chan" &&
+					 vt->getNumTypeParams() > 0 &&
+					 isHeapType( vt->getTypeParam( 0 ) ) )
+				{
+					mDiag.error( s->getLocation(),
+						"channel element type '" +
+						typeName( vt->getTypeParam( 0 ) ) +
+						"' is not supported: channels carry value types only "
+						"(a refcounted element would be copied without ownership)" );
+					mReported = true;
+				}
+			}
+
 			// U6: record the declaration's loop/spawn nesting for this variable.
 			if ( decl.mVaribale != nullptr )
 			{
@@ -765,6 +789,26 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 
 void Sema::resolveMethodCall( MethodCallExpression *mc, Type *baseType )
 {
+	// Channel methods: chan<T> is a built-in generic, not a StructDefinition,
+	// so structForType returns null and the struct path below would leave the
+	// call unannotated. recv() yields the built-in Option<T>; annotating it here
+	// is load-bearing in ALL build modes: (a) match-exhaustiveness over
+	// `match ch.recv()` fires (a match that ignores the closed/empty `none` case
+	// is rejected), and (b) codegen recovers the concrete payload type for the
+	// erased-payload scope release (so a refcounted recv payload is not leaked).
+	// send()/close() are void and need no annotation.
+	if ( baseType != nullptr && baseType->getName() == "chan" )
+	{
+		if ( mc->mMethodName == "recv" && mc->mArgs.empty() )
+		{
+			Type *opt = new Type( "Option" );
+			if ( baseType->getNumTypeParams() > 0 )
+				opt->addTypeParam( baseType->getTypeParam( 0 ) );
+			mc->setResolvedType( opt );
+		}
+		return;
+	}
+
 	StructDefinition *structDef = structForType( baseType );
 	if ( structDef == nullptr )
 		return;
