@@ -564,3 +564,8 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     Phase 2 of the production roadmap ("trust the tests"): golden-output
     codegen tests, a real `bcc test` runner, ASan/LSan + fuzzing in CI, and
     C-runtime unit tests.
+  - `feature-integration` (`docs/epics/feature-integration/`) — status:
+    **planning**. Reconcile local master (blang-ast + test-validation epics) with
+    origin/master's parallel feature line (channels, event loop, Option/Result,
+    exhaustive match, HTTP routing, database layer) — port origin's features into
+    the CG*/Sema architecture; 8 units.
