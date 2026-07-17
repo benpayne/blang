@@ -2,7 +2,7 @@
 
 **Archetype**: evolve (structural + semantic integration of two diverged histories)
 
-**Status**: launched
+**Status**: complete (all 8 units merged + pushed to origin; done-condition independently verified)
 
 **Owner**: Ben Payne
 
@@ -129,6 +129,8 @@ pushed to `origin`, all of the following hold (concrete commands in
 | 2026-07-16 | — | readiness review round 1 | Fresh-context + self audit; 7 findings. Fixes: named every origin feature test (all exist); added codegen_parked.txt skip mechanism (F2 — suite was going red at U1); fixed exhaustiveness grep to 'non-exhaustive match' string anchor (1 in Sema, 0 in codegen); corrected todo-app gate (examples/todo_app/test_todo_app.sh) + demos #14 collision (origin->15_timer) + NET_DEMOS build-only; relocate origin cgfail non-exhaustive → fail/sema; quarantine/golden reconciliation on U2/U3/U6; CG* ownership matrix; max_turns 500→700; ahead 40→41. done_condition re-synced verbatim. |
 | 2026-07-16 | — | readiness review passed (10/10); status → ready | All 7 findings resolved; every named origin test verified to exist; parked-skip mechanism; exhaustiveness grep anchored; todo/demos gates corrected; done_condition verbatim. |
 | 2026-07-16 | bb4873a4 | launched on devbot | endpoint http://localhost:8000, dir a6b2f628, fully_autonomous, no_progress_threshold 10, 50M tokens, max 700 turns / 14 days. PM approved autonomous push (gated behind all-tests-green in U8). |
+| 2026-07-17 | bb4873a4 | EPIC COMPLETE — merged + pushed | Two-hire team (integrator + independent auditor). All 8 units through the five-phase lifecycle; origin's 6 features ported into CG*/Sema; merged to master (single merge commit) and pushed. HEAD==origin/master==ce80f572. Transient 529 model_unavailable alert during the run, non-fatal. |
+| 2026-07-17 | — | done-condition independently verified | Rebuilt LLVM+parse-only: run_tests 195/190, test_codegen 84/84 (goldens), 5 named origin feature tests pass, codegen_db_query pass, todo-app E2E 8/8, fail/sema 32 (rose from 26), non-exhaustive-match single impl (Sema=1, codegen=0), codegen_parked.txt empty, HEAD in sync with origin. All 6 clauses PASS. |
 | 2026-07-16 | bb4873a4 | U1 merged | Base merge (2-parent, `a31892d`) into `epic/feature-integration/base`; all conflicts resolved keeping local's CG*/Sema arch; monolith not resurrected; codegen_parked.txt (18) + parked/ (4) burn-down established; net.b→U6, 15_timer→U3. Auditor BLOCKER (dropped origin 535058b array-of-struct ARC) fixed by porting `emitArrayElemRetain` + IndexExpression retain-on-bind into CG* modules; deterministic, 0 leaks. Auditor cleared. |
 | 2026-07-16 | bb4873a4 | OQ-1 raised at U2 | Porting channels surfaced a real dependency edge U2→U4: channel `recv()`→built-in `Option<T>` + exhaustive-match-over-Option are U4's scope. Recommended reordering U4 ahead of U2. U2 implementation paused pending manager decision. |
 | 2026-07-16 | bb4873a4 | OQ-1 resolved → reorder | Manager approved reorder. **New execution sequence: `U1 → U4 → {U2, U3, U5, U6} → U7 → U8`** (U4 promoted ahead of U2; all other deps/scopes unchanged). Proceeding to U4 (built-in Option/Result + match-exhaustiveness dedup) next. |

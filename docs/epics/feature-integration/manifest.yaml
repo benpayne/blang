@@ -120,4 +120,4 @@ devbot:
   runs:
     - run_id: bb4873a4-079a-4f8f-a93c-8b0b9a734f4b
       launched: 2026-07-16
-      outcome: pending
+      outcome: completed  # all 8 units; merged+pushed (ce80f572=origin/master); done-condition verified
