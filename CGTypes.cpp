@@ -164,6 +164,29 @@ uint64_t CodeGen::getEnumMaxPayloadSize( EnumDefinition *enumDef )
 		uint64_t variantSize = 0;
 		for ( auto &assocType : variant.mAssociatedTypes )
 		{
+			// A variant payload that is one of the enum's own generic parameters
+			// (e.g. built-in Option<T>.some(T) / Result<T,E>.err(E)) is
+			// type-erased — the concrete type is recovered at the match/construct
+			// site, not baked into the enum layout. Reserve a pointer-sized
+			// (8-byte) slot so any primitive, pointer, or heap-struct payload fits
+			// (the Option/Result erased-payload contract). Without this the slot
+			// defaults to int width (4 bytes) and an 8-byte string/pointer payload
+			// is truncated, corrupting memory.
+			bool isGenericParam = false;
+			for ( auto &gp : enumDef->mGenericParams )
+			{
+				if ( gp.mName == assocType->getName() )
+				{
+					isGenericParam = true;
+					break;
+				}
+			}
+			if ( isGenericParam )
+			{
+				variantSize += 8;
+				continue;
+			}
+
 			llvm::Type *llvmType = getLLVMType( assocType );
 			uint64_t typeSize = dl.getTypeAllocSize( llvmType );
 			// Fallback for zero-sized types

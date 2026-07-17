@@ -41,6 +41,26 @@ bool CodeGen::generate( Module *mod )
 		mEnumDefMap[enumDef->getName()] = enumDef;
 	}
 
+	// Register built-in Option<T>/Result<T,E> for codegen resolution (match,
+	// getLLVMType, EnumConstruct, chan recv, the `?` operator) unless the
+	// program defines its own — a user definition (already in mEnumDefMap from
+	// the loop above) takes precedence. The parser/Sema see these via gScope
+	// (see qcc.cpp); codegen needs its own copy in mEnumDefMap because synthetic
+	// built-ins are not part of the module's mEnumList. mSyntheticEnums owns the
+	// SmartPtr so the raw pointer stored in mEnumDefMap stays alive.
+	if ( mEnumDefMap.find( "Option" ) == mEnumDefMap.end() )
+	{
+		SmartPtr<EnumDefinition> opt = EnumDefinition::CreateBuiltinOption();
+		mSyntheticEnums.push_back( opt );
+		mEnumDefMap["Option"] = opt;
+	}
+	if ( mEnumDefMap.find( "Result" ) == mEnumDefMap.end() )
+	{
+		SmartPtr<EnumDefinition> res = EnumDefinition::CreateBuiltinResult();
+		mSyntheticEnums.push_back( res );
+		mEnumDefMap["Result"] = res;
+	}
+
 	// Forward-declare all module-level functions so that methods/lambdas
 	// can reference them before they are fully generated below.
 	for ( auto &func : mod->mFunctionList )
@@ -871,7 +891,7 @@ void CodeGen::genBlock( Block *block )
 		// Release refcounted payloads in enum variables declared in this scope
 		for ( auto &entry : mEnumScopeStack.back() )
 		{
-			emitEnumPayloadRelease( entry.first, entry.second );
+			emitEnumPayloadRelease( entry.alloca, entry.enumDef, entry.concreteType );
 		}
 	}
 

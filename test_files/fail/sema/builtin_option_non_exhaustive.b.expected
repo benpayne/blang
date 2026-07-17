@@ -1,0 +1,5 @@
+# U4 fail/sema fixture (relocated from origin's cgfail/): a match on the built-in
+# Option<T> that handles only some() and omits none() is non-exhaustive — the
+# safety payoff of surfacing absence as Option — and is rejected by Sema in ALL
+# build modes with a located error.
+^[^:]+\.b:[0-9]+:[0-9]+: error: non-exhaustive match: variant 'none' of enum 'Option' is not handled$

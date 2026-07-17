@@ -504,10 +504,31 @@ private:
 
 	// Enum variable tracking: release refcounted payloads at scope exit.
 	// Each entry pairs an alloca with the enum definition for tag-based cleanup.
-	std::vector<std::vector<std::pair<llvm::AllocaInst*, EnumDefinition*>>> mEnumScopeStack;
+	// mConcreteType carries the subject's concrete instantiation (e.g.
+	// Result<int,string>) when the enum is generic (built-in Option/Result), so
+	// a generic-param payload (T/E) can be resolved to its concrete refcounted
+	// type at release time; nullptr for non-generic enums whose payload types are
+	// already concrete in the definition.
+	struct EnumCleanupEntry
+	{
+		llvm::AllocaInst *alloca;
+		EnumDefinition *enumDef;
+		Type *concreteType;
+	};
+	std::vector<std::vector<EnumCleanupEntry>> mEnumScopeStack;
 
-	// Emit cleanup code for an enum variable's refcounted payload
-	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef );
+	// Emit cleanup code for an enum variable's refcounted payload. concreteEnumType
+	// (optional) supplies type arguments for a generic enum so generic-param
+	// payloads resolve to their concrete refcounted types.
+	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef,
+		Type *concreteEnumType = nullptr );
+
+	// Resolve a variant's associated type to a concrete type: if it names one of
+	// the enum's generic parameters, substitute the matching argument from
+	// concreteEnumType; otherwise return it unchanged. Returns the input when no
+	// substitution applies (never null for a non-null input).
+	Type *resolveVariantPayloadType( Type *assocType, EnumDefinition *enumDef,
+		Type *concreteEnumType );
 
 	// Runtime declaration for __blang_rc_alloc_dtor
 	llvm::Function *getOrDeclareRcAllocDtor();

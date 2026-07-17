@@ -63,17 +63,30 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 			// Store the value through the byte pointer
 			mBuilder->CreateStore( argVal, bytePtr );
 
-			// If storing a string/struct into the enum payload, untrack the temp —
-			// ownership transfers to the enum value
-			if ( argType->isPointerTy() && i < variant.mAssociatedTypes.size() )
+			// If storing a refcounted payload (string/Array/struct) into the enum,
+			// the enum takes ownership — untrack the temporary so scope cleanup
+			// does not release it and leave the enum holding a dangling pointer
+			// (a use-after-free at the match/recv site). Key on the ARGUMENT's
+			// actual type: for a generic enum (built-in Option<T>/Result<T,E>) the
+			// declared associated type is a generic param (T/E), not
+			// "string"/"Array", so keying on the declared type would miss it.
+			if ( argType->isPointerTy() )
 			{
-				string assocTypeName = variant.mAssociatedTypes[i]->getName();
-				if ( assocTypeName == "string" )
+				if ( isStringType( expr->mArgs[i] ) )
 					untrackTempString( argVal );
-				else if ( assocTypeName == "Array" )
+				else if ( isArrayType( expr->mArgs[i] ) )
 					untrackTempArray( argVal );
-				else if ( isUserStructType( assocTypeName ) )
-					untrackTempStruct( argVal );
+				else
+				{
+					std::string payloadTypeName;
+					if ( Type *rt = ( (Expression*)expr->mArgs[i] )->getResolvedType() )
+						payloadTypeName = rt->getName();
+					if ( ( payloadTypeName.empty() || payloadTypeName == "var" ) &&
+						 i < variant.mAssociatedTypes.size() )
+						payloadTypeName = variant.mAssociatedTypes[i]->getName();
+					if ( isUserStructType( payloadTypeName ) )
+						untrackTempStruct( argVal );
+				}
 			}
 
 			uint64_t typeSize = dl.getTypeAllocSize( argType );
@@ -122,6 +135,46 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				// Store the subject in an alloca so we can GEP into it
 				subjectAlloca = mBuilder->CreateAlloca( st, nullptr, "match.enum" );
 				mBuilder->CreateStore( subject, subjectAlloca );
+
+				// If the subject is a TEMPORARY enum value (an rvalue such as a
+				// function/method call result — e.g. `match divide(a,b)` or
+				// `match ch.recv()`), nothing else owns or scope-releases it. When
+				// its variant carries a refcounted payload (string/Array/Buffer/
+				// struct — e.g. Result<int,string>.err), register this alloca on the
+				// enum scope stack so the payload is released at scope/return exit
+				// via emitEnumPayloadRelease, exactly as an enum *variable* is.
+				// Without this the payload leaks. A variable/field subject is NOT
+				// registered here — it is already tracked at its own declaration, so
+				// registering again would double-free.
+				bool subjectIsTemporary =
+					dynamic_cast<VariableExpression*>( (Expression*)expr->mSubject ) == nullptr &&
+					dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mSubject ) == nullptr;
+				if ( subjectIsTemporary && !mEnumScopeStack.empty() )
+				{
+					// Concrete instantiation of the subject (e.g. Result<int,string>)
+					// so a generic-param payload (built-in Option/Result) resolves to
+					// its concrete refcounted type for release.
+					Type *subjConcrete = ( (Expression*)expr->mSubject )->getResolvedType();
+					bool hasRefPayload = false;
+					for ( auto &variant : matchedEnum->mVariants )
+					{
+						for ( auto &at : variant.mAssociatedTypes )
+						{
+							string atn = resolveVariantPayloadType(
+								(Type *)at, matchedEnum, subjConcrete )->getName();
+							if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+								 isUserStructType( atn ) )
+							{
+								hasRefPayload = true;
+								break;
+							}
+						}
+						if ( hasRefPayload ) break;
+					}
+					if ( hasRefPayload )
+						mEnumScopeStack.back().push_back(
+							{ subjectAlloca, matchedEnum, subjConcrete } );
+				}
 
 				// Extract the tag: GEP to field 0, load i32
 				llvm::Value *tagPtr = mBuilder->CreateStructGEP(
@@ -265,7 +318,25 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				}
 
 				llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
-				if ( variantIdx >= 0 &&
+				// Prefer the binding variable's Sema-resolved type: for a generic
+				// enum (built-in Option<T>/Result<T,E>) Sema substitutes the concrete
+				// type argument from the subject (e.g. err payload -> string), which
+				// the raw variant associated type ("T"/"E") does not carry. Fall back
+				// to the variant's declared associated type for non-generic enums.
+				Type *bindQType = nullptr;
+				if ( expr->mArms[i].mBody != nullptr &&
+					 expr->mArms[i].mBody->mScope != nullptr )
+				{
+					Symbol *bs = expr->mArms[i].mBody->mScope->findSymbol(
+						expr->mArms[i].mBindingName );
+					if ( auto *bv = dynamic_cast<VariableDefinition*>( bs ) )
+						bindQType = bv->getVariableType();
+				}
+				if ( bindQType != nullptr && bindQType->getName() != "var" )
+				{
+					bindType = getLLVMType( bindQType );
+				}
+				else if ( variantIdx >= 0 &&
 					 !matchedEnum->mVariants[variantIdx].mAssociatedTypes.empty() )
 				{
 					bindType = getLLVMType( matchedEnum->mVariants[variantIdx].mAssociatedTypes[0] );
@@ -327,6 +398,15 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 		if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
 			mBuilder->CreateBr( mergeBB );
 	}
+
+	// Move the merge block to the end of the function. It was created before the
+	// arm blocks, so without this it sits in the middle of the block list; for
+	// main() the function finalizer resets the insert point to llvmFunc->back()
+	// (an arm), leaving matchend unterminated when the match is the function's
+	// tail and every arm returns. Making matchend the last block lets the
+	// finalizer add the implicit return to it (or following statements flow into
+	// it normally when the match is not the tail).
+	mergeBB->moveAfter( &func->back() );
 
 	// Continue at merge
 	mBuilder->SetInsertPoint( mergeBB );

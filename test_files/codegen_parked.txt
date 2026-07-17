@@ -19,14 +19,6 @@ codegen_timer_cancel.b
 codegen_timer_oneshot.b
 codegen_timer_helper.b
 
-# --- U4: built-in Option/Result + exhaustive match ---
-codegen_builtin_option.b
-codegen_builtin_result.b
-codegen_builtin_try.b
-codegen_match_exhaustive.b
-codegen_match_wildcard_enum.b
-codegen_match_tail_main.b
-
 # --- U5: database codegen + bcc migrate ---
 codegen_db_query.b
 codegen_db_query_rows.b

@@ -619,8 +619,27 @@ Type *Sema::visitExpr( Expression *expr )
 						Symbol *s = arm.mBody->mScope->findSymbol( arm.mBindingName );
 						if ( auto *vd = dynamic_cast<VariableDefinition *>( s ) )
 						{
-							SmartPtr<Type> at = v.mAssociatedTypes[0];
-							vd->setType( (Type *)at );
+							SmartPtr<Type> atsp = v.mAssociatedTypes[0];
+							Type *at = (Type *)atsp;
+							// For a generic enum (e.g. built-in Option<T>/Result<T,E>),
+							// the variant's associated type is a generic param (T/E).
+							// Recover the concrete argument from the subject's static
+							// type (e.g. Result<int, string> -> err payload is string),
+							// so string/Array payload methods resolve downstream.
+							if ( subjType != nullptr )
+							{
+								const auto &gps = ed->getGenericParams();
+								for ( size_t gi = 0; gi < gps.size(); gi++ )
+								{
+									if ( gps[gi].mName == at->getName() &&
+										 (int)gi < subjType->getNumTypeParams() )
+									{
+										at = subjType->getTypeParam( (int)gi );
+										break;
+									}
+								}
+							}
+							vd->setType( at );
 						}
 						break;
 					}

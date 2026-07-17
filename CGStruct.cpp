@@ -8,7 +8,23 @@
 using namespace QLang;
 using namespace std;
 
-void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef )
+Type *CodeGen::resolveVariantPayloadType( Type *assocType, EnumDefinition *enumDef,
+	Type *concreteEnumType )
+{
+	if ( assocType == nullptr || enumDef == nullptr || concreteEnumType == nullptr )
+		return assocType;
+	const auto &gps = enumDef->getGenericParams();
+	for ( size_t i = 0; i < gps.size(); i++ )
+	{
+		if ( gps[i].mName == assocType->getName() &&
+			 (int)i < concreteEnumType->getNumTypeParams() )
+			return concreteEnumType->getTypeParam( (int)i );
+	}
+	return assocType;
+}
+
+void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef,
+	Type *concreteEnumType )
 {
 	if ( enumDef == nullptr )
 		return;
@@ -39,7 +55,8 @@ void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *
 		bool hasRef = false;
 		for ( auto &at : variant.mAssociatedTypes )
 		{
-			string atn = at->getName();
+			string atn = resolveVariantPayloadType(
+				(Type *)at, enumDef, concreteEnumType )->getName();
 			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
 				 isUserStructType( atn ) )
 			{
@@ -69,7 +86,8 @@ void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *
 		// Release each refcounted payload field
 		for ( auto &at : variant.mAssociatedTypes )
 		{
-			string atn = at->getName();
+			string atn = resolveVariantPayloadType(
+				(Type *)at, enumDef, concreteEnumType )->getName();
 			if ( atn == "string" )
 			{
 				llvm::Value *strVal = mBuilder->CreateLoad(

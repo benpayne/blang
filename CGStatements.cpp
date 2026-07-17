@@ -210,14 +210,19 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 				auto enumIt = mEnumDefMap.find( enumTypeName );
 				if ( enumIt != mEnumDefMap.end() )
 				{
-					// Check if any variant has a refcounted payload
+					// Check if any variant has a refcounted payload. For a generic
+					// enum (built-in Option<T>/Result<T,E>) resolve each variant's
+					// generic-param payload to the concrete type from the variable's
+					// own type (e.g. Option<string>), so string/Array payloads are
+					// released at scope exit rather than leaked.
 					EnumDefinition *ed = enumIt->second;
 					bool hasRefPayload = false;
 					for ( auto &variant : ed->mVariants )
 					{
 						for ( auto &assocType : variant.mAssociatedTypes )
 						{
-							string atn = assocType->getName();
+							string atn = resolveVariantPayloadType(
+								(Type *)assocType, ed, varType )->getName();
 							if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
 								 isUserStructType( atn ) )
 							{
@@ -228,7 +233,7 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 						if ( hasRefPayload ) break;
 					}
 					if ( hasRefPayload )
-						mEnumScopeStack.back().push_back( { alloca, ed } );
+						mEnumScopeStack.back().push_back( { alloca, ed, varType } );
 				}
 			}
 
@@ -531,7 +536,7 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 	{
 		for ( auto &entry : *it )
 		{
-			emitEnumPayloadRelease( entry.first, entry.second );
+			emitEnumPayloadRelease( entry.alloca, entry.enumDef, entry.concreteType );
 		}
 	}
 
