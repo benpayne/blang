@@ -587,7 +587,13 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     codegen tests, a real `bcc test` runner, ASan/LSan + fuzzing in CI, and
     C-runtime unit tests.
   - `feature-integration` (`docs/epics/feature-integration/`) — status:
-    **launched** (devbot run `bb4873a4-079a-4f8f-a93c-8b0b9a734f4b`). Reconcile local master (blang-ast + test-validation epics) with
-    origin/master's parallel feature line (channels, event loop, Option/Result,
-    exhaustive match, HTTP routing, database layer) — port origin's features into
-    the CG*/Sema architecture; 8 units.
+    **complete** (U1–U8 merged to master via a single merge commit joining the
+    two diverged histories; done-condition verified). Reconciled local master
+    (blang-ast + test-validation epics) with origin/master's parallel feature
+    line — origin's features (channel send/recv, event loop + timers, built-in
+    Option/Result + exhaustive match, database layer + `bcc migrate`, HTTP
+    routing + builtin `to_json`) were ported INTO local's `CG*`/`Sema`
+    architecture (the monolithic `CodeGen.cpp` was NOT resurrected). Both prior
+    epics' gates stayed green (26+ `fail/sema` fixtures, golden codegen tests,
+    `--leak-check`, `fuzz`), match-exhaustiveness has a single implementation in
+    `Sema`, and `codegen_parked.txt` is empty (every feature ported).
