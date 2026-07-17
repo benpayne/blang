@@ -1014,14 +1014,19 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	llvm::StructType *ctxType = llvm::StructType::create(
 		*mContext, captureTypes, handlerName + ".ctx" );
 
-	// Create callback function
+	// Create callback function. Signature matches the event-loop handler ABI:
+	// void(void* ctx, int fd). The fd argument is currently unused by handler
+	// bodies (there is no binding syntax yet) but keeps the ABI uniform with
+	// __blang_event_on's handler type.
 	llvm::FunctionType *cbType = llvm::FunctionType::get(
 		llvm::Type::getVoidTy( *mContext ),
-		{ llvm::PointerType::get( *mContext, 0 ) },
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt32Ty( *mContext ) },
 		false );
 	llvm::Function *cbFn = llvm::Function::Create(
 		cbType, llvm::Function::InternalLinkage, handlerName, mModule.get() );
 	cbFn->getArg( 0 )->setName( "ctx" );
+	cbFn->getArg( 1 )->setName( "fd" );
 
 	// Save state
 	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
@@ -1088,9 +1093,19 @@ void CodeGen::genEventHandler( EventHandler *handler )
 	mTempStrings = savedTempStrings;
 	mTempLambdaCtxs = savedTempLambdaCtxs;
 
-	// In the caller: evaluate the event expression (for side effects)
+	// In the caller: evaluate the event expression. An integer result is an
+	// event source fd (a timerfd from timer.every()/after(), or a socket fd) and
+	// the handler is registered on the global event loop; the program later
+	// enters the loop explicitly via `timer.run()` / `events.run()`. Any other
+	// result (e.g. `on someVoidCall()`) falls back to invoking the handler inline
+	// once (the pre-event-loop behaviour). (Ported from origin's monolith.)
+	llvm::Value *fdVal = nullptr;
 	if ( handler->mEventExpression != nullptr )
-		genExpression( handler->mEventExpression );
+		fdVal = genExpression( handler->mEventExpression );
+	bool registerOnLoop = ( fdVal != nullptr && fdVal->getType()->isIntegerTy() );
+	if ( registerOnLoop && !fdVal->getType()->isIntegerTy( 32 ) )
+		fdVal = mBuilder->CreateIntCast(
+			fdVal, llvm::Type::getInt32Ty( *mContext ), true, "on.fd" );
 
 	// Allocate context and populate captures
 	llvm::DataLayout dl( mModule.get() );
@@ -1108,12 +1123,48 @@ void CodeGen::genEventHandler( EventHandler *handler )
 		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
 			ctxType, ctxAlloc, static_cast<unsigned>( i ), "ctx.store" );
 		mBuilder->CreateStore( val, fieldPtr );
+
+		// When registered on the loop the handler runs later (deferred), so
+		// refcounted captures must be retained to survive the registering scope.
+		if ( !registerOnLoop )
+			continue;
+		VariableDefinition *capDef = captures[i].first;
+		Type *capType = capDef->getVariableType();
+		if ( capType != nullptr )
+		{
+			OwnershipQualifier ownership = capDef->getOwnership();
+			if ( ownership == OwnershipQualifier::kOwnership_Shared ||
+				 ownership == OwnershipQualifier::kOwnership_Sync )
+				mBuilder->CreateCall( getOrDeclareRcRetain(), { val } );
+			else
+			{
+				const std::string &tn = capType->getName();
+				if ( tn == "string" )
+					mBuilder->CreateCall( getOrDeclareStringRetain(), { val } );
+				else if ( tn == "Array" )
+					mBuilder->CreateCall( getOrDeclareArrayRetain(), { val } );
+				else if ( tn == "Buffer" )
+					mBuilder->CreateCall( getOrDeclareBufferRetain(), { val } );
+				else if ( mStructDefMap.find( tn ) != mStructDefMap.end() )
+					mBuilder->CreateCall( getOrDeclareRcRetain(), { val } );
+			}
+		}
 	}
 
-	// For now, call the handler inline (synchronous execution)
-	// When the event loop runtime is available, this would register
-	// the callback instead: __blang_event_register(event, cbFn, ctxAlloc)
-	mBuilder->CreateCall( cbFn, { ctxAlloc } );
+	if ( registerOnLoop )
+	{
+		// Register on the global event loop: fires whenever the source fd is
+		// readable. The handler runs when the program explicitly enters the loop
+		// via `timer.run()` / `events.run()`.
+		mBuilder->CreateCall( getOrDeclareEventOn(), { fdVal, cbFn, ctxAlloc } );
+		mUsesConcurrency = true;
+	}
+	else
+	{
+		// Legacy fallback: no fd source — invoke the handler inline once.
+		mBuilder->CreateCall( cbFn,
+			{ ctxAlloc, llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 ) } );
+	}
 }
 
 // ---- Phase 2: Await expression codegen ----

@@ -182,6 +182,18 @@ llvm::Function *CodeGen::getOrDeclareChanDestroy()
 		{ llvm::PointerType::get( *mContext, 0 ) } );
 }
 
+// Register a handler on the global event loop, keyed by an event source fd
+// (timerfd from timer.every()/after(), or a socket fd). The handler ABI is
+// void(void* ctx, int fd). Used by `on EXPR { }` event handler codegen.
+//   void __blang_event_on( int fd, void(*handler)(void*, int), void* ctx )
+llvm::Function *CodeGen::getOrDeclareEventOn()
+{
+	return declareExtern( "__blang_event_on", llvm::Type::getVoidTy( *mContext ),
+		{ llvm::Type::getInt32Ty( *mContext ),
+		  llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ) } );
+}
+
 llvm::Function *CodeGen::getOrDeclareAsyncCall()
 {
 	return declareExtern( "__blang_async_call", llvm::PointerType::get( *mContext, 0 ),

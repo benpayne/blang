@@ -5,8 +5,11 @@ DEMOS = 01_fibonacci 02_primes 03_collatz 04_result_calculator \
         05_temperature 06_generic_pair 07_producer_consumer \
         08_json_addressbook 09_traffic_light 10_math_library
 
-# Network demos build but don't auto-run (server is long-running, client needs args)
-NET_DEMOS = 11_echo_server 12_tcp_client 13_http_server 14_file_server
+# Network/event-loop demos build but don't auto-run (server is long-running,
+# client needs args, timer runs its own event loop). 15_timer is the ported
+# origin timer demo (renumbered from 14_timer at U1 to avoid colliding with
+# local's 14_file_server; owned by U3).
+NET_DEMOS = 11_echo_server 12_tcp_client 13_http_server 14_file_server 15_timer
 
 BINS = $(addprefix $(BINDIR)/, $(DEMOS) $(NET_DEMOS))
 

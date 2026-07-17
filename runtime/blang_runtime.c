@@ -296,10 +296,29 @@ BlangSpawnTask *__blang_spawn( blang_spawn_fn fn, void *ctx )
 	return task;
 }
 
+/* Channel registry: channels are heap-allocated (struct + ring buffer) and are
+   shared across spawn boundaries, so they cannot be freed at a lexical scope
+   exit while a peer thread may still use them. Instead every channel is tracked
+   here and destroyed together at runtime shutdown — after all spawn threads have
+   been joined (see __blang_runtime_shutdown), so no thread can touch a freed
+   channel. Without this channels leak (and intermittently trip LSan when the
+   last stack reference is lost across a spawn). The registry has its own mutex
+   because channels may be created from spawned threads. */
+static BlangChan **g_channels = NULL;
+static int g_chan_count = 0;
+static int g_chan_capacity = 0;
+static pthread_mutex_t g_chan_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void __blang_chan_destroy_all( void );
+
 void __blang_runtime_shutdown( void )
 {
 	if ( !g_tracker.initialized )
+	{
+		/* No spawn tracker means no live spawned threads, so any channels are
+		   used single-threaded — safe to free them here. */
+		__blang_chan_destroy_all();
 		return;
+	}
 
 	/* Wait for all in-flight tasks to complete. */
 	pthread_mutex_lock( &g_tracker.mutex );
@@ -317,6 +336,10 @@ void __blang_runtime_shutdown( void )
 		}
 	}
 	free( g_tracker.handles );
+
+	/* All spawned threads are joined — no thread can touch a channel now, so it
+	   is safe to destroy every channel that was created during the run. */
+	__blang_chan_destroy_all();
 
 	pthread_mutex_destroy( &g_tracker.mutex );
 	pthread_cond_destroy( &g_tracker.all_done );
@@ -411,6 +434,25 @@ BlangChan *__blang_chan_create( size_t elem_size, size_t capacity )
 	pthread_mutex_init( &ch->mutex, NULL );
 	pthread_cond_init( &ch->not_empty, NULL );
 	pthread_cond_init( &ch->not_full, NULL );
+
+	/* Track the channel so it is freed at runtime shutdown (channels have no
+	   lexical owner — they cross spawn boundaries). */
+	pthread_mutex_lock( &g_chan_mutex );
+	if ( g_chan_count == g_chan_capacity )
+	{
+		int newcap = g_chan_capacity == 0 ? 16 : g_chan_capacity * 2;
+		BlangChan **grown =
+			(BlangChan **)realloc( g_channels, (size_t)newcap * sizeof( BlangChan * ) );
+		if ( grown != NULL )
+		{
+			g_channels = grown;
+			g_chan_capacity = newcap;
+		}
+	}
+	if ( g_chan_count < g_chan_capacity )
+		g_channels[g_chan_count++] = ch;
+	pthread_mutex_unlock( &g_chan_mutex );
+
 	return ch;
 }
 
@@ -482,6 +524,23 @@ void __blang_chan_destroy( BlangChan *ch )
 	pthread_cond_destroy( &ch->not_full );
 	free( ch->buffer );
 	free( ch );
+}
+
+/* Destroy every registered channel and reset the registry. Called once from
+   __blang_runtime_shutdown after all spawned threads have been joined. */
+static void __blang_chan_destroy_all( void )
+{
+	pthread_mutex_lock( &g_chan_mutex );
+	for ( int i = 0; i < g_chan_count; i++ )
+	{
+		__blang_chan_destroy( g_channels[i] );
+		g_channels[i] = NULL;
+	}
+	free( g_channels );
+	g_channels = NULL;
+	g_chan_count = 0;
+	g_chan_capacity = 0;
+	pthread_mutex_unlock( &g_chan_mutex );
 }
 
 /* ========================================================================

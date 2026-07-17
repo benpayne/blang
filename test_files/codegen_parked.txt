@@ -8,12 +8,6 @@
 # Blank lines and lines beginning with '#' are ignored. One test basename (with
 # or without the .b suffix) per line.
 
-# --- U3: event loop + timers ---
-codegen_timer_event.b
-codegen_timer_cancel.b
-codegen_timer_oneshot.b
-codegen_timer_helper.b
-
 # --- U5: database codegen + bcc migrate ---
 codegen_db_query.b
 codegen_db_query_rows.b
