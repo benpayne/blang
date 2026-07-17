@@ -45,7 +45,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev
+          # pkg-config + libsqlite3-dev so the database codegen_*.b goldens
+          # (codegen_db_query, codegen_db_query_rows) run against a real SQLite
+          # backend here instead of SKIP-ping (origin's DB codegen leg).
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev pkg-config libsqlite3-dev
       - name: Build (with LLVM)
         run: |
           cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
@@ -120,7 +123,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev
+          # sqlite so the database codegen tests are exercised under --leak-check
+          # (they SKIP without a real backend, which would hide DB-path leaks).
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev pkg-config libsqlite3-dev
       - name: Build (with LLVM) — needed by test_codegen.sh --leak-check
         run: |
           cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
@@ -199,7 +204,41 @@ jobs:
         # fast and loud (libFuzzer reports it as a crash) instead of hanging.
         run: build-fuzz/fuzz_parse test_files/fuzz/corpus/ -max_total_time=60 -timeout=30
 
-  # ---- 6. Demos ----
+  # ---- 6. Database codegen leg (origin feature line) + todo-app REST E2E ----
+  # Origin's CI ran test_codegen.sh with SQLite installed so the query/insert/
+  # update/delete goldens execute against a real backend. This job makes that
+  # explicit and adds bcc migrate + the todo-app end-to-end REST test (build ->
+  # migrate --apply -> CRUD with @json responses -> query Todo -> Array<Todo> ->
+  # persistence), the epic done-condition's named database gates.
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev pkg-config libsqlite3-dev curl
+      - name: Build (with LLVM + SQLite backend)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Confirm the SQLite backend is linked (not the stub)
+        run: nm build/libblang_db.a | grep -q 'U sqlite3_'
+      - name: Database codegen tests (param binding + query -> Array<T>)
+        run: ./test_codegen.sh test_files/codegen_db_query.b test_files/codegen_db_query_rows.b
+      - name: bcc migrate (schema derived from the table struct)
+        run: |
+          cd examples/todo_app
+          rm -rf todos.db .blang
+          ../../build/bcc build
+          ../../build/bcc migrate --preview
+          ../../build/bcc migrate --apply
+          test -f .blang/schema.json
+          rm -rf todos.db .blang
+      - name: todo-app REST E2E (build -> migrate -> CRUD -> @json -> persistence)
+        run: bash examples/todo_app/test_todo_app.sh
+
+  # ---- 7. Demos ----
   demos:
     runs-on: ubuntu-latest
     steps:
@@ -212,5 +251,7 @@ jobs:
         run: |
           cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
           cmake --build build -j"$(nproc)"
-      - name: make -C demos run
+      - name: make -C demos all (builds NET_DEMOS incl 13_http_server, 15_timer)
+        run: make -C demos all
+      - name: make -C demos run (runs 01-10)
         run: make -C demos run
