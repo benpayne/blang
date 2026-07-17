@@ -115,6 +115,9 @@ foldback:
   status_into: overview.md
 
 devbot:
-  endpoint: null
-  directory_id: null
-  runs: []
+  endpoint: http://localhost:8000
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b
+  runs:
+    - run_id: bb4873a4-079a-4f8f-a93c-8b0b9a734f4b
+      launched: 2026-07-16
+      outcome: pending

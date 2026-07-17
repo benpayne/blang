@@ -2,7 +2,7 @@
 
 **Archetype**: evolve (structural + semantic integration of two diverged histories)
 
-**Status**: planning
+**Status**: launched
 
 **Owner**: Ben Payne
 
@@ -124,3 +124,5 @@ pushed to `origin`, all of the following hold (concrete commands in
 |------|-----|-------|-------|
 | 2026-07-16 | — | epic created | Reconciliation of local (devbot epics) vs origin (feature line) found to be a structural+semantic re-integration; scoped as an epic. Ancestor e8c6fc5; local ahead 41 / behind 27; merge = 65 files / +12k lines. |
 | 2026-07-16 | — | readiness review round 1 | Fresh-context + self audit; 7 findings. Fixes: named every origin feature test (all exist); added codegen_parked.txt skip mechanism (F2 — suite was going red at U1); fixed exhaustiveness grep to 'non-exhaustive match' string anchor (1 in Sema, 0 in codegen); corrected todo-app gate (examples/todo_app/test_todo_app.sh) + demos #14 collision (origin->15_timer) + NET_DEMOS build-only; relocate origin cgfail non-exhaustive → fail/sema; quarantine/golden reconciliation on U2/U3/U6; CG* ownership matrix; max_turns 500→700; ahead 40→41. done_condition re-synced verbatim. |
+| 2026-07-16 | — | readiness review passed (10/10); status → ready | All 7 findings resolved; every named origin test verified to exist; parked-skip mechanism; exhaustiveness grep anchored; todo/demos gates corrected; done_condition verbatim. |
+| 2026-07-16 | bb4873a4 | launched on devbot | endpoint http://localhost:8000, dir a6b2f628, fully_autonomous, no_progress_threshold 10, 50M tokens, max 700 turns / 14 days. PM approved autonomous push (gated behind all-tests-green in U8). |
