@@ -1575,6 +1575,59 @@ bool CodeGen::genJsonToJson( StructDefinition *structDef )
 	return true;
 }
 
+// Builtin to_json(value): resolve the argument's struct type at compile time and
+// dispatch to the generated StructName_to_json (see genJsonToJson). The Sema pass
+// already rejected a non-@json argument with a located error (all build modes),
+// so this codegen only asserts the serializer exists as a backstop. Returns a
+// tracked temporary string. (Ported from origin's monolith into the CG* layer.)
+llvm::Value *CodeGen::genToJsonCall( CallExpression *call )
+{
+	if ( call->mParams.size() != 1 )
+	{
+		mHasError = true;
+		return nullptr;
+	}
+
+	Expression *arg = call->mParams[0];
+
+	// Resolve the argument's struct type name from the AST/Sema annotations.
+	std::string structTypeName;
+	if ( auto *slit = dynamic_cast<StructLiteralExpression*>( arg ) )
+		structTypeName = slit->mTypeName;
+	else if ( auto *ve = dynamic_cast<VariableExpression*>( arg ) )
+	{
+		if ( ve->mVariable != nullptr && ve->mVariable->getVariableType() != nullptr )
+			structTypeName = ve->mVariable->getVariableType()->getName();
+	}
+	else if ( Type *qt = arg->getResolvedType() )
+		structTypeName = qt->getName();
+
+	auto sIt = mStructDefMap.find( structTypeName );
+	if ( structTypeName.empty() || sIt == mStructDefMap.end() )
+	{
+		mHasError = true;
+		return nullptr;
+	}
+
+	llvm::Value *val = genExpression( arg );
+	if ( val == nullptr )
+		return nullptr;
+
+	// StructName_to_json(ptr self) -> string. Structs are heap pointers, so the
+	// generated value is already the self pointer the function expects.
+	std::string fnName = structTypeName + "_to_json";
+	llvm::Function *toJsonFn = mModule->getFunction( fnName );
+	if ( toJsonFn == nullptr )
+	{
+		mHasError = true;
+		return nullptr;
+	}
+
+	llvm::Value *result = mBuilder->CreateCall( toJsonFn, { val }, "to_json" );
+	trackTempString( result );
+	return result;
+}
+
 bool CodeGen::genJsonFromJson( StructDefinition *structDef )
 {
 	llvm::StructType *structType = getOrCreateStructType( structDef );

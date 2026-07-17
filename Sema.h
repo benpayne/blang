@@ -52,6 +52,10 @@ namespace QLang
 		// build modes). tableStructFor resolves the `table struct` (located error
 		// for unknown/non-table); checkTableField reports an unknown column;
 		// validateTableSteps walks where/order/set pipeline steps.
+		// Builtin to_json(value): require a @json-annotated struct argument
+		// (located error, all build modes).
+		void validateToJsonArg( CallExpression *call );
+
 		StructDefinition *tableStructFor( const std::string &tableName, Expression *node );
 		void checkTableField( StructDefinition *table, const std::string &field,
 			const SourceLocation &loc );

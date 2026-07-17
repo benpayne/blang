@@ -217,10 +217,36 @@ pub fn http_not_found() -> HttpResponse {
 	return HttpResponse { status: 404, content_type: "text/plain", body: "Not Found" };
 }
 
+// A single method+path route with its handler. HttpServer keeps a table of
+// these; dispatch_request matches a request against them. (Ported from origin.)
+pub struct Route {
+	string method;
+	string path;
+	fn(HttpRequest) -> HttpResponse handler;
+}
+
+// Find the route matching a request and invoke its handler, returning the
+// handler's response; falls back to 404 when nothing matches. Pure function —
+// testable without a live socket.
+pub fn dispatch_request(Array<Route> routes, HttpRequest req) -> HttpResponse {
+	int i = 0;
+	for i in 0..routes.length {
+		Route r = routes[i];
+		if r.method == req.method {
+			if r.path == req.path {
+				fn(HttpRequest) -> HttpResponse h = r.handler;
+				return h(req);
+			}
+		}
+	}
+	return http_not_found();
+}
+
 // --- HttpServer struct (impl block is below, after HTTP utility functions) ---
 pub struct HttpServer {
 	int _selector_handle;
 	int _server_fd;
+	Array<Route> _routes;
 }
 
 // ================================================================
@@ -462,6 +488,65 @@ pub fn http_get(string host, int port, string path) -> string {
 // ================================================================
 
 impl HttpServer {
+	// --- Route registration (ported from origin). get()/post()/put() are sugar
+	// over route(); `delete` is a reserved keyword, so DELETE routes use
+	// route("DELETE", ...). Handlers are stored in _routes and matched by serve().
+	fn route(self, string method, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: method, path: path, handler: handler });
+	}
+
+	fn get(self, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: "GET", path: path, handler: handler });
+	}
+
+	fn post(self, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: "POST", path: path, handler: handler });
+	}
+
+	fn put(self, string path, fn(HttpRequest) -> HttpResponse handler) {
+		self._routes.push(Route { method: "PUT", path: path, handler: handler });
+	}
+
+	// Serve registered routes: parse each accepted connection into an
+	// HttpRequest, dispatch to the matching route (or 404), write the response.
+	// Modeled on on_request but dispatching through the route table; uses local's
+	// byte-array TCP helpers (origin's version used the Buffer-based helpers).
+	fn serve(self) {
+		Array<Route> routes = self._routes;
+		int sel = self._selector_handle;
+		int sfd = self._server_fd;
+		__blang_selector_add_accept(sel, sfd, fn(int new_fd) {
+			Buffer buf = Buffer(4096);
+
+			Buffer sep = Buffer(4);
+			sep.append_byte(13);
+			sep.append_byte(10);
+			sep.append_byte(13);
+			sep.append_byte(10);
+
+			long max_read = 4096;
+			for {
+				long n = __blang_tcp_read_into_byte_array(new_fd, buf.get_bytes(), max_read);
+				if n <= 0 { break; }
+				if buf.index_of(sep, 0) >= 0 { break; }
+			}
+
+			HttpRequestLine rline = parse_http_request_line(buf);
+			string body = extract_http_body(buf);
+
+			HttpRequest req = HttpRequest {
+				method: rline.method,
+				path: rline.path,
+				body: body
+			};
+
+			HttpResponse resp = dispatch_request(routes, req);
+			string response_str = build_http_response(resp.status, resp.content_type, resp.body);
+			__blang_tcp_write_string(new_fd, response_str);
+			__blang_tcp_close(new_fd);
+		});
+	}
+
 	fn on_request(self, fn(HttpRequest) -> HttpResponse handler) {
 		int sel = self._selector_handle;
 		int sfd = self._server_fd;
@@ -548,5 +633,6 @@ pub fn http_server(string host, int port) -> HttpServer {
 	int server_fd = __blang_tcp_listen(host, port, 10);
 	int sel = __blang_selector_create();
 	spawn { __blang_selector_run(sel); }
-	return HttpServer { _selector_handle: sel, _server_fd: server_fd };
+	Array<Route> routes = [];
+	return HttpServer { _selector_handle: sel, _server_fd: server_fd, _routes: routes };
 }

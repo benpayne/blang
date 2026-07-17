@@ -370,6 +370,16 @@ Type *Sema::visitExpr( Expression *expr )
 		Type *t = ( callee != nullptr ) ? callee->getReturnType() : nullptr;
 		expr->setResolvedType( t );
 
+		// Builtin to_json(value) requires a @json-annotated struct argument.
+		// Reject a plain (non-@json) struct here with a located error in ALL
+		// build modes (the codegen dispatches to the generated StructName_to_json,
+		// which only exists for @json structs).
+		if ( callee != nullptr && callee->isBuiltin() && callee->getName() == "to_json" )
+		{
+			validateToJsonArg( ce );
+			return t;
+		}
+
 		// Call arity + argument-type checking (FR-005, FR-006). Skip variadic,
 		// generic, and builtin callees (their own paths validate). Argument-TYPE
 		// checking additionally skips extern callees, whose string<->cstring /
@@ -787,6 +797,55 @@ StructDefinition *Sema::structForType( Type *baseType )
 		return nullptr;
 	Symbol *sym = mScope->findSymbol( baseType->getName() );
 	return dynamic_cast<StructDefinition *>( sym );
+}
+
+void Sema::validateToJsonArg( CallExpression *call )
+{
+	if ( call->mParams.size() != 1 )
+	{
+		mDiag.error( call->getLocation(), "to_json expects exactly one argument" );
+		mReported = true;
+		return;
+	}
+	Expression *arg = call->mParams[0];
+
+	// Resolve the argument's struct type name from the AST / Sema annotations.
+	std::string typeName;
+	if ( auto *slit = dynamic_cast<StructLiteralExpression *>( arg ) )
+		typeName = slit->mTypeName;
+	else if ( auto *ve = dynamic_cast<VariableExpression *>( arg ) )
+	{
+		if ( ve->getVariable() != nullptr &&
+			 ve->getVariable()->getVariableType() != nullptr )
+			typeName = ve->getVariable()->getVariableType()->getName();
+	}
+	else if ( Type *rt = arg->getResolvedType() )
+		typeName = rt->getName();
+
+	// Only flag when we can POSITIVELY resolve the argument to a concrete struct
+	// in scope. If the type is not determinable here (e.g. a for-in loop variable
+	// whose element type is only fixed at codegen), leave it unchecked — codegen
+	// dispatches on the concrete type and errors if no serializer exists. This
+	// mirrors Sema's member-resolution rule (never fabricate an error on an
+	// indeterminate base).
+	StructDefinition *sd =
+		dynamic_cast<StructDefinition *>( mScope->findSymbol( typeName ) );
+	if ( sd == nullptr )
+		return;
+	bool hasJson = false;
+	for ( const auto &ann : sd->getAnnotations() )
+		if ( ann.mName == "json" )
+		{
+			hasJson = true;
+			break;
+		}
+	if ( !hasJson )
+	{
+		mDiag.error( arg->getLocation(),
+			"to_json requires a @json-annotated struct, but '" + typeName +
+			"' is not annotated @json" );
+		mReported = true;
+	}
 }
 
 StructDefinition *Sema::tableStructFor( const std::string &tableName, Expression *node )

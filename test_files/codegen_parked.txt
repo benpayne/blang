@@ -8,7 +8,3 @@
 # Blank lines and lines beginning with '#' are ignored. One test basename (with
 # or without the .b suffix) per line.
 
-# --- U6: HTTP routing + builtin to_json ---
-codegen_http_routing.b
-codegen_http_json_response.b
-codegen_to_json_builtin.b

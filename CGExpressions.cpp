@@ -116,6 +116,10 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			genPrintCall( call, true );
 			return nullptr;
 		}
+		if ( funcDef->getName() == "to_json" )
+		{
+			return genToJsonCall( call );
+		}
 	}
 
 	// Handle @format annotation: validate format string at call site
