@@ -43,6 +43,22 @@ public:
 	// normal (bcc build / single-file) codegen is byte-for-byte unchanged.
 	void setTestMode( bool on ) { mTestMode = on; }
 
+	// Configure the default database connection opened in main() (from the
+	// [database] section of blang.toml, forwarded by bcc via qcc flags).
+	// An empty url leaves the connection to the runtime's lazy env fallback.
+	void setDbConfig( const std::string &driver, const std::string &url )
+	{
+		mDbDriver = driver;
+		mDbUrl = url;
+	}
+
+	// Register a named database connection for @db("name") routing.
+	void addDbNamedConn( const std::string &name, const std::string &driver,
+		const std::string &url )
+	{
+		mDbNamedConns.push_back( { name, driver, url } );
+	}
+
 	// Multi-module support: register struct/enum defs from other modules
 	void registerExternalTypes(
 		const std::vector<SmartPtr<StructDefinition>> &structs,
@@ -119,6 +135,13 @@ private:
 	// Try operator helper: resolve the QLang enum type of an expression
 	EnumDefinition *resolveExpressionEnumDef( Expression *expr );
 
+	// Resolve the full QLang type (with type arguments) of an expression, used to
+	// recover concrete types for generic enum variant payloads (Option<T>/Result<T,E>).
+	Type *resolveExpressionQType( Expression *expr );
+	// Resolve the concrete QLang type of a variant's first associated type,
+	// substituting the enum's generic params from `subjectType`'s type arguments.
+	Type *resolveVariantBindingQType( EnumDefinition *enumDef, int variantIdx, Type *subjectType );
+
 	// Array codegen
 	llvm::Value *genArrayLiteral( ArrayLiteralExpression *expr );
 	llvm::Value *genIndexExpression( IndexExpression *expr );
@@ -142,6 +165,16 @@ private:
 	// Set element destructor on an array based on element type name
 	void emitArrayElemDtor( llvm::Value *arrayPtr, const std::string &elemTypeName );
 
+	// Retain a refcounted element being stored into an array that owns its
+	// elements (an elem_dtor was/will be set — see emitArrayElemDtor).
+	// __blang_array_push does NOT retain, so pushing a refcounted value without
+	// this leaves the array holding a reference it never took: the pushed
+	// temporary/variable is released at scope exit while the array still points
+	// at it, causing a dangling pointer and a double-free at array release.
+	// Mirrors emitArrayElemDtor's per-type mapping (string/Array/Buffer/struct).
+	// No-op for non-refcounted element types (int, byte, ...).
+	void emitArrayElemRetain( llvm::Value *elemVal, const std::string &elemTypeName );
+
 	// Array type helper
 	bool isArrayType( Expression *expr );
 	int getElementSize( Type *elemType );
@@ -151,6 +184,11 @@ private:
 
 	// Buffer type helper
 	bool isBufferType( Expression *expr );
+
+	// Channel type helpers and method codegen (chan<T> .send()/.recv()/.close())
+	bool isChanType( Expression *expr );
+	Type *getChanElementQType( Expression *expr );
+	llvm::Value *genChanMethodCall( MethodCallExpression *expr );
 
 	// Buffer runtime declarations
 	llvm::Function *getOrDeclareBufferCreate();
@@ -269,6 +307,7 @@ private:
 
 	// Memory allocation helpers
 	llvm::Function *getOrDeclareMalloc();
+	llvm::Function *getOrDeclareBlangAlloc();
 	llvm::Function *getOrDeclareFree();
 
 	// BLang runtime library declarations
@@ -290,9 +329,13 @@ private:
 	llvm::Function *getOrDeclareChanRecv();
 	llvm::Function *getOrDeclareChanClose();
 	llvm::Function *getOrDeclareChanDestroy();
+	llvm::Function *getOrDeclareEventOn();
 	llvm::Function *getOrDeclareAsyncCall();
 	llvm::Function *getOrDeclareAwait();
 	llvm::Function *getOrDeclareTaskDestroy();
+
+	// Builtin to_json(value): compile-time dispatch to StructName_to_json
+	llvm::Value *genToJsonCall( CallExpression *call );
 
 	// JSON codegen (@json annotation)
 	bool genJsonToJson( StructDefinition *structDef );
@@ -326,7 +369,38 @@ private:
 	llvm::Function *getOrDeclareDbResultCount();
 	llvm::Function *getOrDeclareDbResultGet();
 	llvm::Function *getOrDeclareDbResultGetInt();
+	llvm::Function *getOrDeclareDbResultGetFloat();
 	llvm::Function *getOrDeclareDbResultFree();
+	llvm::Function *getOrDeclareDbDefault();
+	llvm::Function *getOrDeclareDbGet();
+	llvm::Function *getOrDeclareDbOpen();
+	llvm::Function *getOrDeclareDbSetDefault();
+	llvm::Function *getOrDeclareDbRegister();
+
+	// Resolve the connection pointer for a query on table `tableName`:
+	// __blang_db_get("name") if the table struct carries @db("name"),
+	// otherwise __blang_db_default().
+	llvm::Value *genDbConnForTable( const std::string &tableName );
+
+	// Build an [N x i8*] array of C-string param values from the runtime
+	// expressions backing SQL `?` placeholders; returns an i8** to element 0
+	// (or a null i8** when there are no params). Sets outCount to N.
+	llvm::Value *buildParamArray( const std::vector<const Expression*> &paramExprs,
+		int &outCount );
+
+	// Convert an evaluated value to a NUL-terminated C string (i8*) suitable
+	// for binding as a SQL parameter.
+	llvm::Value *paramToCString( llvm::Value *val );
+
+	// Compile-time validation that query/update/delete field references and
+	// insert field names exist on the target table struct.  Reports via
+	// cerr + mHasError (consistent with the rest of codegen).
+	void validateQueryFields( const std::string &tableName,
+		const std::vector<QueryPipelineStep> &steps, Expression *node );
+	void validateInsertFields( InsertExpression *insert );
+	// Recursively collect .field references (QueryFieldExpression) from an expr.
+	void collectQueryFieldRefs( const Expression *expr,
+		std::vector<std::string> &out );
 
 	// ForIn codegen
 	void genForInStatement( ForInStatement *forInStmt );
@@ -363,6 +437,10 @@ private:
 	// Maps self parameters to the mangled struct name (for generic struct methods)
 	std::map<VariableDefinition*, std::string> mSelfStructMangledName;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
+	// Owns enums synthesized at codegen time (e.g. built-in Option/Result).
+	std::vector<SmartPtr<EnumDefinition>> mSyntheticEnums;
+	// Owns QLang types synthesized at codegen time (e.g. Option<T> for chan recv).
+	std::vector<SmartPtr<Type>> mSyntheticTypes;
 	std::map<std::string, llvm::StructType*> mEnumTypeMap;
 
 	// Generic instantiation tracking
@@ -380,6 +458,12 @@ private:
 
 	// Module prefix for namespace name mangling (empty for user code)
 	std::string mModulePrefix;
+
+	// Database configuration (from blang.toml [database], forwarded by bcc).
+	std::string mDbDriver;   // "sqlite" / "postgres" (default sqlite)
+	std::string mDbUrl;      // connection string; empty => runtime env fallback
+	struct DbNamedConn { std::string name, driver, url; };
+	std::vector<DbNamedConn> mDbNamedConns;
 
 	// Loop break/continue target stack (for nested loops)
 	std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> mLoopStack;

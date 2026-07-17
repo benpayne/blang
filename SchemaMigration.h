@@ -46,9 +46,14 @@ struct MigrationStep
 class SchemaMigration
 {
 public:
-	// Load stored schema from a JSON file.
+	// Load stored schema from a JSON file (into the stored snapshot).
 	// Returns true on success (or if file doesn't exist — treated as empty schema).
 	bool loadSchema( const std::string &path );
+
+	// Load the current schema from a JSON file (into the current snapshot).
+	// Used by `bcc migrate`, which obtains the current schema by running
+	// `qcc --emit-schema` rather than parsing in-process.
+	bool loadCurrentSchema( const std::string &path );
 
 	// Save current schema to a JSON file.
 	bool saveSchema( const std::string &path );

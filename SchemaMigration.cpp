@@ -12,13 +12,14 @@ using namespace std;
 // Simple JSON serialization/deserialization for schema files.
 // We use a minimal approach to avoid external dependencies.
 
-bool SchemaMigration::loadSchema( const string &path )
+// Parse a schema JSON file into `out`.  Returns true on success or when the
+// file is absent (treated as an empty schema).
+static bool parseSchemaFile( const string &path, vector<SchemaTable> &out )
 {
 	ifstream file( path );
 	if ( !file.is_open() )
 	{
-		// No schema file — treat as empty (first migration)
-		mStoredSchema.clear();
+		out.clear();
 		return true;
 	}
 
@@ -28,7 +29,7 @@ bool SchemaMigration::loadSchema( const string &path )
 		istreambuf_iterator<char>() );
 	file.close();
 
-	mStoredSchema.clear();
+	out.clear();
 
 	// Minimal JSON parser for our known schema format
 	size_t pos = 0;
@@ -114,13 +115,23 @@ bool SchemaMigration::loadSchema( const string &path )
 			if ( pos < content.size() && content[pos] == ',' ) pos++;
 		}
 		expectChar( '}' );
-		mStoredSchema.push_back( table );
+		out.push_back( table );
 
 		skipWs();
 		if ( pos < content.size() && content[pos] == ',' ) pos++;
 	}
 
 	return true;
+}
+
+bool SchemaMigration::loadSchema( const string &path )
+{
+	return parseSchemaFile( path, mStoredSchema );
+}
+
+bool SchemaMigration::loadCurrentSchema( const string &path )
+{
+	return parseSchemaFile( path, mCurrentSchema );
 }
 
 bool SchemaMigration::saveSchema( const string &path )

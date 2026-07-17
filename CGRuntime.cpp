@@ -536,6 +536,25 @@ void CodeGen::emitArrayElemDtor( llvm::Value *arrayPtr, const std::string &elemT
 	}
 }
 
+void CodeGen::emitArrayElemRetain( llvm::Value *elemVal, const std::string &elemTypeName )
+{
+	llvm::Function *retainFn = nullptr;
+
+	if ( elemTypeName == "string" )
+		retainFn = getOrDeclareStringRetain();
+	else if ( elemTypeName == "Array" )
+		retainFn = getOrDeclareArrayRetain();
+	else if ( elemTypeName == "Buffer" )
+		retainFn = getOrDeclareBufferRetain();
+	else if ( isUserStructType( elemTypeName ) )
+		retainFn = getOrDeclareRcRetain();
+
+	if ( retainFn != nullptr && elemVal != nullptr )
+	{
+		mBuilder->CreateCall( retainFn, { elemVal } );
+	}
+}
+
 // ---- Buffer runtime declarations ----
 
 llvm::Function *CodeGen::getOrDeclareBufferCreate()

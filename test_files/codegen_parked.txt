@@ -1,0 +1,37 @@
+# codegen_parked.txt — origin/master feature codegen tests parked during the
+# feature-integration epic. test_codegen.sh SKIPS every test listed here
+# (reported as PARKED, excluded from pass/fail) because its codegen has not yet
+# been ported from origin's monolithic CodeGen.cpp into local's CG*/Sema
+# architecture. Each of U2-U6 removes its own entries as it lands the port;
+# U8 requires this file EMPTY (every feature ported).
+#
+# Blank lines and lines beginning with '#' are ignored. One test basename (with
+# or without the .b suffix) per line.
+
+# --- U2: channels (send/recv) ---
+codegen_channel.b
+codegen_channel_closed.b
+codegen_channel_spawn.b
+
+# --- U3: event loop + timers ---
+codegen_timer_event.b
+codegen_timer_cancel.b
+codegen_timer_oneshot.b
+codegen_timer_helper.b
+
+# --- U4: built-in Option/Result + exhaustive match ---
+codegen_builtin_option.b
+codegen_builtin_result.b
+codegen_builtin_try.b
+codegen_match_exhaustive.b
+codegen_match_wildcard_enum.b
+codegen_match_tail_main.b
+
+# --- U5: database codegen + bcc migrate ---
+codegen_db_query.b
+codegen_db_query_rows.b
+
+# --- U6: HTTP routing + builtin to_json ---
+codegen_http_routing.b
+codegen_http_json_response.b
+codegen_to_json_builtin.b

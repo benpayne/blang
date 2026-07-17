@@ -95,13 +95,13 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 47 | Implement `Result<T, E>` as built-in generic type | impl | DEFERRED | User-defined enums work as Result; built-in treatment deferred until generic monomorphization matures |
-| 48 | Implement `Option<T>` as built-in generic type | impl | DEFERRED | User-defined enums work as Option; built-in treatment deferred until generic monomorphization matures |
+| 47 | Implement `Result<T, E>` as built-in generic type | impl | YES | Registered in gScope (`EnumDefinition::CreateBuiltinResult`) and mEnumDefMap; type-erased 8-byte payload, concrete T/E recovered at match/`?` from the subject's type args; user-defined `Result` still shadows it. Tested in `codegen_builtin_result.b`, `codegen_builtin_try.b` |
+| 48 | Implement `Option<T>` as built-in generic type | impl | YES | Registered in gScope (`EnumDefinition::CreateBuiltinOption`) and mEnumDefMap; channel `recv()` now returns this same built-in `Option<T>`. Tested in `codegen_builtin_option.b`, `cgfail/builtin_option_non_exhaustive.b` |
 | 49 | Add `match` keyword to lexer | impl | YES | `match` is a recognized keyword token |
 | 50 | Parse `match` expressions | impl | YES | `QMatchExpression.cpp` — literal, wildcard `_`, destructuring patterns |
 | 51 | Parse `?` operator | impl | YES | `QUESTION_MARK` token in lexer; `TryExpression` AST node; postfix parsing in `ParsePrimary` |
 | 52 | Codegen for Result/Option | impl | YES | Enum tagged union layout `{i32 tag, [N x i8] payload}` via `genEnumConstruct`; tested in `codegen_result_type.b` and `codegen_enum_payload.b` |
-| 53 | Codegen for match | impl | YES | `genMatchExpression` — tag extraction, switch dispatch, variant pattern matching with payload extraction and binding, wildcard arms |
+| 53 | Codegen for match | impl | YES | `genMatchExpression` — tag extraction, switch dispatch, variant pattern matching with payload extraction and binding, wildcard arms, and enum exhaustiveness checking (missing variant without `_` is a compile error; tested in `cgfail/match_non_exhaustive.b`, `codegen_match_exhaustive.b`, `codegen_match_wildcard_enum.b`) |
 | 54 | Codegen for `?` operator | impl | YES | `genTryExpression` — resolves operand's enum type, extracts tag, branches on success (ok/some) vs error (err/none), unwraps payload on success, propagates error via early return on failure; tested in `codegen_try_operator.b` |
 | 55 | Add pass tests for Result/Option | test | YES | `result_option.b`, `match_enum_variants.b`, `try_operator.b` |
 | 56 | Add fail test: unhandled Result | test | YES | `match_missing_brace.b` — match arm without block braces rejected |
@@ -165,11 +165,11 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 89 | Add `chan` keyword to lexer | impl | YES | Channel type |
 | 90 | Parse `spawn { ... }` blocks | impl | YES | `spawn { ... }` parsed into SpawnStatement AST node |
 | 91 | Parse channel declarations | impl | YES | `chan<T>` variable declarations parsed and codegen'd via `__blang_chan_create` |
-| 92 | Parse channel operations | impl | PARTIAL | `.send()` and `.recv()` lack parser syntax — only `chan<T>` declarations codegen'd |
+| 92 | Parse channel operations | impl | YES | `chan<T>` type parsed (`QType.cpp`); `.send()`/`.recv()`/`.close()` parse as method calls; tested in `pass/chan_send_recv.b` |
 | 93 | Implement BLang runtime: green thread scheduler | impl | YES | Thread pool with `__blang_spawn`, `__blang_spawn_wait`, `__blang_wait_all` in `blang_runtime.c` |
 | 94 | Implement BLang runtime: channel implementation | impl | YES | `__blang_chan_create`/`__blang_chan_send`/`__blang_chan_recv`/`__blang_chan_close`/`__blang_chan_destroy` in `blang_runtime.c` |
 | 95 | Codegen for spawn | impl | YES | Closure extraction: captured variables packed into context struct, dispatched to thread pool; tested in `codegen_spawn.b`, `codegen_spawn_threaded.b`, `codegen_shared_spawn.b` |
-| 96 | Codegen for channel operations | impl | PARTIAL | Channel creation codegen'd; send/recv pending parser syntax |
+| 96 | Codegen for channel operations | impl | YES | `genChanMethodCall` emits `__blang_chan_send`/`__blang_chan_recv`/`__blang_chan_close`; `recv()` returns `Option<T>` (synthesized `Option_<T>` enum; `some` on success, `none` on closed+empty) so the closed signal is surfaced and exhaustive match enforces handling; tested in `codegen_channel.b`, `codegen_channel_spawn.b`, `codegen_channel_closed.b`, `cgfail/chan_recv_non_exhaustive.b` |
 | 97 | Enforce thread safety rules | impl | YES | Own variables cannot be captured across spawn boundaries (compile error); shared/sync enforced via ARC and locking |
 | 98 | Add pass tests for spawn/chan | test | YES | spawn_basic.b, spawn_nested.b, spawn_expr.b, chan_decl.b, wait_basic.b, wait_all_basic.b |
 | 99 | Add fail tests for concurrency | test | YES | spawn_missing_brace.b, cgfail/own_spawn_capture.b |
@@ -188,7 +188,7 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 107 | Codegen for await | impl | YES | `__blang_await` + `__blang_task_destroy`; tested in `codegen_wait.b`, `codegen_wait_all.b` |
 | 108 | Add `on` keyword for event handlers | impl | YES | `on timer.every(1000) { ... }` |
 | 109 | Parse event handler syntax | impl | YES | `on expr { body }` parsed into EventHandler AST node |
-| 110 | Codegen for event handlers | impl | PARTIAL | Callback extraction works; full event loop registration is a runtime fallback (executes inline) |
+| 110 | Codegen for event handlers | impl | YES | `on EXPR { body }` extracts the body to a callback and registers it on the global event loop via `__blang_event_on` keyed by the fd that EXPR yields (timerfd or socket fd); refcounted captures are retained for deferred invocation. A non-fd event expr falls back to inline invocation (legacy). Runtime: poll-based loop with timerfds (`timer.every/after`, `timer.run/stop`); tested in `codegen_timer_event.b` |
 | 111 | Add pass tests for async/await | test | YES | async_fn.b, async_fn_void.b, await_expr.b, event_handler.b |
 | 112 | Document async model | docs | YES | Update CLAUDE.md |
 
@@ -252,13 +252,13 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 147 | Parse `insert T { field: value }` | impl | YES | `InsertExpression` AST node |
 | 148 | Parse `update T |> where { } |> set { }` | impl | YES | `UpdateExpression` AST node |
 | 149 | Parse `delete T |> where { }` | impl | YES | `DeleteExpression` AST node |
-| 150 | Compile-time field validation | impl | PARTIAL | Query field references parsed; full compile-time field existence checking pending |
+| 150 | Compile-time field validation | impl | YES | Query/update/delete field refs and insert field names validated against the table struct (`validateQueryFields`/`validateInsertFields`); unknown field is a compile error. Test: cgfail/query_bad_field.b. (JOIN field refs validated against primary table only.) |
 | 151 | SQL generation backend | impl | YES | `SQLGen` translates query AST to parameterized SQL (SELECT/INSERT/UPDATE/DELETE, CREATE TABLE) |
 | 152 | Implement database runtime library | impl | YES | `blang_db` library with connection, query, result APIs; optional SQLite backend |
-| 153 | Support `@db("name")` annotation for named connections | impl | PARTIAL | Annotation parsing works; runtime multi-database dispatch pending |
+| 153 | Support `@db("name")` annotation for named connections | impl | YES | `[database.<name>]` parsed and registered via `__blang_db_register`; query codegen routes through `__blang_db_get("name")` when the table struct carries `@db("name")`, else the default connection |
 | 154 | Add pass tests for queries | test | YES | table_struct.b, query_basic.b, query_insert.b, query_update.b, query_delete.b, query_join.b |
 | 155 | Add fail tests for queries | test | YES | query_missing_table.b, insert_missing_brace.b, table_missing_struct.b |
-| 156 | Add end-to-end test with SQLite | test | — | Parse → SQL → execute against real database |
+| 156 | Add end-to-end test with SQLite | test | YES | `test_files/codegen_db_query.b` — insert/update/delete/select with bound WHERE/SET params against in-memory SQLite (run via test_codegen.sh, gated on SQLite) |
 | 157 | Document query system | docs | YES | Documented in CLAUDE.md |
 
 ### 3.3 Automatic Migrations
@@ -269,12 +269,12 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | 159 | Implement schema diff engine | impl | YES | Compares current table structs against stored snapshot |
 | 160 | Generate `CREATE TABLE` for new tables | impl | YES | `SchemaMigration` generates CREATE TABLE SQL |
 | 161 | Generate `ALTER TABLE ADD COLUMN` for new fields | impl | YES | `SchemaMigration` generates ALTER TABLE ADD COLUMN |
-| 162 | Detect and flag destructive changes | impl | PARTIAL | Detection implemented; `@drop` annotation enforcement pending |
+| 162 | Detect and flag destructive changes | impl | YES | Detection implemented; `bcc migrate --apply` refuses destructive steps unless `--allow-destructive` is passed |
 | 163 | Implement `blang migrate --preview` | impl | YES | `bcc migrate --preview` shows pending SQL |
 | 164 | Implement `blang migrate --apply` | impl | YES | `bcc migrate --apply` executes migrations |
 | 165 | Implement `blang migrate --generate` | impl | YES | `bcc migrate --generate` writes SQL to file |
-| 166 | Add `@drop` annotation for confirmed removals | impl | — | Not yet implemented |
-| 167 | Add tests for migration generation | test | — | Pending |
+| 166 | Add `@drop` annotation for confirmed removals | impl | PARTIAL | Destructive removals gated behind the `--allow-destructive` CLI confirmation; a per-entity `@drop` annotation (vs. the global flag) is still future |
+| 167 | Add tests for migration generation | test | YES | `test_migrate.sh` — create table, add column, destructive-guard refuse/allow, end to end against SQLite |
 | 168 | Document migration system | docs | YES | Documented in CLAUDE.md |
 
 ### 3.4 Serialization Annotations
@@ -307,13 +307,13 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
-| 185 | Implement `http.Server` in standard library | impl | — | Basic HTTP/1.1 server with routing |
-| 186 | Implement `http.Request` / `http.Response` types | impl | — | Request parsing, response building |
-| 187 | Implement route registration (`.get()`, `.post()`, etc.) | impl | — | Method-based routing API |
-| 188 | Implement automatic JSON serialization for responses | impl | — | `http.ok(struct)` auto-calls `to_json()` if `@json` annotated |
-| 189 | Implement `http.Client` for outgoing requests | impl | — | `http.get(url)`, `http.post(url, body)` |
-| 190 | Add pass tests for HTTP server | test | — | Start server, make request, validate response |
-| 191 | Document HTTP library | docs | — | Update CLAUDE.md |
+| 185 | Implement `http.Server` in standard library | impl | YES | `HttpServer` in `stdlib/net.b` — selector-backed HTTP/1.1 server with a route table; `serve()` parses each request and dispatches to the matching route |
+| 186 | Implement `http.Request` / `http.Response` types | impl | YES | `HttpRequest` (method/path/body), `HttpResponse` (status/content_type/body); request parsing (`parse_http_request_line`, headers, body) and response building (`build_http_response`) |
+| 187 | Implement route registration (`.get()`, `.post()`, etc.) | impl | YES | `HttpServer.get/post/put/route(method, path, handler)` build an `Array<Route>` route table; `dispatch_request` matches method+path → handler, else 404. (`delete` is a keyword — use `route("DELETE", ...)`.) Tested in `codegen_http_routing.b` |
+| 188 | Implement automatic JSON serialization for responses | impl | YES | Builtin `to_json(value)` dispatches at compile time to `StructName_to_json` for a `@json` struct (compile error otherwise); `net.http_json(to_json(user))` returns an `application/json` response with the serialized struct. Tested in `codegen_to_json_builtin.b`, `codegen_http_json_response.b`, `cgfail/to_json_not_annotated.b` |
+| 189 | Implement `http.Client` for outgoing requests | impl | YES | `http_get(host, port, path)` and `http_post(host, port, path, content_type, body)` — BLang-native Buffer I/O, return the response body |
+| 190 | Add pass tests for HTTP server | test | YES | `codegen_http_routing.b` (route dispatch + get/post registration); `codegen_http_blang.b` (parsing/response building). Live socket serving verified manually (deterministic socket+thread E2E omitted from the suite) |
+| 191 | Document HTTP library | docs | YES | Documented in CLAUDE.md; demo `demos/13_http_server.b` uses the routing API |
 
 ### 3.7 GraphQL Standard Library
 
@@ -331,11 +331,11 @@ The foundation: transition from C-style syntax to BLang syntax, complete the typ
 | # | Task | Type | Done | Description |
 |---|------|------|------|-------------|
 | 198 | Implement `blang.toml` project configuration | impl | YES | `ProjectConfig` class parses blang.toml for project metadata, type (bin/lib), and dependencies |
-| 199 | Implement Postgres driver in stdlib | impl | — | libpq-based or native protocol |
-| 200 | Implement SQLite driver in stdlib | impl | — | For local development and testing |
-| 201 | Implement connection pooling | impl | — | Shared connection pool with configurable size |
-| 202 | Add database integration tests | test | — | Full roundtrip: table struct → migrate → query → validate |
-| 203 | Document database configuration | docs | — | Update CLAUDE.md |
+| 199 | Implement Postgres driver in stdlib | impl | PARTIAL | libpq backend implemented (`pg_open`/`pg_query`/`pg_exec` with `?`→`$n` rewrite), compile-guarded behind `BLANG_HAS_POSTGRES`; not yet exercised in CI (requires libpq-dev) |
+| 200 | Implement SQLite driver in stdlib | impl | YES | SQLite backend with runtime parameter binding behind a driver-dispatch layer; tested via codegen_db_query.b + test_migrate.sh |
+| 201 | Implement connection pooling | impl | — | Deferred; process uses a single shared default/named connection (sufficient for SQLite/single-threaded). Pooling for file/Postgres connections is future |
+| 202 | Add database integration tests | test | YES | `test_migrate.sh` (migrate → apply against SQLite) + `codegen_db_query.b` (insert/update/delete/query roundtrip with bound params) |
+| 203 | Document database configuration | docs | YES | CLAUDE.md: `[database]`/`[database.<name>]` blang.toml format, BLANG_DATABASE_URL fallback, migrate workflow, driver status |
 
 ---
 
@@ -445,17 +445,17 @@ These tasks span multiple phases and should be addressed incrementally.
 
 | Phase | Tasks | Focus | Done | Partial | Deferred | Remaining |
 |-------|-------|-------|------|---------|----------|-----------|
-| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 74 | 0 | 2 | 0 |
-| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 47 | 4 | 0 | 6 |
-| Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 36 | 3 | 0 | 31 |
+| Phase 1 | 1–76 | Core language: fn syntax, structs, protocols, generics, Result/Option, modules | 75 | 0 | 1 | 0 |
+| Phase 2 | 77–133 | Safety and concurrency: ownership, spawn/chan, async/await, contracts, testing | 50 | 1 | 0 | 6 |
+| Phase 3 | 134–203 | Data and services: pipeline, queries, migrations, serialization, gRPC, HTTP, GraphQL | 51 | 2 | 0 | 17 |
 | Phase 4 | 218–250 | Build system: .bmod, blang.toml, deps, cache | 33 | 0 | 0 | 0 |
 | Cross-cutting | 204–217 | Documentation, test infrastructure, CI | 9 | 3 | 0 | 2 |
-| **Total** | **250** | | **199** | **10** | **2** | **39** |
+| **Total** | **250** | | **218** | **6** | **1** | **25** |
 
 ### Phase 1 Complete
 
 All Phase 1 tasks are done or explicitly deferred:
-- **Task 47/48** (built-in Result/Option): Deferred — user-defined enums work correctly as Result/Option types. Built-in treatment will be added when generic monomorphization matures.
+- **Task 47/48** (built-in Result/Option): Done — `Option<T>` and `Result<T,E>` are registered as built-in generic enums (no user definition required). They use a type-erased pointer-sized payload; the concrete type argument is recovered at the match/`?` site from the subject's static type. A user-defined `Option`/`Result` shadows the built-in (user defs land in a child scope).
 - **Task 63** (visibility checking): Deferred — requires cross-module name resolution which depends on multi-module function linking (not just type sharing).
 
 ### Phase 4 Complete

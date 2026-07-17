@@ -623,10 +623,18 @@ llvm::Value *CodeGen::genArrayLiteral( ArrayLiteralExpression *expr )
 	{
 		llvm::Function *pushFn = getOrDeclareArrayPush();
 
+		// The array owns a reference to each refcounted element (an elem_dtor is
+		// set below). __blang_array_push does not retain, so each pushed element
+		// (typically a released statement-temporary like a struct literal) must
+		// be retained here or it is freed while the array still holds it — a
+		// dangling pointer + double-free at array release. See emitArrayElemRetain.
+		const std::string litElemType = mArrayElemTypeNameHint;
+
 		// Push first element
 		llvm::AllocaInst *tmpAlloca = mBuilder->CreateAlloca( elemLLVMType, nullptr, "arr.tmp" );
 		mBuilder->CreateStore( firstElem, tmpAlloca );
 		mBuilder->CreateCall( pushFn, { arr, tmpAlloca } );
+		emitArrayElemRetain( firstElem, litElemType );
 
 		// Push remaining elements
 		for ( int i = 1; i < numElements; i++ )
@@ -643,6 +651,7 @@ llvm::Value *CodeGen::genArrayLiteral( ArrayLiteralExpression *expr )
 			}
 			mBuilder->CreateStore( elemVal, tmpAlloca );
 			mBuilder->CreateCall( pushFn, { arr, tmpAlloca } );
+			emitArrayElemRetain( elemVal, litElemType );
 		}
 	}
 

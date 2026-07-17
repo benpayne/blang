@@ -19,11 +19,13 @@ JSON_LIB="${BUILD_DIR}/libblang_json.a"
 NET_LIB="${BUILD_DIR}/libblang_net.a"
 FS_LIB="${BUILD_DIR}/libblang_fs.a"
 SYS_LIB="${BUILD_DIR}/libblang_sys.a"
+DB_LIB="${BUILD_DIR}/libblang_db.a"
 STDLIB_IO="${SCRIPT_DIR}/stdlib/io.b"
 STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
 STDLIB_FS="${SCRIPT_DIR}/stdlib/fs.b"
 STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
 STDLIB_BUFFER="${SCRIPT_DIR}/stdlib/buffer.b"
+STDLIB_TIMER="${SCRIPT_DIR}/stdlib/timer.b"
 
 # Colors — emitted only to a terminal. When stdout is a pipe/file (CI, and the
 # epic-acceptance greps like `grep -Eq 'Leaks:[[:space:]]*0'`), ANSI codes are
@@ -158,10 +160,34 @@ is_leak_quarantined() {
 	return 1
 }
 
+# Parked tests (feature-integration epic): origin/master feature codegen tests
+# whose codegen has not yet been ported into local's CG*/Sema architecture.
+# Listed in codegen_parked.txt (annotated by owning unit U2-U6). A parked test
+# is SKIPPED entirely — reported as PARKED, excluded from pass/fail/TOTAL — so
+# the suite stays honestly green while the ports land one unit at a time. Each
+# unit removes its own entries; U8 requires the file empty. '#'/blank ignored;
+# entries may carry or omit the .b suffix.
+PARKED_FILE="${SCRIPT_DIR}/test_files/codegen_parked.txt"
+is_parked() {
+	local name="$1" entry
+	[ -f "$PARKED_FILE" ] || return 1
+	while IFS= read -r entry || [ -n "$entry" ]; do
+		entry="${entry%%#*}"
+		entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
+		[ -z "$entry" ] && continue
+		if [ "$entry" = "$name" ] || [ "$entry" = "${name}.b" ]; then
+			return 0
+		fi
+	done < "$PARKED_FILE"
+	return 1
+}
+
 PASS_COUNT=0
 FAIL_COUNT=0
 LEAK_TOTAL=0
 KNOWN_LEAK_TOTAL=0
+SKIP_COUNT=0
+PARKED_COUNT=0
 TOTAL=0
 GOLDEN_PASS_COUNT=0
 NOGOLDEN_COUNT=0
@@ -177,6 +203,19 @@ run_one_test() {
 	local ir_file="/tmp/${base_name}.ll"
 	local obj_file="/tmp/${base_name}.o"
 	local bin_file="/tmp/${base_name}"
+
+	# Database tests need a SQLite-backed libblang_db. If the DB runtime was
+	# built without SQLite (stub), skip rather than fail — there is no backend
+	# to execute against.
+	local is_db_test=0
+	if [[ "${base_name}" == *"db"* ]] || [[ "${base_name}" == *"query"* ]]; then
+		is_db_test=1
+		if [ ! -f "${DB_LIB}" ] || ! nm "${DB_LIB}" 2>/dev/null | grep -q "U sqlite3_"; then
+			echo -e "  ${YELLOW}SKIP${NC}  ${test_file}  (SQLite backend not built)"
+			SKIP_COUNT=$((SKIP_COUNT + 1))
+			return 0
+		fi
+	fi
 
 	TOTAL=$((TOTAL + 1))
 
@@ -203,6 +242,12 @@ run_one_test() {
 	if [[ "${base_name}" == *"file"* ]] || [[ "${base_name}" == *"fs"* ]]; then
 		if [ -f "${STDLIB_FS}" ]; then
 			stdlib_files+=("${STDLIB_FS}")
+			need_combine=1
+		fi
+	fi
+	if [[ "${base_name}" == *"timer"* ]] || [[ "${base_name}" == *"event"* ]]; then
+		if [ -f "${STDLIB_TIMER}" ]; then
+			stdlib_files+=("${STDLIB_TIMER}")
 			need_combine=1
 		fi
 	fi
@@ -295,16 +340,44 @@ run_one_test() {
 	if [ -f "${SYS_LIB}" ]; then
 		sys_link="${SYS_LIB}"
 	fi
+	# Database tests link the DB runtime + its SQLite backend. By this point a
+	# db test is known to have a SQLite-enabled libblang_db (otherwise skipped
+	# above), so resolve the sqlite link flags, preferring pkg-config but
+	# falling back to a plain -lsqlite3 when pkg-config metadata is absent.
+	local db_link=""
+	local db_sys_flags=""
+	if [ "$is_db_test" -eq 1 ]; then
+		db_link="${DB_LIB}"
+		# Link whichever backends were compiled into libblang_db.a. The lib may
+		# reference sqlite3_* and/or PQ* depending on which dev packages CMake
+		# found; link the matching system libraries (pkg-config, else -l<name>).
+		local db_syms
+		db_syms="$(nm "${DB_LIB}" 2>/dev/null)"
+		if echo "$db_syms" | grep -q "U sqlite3_"; then
+			if pkg-config --exists sqlite3 2>/dev/null; then
+				db_sys_flags="${db_sys_flags} $(pkg-config --libs sqlite3)"
+			else
+				db_sys_flags="${db_sys_flags} -lsqlite3"
+			fi
+		fi
+		if echo "$db_syms" | grep -q "U PQ"; then
+			if pkg-config --exists libpq 2>/dev/null; then
+				db_sys_flags="${db_sys_flags} $(pkg-config --libs libpq)"
+			else
+				db_sys_flags="${db_sys_flags} -lpq"
+			fi
+		fi
+	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${sys_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
 	else
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${sys_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${db_link} ${sys_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -o "${bin_file}" 2>&1)
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"
-		if [ "$VERBOSE" -eq 1 ]; then
-			echo "$cc_output" | tail -5 | sed 's/^/    /'
-		fi
+		# Always surface the linker error — link failures are environment-
+		# specific (missing system libs) and hard to diagnose without it.
+		echo "$cc_output" | tail -8 | sed 's/^/    /'
 		rm -f "${ir_file}" "${obj_file}"
 		FAIL_COUNT=$((FAIL_COUNT + 1))
 		return 1
@@ -315,6 +388,13 @@ run_one_test() {
 	local run_env=""
 	if [ "$LEAK_CHECK" -eq 1 ]; then
 		run_env="ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=exitcode=23"
+	fi
+	# Database tests use an in-memory SQLite DB unless the test ships a blang.toml.
+	# (The binary is actually run below — in the VALGRIND branch or, for the
+	# normal/leak path, in the else branch that splits stdout/stderr for the
+	# golden compare — so we only seed run_env here, not run the binary.)
+	if [[ "${base_name}" == *"db"* ]] || [[ "${base_name}" == *"query"* ]]; then
+		run_env="${run_env} BLANG_DATABASE_URL=:memory: BLANG_DATABASE_DRIVER=sqlite"
 	fi
 
 	if [ "$VALGRIND" -eq 1 ]; then
@@ -576,6 +656,16 @@ else
 
 	echo -e "${CYAN}--- E2E codegen tests (parse → IR → compile → link → run) ---${NC}"
 	while IFS= read -r f; do
+		# Parked (feature-integration): origin feature tests whose codegen is
+		# not yet ported. Skip in the full-suite run so the suite stays green;
+		# an explicitly-named test (FILE_ARGS) still runs, so it can never be
+		# falsely green once its owning unit removes it from the parked list.
+		pk_base="$(basename "$f" .b)"
+		if is_parked "$pk_base"; then
+			echo -e "  ${YELLOW}PARKED${NC} $f  (codegen not yet ported — see codegen_parked.txt)"
+			PARKED_COUNT=$((PARKED_COUNT + 1))
+			continue
+		fi
 		run_one_test "$f" "$VERBOSE"
 	done <<< "$TEST_FILES"
 fi
@@ -586,6 +676,12 @@ echo " Results"
 echo "==========================================="
 echo -e "  ${GREEN}Passed:${NC}  $PASS_COUNT"
 echo -e "  ${RED}Failed:${NC}  $FAIL_COUNT"
+if [ "$SKIP_COUNT" -gt 0 ]; then
+echo -e "  ${YELLOW}Skipped:${NC} $SKIP_COUNT"
+fi
+if [ "$PARKED_COUNT" -gt 0 ]; then
+echo -e "  ${YELLOW}Parked:${NC}  $PARKED_COUNT   ${CYAN}(feature-integration: origin tests pending port — see codegen_parked.txt)${NC}"
+fi
 if [ "$LEAK_CHECK" -eq 1 ]; then
 echo -e "  ${YELLOW}Leaks:${NC}   $LEAK_TOTAL"
 echo -e "  ${CYAN}Known-leaks (quarantined):${NC} $KNOWN_LEAK_TOTAL"

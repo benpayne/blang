@@ -29,6 +29,10 @@
 
 #include "ProjectConfig.h"
 #include "BuildCache.h"
+#include "Type.h"
+#include "Expression.h"
+#include "SchemaMigration.h"
+#include "runtime/blang_db.h"
 
 using namespace std;
 
@@ -520,6 +524,12 @@ static int runTests( int argc, char *argv[], const string &exeDir )
 	return worstExit;
 }
 
+// Forward declarations (defined later) so migrate can resolve stdlib imports
+// the same way `bcc build` does.
+static set<string> parseImports( const string &path );
+static vector<string> resolveStdlibFiles( const string &exeDir,
+	const set<string> &imports );
+
 // bcc migrate subcommand
 //
 // Compares current table struct definitions against stored schema snapshot
@@ -532,6 +542,7 @@ static int runTests( int argc, char *argv[], const string &exeDir )
 static int runMigrate( int argc, char *argv[] )
 {
 	string mode = "--preview"; // default
+	bool allowDestructive = false;
 	vector<string> sourceFiles;
 
 	for ( int i = 2; i < argc; i++ )
@@ -539,6 +550,8 @@ static int runMigrate( int argc, char *argv[] )
 		string arg = argv[i];
 		if ( arg == "--preview" || arg == "--apply" || arg == "--generate" )
 			mode = arg;
+		else if ( arg == "--allow-destructive" )
+			allowDestructive = true;
 		else if ( arg[0] != '-' )
 			sourceFiles.push_back( arg );
 	}
@@ -557,31 +570,144 @@ static int runMigrate( int argc, char *argv[] )
 		return 1;
 	}
 
-	// Parse all source files to extract table struct definitions.
-	// Run qcc --parse-only on each file and capture output.
-	// Note: In a full implementation, we would parse directly and use
-	// the SchemaMigration class. For now, this is a placeholder that
-	// reports the subcommand was invoked.
+	// 1. Obtain the current schema by parsing the sources with qcc and having
+	//    it emit the table-struct schema as JSON (qcc owns the parser).
+	string exeDir = getExeDir( argv[0] );
+	string qcc = exeDir + "/qcc";
 
-	cerr << "bcc migrate: " << mode << " mode" << endl;
-	cerr << "bcc migrate: found " << sourceFiles.size() << " source file(s)" << endl;
+	mkdir( ".blang", 0755 );
+	string storedSchemaPath = ".blang/schema.json";
+	string currentSchemaPath = ".blang/schema.current.json";
+
+	// Resolve stdlib imports so projects that `import net;` (etc.) parse — the
+	// table struct lives in a source file that references stdlib symbols, so the
+	// stdlib modules must be combined into the same parse, exactly as bcc build
+	// does. User sources go last (combine treats the last file as user scope).
+	set<string> imports;
+	for ( const auto &f : sourceFiles )
+		for ( const auto &imp : parseImports( f ) )
+			imports.insert( imp );
+	vector<string> stdlibFiles = resolveStdlibFiles( exeDir, imports );
+
+	vector<string> qccCmd = { qcc };
+	if ( !stdlibFiles.empty() )
+		qccCmd.push_back( "--combine" );
+	qccCmd.push_back( "--emit-schema" );
+	qccCmd.push_back( currentSchemaPath );
+	for ( const auto &sf : stdlibFiles )
+		qccCmd.push_back( sf );
+	for ( const auto &f : sourceFiles )
+		qccCmd.push_back( f );
+	if ( runCommand( qccCmd, false, true ) != 0 )
+	{
+		cerr << "bcc migrate: failed to extract schema from sources" << endl;
+		return 1;
+	}
+
+	// 2. Diff the stored snapshot against the current schema.
+	QLang::SchemaMigration mig;
+	mig.loadSchema( storedSchemaPath );          // stored (empty on first run)
+	mig.loadCurrentSchema( currentSchemaPath );  // current
+
+	vector<QLang::MigrationStep> steps = mig.computeDiff();
 
 	if ( mode == "--preview" )
 	{
-		cerr << "bcc migrate: schema migration preview" << endl;
-		cerr << "  (Run with --generate to emit SQL)" << endl;
-	}
-	else if ( mode == "--generate" )
-	{
-		cerr << "bcc migrate: generating migration SQL..." << endl;
-		cerr << "  (Full migration generation requires parsing source files)" << endl;
-	}
-	else if ( mode == "--apply" )
-	{
-		cerr << "bcc migrate: applying migrations..." << endl;
-		cerr << "  (Full migration apply requires database connection)" << endl;
+		cout << mig.preview();
+		remove( currentSchemaPath.c_str() );
+		return 0;
 	}
 
+	if ( mode == "--generate" )
+	{
+		cout << mig.generateSQL();
+		remove( currentSchemaPath.c_str() );
+		return 0;
+	}
+
+	// mode == "--apply"
+	if ( steps.empty() )
+	{
+		cout << "No schema changes to apply." << endl;
+		remove( currentSchemaPath.c_str() );
+		return 0;
+	}
+
+	// Destructive changes (DROP TABLE / DROP COLUMN) require explicit consent.
+	// The @drop annotation marks an intentional removal in source; since a
+	// removed entity no longer exists in source, apply additionally gates on
+	// the --allow-destructive flag as the CLI confirmation path.
+	if ( mig.hasDestructiveChanges() && !allowDestructive )
+	{
+		cerr << "bcc migrate: refusing to apply destructive changes without "
+			 << "--allow-destructive:" << endl;
+		for ( const auto &step : steps )
+			if ( step.isDestructive )
+				cerr << "  [DESTRUCTIVE] " << step.description << endl;
+		remove( currentSchemaPath.c_str() );
+		return 1;
+	}
+
+	// Resolve the database connection from blang.toml [database] or the
+	// BLANG_DATABASE_URL environment variable.
+	string driver = "sqlite";
+	string url;
+	ProjectConfig *cfg = ProjectConfig::loadFromDirectory( "." );
+	if ( cfg != nullptr )
+	{
+		if ( !cfg->getDbDriver().empty() ) driver = cfg->getDbDriver();
+		url = cfg->getDbUrl();
+		delete cfg;
+	}
+	if ( url.empty() )
+	{
+		const char *envUrl = getenv( "BLANG_DATABASE_URL" );
+		if ( envUrl != nullptr )
+			url = envUrl;
+	}
+	if ( url.empty() )
+	{
+		cerr << "bcc migrate: no database url configured (set [database].url in "
+			 << "blang.toml or BLANG_DATABASE_URL)" << endl;
+		remove( currentSchemaPath.c_str() );
+		return 1;
+	}
+
+	const char *errMsg = nullptr;
+	BlangDBConn *conn = __blang_db_open(
+		__blang_db_driver_from_name( driver.c_str() ), url.c_str(), &errMsg );
+	if ( conn == nullptr )
+	{
+		cerr << "bcc migrate: cannot open database: "
+			 << ( errMsg ? errMsg : "unknown error" ) << endl;
+		remove( currentSchemaPath.c_str() );
+		return 1;
+	}
+
+	int applied = 0;
+	for ( const auto &step : steps )
+	{
+		const char *stepErr = nullptr;
+		if ( __blang_db_exec_raw( conn, step.sql.c_str(), &stepErr ) != 0 )
+		{
+			cerr << "bcc migrate: failed: " << step.description << endl;
+			cerr << "  SQL: " << step.sql << endl;
+			cerr << "  error: " << ( stepErr ? stepErr : "unknown" ) << endl;
+			__blang_db_close( conn );
+			remove( currentSchemaPath.c_str() );
+			return 1;
+		}
+		cout << "applied: " << step.description << endl;
+		applied++;
+	}
+
+	__blang_db_close( conn );
+
+	// Snapshot the now-current schema as the new stored baseline.
+	mig.saveSchema( storedSchemaPath );
+	remove( currentSchemaPath.c_str() );
+
+	cout << "Migration complete: " << applied << " step(s) applied." << endl;
 	return 0;
 }
 
@@ -620,6 +746,84 @@ static string readFileToString( const string &path )
 	ostringstream ss;
 	ss << f.rdbuf();
 	return ss.str();
+}
+
+// Extract the set of imported module names from a BLang source file.
+// Recognizes top-level `import name;` and `import name.sub;` statements,
+// returning just the leading identifier ("name"). Comments and other tokens
+// are ignored well enough for stdlib resolution.
+static set<string> parseImports( const string &path )
+{
+	set<string> imports;
+	string src = readFileToString( path );
+	istringstream in( src );
+	string line;
+	while ( getline( in, line ) )
+	{
+		// Strip a trailing line comment.
+		size_t cpos = line.find( "//" );
+		if ( cpos != string::npos )
+			line = line.substr( 0, cpos );
+
+		// Find the first non-space character.
+		size_t i = 0;
+		while ( i < line.size() && isspace( (unsigned char)line[i] ) )
+			i++;
+		if ( line.compare( i, 7, "import " ) != 0 )
+			continue;
+		i += 7;
+		while ( i < line.size() && isspace( (unsigned char)line[i] ) )
+			i++;
+
+		// Read the leading identifier of the module path.
+		size_t start = i;
+		while ( i < line.size() &&
+			( isalnum( (unsigned char)line[i] ) || line[i] == '_' ) )
+			i++;
+		if ( i > start )
+			imports.insert( line.substr( start, i - start ) );
+	}
+	return imports;
+}
+
+// Given the user's imports, return the stdlib `.b` files to combine, in a
+// dependency-safe order. Only modules the program actually imports are pulled
+// in, so an unused module never pollutes the namespace (e.g. collections' Map).
+static vector<string> resolveStdlibFiles( const string &exeDir,
+	const set<string> &imports )
+{
+	vector<string> files;
+	set<string> handled;
+	auto addIfPresent = [&]( const string &name ) {
+		string candidate = exeDir + "/stdlib/" + name + ".b";
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			files.push_back( candidate );
+		handled.insert( name );
+	};
+
+	// Local's base modules are always combined, in dependency-safe order:
+	// buffer.b must precede fs.b and net.b (they use Buffer). These ship with
+	// the compiler and many programs use them (File, Socket, Buffer) without an
+	// explicit import, so inclusion is unconditional (preserves local behavior).
+	for ( const char *name : { "sys", "buffer", "fs", "net" } )
+		addIfPresent( name );
+
+	// Origin's import-gated extras: only pulled in when the program imports
+	// them, so an unused module never pollutes the namespace (e.g. collections'
+	// Map). Ordered so base modules resolve first under --combine.
+	static const char *kKnownOrder[] = { "collections", "timer" };
+	for ( const char *name : kKnownOrder )
+	{
+		if ( imports.count( name ) && !handled.count( name ) )
+			addIfPresent( name );
+	}
+	// Any other imported name that happens to ship a stdlib file.
+	for ( const string &name : imports )
+	{
+		if ( !handled.count( name ) )
+			addIfPresent( name );
+	}
+	return files;
 }
 
 // Resolve absolute path from a possibly relative path
@@ -734,6 +938,21 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		delete config;
 		return 1;
 	}
+
+	// Resolve stdlib modules imported by the project's own sources (e.g.
+	// `import timer;`). For binaries these are combined into the program so the
+	// stdlib bodies are present; the matching runtime libs are linked below.
+	// Libraries intentionally do NOT embed stdlib (it would duplicate symbols
+	// when a downstream binary imports the same module) — they reference stdlib
+	// declarations and the final binary supplies the bodies.
+	set<string> projImports;
+	for ( const auto &src : sources )
+	{
+		set<string> imp = parseImports( src );
+		projImports.insert( imp.begin(), imp.end() );
+	}
+	vector<string> stdlibFiles = resolveStdlibFiles( exeDir, projImports );
+	bool useCombine = !stdlibFiles.empty() && !config->isLibrary();
 
 	// Compute cache key for this project
 	string tomlContent = readFileToString( projectDir + "/blang.toml" );
@@ -855,7 +1074,43 @@ static int buildProject( const string &projectDir, const string &exeDir,
 	}
 	else
 	{
-		// For binaries: compile and link
+		// For binaries: compile and link. When the program imports stdlib
+		// modules, build in --combine mode so the stdlib sources share scope
+		// with the program and emit a single combined .ll; otherwise keep the
+		// per-source .ll path (which preserves the existing dependency flow).
+		string combinedLL;
+		if ( useCombine )
+		{
+			combinedLL = projectDir + "/" + config->getName() + ".ll";
+			qccCmd = { qcc, "--combine" };
+			for ( const auto &sf : stdlibFiles )
+				qccCmd.push_back( sf );
+			for ( const auto &src : sources )
+				qccCmd.push_back( src );
+			for ( const auto &bmod : depBmodFiles )
+				qccCmd.push_back( bmod );
+			qccCmd.push_back( "-o" );
+			qccCmd.push_back( combinedLL );
+
+			// Forward [database] config so the generated main() opens the
+			// default/named connections at startup.
+			if ( !config->getDbUrl().empty() )
+			{
+				qccCmd.push_back( "--db-driver" );
+				qccCmd.push_back( config->getDbDriver().empty()
+					? "sqlite" : config->getDbDriver() );
+				qccCmd.push_back( "--db-url" );
+				qccCmd.push_back( config->getDbUrl() );
+			}
+			for ( const auto &c : config->getNamedDbConns() )
+			{
+				qccCmd.push_back( "--db-conn" );
+				qccCmd.push_back( c.name );
+				qccCmd.push_back( c.driver.empty() ? "sqlite" : c.driver );
+				qccCmd.push_back( c.url );
+			}
+		}
+
 		int ret = runCommand( qccCmd, verbose, !verbose );
 		if ( ret != 0 )
 		{
@@ -879,13 +1134,31 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			return 1;
 		}
 
-		vector<string> objFiles;
-		for ( const auto &src : sources )
+		// The IR files to compile: a single combined module in --combine mode,
+		// or one per project source otherwise. Track each .ll with the object
+		// name to emit.
+		vector<pair<string,string> > llToObj;
+		if ( useCombine )
 		{
-			string base = getBaseName( src );
-			string srcDir = getDirName( src );
-			string llFile = srcDir + "/" + base + ".ll";
-			string objFile = "/tmp/" + config->getName() + "_" + base + ".o";
+			llToObj.push_back( { combinedLL,
+				"/tmp/" + config->getName() + "_combined.o" } );
+		}
+		else
+		{
+			for ( const auto &src : sources )
+			{
+				string base = getBaseName( src );
+				string srcDir = getDirName( src );
+				llToObj.push_back( { srcDir + "/" + base + ".ll",
+					"/tmp/" + config->getName() + "_" + base + ".o" } );
+			}
+		}
+
+		vector<string> objFiles;
+		for ( const auto &entry : llToObj )
+		{
+			const string &llFile = entry.first;
+			const string &objFile = entry.second;
 
 			if ( access( llFile.c_str(), F_OK ) != 0 )
 				continue;
@@ -905,7 +1178,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			ret = runCommand( llcCmd, verbose );
 			if ( ret != 0 )
 			{
-				cerr << "error: IR compilation failed for " << base << endl;
+				cerr << "error: IR compilation failed for " << getBaseName( llFile ) << endl;
 				delete config;
 				return 1;
 			}
@@ -950,6 +1223,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		const char *bkRuntime = nullptr, *bkString = nullptr, *bkArray = nullptr;
 		const char *bkBuffer = nullptr;
 		const char *bkJson = nullptr, *bkNet = nullptr, *bkFs = nullptr, *bkSys = nullptr;
+		const char *bkDb = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bkRuntime = BCC_RUNTIME_LIB;
 #endif
@@ -974,8 +1248,12 @@ static int buildProject( const string &projectDir, const string &exeDir,
 #ifdef BCC_SYS_LIB
 		bkSys = BCC_SYS_LIB;
 #endif
+#ifdef BCC_DB_LIB
+		bkDb = BCC_DB_LIB;
+#endif
 
 		for ( const auto &lib : {
+			findBuildLib( bkDb, "blang_db" ),
 			findBuildLib( bkSys, "blang_sys" ),
 			findBuildLib( bkFs, "blang_fs" ),
 			findBuildLib( bkNet, "blang_net" ),
@@ -989,6 +1267,17 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( !lib.empty() )
 				linkCmd.push_back( lib );
 		}
+
+		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
+#ifdef BCC_DB_LINKFLAGS
+		{
+			string dbFlags = BCC_DB_LINKFLAGS;
+			istringstream dbf( dbFlags );
+			string tok;
+			while ( dbf >> tok )
+				linkCmd.push_back( tok );
+		}
+#endif
 
 		linkCmd.push_back( "-lpthread" );
 		linkCmd.push_back( "-o" );
@@ -1090,29 +1379,13 @@ int main( int argc, char *argv[] )
 	// Locate qcc (same directory as bcc)
 	string qcc = exeDir + "/qcc";
 
-	// Check for stdlib files to include via --combine
-	// Order matters: buffer.b must come before fs.b and net.b (they use Buffer)
-	vector<string> stdlibFiles;
-	{
-		string candidate = exeDir + "/stdlib/sys.b";
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			stdlibFiles.push_back( candidate );
-	}
-	{
-		string candidate = exeDir + "/stdlib/buffer.b";
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			stdlibFiles.push_back( candidate );
-	}
-	{
-		string candidate = exeDir + "/stdlib/fs.b";
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			stdlibFiles.push_back( candidate );
-	}
-	{
-		string candidate = exeDir + "/stdlib/net.b";
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			stdlibFiles.push_back( candidate );
-	}
+	// Check for stdlib files to include via --combine. Local's base modules
+	// (sys, buffer, fs, net) are always included in dependency order (buffer
+	// before fs/net); origin's import-gated extras (collections, timer, ...)
+	// are pulled in only when the program imports them. The matching runtime
+	// libraries are linked unconditionally in step 3, so any module resolves.
+	vector<string> stdlibFiles =
+		resolveStdlibFiles( exeDir, parseImports( opts.inputFile ) );
 
 	// Step 1: Parse and generate LLVM IR
 	if ( opts.verbose )
@@ -1277,6 +1550,7 @@ int main( int argc, char *argv[] )
 		const char *bakedNet = nullptr;
 		const char *bakedFs = nullptr;
 		const char *bakedSys = nullptr;
+		const char *bakedDb = nullptr;
 #ifdef BCC_RUNTIME_LIB
 		bakedRuntime = BCC_RUNTIME_LIB;
 #endif
@@ -1301,9 +1575,13 @@ int main( int argc, char *argv[] )
 #ifdef BCC_SYS_LIB
 		bakedSys = BCC_SYS_LIB;
 #endif
+#ifdef BCC_DB_LIB
+		bakedDb = BCC_DB_LIB;
+#endif
 
-		// Push in dependency order: sys→fs→net→json→buffer→array→string→runtime
+		// Push in dependency order: db→sys→fs→net→json→buffer→array→string→runtime
 		for ( const auto &lib : {
+			findLib( bakedDb, "blang_db" ),
 			findLib( bakedSys, "blang_sys" ),
 			findLib( bakedFs, "blang_fs" ),
 			findLib( bakedNet, "blang_net" ),
@@ -1317,6 +1595,17 @@ int main( int argc, char *argv[] )
 			if ( !lib.empty() )
 				cmd.push_back( lib );
 		}
+
+		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
+#ifdef BCC_DB_LINKFLAGS
+		{
+			string dbFlags = BCC_DB_LINKFLAGS;
+			istringstream dbf( dbFlags );
+			string tok;
+			while ( dbf >> tok )
+				cmd.push_back( tok );
+		}
+#endif
 
 		cmd.push_back( "-lpthread" );
 

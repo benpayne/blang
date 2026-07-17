@@ -16,6 +16,7 @@
 #include "LocationDumper.h"
 #include "DiagnosticEngine.h"
 #include "Sema.h"
+#include "SchemaMigration.h"
 
 #ifdef BLANG_HAS_LLVM
 #include "CodeGen.h"
@@ -170,6 +171,32 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				structDef->setIsTable( true );
 				structDef->setAnnotations( annotations );
 				mod->mStructList.push_back( structDef );
+
+				// A table struct may also be @json (serialized over the wire);
+				// register the generated to_json/from_json forward declarations
+				// just like a plain @json struct so they resolve at parse time.
+				for ( const auto &ann : annotations )
+				{
+					if ( ann.mName == "json" )
+					{
+						if ( structDef->isGeneric() )
+							COMPILE_ERROR( l, "@json is not yet supported on generic struct '" + structDef->getName() + "' (requires monomorphization)" );
+
+						FunctionDefinition *toJson = new FunctionDefinition( structDef->getName() + "_to_json" );
+						toJson->mReturnType = new Type( "string" );
+						toJson->mParameters.push_back( new VariableDefinition( new Type( structDef->getName() ), "self" ) );
+						toJson->mIsExtern = true;
+						s->addSymbol( toJson );
+
+						FunctionDefinition *fromJson = new FunctionDefinition( structDef->getName() + "_from_json" );
+						fromJson->mReturnType = new Type( structDef->getName() );
+						fromJson->mParameters.push_back( new VariableDefinition( new Type( "string" ), "input" ) );
+						fromJson->mIsExtern = true;
+						s->addSymbol( fromJson );
+						break;
+					}
+				}
+
 				cout << "Completed table struct " << structDef->getName() << endl;
 				continue;
 			}
@@ -467,7 +494,13 @@ int main( int argc, char *argv[] )
 	bool emitTestMain = false;
 	std::string outputFile;
 	std::string emitBmodFile;
+	std::string emitSchemaFile;
 	std::vector<std::string> inputFiles;
+	// Database config forwarded by bcc from blang.toml [database].
+	std::string dbDriver;
+	std::string dbUrl;
+	struct DbConnArg { std::string name, driver, url; };
+	std::vector<DbConnArg> dbNamedConns;
 
 	for ( int i = 1; i < argc; i++ )
 	{
@@ -510,6 +543,53 @@ int main( int argc, char *argv[] )
 			else
 			{
 				std::cerr << "Error: " << arg << " requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--emit-schema" )
+		{
+			if ( i + 1 < argc )
+				emitSchemaFile = argv[++i];
+			else
+			{
+				std::cerr << "Error: --emit-schema requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--db-driver" )
+		{
+			if ( i + 1 < argc )
+				dbDriver = argv[++i];
+			else
+			{
+				std::cerr << "Error: --db-driver requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--db-url" )
+		{
+			if ( i + 1 < argc )
+				dbUrl = argv[++i];
+			else
+			{
+				std::cerr << "Error: --db-url requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--db-conn" )
+		{
+			// --db-conn <name> <driver> <url>
+			if ( i + 3 < argc )
+			{
+				DbConnArg c;
+				c.name = argv[++i];
+				c.driver = argv[++i];
+				c.url = argv[++i];
+				dbNamedConns.push_back( c );
+			}
+			else
+			{
+				std::cerr << "Error: --db-conn requires <name> <driver> <url>" << std::endl;
 				return -1;
 			}
 		}
@@ -568,6 +648,14 @@ int main( int argc, char *argv[] )
 			new Type( "void" ),
 			{ new VariableDefinition( new Type( "string" ), "fmt" ) },
 			true /* variadic */ ) );
+
+		// to_json(value) -> string: serializes a @json-annotated struct.
+		// Variadic so the parser accepts any struct argument; codegen resolves
+		// the concrete type and dispatches to StructName_to_json.
+		gScope->addSymbol( FunctionDefinition::CreateBuiltin( "to_json",
+			new Type( "string" ),
+			{},
+			true /* variadic */ ) );
 	}
 
 	// Register Printable as a builtin protocol
@@ -576,6 +664,16 @@ int main( int argc, char *argv[] )
 			new Type( "string" ),
 			{ new VariableDefinition( new Type( "self" ), "self" ) } );
 		gScope->addSymbol( ProtocolDefinition::CreateBuiltin( "Printable", { toStr } ) );
+	}
+
+	// Register Option<T> and Result<T,E> as builtin generic enums. A program that
+	// defines its own Option/Result enum shadows these (user defs land in a child
+	// scope), so this is backward compatible.
+	{
+		gScope->addType( new Type( "Option" ) );
+		gScope->addSymbol( EnumDefinition::CreateBuiltinOption() );
+		gScope->addType( new Type( "Result" ) );
+		gScope->addSymbol( EnumDefinition::CreateBuiltinResult() );
 	}
 
 	// Parse each input file into its own Module. Each module gets its own
@@ -820,6 +918,29 @@ int main( int argc, char *argv[] )
 		cout << "Wrote .bmod to " << emitBmodFile << endl;
 	}
 
+	// Emit the current schema (table structs) as JSON for `bcc migrate`.
+	if ( !emitSchemaFile.empty() )
+	{
+		std::vector<SmartPtr<StructDefinition>> tableStructs;
+		for ( auto &mod : modules )
+		{
+			if ( mod->isExtern() )
+				continue;
+			for ( auto &s : mod->getStructList() )
+				tableStructs.push_back( s );
+		}
+
+		QLang::SchemaMigration mig;
+		mig.extractSchema( tableStructs );
+		if ( !mig.saveSchema( emitSchemaFile ) )
+		{
+			cerr << "Error: cannot write schema to " << emitSchemaFile << endl;
+			return -1;
+		}
+		cout << "Wrote schema to " << emitSchemaFile << endl;
+		return 0;
+	}
+
 #ifdef BLANG_HAS_LLVM
 	if ( !parseOnly )
 	{
@@ -854,6 +975,9 @@ int main( int argc, char *argv[] )
 			QLang::CodeGen codegen( combinedName.c_str() );
 			codegen.setTestMode( emitTestMain );
 			codegen.registerExternalTypes( allStructs, allEnums );
+			codegen.setDbConfig( dbDriver, dbUrl );
+			for ( auto &c : dbNamedConns )
+				codegen.addDbNamedConn( c.name, c.driver, c.url );
 
 			for ( std::size_t idx = 0; idx < modules.size(); idx++ )
 			{
@@ -944,6 +1068,9 @@ int main( int argc, char *argv[] )
 				const std::string &inputFile = inputFiles[ idx ];
 				QLang::CodeGen codegen( inputFile.c_str() );
 				codegen.setTestMode( emitTestMain );
+				codegen.setDbConfig( dbDriver, dbUrl );
+				for ( auto &c : dbNamedConns )
+					codegen.addDbNamedConn( c.name, c.driver, c.url );
 
 				// Register types from all other modules before generating
 				codegen.registerExternalTypes( allStructs, allEnums );

@@ -103,9 +103,13 @@ add_executable(qcc ${QCC_SOURCES})
 # who want that trace can build with -DJH_VERBOSE_LOGGING.
 set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
+# blang_sqlgen (SQLGen + SchemaMigration) is always needed: codegen uses SQLGen
+# and --emit-schema uses SchemaMigration even in parse-only builds.
+target_link_libraries(qcc blang_sqlgen)
+
 if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
-	target_link_libraries(qcc ${llvm_libs} blang_sqlgen)
+	target_link_libraries(qcc ${llvm_libs})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -225,6 +229,19 @@ else()
 	message(STATUS "SQLite3 not found -- database runtime will use stubs")
 endif()
 
+# Check for libpq (PostgreSQL backend)
+if(PkgConfig_FOUND)
+	pkg_check_modules(LIBPQ QUIET libpq)
+endif()
+if(LIBPQ_FOUND)
+	message(STATUS "Found libpq: ${LIBPQ_VERSION}")
+	target_compile_definitions(blang_db PRIVATE BLANG_HAS_POSTGRES)
+	target_include_directories(blang_db PRIVATE ${LIBPQ_INCLUDE_DIRS})
+	target_link_libraries(blang_db ${LIBPQ_LIBRARIES})
+else()
+	message(STATUS "libpq not found -- PostgreSQL backend disabled")
+endif()
+
 # SHA-256 library (standalone C, used by BuildCache)
 add_library(blang_sha256 STATIC sha256.c)
 set_target_properties(blang_sha256 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -257,15 +274,33 @@ target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang
 target_compile_definitions(bcc PRIVATE BCC_TESTRUNNER_LIB="${CMAKE_BINARY_DIR}/libblang_testrunner.a")
 # Ensure the test-runner driver lib is built before bcc links against it via `bcc test`.
 add_dependencies(bcc blang_testrunner)
+target_compile_definitions(bcc PRIVATE BCC_DB_LIB="${CMAKE_BINARY_DIR}/libblang_db.a")
+# Linker flags for the DB backend(s) (e.g. -lsqlite3, -lpq) baked into bcc so
+# final binaries that use the DB runtime link the right system libraries.
+set(BCC_DB_LDFLAGS_LIST "")
+if(SQLITE3_FOUND)
+	list(APPEND BCC_DB_LDFLAGS_LIST ${SQLITE3_LDFLAGS})
+endif()
+if(LIBPQ_FOUND)
+	list(APPEND BCC_DB_LDFLAGS_LIST ${LIBPQ_LDFLAGS})
+endif()
+string(REPLACE ";" " " BCC_DB_LDFLAGS_STR "${BCC_DB_LDFLAGS_LIST}")
+target_compile_definitions(bcc PRIVATE BCC_DB_LINKFLAGS="${BCC_DB_LDFLAGS_STR}")
+# bcc runs schema migrations in-process (SchemaMigration) and applies them
+# against the database (blang_db + SQLite backend).
+target_link_libraries(bcc blang_sqlgen blang_db)
 message(STATUS "bcc: C compiler = ${CMAKE_C_COMPILER}")
 message(STATUS "bcc: host arch = ${CMAKE_SYSTEM_PROCESSOR}")
 
-# Copy stdlib .b files alongside executables for --combine auto-include
+# Copy stdlib .b files alongside executables so bcc can resolve `import` to the
+# matching stdlib/<name>.b at compile time. Globs all modules so new ones are
+# picked up automatically.
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/stdlib)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/buffer.b ${CMAKE_BINARY_DIR}/stdlib/buffer.b COPYONLY)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/net.b ${CMAKE_BINARY_DIR}/stdlib/net.b COPYONLY)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/fs.b ${CMAKE_BINARY_DIR}/stdlib/fs.b COPYONLY)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/stdlib/sys.b ${CMAKE_BINARY_DIR}/stdlib/sys.b COPYONLY)
+file(GLOB STDLIB_FILES ${CMAKE_CURRENT_SOURCE_DIR}/stdlib/*.b)
+foreach(stdlib_file ${STDLIB_FILES})
+	get_filename_component(stdlib_name ${stdlib_file} NAME)
+	configure_file(${stdlib_file} ${CMAKE_BINARY_DIR}/stdlib/${stdlib_name} COPYONLY)
+endforeach()
 
 if(LIBUV_FOUND)
 	target_compile_definitions(bcc PRIVATE BCC_HAS_LIBUV)

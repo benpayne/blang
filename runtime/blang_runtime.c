@@ -15,6 +15,46 @@ static int g_loop_running = 0;
 #endif
 
 /* ========================================================================
+   Allocation helpers
+
+   The BLang runtime treats heap exhaustion as a fatal, unrecoverable error:
+   there is no language-level mechanism for a program to handle OOM, so the
+   only safe behaviour is to abort with a diagnostic rather than return NULL
+   and let generated code dereference it.  All internal allocations route
+   through these helpers so the policy is enforced in exactly one place.
+   ======================================================================== */
+
+void __blang_oom( const char *what )
+{
+	fprintf( stderr, "blang: out of memory (%s)\n",
+		what != NULL ? what : "allocation" );
+	abort();
+}
+
+void *__blang_alloc( size_t size )
+{
+	/* Guard against zero-size allocations returning a non-usable pointer. */
+	if ( size == 0 )
+		size = 1;
+	void *p = malloc( size );
+	if ( p == NULL )
+		__blang_oom( "malloc" );
+	return p;
+}
+
+void *__blang_calloc( size_t count, size_t size )
+{
+	if ( count == 0 )
+		count = 1;
+	if ( size == 0 )
+		size = 1;
+	void *p = calloc( count, size );
+	if ( p == NULL )
+		__blang_oom( "calloc" );
+	return p;
+}
+
+/* ========================================================================
    ARC (Automatic Reference Counting)
    ======================================================================== */
 
@@ -26,9 +66,7 @@ static BlangRefHeader *get_header( void *ptr )
 
 void *__blang_rc_alloc( size_t data_size )
 {
-	BlangRefHeader *hdr = (BlangRefHeader *)calloc( 1, sizeof( BlangRefHeader ) + data_size );
-	if ( hdr == NULL )
-		return NULL;
+	BlangRefHeader *hdr = (BlangRefHeader *)__blang_calloc( 1, sizeof( BlangRefHeader ) + data_size );
 	hdr->ref_count = 1;
 	hdr->is_sync = 0;
 	hdr->mutex = NULL;
@@ -38,9 +76,7 @@ void *__blang_rc_alloc( size_t data_size )
 
 void *__blang_rc_alloc_dtor( size_t data_size, blang_dtor_fn dtor )
 {
-	BlangRefHeader *hdr = (BlangRefHeader *)calloc( 1, sizeof( BlangRefHeader ) + data_size );
-	if ( hdr == NULL )
-		return NULL;
+	BlangRefHeader *hdr = (BlangRefHeader *)__blang_calloc( 1, sizeof( BlangRefHeader ) + data_size );
 	hdr->ref_count = 1;
 	hdr->is_sync = 0;
 	hdr->mutex = NULL;
@@ -50,9 +86,7 @@ void *__blang_rc_alloc_dtor( size_t data_size, blang_dtor_fn dtor )
 
 void *__blang_rc_alloc_sync( size_t data_size )
 {
-	BlangRefHeader *hdr = (BlangRefHeader *)calloc( 1, sizeof( BlangRefHeader ) + data_size );
-	if ( hdr == NULL )
-		return NULL;
+	BlangRefHeader *hdr = (BlangRefHeader *)__blang_calloc( 1, sizeof( BlangRefHeader ) + data_size );
 	hdr->ref_count = 1;
 	hdr->is_sync = 1;
 	hdr->destructor = NULL;
@@ -221,7 +255,7 @@ BlangSpawnTask *__blang_spawn( blang_spawn_fn fn, void *ctx )
 {
 	tracker_init();
 
-	BlangSpawnTask *task = (BlangSpawnTask *)calloc( 1, sizeof( BlangSpawnTask ) );
+	BlangSpawnTask *task = (BlangSpawnTask *)__blang_calloc( 1, sizeof( BlangSpawnTask ) );
 	pthread_mutex_init( &task->mutex, NULL );
 	pthread_cond_init( &task->done_cond, NULL );
 	task->completed = 0;
@@ -233,15 +267,26 @@ BlangSpawnTask *__blang_spawn( blang_spawn_fn fn, void *ctx )
 	g_tracker.tasks_in_flight++;
 	if ( g_tracker.handle_count >= g_tracker.handle_capacity )
 	{
-		g_tracker.handle_capacity *= 2;
-		g_tracker.handles = (BlangSpawnTask **)realloc(
+		int new_capacity = g_tracker.handle_capacity * 2;
+		/* realloc into a temporary so the original block is not leaked if the
+		   reallocation fails. */
+		BlangSpawnTask **grown = (BlangSpawnTask **)realloc(
 			g_tracker.handles,
-			g_tracker.handle_capacity * sizeof( BlangSpawnTask * ) );
+			new_capacity * sizeof( BlangSpawnTask * ) );
+		if ( grown == NULL )
+		{
+			pthread_mutex_unlock( &g_tracker.mutex );
+			__blang_oom( "spawn handle table" );
+		}
+		g_tracker.handles = grown;
+		g_tracker.handle_capacity = new_capacity;
 	}
 	g_tracker.handles[g_tracker.handle_count++] = task;
 	pthread_mutex_unlock( &g_tracker.mutex );
 
-	/* Create a detached thread for this spawn. */
+	/* Create a joinable thread for this spawn.  The handle is tracked so the
+	   thread can be joined at wait/shutdown time (see __blang_runtime_shutdown),
+	   which is what guarantees spawned work completes and is freed. */
 	pthread_attr_t attr;
 	pthread_attr_init( &attr );
 	pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_JOINABLE );
@@ -352,11 +397,13 @@ BlangChan *__blang_chan_create( size_t elem_size, size_t capacity )
 {
 	if ( capacity == 0 )
 		capacity = 1;  /* minimum buffer of 1 for rendezvous */
+	if ( elem_size == 0 )
+		elem_size = 1; /* avoid zero-stride ring buffer math */
 
-	BlangChan *ch = (BlangChan *)calloc( 1, sizeof( BlangChan ) );
+	BlangChan *ch = (BlangChan *)__blang_calloc( 1, sizeof( BlangChan ) );
 	ch->elem_size = elem_size;
 	ch->capacity = capacity;
-	ch->buffer = calloc( capacity, elem_size );
+	ch->buffer = __blang_calloc( capacity, elem_size );
 	ch->head = 0;
 	ch->tail = 0;
 	ch->count = 0;

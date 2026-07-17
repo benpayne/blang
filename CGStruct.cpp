@@ -779,11 +779,40 @@ llvm::Value *CodeGen::genArrayMethodCall( MethodCallExpression *expr )
 		if ( elemVal == nullptr )
 			return nullptr;
 
-		// Retain strings pushed into arrays so they survive scope cleanup.
-		// The array takes ownership; the scope would otherwise release the
-		// original variable, leaving a dangling pointer in the array.
-		if ( isStringType( expr->mArgs[0] ) )
-			mBuilder->CreateCall( getOrDeclareStringRetain(), { elemVal } );
+		// Retain refcounted elements pushed into arrays so the array's owned
+		// reference (released via the elem_dtor set at array creation) is real;
+		// __blang_array_push does not retain. See emitArrayElemRetain. The
+		// array's declared Array<T> element type is the authoritative key (it
+		// matches the elem_dtor); fall back to the arg's resolved type.
+		{
+			std::string pushElemType;
+			Type *arrElemQType = nullptr;
+			if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
+			{
+				Type *vt = ve->mVariable->getVariableType();
+				if ( vt != nullptr && vt->getNumTypeParams() > 0 )
+					arrElemQType = vt->getTypeParam( 0 );
+			}
+			else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mObject ) )
+			{
+				Type *ft = getFieldType( fa );
+				if ( ft != nullptr && ft->getNumTypeParams() > 0 )
+					arrElemQType = ft->getTypeParam( 0 );
+			}
+			if ( arrElemQType != nullptr )
+			{
+				std::string en = arrElemQType->getName();
+				auto subIt = mTypeSubstitution.find( en );
+				pushElemType = subIt != mTypeSubstitution.end()
+					? subIt->second->getName() : en;
+			}
+			if ( pushElemType.empty() )
+			{
+				if ( Type *argQType = ( (Expression*)expr->mArgs[0] )->getResolvedType() )
+					pushElemType = argQType->getName();
+			}
+			emitArrayElemRetain( elemVal, pushElemType );
+		}
 
 		// Determine element type from Array<T> and cast if needed
 		llvm::Type *elemType = elemVal->getType();

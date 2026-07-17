@@ -65,8 +65,9 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── SQLGen.h / SQLGen.cpp      # SQL generation from query AST nodes (SELECT/INSERT/UPDATE/DELETE, CREATE TABLE)
 ├── SchemaMigration.h / SchemaMigration.cpp # Schema migration engine (diff, CREATE/ALTER TABLE, preview/apply)
 ├── stdlib/
-│   ├── net.b                  # BLang networking stdlib (Socket, ServerSocket, Selector structs + impl methods)
+│   ├── net.b                  # BLang networking stdlib (Socket, ServerSocket, Selector, HttpServer + routing)
 │   ├── fs.b                   # BLang file I/O stdlib (File, FileInfo structs + open/read/write/stat/mkdir/list_dir)
+│   ├── timer.b                # Timers + event loop (timer.every/after, run/stop) for `on` handlers
 │   └── io.b                   # Shared FileOps protocol documentation (currently duplicated in net.b and fs.b)
 ├── LexerTest.cpp              # Basic lexer test program
 ├── LexerTest2.cpp             # Advanced lexer test with position save/restore
@@ -74,7 +75,8 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── test_files/                # Test cases organized in pass/, fail/, cgfail/, xfail/ subdirectories
 ├── test_build/                # Build system integration tests (lib + bin project pairs)
 │   ├── mathlib/               # Test library project (blang.toml type=lib, pub fn add/multiply)
-│   └── myapp/                 # Test binary project (blang.toml type=bin, depends on mathlib)
+│   ├── myapp/                 # Test binary project (blang.toml type=bin, depends on mathlib)
+│   └── timerapp/              # Test binary project (blang.toml type=bin, imports stdlib timer)
 ├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/cgfail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> link -> run)
 ├── docs/
@@ -85,7 +87,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   ├── blang_string.h/c      # Safe string runtime (BlangString: refcounted, immutable, heap-allocated)
 │   ├── blang_array.h/c       # Safe array runtime (BlangArray: refcounted, bounds-checked, growable)
 │   ├── blang_json.h/c        # JSON encode/decode library (for @json annotation support)
-│   ├── blang_net.h/c         # TCP socket + poll-based Selector runtime (listen, accept, connect, read, write, event loop)
+│   ├── blang_net.h/c         # TCP socket + poll-based Selector + global event loop with timerfds (listen, accept, connect, read, write, timers)
 │   ├── blang_fs.h/c          # File I/O + directory operations (open/close/read/write/seek/flush, stat/remove/mkdir/list_dir)
 │   └── blang_db.h/c          # Database abstraction layer (connection, query, result; optional SQLite backend)
 ├── .github/
@@ -184,9 +186,25 @@ type = "bin"          # "lib" emits .a + .bmod; "bin" (default) emits executable
 
 [deps]
 mathlib = { path = "../mathlib" }
+
+[database]                         # optional — default connection for queries/migrations
+driver = "sqlite"                  # "sqlite" (tested) or "postgres" (requires libpq)
+url = "app.db"                     # connection string; "env:DATABASE_URL" resolves at runtime
+
+[database.analytics]               # optional named connection for @db("analytics") routing
+driver = "postgres"
+url = "env:ANALYTICS_URL"
 ```
 
+The default `[database]` connection is opened in `main()` at startup and used by
+`query`/`insert`/`update`/`delete` on tables without a `@db("name")` annotation;
+`[database.<name>]` connections back `@db("name")` routing. With no `[database]`
+section, the runtime falls back to the `BLANG_DATABASE_URL` environment variable
+on first use (driver from `BLANG_DATABASE_DRIVER`, default sqlite).
+
 **Build flow**: Dependencies are built recursively in topological order. Each dependency's artifacts (.a + .bmod) are cached in `~/.cache/blang/objects/<sha256>/`. On cache hit, the build is skipped. `.bmod` files are passed to `qcc` for type resolution; `.a` files are linked into the final binary.
+
+**Stdlib in projects**: a binary project's `import <name>;` statements are resolved to `stdlib/<name>.b` and combined into the program (single combined `.ll`), so `import timer;` / `import net;` work in `bcc build` just as in single-file mode. Library projects do **not** embed stdlib (doing so would duplicate symbols when a downstream binary imports the same module); a lib that uses stdlib should leave the bodies to the final binary.
 
 **No blang.toml**: When no `blang.toml` is present, `bcc` operates in single-file mode (`bcc hello.b -o hello`) — fully backward compatible.
 
@@ -470,6 +488,7 @@ The runtime C libraries have dependency-free unit tests registered with CTest (t
   - Wildcard pattern: `_ { ... }` (default/catch-all)
   - Destructuring with bindings: `ok(value) { ... }`, `some(x) { ... }`
 - Expressions: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
+- **Built-in `Option<T>` / `Result<T,E>`**: available without any user definition — `Option.some(x)`/`Option.none`, `Result.ok(x)`/`Result.err(e)`, consumed via `match` and `?`. A user-defined `Option`/`Result` shadows the built-in.
 - **`?` try operator**: `expr?` postfix operator for error propagation (unwraps Result/Option, returns early on error)
 - Assignment operators: `=`, `+=`, `-=`, `*=`, `/=`
 - **Import statements**: `import std;`, `import std.io;` (dotted module paths)
@@ -487,9 +506,10 @@ The runtime C libraries have dependency-free unit tests registered with CTest (t
 - **Named function references** — passing named functions as callback values: `apply(double_it, 5)` wraps via a thunk
 - **Ownership qualifiers** — `own`, `shared`, `sync` on variable declarations
 - **Spawn blocks** — `spawn { ... }` for green thread creation
+- **Channels** — `chan<T>` typed channels with `.send(value)`, `.close()`, and `.recv() -> Option<T>` (`some(value)` on success, `none` when closed and empty) operations (buffered, thread-safe; usable across `spawn` boundaries)
 - **Async functions** — `async fn name() { }` for event-loop scheduled functions
 - **Await expressions** — `await expr` for async value retrieval
-- **Event handlers** — `on expr { ... }` for event-driven programming
+- **Event handlers** — `on expr { ... }` registers the body on the global event loop keyed by the fd `expr` yields (e.g. `on timer.every(1000) { ... }`). Registration does **not** fire the handler; the program enters the loop explicitly with `timer.run()`, which blocks until stopped (`timer.stop()`) or until no event sources remain (e.g. all one-shot timers have fired). Keeping the loop entry explicit means code before `run()` runs to completion first — nothing in the `main` body is silently preempted by a timer. `timer.after(ms)` (one-shot), `timer.cancel(source)` (remove one timer) are also available. Timer + socket fds share one poll loop.
 - **Contract clauses** — `requires expr` and `ensures expr` on function declarations
 - **Test blocks** — `test "name" { ... }` for built-in unit testing
 - **Assert statements** — `assert expr;` and `assert expr, "message";`
@@ -503,6 +523,7 @@ The runtime C libraries have dependency-free unit tests registered with CTest (t
 - **Boolean constants** — `true` and `false` as first-class constant expressions
 - **Builtin print/println** — `print("hello {}", name)` and `println("{:.2f}", pi)` with compile-time format string validation, positional `{}` placeholders, format specifiers (`{:x}`, `{:X}`, `{:o}`, `{:b}`, `{:.Nf}`, `{:e}`), and `Printable` protocol support for user-defined types
 - **Printable protocol** — builtin protocol with `to_string(self) -> string`; structs implementing it can be used in `{}` print placeholders
+- **Builtin `to_json`** — `to_json(value)` serializes a `@json`-annotated struct to a JSON string (compile-time dispatch to `StructName_to_json`; compile error if not `@json`). Composes for auto-JSON HTTP responses: `net.http_json(to_json(user))`
 - **`@format` annotation** — validates call-site format strings against arguments at compile time for user-defined format functions
 
 ## Project Status
@@ -525,10 +546,11 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
 
 ## Known Issues and Limitations
 
-- Channel send/receive operations lack parser syntax — only `chan<T>` variable declarations are codegen'd.
+- Built-in `Option<T>`/`Result<T,E>` use a type-erased pointer-sized (8-byte) payload, so a variant payload must fit in 8 bytes — fine for all primitives, pointers, and heap structs (structs are heap-allocated), but a by-value payload larger than 8 bytes is not supported. The concrete type argument is recovered at the match/`?` site from the subject's static type; expressions whose static type does not carry the type argument fall back to the erased slot.
 - Async function return value boxing/unboxing is simplified (heap-allocated, not yet optimized).
-- Event handler registration requires runtime event loop API (currently executes inline as a fallback).
-- Database query codegen uses NULL connection pointer — needs global DB connection management.
+- Event handlers (`on EXPR { }`) register on the global poll-based event loop when EXPR yields an fd (timerfd/socket fd); registration does not fire the handler — the program enters the loop explicitly with `timer.run()` (blocks until `timer.stop()` or no sources remain). This is deliberate: it keeps control flow explicit (no hidden loop after `main`) and avoids the footgun where blocking work in `main` would silently delay handlers. A non-fd event expression still falls back to inline invocation. The HTTP server's Selector is a separate loop instance (not yet unified with the global `on` loop).
+- Query result sets ARE mapped back to BLang values: `query T |> ...` returns an `Array<T>`, mapping each result row to a heap-allocated `T` (SELECT * column order == struct field order; int/float/string/bool columns supported), so `Array<Todo> todos = query Todo;` then `for t in todos { ... }` / `todos[i]` works. `insert`/`update`/`delete` still return affected-row counts. Not yet mapped: `|> first` → `Option<T>` (single-row), and columns whose struct field is itself a nested struct/array (left null).
+- PostgreSQL backend is implemented (libpq, with `?`→`$n` placeholder rewrite) but only compiled when `libpq-dev` is present and has not been exercised in CI; SQLite is the tested backend. Connection pooling is not implemented — the process uses a single shared default connection per name (sufficient for SQLite/single-threaded use).
 - Multi-module codegen shares type definitions (structs/enums) across modules. Cross-module function linking works via `.bmod` interface files and `bcc build` (functions from deps are auto-declared as extern and linked from `.a` archives).
 - Generic functions from dependencies: `.bmod` includes the signature but monomorphization requires the body. Consumer gets a linker error if they try to instantiate a generic from a dep. Full support requires shipping function bodies or pre-instantiated variants.
 - Git dependencies (`deps.foo = { git = "...", tag = "v1.0" }`) are parsed in blang.toml but not yet fetched — only local path deps work currently.
