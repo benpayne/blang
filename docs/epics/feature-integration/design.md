@@ -4,7 +4,7 @@
 
 ## Context (measured 2026-07-16)
 
-Common ancestor: `e8c6fc5`. Local `master` ahead 40 / behind `origin/master` 27.
+Common ancestor: `e8c6fc5`. Local `master` ahead 41 / behind `origin/master` 27.
 
 **Local stream (the target architecture):**
 - Split monolithic `CodeGen.cpp` into 7 modules: `CGEnum`, `CGExpressions`,
@@ -40,7 +40,7 @@ through `Sema`.
 | D2 | Merge commit, not rebase | Preserve both histories + the devbot audit trail; avoid rewriting 40 verified commits | Rebase local onto origin |
 | D3 | Match-exhaustiveness: local's `Sema` version wins; port missing cases from origin's; delete origin's inline copy | One implementation; `Sema` is where checking lives now | Keep both (dead/divergent code) |
 | D4 | Land units on a shared integration **base branch**, not `master`; only U8 touches `master`/`origin` | Units build on each other's ports; keeps `master` clean until fully verified | Merge each unit to master (half-integrated master) |
-| D5 | U1 parks un-homed origin codegen behind `// TODO(feature-integration U#)` so the tree compiles from the start | A compiling baseline makes every later unit independently testable | Big-bang resolve everything in one unit |
+| D5 | U1 parks un-homed origin codegen behind `// TODO(feature-integration U#)` AND lists origin's not-yet-ported `codegen_*.b` tests in `test_files/codegen_parked.txt` (which `test_codegen.sh` skips) | A compiling baseline + a skip list keeps `test_codegen.sh` honestly green at U1; the list is a visible burn-down — each of U2–U6 removes its entries, U8 requires it empty | Big-bang resolve; or leave the suite red at U1 with no disposition (manager can't tell parked from broken) |
 
 ## Conflict map (which unit owns each)
 
@@ -54,6 +54,21 @@ through `Sema`.
 | `bcc.cpp` — test subcommand vs migrate/db-config forwarding | additive | U1 (keep both) |
 | `CodeGen.cpp` — origin's +1100 inline features vs local's split | **structural** | U1 parks; U2–U6 port per subsystem |
 | `SQLGen*`, `SchemaMigration*`, `ProjectConfig*`, `blang_db*` | origin-only files | U1 brings in; U5 wires codegen |
+| `demos/Makefile` + demo **#14 collision** (`14_file_server.b` vs origin `14_timer.b`) | rename + `NET_DEMOS` merge | U1 (renumber origin's to `demos/15_timer.b`); U3 owns the timer demo |
+| origin `cgfail/*_non_exhaustive.b`, `to_json_not_annotated`, `query_bad_field` | codegen-time rejections that become **Sema (all-mode)** rejections | relocate to `fail/sema/` with `.b.expected` (U2 chan, U4 match/option, U5 db, U6 to_json); raises the ≥26 `fail/sema` floor |
+
+### Predicted `CG*` ownership (parallelism is optimistic — serialize collisions)
+
+| Unit | Primary `CG*`/Sema files | Collides with |
+|------|--------------------------|---------------|
+| U2 channels | `CGExpressions`, `CGStatements`, Sema | U5 (CGExpressions), U3 (CGStatements) |
+| U3 event loop | `CGStatements`, `CGRuntime`, EventHandler | U2 (CGStatements) |
+| U4 option/result/match | `CGEnum`, `Sema`, `CGTypes` | (mostly disjoint) |
+| U5 database | `CGExpressions`, SQLGen wiring | U2 (CGExpressions) |
+| U6 to_json/http | `CodeGen`/`CGStruct`, stdlib/net | (mostly disjoint) |
+
+The manager should serialize **U2 with U5** (both edit `CGExpressions.cpp`) and
+**U2 with U3** (both edit `CGStatements.cpp`); U4 and U6 can run alongside.
 
 ## Interfaces & contracts (must hold post-merge)
 - `Sema` still runs in every build mode; blang-ast's `fail/sema/*` fixtures

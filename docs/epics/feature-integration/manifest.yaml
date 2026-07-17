@@ -18,19 +18,22 @@ run:
        all build with no errors.
     2. Both test suites green: ./run_tests.sh (LLVM + parse-only) and
        ./test_codegen.sh (with goldens) pass; ctest --test-dir build passes;
-       build-fuzz/fuzz_parse test_files/fuzz/corpus/ -runs=0 exits 0.
-    3. blang-ast enforcement intact: test_files/fail/sema/*.b (26 fixtures incl.
-       audit_01..10) still rejected with located file:line:col: error:; Sema
-       still runs in all build modes.
+       build-fuzz/fuzz_parse test_files/fuzz/corpus/ -runs=0 exits 0. (The
+       test-validation gates survive the merge.)
+    3. blang-ast enforcement intact: test_files/fail/sema/*.b (26 fixtures
+       incl. audit_01..10) still rejected with located file:line:col: error:;
+       Sema still runs in all build modes.
     4. Origin's features work: channel send/recv, event loop, Option/Result,
-       exhaustive match, HTTP routing, and the database layer each have a passing
-       codegen/E2E test (origin's own tests + demos, incl. the todo app, build
-       and run); bcc migrate functions.
+       exhaustive match, HTTP routing, and the database layer each pass their named
+       origin codegen_*.b test (per evaluation.md); the todo-app E2E
+       (examples/todo_app/test_todo_app.sh) passes and bcc migrate functions;
+       codegen_parked.txt is empty.
     5. No duplicate/dead code: match-exhaustiveness has a single implementation
-       (reconciled through Sema); no orphaned copies of ported functions remain
-       in CodeGen.cpp vs the CG* modules.
-    6. History: git log shows one merge commit joining the two lines; git status
-       reports master up to date with origin/master (pushed), working tree clean.
+       (reconciled through Sema); no orphaned copies of ported functions remain in
+       CodeGen.cpp vs the CG* modules.
+    6. History: git log shows one merge commit joining the two lines; git
+       status reports master up to date with origin/master (pushed), working
+       tree clean.
 
   guidance: |
     Start by reading docs/epics/feature-integration/overview.md and companions
@@ -50,7 +53,7 @@ run:
 
   oversight_level: fully_autonomous
   limits:
-    max_turns: 500
+    max_turns: 700
     max_runtime_seconds: 1209600        # 14 days
     session_token_limit: 50000000       # 50M
     no_progress_threshold: 10
@@ -63,49 +66,49 @@ units:
     reqs: [REQ-001]
     summary: Base merge + mechanical/additive conflicts + separable DB files; compiling baseline with parked codegen
     depends_on: []
-    done: "integration branch builds (LLVM); run_tests both modes green; origin inline codegen parked behind TODO(U#); no sema/golden regressions"
+    done: "integration branch builds (LLVM); run_tests both modes green; test_codegen green with codegen_parked.txt excluding origin feature tests; demos/Makefile #14 collision resolved (origin->15_timer); no sema/golden regressions"
     speckit: base-merge
   - id: U2
     reqs: [REQ-003]
     summary: Port channel send/recv codegen into CG*/Sema
     depends_on: [U1]
-    done: "channel test compiles+runs; send/recv type-checked by Sema; suites green"
+    done: "./test_codegen.sh codegen_channel.b/_closed.b/_spawn.b exit 0; removed from codegen_parked.txt; chan_recv_non_exhaustive relocated to fail/sema; Sema type-checks send/recv; suites green"
     speckit: channels
   - id: U3
     reqs: [REQ-004]
     summary: Port event loop + timers (on-registration, run(), idle-exit)
     depends_on: [U1]
-    done: "event-loop test/demo builds+runs; on registers not inline-calls; suites green"
+    done: "./test_codegen.sh codegen_timer_event/_cancel/_oneshot/_helper.b exit 0; removed from parked; on registers not inline-calls; demos/15_timer.b builds; suites green"
     speckit: event-loop
   - id: U4
     reqs: [REQ-005]
     summary: Built-in Option/Result + de-duplicate match-exhaustiveness (keep Sema, delete origin inline)
     depends_on: [U1]
-    done: "non-exhaustive match rejected via Sema located error; Option/Result built-in; grep shows single match-exhaustiveness impl; suites green"
+    done: "codegen_builtin_option/_result/match_exhaustive/match_wildcard_enum.b exit 0; origin cgfail non-exhaustive relocated to fail/sema (located error, parse-only); grep -rl 'non-exhaustive match' Sema.cpp ==1 AND none in CodeGen.cpp/CG*.cpp; suites green"
     speckit: option-result-match
   - id: U5
     reqs: [REQ-002]
     summary: Database codegen + driver dispatch + bcc migrate wired into CG* structure
     depends_on: [U1]
-    done: "origin DB codegen test passes (sqlite-guarded); bcc migrate --preview/--apply works; todo app builds; suites green"
+    done: "codegen_db_query/_rows.b pass (sqlite-guarded); removed from parked; examples/todo_app/test_todo_app.sh passes (bcc build->migrate --apply->run); suites green"
     speckit: database
   - id: U6
     reqs: [REQ-006]
     summary: HTTP routing (.get/.post) + builtin to_json integrated with stdlib/net HTTP
     depends_on: [U1]
-    done: "HTTP-routing demo/test builds+runs; to_json works; suites green"
+    done: "codegen_http_routing/_json_response/to_json_builtin.b exit 0; removed from parked; http_routing added to both quarantine lists (diff-equal); demos/13_http_server.b builds; suites green"
     speckit: http-routing
   - id: U7
     reqs: [REQ-007]
     summary: Reconcile CI — both epics' job sets + origin DB codegen leg coexist green
     depends_on: [U2, U3, U4, U5, U6]
-    done: "ci.yml has both job sets; CI run on integration branch green"
+    done: "ci.yml has both epics job sets + origin DB codegen leg; gh CI run on integration branch = success"
     speckit: ci-reconcile
   - id: U8
     reqs: [REQ-008]
     summary: Full verification, merge to master (single merge commit), push to origin
     depends_on: [U1, U2, U3, U4, U5, U6, U7]
-    done: "evaluation.md Epic-level acceptance passes; master pushed to origin; working tree clean"
+    done: "evaluation.md Epic-level acceptance passes; codegen_parked.txt empty; master pushed to origin; working tree clean"
     speckit: verify-and-merge
 
 foldback:

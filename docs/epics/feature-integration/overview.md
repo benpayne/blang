@@ -15,7 +15,7 @@ ancestor `e8c6fc5`.
 ## Why
 
 Local `master` and `origin/master` diverged into **two independent feature
-streams** from common ancestor `e8c6fc5` (ahead 40 / behind 27):
+streams** from common ancestor `e8c6fc5` (ahead 41 / behind 27):
 
 - **Local (40 commits)** — the devbot epics: **blang-ast** (a dedicated `Sema`
   pass, source locations, `DiagnosticEngine`, type checking, match/generics
@@ -55,9 +55,10 @@ pushed to `origin`, all of the following hold (concrete commands in
    incl. `audit_01..10`) still rejected with located `file:line:col: error:`;
    `Sema` still runs in all build modes.
 4. **Origin's features work**: channel send/recv, event loop, `Option`/`Result`,
-   exhaustive match, HTTP routing, and the database layer each have a passing
-   codegen/E2E test (origin's own tests + demos, incl. the todo app, build and
-   run); `bcc migrate` functions.
+   exhaustive match, HTTP routing, and the database layer each pass their named
+   origin `codegen_*.b` test (per evaluation.md); the todo-app E2E
+   (`examples/todo_app/test_todo_app.sh`) passes and `bcc migrate` functions;
+   `codegen_parked.txt` is empty.
 5. **No duplicate/dead code**: match-exhaustiveness has a single implementation
    (reconciled through `Sema`); no orphaned copies of ported functions remain in
    `CodeGen.cpp` vs the `CG*` modules.
@@ -121,4 +122,5 @@ pushed to `origin`, all of the following hold (concrete commands in
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
-| 2026-07-16 | — | epic created | Reconciliation of local (devbot epics) vs origin (feature line) found to be a structural+semantic re-integration; scoped as an epic. Ancestor e8c6fc5; local ahead 40 / behind 27; merge = 65 files / +12k lines. |
+| 2026-07-16 | — | epic created | Reconciliation of local (devbot epics) vs origin (feature line) found to be a structural+semantic re-integration; scoped as an epic. Ancestor e8c6fc5; local ahead 41 / behind 27; merge = 65 files / +12k lines. |
+| 2026-07-16 | — | readiness review round 1 | Fresh-context + self audit; 7 findings. Fixes: named every origin feature test (all exist); added codegen_parked.txt skip mechanism (F2 — suite was going red at U1); fixed exhaustiveness grep to 'non-exhaustive match' string anchor (1 in Sema, 0 in codegen); corrected todo-app gate (examples/todo_app/test_todo_app.sh) + demos #14 collision (origin->15_timer) + NET_DEMOS build-only; relocate origin cgfail non-exhaustive → fail/sema; quarantine/golden reconciliation on U2/U3/U6; CG* ownership matrix; max_turns 500→700; ahead 40→41. done_condition re-synced verbatim. |
