@@ -8,10 +8,6 @@
 # Blank lines and lines beginning with '#' are ignored. One test basename (with
 # or without the .b suffix) per line.
 
-# --- U5: database codegen + bcc migrate ---
-codegen_db_query.b
-codegen_db_query_rows.b
-
 # --- U6: HTTP routing + builtin to_json ---
 codegen_http_routing.b
 codegen_http_json_response.b

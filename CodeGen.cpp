@@ -735,6 +735,48 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 			{ llvmFunc->getArg( llvmFunc->arg_size() - 2 ),
 			  llvmFunc->getArg( llvmFunc->arg_size() - 1 ) } );
 
+		// Open database connections configured via blang.toml ([database] /
+		// [database.<name>]), forwarded by bcc through qcc --db-* flags into
+		// setDbConfig()/addDbNamedConn(). The default connection backs unrouted
+		// query/insert/update/delete; named connections back @db("name") routing.
+		// With no config the runtime lazily falls back to BLANG_DATABASE_URL on
+		// first use, so this is only emitted when a url/named connection was
+		// actually provided. (Ported from origin's monolith.)
+		if ( !mDbUrl.empty() || !mDbNamedConns.empty() )
+		{
+			llvm::Type *dbPtrTy = llvm::PointerType::get( *mContext, 0 );
+			llvm::Type *dbI32Ty = llvm::Type::getInt32Ty( *mContext );
+			llvm::Value *dbNull = llvm::ConstantPointerNull::get(
+				llvm::PointerType::get( *mContext, 0 ) );
+
+			auto emitOpen = [&]( const std::string &driver,
+				const std::string &url ) -> llvm::Value *
+			{
+				int drvEnum = ( driver == "postgres" || driver == "postgresql" ||
+					driver == "pg" ) ? 1 : 0;
+				llvm::Value *drvVal = llvm::ConstantInt::get( dbI32Ty, drvEnum );
+				llvm::Value *urlVal = mBuilder->CreateGlobalStringPtr( url, "db.url" );
+				llvm::AllocaInst *errSlot =
+					mBuilder->CreateAlloca( dbPtrTy, nullptr, "db.open.err" );
+				mBuilder->CreateStore( dbNull, errSlot );
+				return mBuilder->CreateCall( getOrDeclareDbOpen(),
+					{ drvVal, urlVal, errSlot }, "db.open" );
+			};
+
+			if ( !mDbUrl.empty() )
+			{
+				llvm::Value *conn = emitOpen( mDbDriver, mDbUrl );
+				mBuilder->CreateCall( getOrDeclareDbSetDefault(), { conn } );
+			}
+			for ( auto &nc : mDbNamedConns )
+			{
+				llvm::Value *conn = emitOpen( nc.driver, nc.url );
+				llvm::Value *nameVal =
+					mBuilder->CreateGlobalStringPtr( nc.name, "db.cname" );
+				mBuilder->CreateCall( getOrDeclareDbRegister(), { nameVal, conn } );
+			}
+		}
+
 		// Runtime init only if concurrency features were discovered
 		if ( mUsesConcurrency && !concurrencyBefore )
 		{

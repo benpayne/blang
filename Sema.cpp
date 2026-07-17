@@ -454,6 +454,36 @@ Type *Sema::visitExpr( Expression *expr )
 		return t;
 	}
 
+	// Database query/insert/update/delete: validate that every referenced column
+	// exists on the table struct, in ALL build modes, with a located error
+	// (reject, don't coerce). The codegen retains a non-located backstop, but
+	// Sema is the source of truth so query_bad_field is a fail/sema fixture.
+	if ( auto *q = dynamic_cast<QueryExpression *>( expr ) )
+	{
+		validateTableSteps( q->mTableName, q->mSteps, q );
+		return nullptr;
+	}
+	if ( auto *u = dynamic_cast<UpdateExpression *>( expr ) )
+	{
+		validateTableSteps( u->mTableName, u->mSteps, u );
+		return nullptr;
+	}
+	if ( auto *d = dynamic_cast<DeleteExpression *>( expr ) )
+	{
+		validateTableSteps( d->mTableName, d->mSteps, d );
+		return nullptr;
+	}
+	if ( auto *ins = dynamic_cast<InsertExpression *>( expr ) )
+	{
+		StructDefinition *table = tableStructFor( ins->mTableName, ins );
+		if ( table != nullptr )
+		{
+			for ( const auto &name : ins->mFieldNames )
+				checkTableField( table, name, ins->getLocation() );
+		}
+		return nullptr;
+	}
+
 	if ( auto *fa = dynamic_cast<FieldAccessExpression *>( expr ) )
 	{
 		Type *baseType = visitExpr( fa->getObject() );
@@ -757,6 +787,85 @@ StructDefinition *Sema::structForType( Type *baseType )
 		return nullptr;
 	Symbol *sym = mScope->findSymbol( baseType->getName() );
 	return dynamic_cast<StructDefinition *>( sym );
+}
+
+StructDefinition *Sema::tableStructFor( const std::string &tableName, Expression *node )
+{
+	StructDefinition *sd =
+		dynamic_cast<StructDefinition *>( mScope->findSymbol( tableName ) );
+	if ( sd == nullptr )
+	{
+		mDiag.error( node->getLocation(), "unknown table '" + tableName + "'" );
+		mReported = true;
+		return nullptr;
+	}
+	if ( !sd->isTable() )
+	{
+		mDiag.error( node->getLocation(),
+			"'" + tableName + "' is not a table struct (use `table struct`)" );
+		mReported = true;
+		return nullptr;
+	}
+	return sd;
+}
+
+void Sema::checkTableField( StructDefinition *table, const std::string &field,
+	const SourceLocation &loc )
+{
+	for ( const auto &f : table->getFields() )
+		if ( f->getName() == field )
+			return;
+	mDiag.error( loc,
+		"table '" + table->getName() + "' has no field '" + field + "'" );
+	mReported = true;
+}
+
+void Sema::collectQueryFieldExprs( const Expression *e,
+	std::vector<const QueryFieldExpression *> &out )
+{
+	if ( e == nullptr )
+		return;
+	if ( auto *qf = dynamic_cast<const QueryFieldExpression *>( e ) )
+	{
+		out.push_back( qf );
+		return;
+	}
+	if ( auto *ops = dynamic_cast<const OperationsExpression *>( e ) )
+	{
+		collectQueryFieldExprs( (const Expression *)ops->mOp1, out );
+		collectQueryFieldExprs( (const Expression *)ops->mOp2, out );
+	}
+}
+
+void Sema::validateTableSteps( const std::string &tableName,
+	const std::vector<QueryPipelineStep> &steps, Expression *node )
+{
+	StructDefinition *table = tableStructFor( tableName, node );
+	if ( table == nullptr )
+		return;
+
+	// A JOIN references a second table; skip field validation once one is
+	// present to avoid false positives on the joined table's columns (matches
+	// the codegen backstop).
+	for ( const auto &step : steps )
+		if ( step.mType == QueryPipelineStep::JOIN )
+			return;
+
+	for ( const auto &step : steps )
+	{
+		if ( step.mType == QueryPipelineStep::SET )
+		{
+			for ( const auto &sf : step.mSetFields )
+				checkTableField( table, sf.first, node->getLocation() );
+		}
+		else
+		{
+			std::vector<const QueryFieldExpression *> refs;
+			collectQueryFieldExprs( (const Expression *)step.mExpression, refs );
+			for ( auto *r : refs )
+				checkTableField( table, r->getFieldName(), r->getLocation() );
+		}
+	}
 }
 
 void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )

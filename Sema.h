@@ -48,6 +48,18 @@ namespace QLang
 		void resolveFieldAccess( FieldAccessExpression *fa, Type *baseType );
 		void resolveMethodCall( MethodCallExpression *mc, Type *baseType );
 
+		// Database query/insert/update/delete field validation (located, all
+		// build modes). tableStructFor resolves the `table struct` (located error
+		// for unknown/non-table); checkTableField reports an unknown column;
+		// validateTableSteps walks where/order/set pipeline steps.
+		StructDefinition *tableStructFor( const std::string &tableName, Expression *node );
+		void checkTableField( StructDefinition *table, const std::string &field,
+			const SourceLocation &loc );
+		void collectQueryFieldExprs( const Expression *e,
+			std::vector<const QueryFieldExpression *> &out );
+		void validateTableSteps( const std::string &tableName,
+			const std::vector<QueryPipelineStep> &steps, Expression *node );
+
 		// The concrete user struct a base type names, or nullptr when the base
 		// is a builtin (string/Array/Buffer/…), a generic parameter, an enum, an
 		// imported/namespaced symbol we cannot see, or otherwise not a concrete

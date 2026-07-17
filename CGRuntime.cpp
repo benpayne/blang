@@ -741,147 +741,549 @@ llvm::Function *CodeGen::getOrDeclareDbResultFree()
 		{ llvm::PointerType::get( *mContext, 0 ) } );
 }
 
+llvm::Function *CodeGen::getOrDeclareDbResultGetFloat()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_result_get_float" );
+	if ( f != nullptr )
+		return f;
+
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::Type *dblTy = llvm::Type::getDoubleTy( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get( dblTy, { ptrTy, i32Ty, i32Ty }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_result_get_float", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbDefault()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_default" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangDBConn* __blang_db_default(void)
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, {}, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_default", mModule.get() );
+}
+
+// Connection-config runtime declarations used by generate() to open and register
+// the default/named database connections from blang.toml (forwarded by bcc).
+llvm::Function *CodeGen::getOrDeclareDbOpen()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_open" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangDBConn* __blang_db_open(int driver, const char* conn_str, const char** err)
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		ptrTy, { i32Ty, ptrTy, ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_open", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbSetDefault()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_set_default" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_db_set_default(BlangDBConn*)
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_set_default", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbRegister()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_register" );
+	if ( f != nullptr )
+		return f;
+
+	// void __blang_db_register(const char* name, BlangDBConn*)
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get(
+		llvm::Type::getVoidTy( *mContext ), { ptrTy, ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_register", mModule.get() );
+}
+
+llvm::Function *CodeGen::getOrDeclareDbGet()
+{
+	llvm::Function *f = mModule->getFunction( "__blang_db_get" );
+	if ( f != nullptr )
+		return f;
+
+	// BlangDBConn* __blang_db_get(const char* name)
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
+	return llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, "__blang_db_get", mModule.get() );
+}
+
 // ---- Database query/insert/update/delete codegen ----
+
+llvm::Value *CodeGen::genDbConnForTable( const std::string &tableName )
+{
+	// Route to a named connection if the table struct carries @db("name").
+	auto it = mStructDefMap.find( tableName );
+	if ( it != mStructDefMap.end() && it->second != nullptr )
+	{
+		for ( const auto &ann : it->second->getAnnotations() )
+		{
+			if ( ann.mName == "db" && !ann.mArgs.empty() )
+			{
+				llvm::Value *nameStr =
+					mBuilder->CreateGlobalStringPtr( ann.mArgs[0], "db.name" );
+				return mBuilder->CreateCall(
+					getOrDeclareDbGet(), { nameStr }, "db.conn" );
+			}
+		}
+	}
+	return mBuilder->CreateCall( getOrDeclareDbDefault(), {}, "db.conn" );
+}
+
+llvm::Value *CodeGen::paramToCString( llvm::Value *val )
+{
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i8Ty = llvm::Type::getInt8Ty( *mContext );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+	llvm::Type *i64Ty = llvm::Type::getInt64Ty( *mContext );
+
+	if ( val == nullptr )
+		return llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
+
+	llvm::Type *t = val->getType();
+
+	// Integers (including bool) → decimal string via snprintf.
+	if ( t->isIntegerTy() )
+	{
+		llvm::AllocaInst *buf = mBuilder->CreateAlloca(
+			i8Ty, llvm::ConstantInt::get( i32Ty, 32 ), "param.ibuf" );
+		llvm::Value *fmt = mBuilder->CreateGlobalStringPtr( "%lld", "param.ifmt" );
+		llvm::Value *ext = val;
+		if ( !t->isIntegerTy( 64 ) )
+			ext = mBuilder->CreateSExt( val, i64Ty, "param.iext" );
+		mBuilder->CreateCall( getOrDeclareSnprintf(),
+			{ buf, llvm::ConstantInt::get( i64Ty, 32 ), fmt, ext } );
+		return buf;
+	}
+
+	// Floats/doubles → "%g" via snprintf (varargs promote float to double).
+	if ( t->isFloatingPointTy() )
+	{
+		llvm::AllocaInst *buf = mBuilder->CreateAlloca(
+			i8Ty, llvm::ConstantInt::get( i32Ty, 64 ), "param.fbuf" );
+		llvm::Value *fmt = mBuilder->CreateGlobalStringPtr( "%g", "param.ffmt" );
+		llvm::Value *dval = val;
+		if ( t->isFloatTy() )
+			dval = mBuilder->CreateFPExt(
+				val, llvm::Type::getDoubleTy( *mContext ), "param.fext" );
+		mBuilder->CreateCall( getOrDeclareSnprintf(),
+			{ buf, llvm::ConstantInt::get( i64Ty, 64 ), fmt, dval } );
+		return buf;
+	}
+
+	// Pointers are BlangString* — bind the underlying C string. Extract the
+	// null-terminated `.data` field directly (BlangString stores a length+1
+	// buffer with a trailing '\0', see __blang_string_create) rather than
+	// __blang_string_to_cstring, which mallocs a copy the caller would have to
+	// free (it never did — a per-string-param leak). The db driver copies the
+	// value during bind, and the source BlangString outlives the db call, so
+	// borrowing `.data` is safe and leak-free.
+	if ( t->isPointerTy() )
+	{
+		// BlangString: { char* data, i64 length, i64 capacity, i32 ref_count }
+		llvm::StructType *bsType = llvm::StructType::get( *mContext,
+			{ llvm::PointerType::get( *mContext, 0 ),
+			  i64Ty, i64Ty, i32Ty } );
+		llvm::Value *dataPtr = mBuilder->CreateStructGEP(
+			bsType, val, 0, "param.str.data.ptr" );
+		return mBuilder->CreateLoad( ptrTy, dataPtr, "param.str.data" );
+	}
+
+	// Unknown type → bind SQL NULL.
+	return llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
+}
+
+llvm::Value *CodeGen::buildParamArray(
+	const std::vector<const Expression*> &paramExprs, int &outCount )
+{
+	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
+
+	outCount = static_cast<int>( paramExprs.size() );
+	if ( outCount == 0 )
+		return llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
+
+	llvm::ArrayType *arrTy = llvm::ArrayType::get( ptrTy, outCount );
+	llvm::AllocaInst *arr = mBuilder->CreateAlloca( arrTy, nullptr, "db.params" );
+	llvm::Value *idx0 = llvm::ConstantInt::get( i32Ty, 0 );
+
+	for ( int i = 0; i < outCount; i++ )
+	{
+		// genExpression borrows the value (read-only); no ownership transfer.
+		llvm::Value *val = genExpression( const_cast<Expression*>( paramExprs[i] ) );
+		llvm::Value *cstr = paramToCString( val );
+		llvm::Value *elem = mBuilder->CreateGEP( arrTy, arr,
+			{ idx0, llvm::ConstantInt::get( i32Ty, i ) }, "db.param.ptr" );
+		mBuilder->CreateStore( cstr, elem );
+	}
+
+	return mBuilder->CreateGEP( arrTy, arr, { idx0, idx0 }, "db.params.ptr" );
+}
+
+void CodeGen::collectQueryFieldRefs( const Expression *expr,
+	std::vector<std::string> &out )
+{
+	if ( expr == nullptr )
+		return;
+
+	const QueryFieldExpression *field =
+		dynamic_cast<const QueryFieldExpression*>( expr );
+	if ( field )
+	{
+		out.push_back( field->getFieldName() );
+		return;
+	}
+
+	const OperationsExpression *ops =
+		dynamic_cast<const OperationsExpression*>( expr );
+	if ( ops )
+	{
+		collectQueryFieldRefs( ops->mOp1, out );
+		collectQueryFieldRefs( ops->mOp2, out );
+	}
+}
+
+void CodeGen::validateQueryFields( const std::string &tableName,
+	const std::vector<QueryPipelineStep> &steps, Expression *node )
+{
+	auto it = mStructDefMap.find( tableName );
+	if ( it == mStructDefMap.end() || it->second == nullptr )
+	{
+		cerr << "CodeGen: query on unknown table '" << tableName << "'" << endl;
+		mHasError = true;
+		return;
+	}
+
+	StructDefinition *structDef = it->second;
+	if ( !structDef->isTable() )
+	{
+		cerr << "CodeGen: '" << tableName
+			 << "' is not a table struct (use `table struct`)" << endl;
+		mHasError = true;
+		return;
+	}
+
+	// Build the set of valid column names.  JOIN steps reference a second
+	// table; to avoid false positives, validation is skipped once a join is
+	// present (the primary-table-only check would reject valid join columns).
+	bool hasJoin = false;
+	for ( const auto &step : steps )
+		if ( step.mType == QueryPipelineStep::JOIN )
+			hasJoin = true;
+	if ( hasJoin )
+		return;
+
+	std::set<std::string> fields;
+	for ( const auto &f : structDef->getFields() )
+		fields.insert( f->getName() );
+
+	auto checkField = [&]( const std::string &name )
+	{
+		if ( fields.find( name ) == fields.end() )
+		{
+			cerr << "CodeGen: field '" << name << "' not found in table '"
+				 << tableName << "'" << endl;
+			mHasError = true;
+		}
+	};
+
+	for ( const auto &step : steps )
+	{
+		if ( step.mType == QueryPipelineStep::SET )
+		{
+			for ( const auto &sf : step.mSetFields )
+				checkField( sf.first );
+		}
+		else
+		{
+			std::vector<std::string> refs;
+			collectQueryFieldRefs( step.mExpression, refs );
+			for ( const auto &r : refs )
+				checkField( r );
+		}
+	}
+}
+
+void CodeGen::validateInsertFields( InsertExpression *insert )
+{
+	auto it = mStructDefMap.find( insert->mTableName );
+	if ( it == mStructDefMap.end() || it->second == nullptr )
+	{
+		cerr << "CodeGen: insert into unknown table '"
+			 << insert->mTableName << "'" << endl;
+		mHasError = true;
+		return;
+	}
+
+	StructDefinition *structDef = it->second;
+	if ( !structDef->isTable() )
+	{
+		cerr << "CodeGen: '" << insert->mTableName
+			 << "' is not a table struct (use `table struct`)" << endl;
+		mHasError = true;
+		return;
+	}
+
+	std::set<std::string> fields;
+	for ( const auto &f : structDef->getFields() )
+		fields.insert( f->getName() );
+
+	for ( const auto &name : insert->mFieldNames )
+	{
+		if ( fields.find( name ) == fields.end() )
+		{
+			cerr << "CodeGen: field '" << name << "' not found in table '"
+				 << insert->mTableName << "'" << endl;
+			mHasError = true;
+		}
+	}
+}
 
 llvm::Value *CodeGen::genQueryExpression( QueryExpression *query )
 {
-	// Generate SQL at compile time
+	validateQueryFields( query->mTableName, query->mSteps, query );
+
+	// Generate SQL + the runtime expressions backing its ? placeholders.
 	SQLStatement sqlStmt = SQLGen::generateSelect( query, mQLangModule );
 
 	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
 	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
 
-	// Create the SQL string constant
 	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "query.sql" );
+	llvm::Value *conn = genDbConnForTable( query->mTableName );
 
-	// Create params array (NULL for now — parameter binding requires runtime values)
-	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
-		llvm::PointerType::get( *mContext, 0 ) );
-	llvm::Value *numParams = llvm::ConstantInt::get( i32Ty, 0 );
+	int numParams = 0;
+	llvm::Value *params = buildParamArray( sqlStmt.paramExprs, numParams );
 
-	// Error message pointer
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
 	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "query.err" );
 	mBuilder->CreateStore( nullPtr, errMsgAlloca );
 
-	// The first argument is the database connection — for now use NULL
-	// (real code would load from a global or parameter)
-	// Call __blang_db_query(conn, sql, params, num_params, &error_msg)
+	// __blang_db_query(conn, sql, params, num_params, &error_msg) -> BlangDBResult*
 	llvm::Value *result = mBuilder->CreateCall(
 		getOrDeclareDbQuery(),
-		{ nullPtr, sqlStr, nullPtr, numParams, errMsgAlloca },
+		{ conn, sqlStr, params,
+		  llvm::ConstantInt::get( i32Ty, numParams ), errMsgAlloca },
 		"query.result" );
 
-	return result;
+	// Map result rows into an Array<T> of the table struct. SELECT * returns
+	// columns in the table's (== struct's) field order, so column i feeds
+	// field i. Each row becomes a heap struct; the array owns those pointers.
+	llvm::Type *i64Ty = llvm::Type::getInt64Ty( *mContext );
+
+	StructDefinition *structDef = nullptr;
+	{
+		auto it = mStructDefMap.find( query->mTableName );
+		if ( it != mStructDefMap.end() )
+			structDef = it->second;
+	}
+
+	// arr = __blang_array_create(elem_size = sizeof(ptr), capacity)
+	llvm::Value *arr = mBuilder->CreateCall(
+		getOrDeclareArrayCreate(),
+		{ llvm::ConstantInt::get( i32Ty, 8 ),
+		  llvm::ConstantInt::get( i64Ty, 8 ) }, "rows" );
+
+	if ( structDef == nullptr )
+	{
+		// Unknown table — free the result and return an empty array.
+		mBuilder->CreateCall( getOrDeclareDbResultFree(), { result } );
+		return arr;
+	}
+
+	// Release each row struct when the array is freed.
+	emitArrayElemDtor( arr, structDef->getName() );
+
+	llvm::StructType *structType = getOrCreateStructType( structDef );
+
+	llvm::Value *count = mBuilder->CreateCall(
+		getOrDeclareDbResultCount(), { result }, "row.count" );
+
+	// for ( i = 0; i < count; i++ ) { build struct from row i; push }
+	llvm::Function *fn = mBuilder->GetInsertBlock()->getParent();
+	llvm::BasicBlock *condBB = llvm::BasicBlock::Create( *mContext, "qrow.cond", fn );
+	llvm::BasicBlock *bodyBB = llvm::BasicBlock::Create( *mContext, "qrow.body", fn );
+	llvm::BasicBlock *endBB  = llvm::BasicBlock::Create( *mContext, "qrow.end", fn );
+
+	llvm::AllocaInst *iAlloca = mBuilder->CreateAlloca( i32Ty, nullptr, "qrow.i" );
+	mBuilder->CreateStore( llvm::ConstantInt::get( i32Ty, 0 ), iAlloca );
+	mBuilder->CreateBr( condBB );
+
+	mBuilder->SetInsertPoint( condBB );
+	llvm::Value *iVal = mBuilder->CreateLoad( i32Ty, iAlloca, "i" );
+	llvm::Value *cmp = mBuilder->CreateICmpSLT( iVal, count, "i.lt.count" );
+	mBuilder->CreateCondBr( cmp, bodyBB, endBB );
+
+	mBuilder->SetInsertPoint( bodyBB );
+	llvm::Value *rowIdx = mBuilder->CreateLoad( i32Ty, iAlloca, "row" );
+
+	// Heap-allocate the struct (with destructor for refcounted field cleanup).
+	llvm::DataLayout dl( mModule.get() );
+	llvm::Value *structSize = llvm::ConstantInt::get(
+		i64Ty, dl.getTypeAllocSize( structType ) );
+	std::map<std::string, std::string> noSub;
+	llvm::Function *structDtor = getOrGenStructDestructor( structDef, noSub );
+	llvm::Value *rowStruct;
+	if ( structDtor != nullptr )
+		rowStruct = mBuilder->CreateCall( getOrDeclareRcAllocDtor(),
+			{ structSize, structDtor }, "row.struct" );
+	else
+		rowStruct = mBuilder->CreateCall( getOrDeclareRcAlloc(),
+			{ structSize }, "row.struct" );
+
+	const auto &fields = structDef->getFields();
+	for ( size_t f = 0; f < fields.size(); f++ )
+	{
+		llvm::Value *colIdx = llvm::ConstantInt::get( i32Ty, (int)f );
+		llvm::Type *fieldLLVM = structType->getElementType( (unsigned)f );
+		llvm::Value *fieldPtr = mBuilder->CreateStructGEP(
+			structType, rowStruct, (unsigned)f, "row.field" );
+
+		std::string fieldTypeName = fields[f]->getVariableType()->getName();
+		llvm::Value *stored = nullptr;
+
+		if ( fieldTypeName == "string" )
+		{
+			llvm::Value *cstr = mBuilder->CreateCall(
+				getOrDeclareDbResultGet(), { result, rowIdx, colIdx }, "col.str" );
+			llvm::Value *len = mBuilder->CreateCall(
+				getOrDeclareStrlen(), { cstr }, "col.len" );
+			stored = mBuilder->CreateCall(
+				getOrDeclareStringCreate(), { cstr, len }, "col.blangstr" );
+		}
+		else if ( fieldLLVM->isFloatingPointTy() )
+		{
+			llvm::Value *d = mBuilder->CreateCall(
+				getOrDeclareDbResultGetFloat(), { result, rowIdx, colIdx }, "col.f" );
+			if ( fieldLLVM->isFloatTy() )
+				d = mBuilder->CreateFPTrunc( d, fieldLLVM, "col.f.trunc" );
+			stored = d;
+		}
+		else if ( fieldLLVM->isIntegerTy() )
+		{
+			llvm::Value *v = mBuilder->CreateCall(
+				getOrDeclareDbResultGetInt(), { result, rowIdx, colIdx }, "col.i" );
+			stored = mBuilder->CreateIntCast( v, fieldLLVM, true, "col.i.cast" );
+		}
+		else
+		{
+			// Unsupported column type (nested struct/array) — leave it null.
+			stored = llvm::Constant::getNullValue( fieldLLVM );
+		}
+
+		mBuilder->CreateStore( stored, fieldPtr );
+	}
+
+	// arr.push(rowStruct) — push copies the pointer; the array now owns the row.
+	llvm::AllocaInst *elemSlot = mBuilder->CreateAlloca( ptrTy, nullptr, "row.slot" );
+	mBuilder->CreateStore( rowStruct, elemSlot );
+	mBuilder->CreateCall( getOrDeclareArrayPush(), { arr, elemSlot } );
+
+	llvm::Value *iNext = mBuilder->CreateAdd(
+		rowIdx, llvm::ConstantInt::get( i32Ty, 1 ), "i.next" );
+	mBuilder->CreateStore( iNext, iAlloca );
+	mBuilder->CreateBr( condBB );
+
+	mBuilder->SetInsertPoint( endBB );
+	mBuilder->CreateCall( getOrDeclareDbResultFree(), { result } );
+	return arr;
 }
 
 llvm::Value *CodeGen::genInsertExpression( InsertExpression *insert )
 {
+	validateInsertFields( insert );
+
 	SQLStatement sqlStmt = SQLGen::generateInsert( insert, mQLangModule );
 
 	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
 	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
 
 	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "insert.sql" );
-	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
-		llvm::PointerType::get( *mContext, 0 ) );
+	llvm::Value *conn = genDbConnForTable( insert->mTableName );
 
-	// Build parameter array from field values
-	int numParams = static_cast<int>( insert->mFieldValues.size() );
-	llvm::ArrayType *paramArrType = llvm::ArrayType::get( ptrTy, numParams );
-	llvm::AllocaInst *paramArr = mBuilder->CreateAlloca( paramArrType, nullptr, "insert.params" );
+	int numParams = 0;
+	llvm::Value *params = buildParamArray( sqlStmt.paramExprs, numParams );
 
-	llvm::Value *idx0 = llvm::ConstantInt::get( i32Ty, 0 );
-	for ( int i = 0; i < numParams; i++ )
-	{
-		llvm::Value *val = genExpression( insert->mFieldValues[i] );
-		if ( val == nullptr )
-			continue;
-
-		// Convert to string representation using snprintf
-		llvm::Value *strVal = val;
-		if ( val->getType()->isIntegerTy() )
-		{
-			// Convert int to string via snprintf
-			llvm::Type *i8Ty = llvm::Type::getInt8Ty( *mContext );
-			llvm::AllocaInst *buf = mBuilder->CreateAlloca(
-				i8Ty, llvm::ConstantInt::get( i32Ty, 32 ), "param.buf" );
-			llvm::Value *fmt = mBuilder->CreateGlobalStringPtr( "%d", "int.fmt" );
-			if ( !val->getType()->isIntegerTy( 32 ) )
-				val = mBuilder->CreateSExt( val, i32Ty, "ext" );
-			mBuilder->CreateCall( getOrDeclareSnprintf(),
-				{ buf, llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 32 ),
-				  fmt, val } );
-			strVal = buf;
-		}
-
-		llvm::Value *idxVal = llvm::ConstantInt::get( i32Ty, i );
-		llvm::Value *elemPtr = mBuilder->CreateGEP(
-			paramArrType, paramArr, { idx0, idxVal }, "param.ptr" );
-		mBuilder->CreateStore( strVal, elemPtr );
-	}
-
-	// Get pointer to first element
-	llvm::Value *paramsPtr = mBuilder->CreateGEP(
-		paramArrType, paramArr, { idx0, idx0 }, "params.ptr" );
-
-	// Error message pointer
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
 	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "insert.err" );
 	mBuilder->CreateStore( nullPtr, errMsgAlloca );
 
-	// Call __blang_db_exec(conn, sql, params, num_params, &error_msg)
-	llvm::Value *result = mBuilder->CreateCall(
+	// __blang_db_exec(conn, sql, params, num_params, &error_msg)
+	return mBuilder->CreateCall(
 		getOrDeclareDbExec(),
-		{ nullPtr, sqlStr, paramsPtr,
+		{ conn, sqlStr, params,
 		  llvm::ConstantInt::get( i32Ty, numParams ), errMsgAlloca },
 		"insert.result" );
-
-	return result;
 }
 
 llvm::Value *CodeGen::genUpdateExpression( UpdateExpression *update )
 {
+	validateQueryFields( update->mTableName, update->mSteps, update );
+
 	SQLStatement sqlStmt = SQLGen::generateUpdate( update, mQLangModule );
 
 	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
 	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
 
 	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "update.sql" );
-	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
-		llvm::PointerType::get( *mContext, 0 ) );
+	llvm::Value *conn = genDbConnForTable( update->mTableName );
 
+	int numParams = 0;
+	llvm::Value *params = buildParamArray( sqlStmt.paramExprs, numParams );
+
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
 	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "update.err" );
 	mBuilder->CreateStore( nullPtr, errMsgAlloca );
 
-	llvm::Value *result = mBuilder->CreateCall(
+	return mBuilder->CreateCall(
 		getOrDeclareDbExec(),
-		{ nullPtr, sqlStr, nullPtr,
-		  llvm::ConstantInt::get( i32Ty, 0 ), errMsgAlloca },
+		{ conn, sqlStr, params,
+		  llvm::ConstantInt::get( i32Ty, numParams ), errMsgAlloca },
 		"update.result" );
-
-	return result;
 }
 
 llvm::Value *CodeGen::genDeleteExpression( DeleteExpression *del )
 {
+	validateQueryFields( del->mTableName, del->mSteps, del );
+
 	SQLStatement sqlStmt = SQLGen::generateDelete( del, mQLangModule );
 
 	llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
 	llvm::Type *i32Ty = llvm::Type::getInt32Ty( *mContext );
 
 	llvm::Value *sqlStr = mBuilder->CreateGlobalStringPtr( sqlStmt.sql, "delete.sql" );
-	llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
-		llvm::PointerType::get( *mContext, 0 ) );
+	llvm::Value *conn = genDbConnForTable( del->mTableName );
 
+	int numParams = 0;
+	llvm::Value *params = buildParamArray( sqlStmt.paramExprs, numParams );
+
+	llvm::Value *nullPtr = llvm::ConstantPointerNull::get( llvm::PointerType::get( *mContext, 0 ) );
 	llvm::AllocaInst *errMsgAlloca = mBuilder->CreateAlloca( ptrTy, nullptr, "delete.err" );
 	mBuilder->CreateStore( nullPtr, errMsgAlloca );
 
-	llvm::Value *result = mBuilder->CreateCall(
+	return mBuilder->CreateCall(
 		getOrDeclareDbExec(),
-		{ nullPtr, sqlStr, nullPtr,
-		  llvm::ConstantInt::get( i32Ty, 0 ), errMsgAlloca },
+		{ conn, sqlStr, params,
+		  llvm::ConstantInt::get( i32Ty, numParams ), errMsgAlloca },
 		"delete.result" );
-
-	return result;
 }
 
 // ---- Phase 2: Test block codegen ----

@@ -13,7 +13,7 @@ directory is **empty** — mirroring the `codegen_parked.txt` burn-down.
 |---------|-------------|-------------------------|--------|
 | ~~`builtin_option_result.b`~~ | U4 (Option/Result) | `test_files/pass/` (built-in Option/Result parses+checks) | **DONE (U4)** — restored to `pass/` |
 | ~~`chan_recv_non_exhaustive.b`~~ | U2 (channels)   | `test_files/fail/sema/` + `.b.expected` (Sema rejects, all modes) | **DONE (U2)** — relocated to `fail/sema/` |
-| `query_bad_field.b`           | U5 (database)      | `test_files/fail/sema/` + `.b.expected` (if it becomes a Sema-mode rejection) | pending U5 |
+| ~~`query_bad_field.b`~~       | U5 (database)      | `test_files/fail/sema/` + `.b.expected` (Sema rejects, all modes) | **DONE (U5)** — relocated to `fail/sema/` (located error) |
 | `to_json_not_annotated.b`     | U6 (to_json/http)  | `test_files/fail/sema/` + `.b.expected` (if it becomes a Sema-mode rejection) | pending U6 |
 
 **U4 completed** its relocations: origin's `cgfail/match_non_exhaustive.b` and
