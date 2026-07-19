@@ -1,0 +1,4 @@
+touch 2
+touch 4
+results false true true true
+PASS

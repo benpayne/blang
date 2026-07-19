@@ -1,0 +1,6 @@
+shl 48
+shr 6
+negshr -4
+big 1073741824
+mixed 16
+PASS
