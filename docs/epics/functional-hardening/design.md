@@ -47,20 +47,26 @@ additionally run under `--leak-check`.
 A matrix test that fails is resolved one of two ways, so the suite is always
 green and nothing is silently dropped:
 - **Fixed** → the test passes (leak-clean if ARC), committed into the suite.
-- **Filed** → a minimal repro + a one-paragraph justification goes into
-  `docs/epics/functional-hardening/known-issues.md`; the failing test is
-  **not** committed into the passing suite (it lives as a repro in the doc).
-  Filing is only for large/risky fixes or ones needing a language decision, and
-  is raised to the manager as an Open Question first.
-This gives the epic a **bounded end** even if a deep bug appears — the same
-discipline test-validation used for fuzzing findings.
+- **Filed** → a structured entry in `docs/epics/functional-hardening/known-issues.md`:
+  a `### KI-N` heading with a fenced `Repro:` block and a `Justification:` line;
+  the failing test is **not** committed into the passing suite (it lives as the
+  repro in the doc). Filing is only for large/risky fixes or ones needing a
+  language decision, and is raised to the manager as an Open Question first.
+
+**Machine backstop (not just prose):** acceptance FAILS if
+`grep -c '^### KI-' known-issues.md` > **3** — beyond three unfixed matrix bugs
+is a bulk-defer, which must instead be an Open Question to the manager. The two
+seeded bugs are required fixes and may never appear in `known-issues.md`. This
+gives the epic a **bounded end** even if a deep bug appears — the same
+discipline test-validation used for fuzzing findings — without the
+quarantine-everything escape hatch.
 
 ## Seeded bugs (required fixes, reproduce today)
 
 | # | Bug | Repro | Owner |
 |---|-----|-------|-------|
 | S1 | Struct-valued field reassignment reads inconsistently | `o.inner = Inner{v:99}` then `assert o.inner.v == 99` fails (prints 99, assert fails) | U1 |
-| S2 | `Map` unusable via `bcc` | `import collections;` + `Map` → `bcc` reports "compilation failed" (`collections.b` not in `bcc.cpp` auto-include list, ~line 279) | U4 |
+| S2 | `Map` from the `collections` **module** is unusable (deeper than first thought) | A program using `Map<string,int> { keys: [], values: [] }` fails whether `Map` comes via `import collections;` through `bcc` ("compilation failed") **or** via `qcc --combine stdlib/collections.b` (`error: Failed parse varible` at the `Map<K,V> x` declaration). Only an **inline-defined** `Map` works (that is why `codegen_map.b` — which copies the struct in-file — passes). So `collections.b` missing from `bcc.cpp:279` is *necessary but not sufficient*: U4 must also diagnose why a generic struct from a combined/imported module isn't resolved in a variable declaration. Use the full literal (`{ keys: [], values: [] }`) — `Map<..>{}` is a separate runtime problem. | U4 |
 
 ## Key decisions
 
@@ -75,5 +81,9 @@ discipline test-validation used for fuzzing findings.
 ## Invariants — must not break
 - Existing green suites (`run_tests.sh` both modes, `test_codegen.sh`, `ctest`,
   `--leak-check`) stay green at every unit boundary.
-- No new test committed in a failing state; deferrals live in `known-issues.md`.
+- **ARC-matrix naming is load-bearing:** U1's ARC tests are named
+  `test_files/codegen_arc_*.b`; the `--leak-check` acceptance glob depends on
+  this prefix, and a different name silently makes the leak gate check nothing.
+- No new test committed in a failing state; deferrals live in `known-issues.md`
+  (≤ 3, structured `### KI-N`).
 - Default (non-sanitizer) build output unchanged; fixes are correctness-only.

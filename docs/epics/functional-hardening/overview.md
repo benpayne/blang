@@ -44,17 +44,21 @@ All of the following hold on a clean checkout of the epic's final state
 
 1. **Both suites green, both build modes**: `./run_tests.sh` (LLVM and
    parse-only), `./test_codegen.sh`, and `ctest --test-dir build` all exit 0.
-2. **The four matrices exist**: ≥ 20 new `test_files/codegen_*.b` tests added
-   across the aggregate-ARC, operator, interaction, and stdlib-via-`bcc`
-   matrices; every deterministic one has a committed stdout golden and passes.
+2. **The four matrices exist**: the `test_files/codegen_*.b` count is ≥ 105
+   (launch baseline 85 + ≥ 20 new) across the aggregate-ARC, operator,
+   interaction, and stdlib-via-`bcc` matrices; every deterministic one has a
+   committed stdout golden and passes. The ARC-matrix tests are named
+   `test_files/codegen_arc_*.b` (the leak gate globs on that prefix).
 3. **The two seeded bugs are fixed**: a committed test for struct-valued field
    reassignment passes and is leak-clean; a program using `import collections;`
    + `Map` **compiles and runs via `bcc`** (not just the test harness).
-4. **ARC-matrix tests are leak-clean**: `./test_codegen.sh --leak-check` over
-   the aggregate-ARC tests exits 0 with 0 leaks.
-5. **Fix-or-file, nothing dropped**: `docs/epics/functional-hardening/known-issues.md`
-   exists; every bug a matrix surfaced that was NOT fixed has an entry with a
-   minimal repro and a justification; no committed matrix test is left failing.
+4. **ARC-matrix tests are leak-clean**: `./test_codegen.sh --leak-check
+   test_files/codegen_arc_*.b` exits 0 with 0 leaks (the glob is non-empty).
+5. **Fix-or-file, bounded**: `docs/epics/functional-hardening/known-issues.md`
+   exists with structured `### KI-N` entries (each a repro + justification);
+   `grep -c '^### KI-'` is ≤ 3 (more is a bulk-defer → Open Question, not a
+   pass); no committed matrix test is left failing; the seeded bugs never
+   appear there.
 6. **CI runs the new tests green** (they are auto-globbed into the suite; the
    CI run on the epic's final commit is green).
 
@@ -121,3 +125,4 @@ All of the following hold on a clean checkout of the epic's final state
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
 | 2026-07-19 | — | epic created | From the functional-coverage evaluation: suite strong for isolated core, thin on interactions/aggregate-ARC/unguarded primitives; 5 session bugs (3 fixed, 2 seeded). Scope: 4 matrices, fix-or-file (bounded). |
+| 2026-07-19 | — | readiness review round 1 | 5 findings. C1: +20 gate was commented-out + undefined BASELINE → pinned BASELINE=85, uncommented, added run.baseline. C2: ARC leak glob vacuous → U1 must name tests codegen_arc_*.b (invariant). C3: fix-or-file gameable → cap <=3 structured ### KI- entries. M1/S2: Map acceptance program refined; probe found the bug is DEEPER (Map from module unresolved via import AND --combine, not just bcc auto-include) — U4 scope updated. M2: soft_conflicts [U1,U3] recorded. done_condition re-synced. |

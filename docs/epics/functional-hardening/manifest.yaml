@@ -14,17 +14,21 @@ run:
 
     1. Both suites green, both build modes: ./run_tests.sh (LLVM and
        parse-only), ./test_codegen.sh, and ctest --test-dir build all exit 0.
-    2. The four matrices exist: ≥ 20 new test_files/codegen_*.b tests added
-       across the aggregate-ARC, operator, interaction, and stdlib-via-bcc
-       matrices; every deterministic one has a committed stdout golden and passes.
+    2. The four matrices exist: the test_files/codegen_*.b count is ≥ 105
+       (launch baseline 85 + ≥ 20 new) across the aggregate-ARC, operator,
+       interaction, and stdlib-via-bcc matrices; every deterministic one has a
+       committed stdout golden and passes. The ARC-matrix tests are named
+       test_files/codegen_arc_*.b (the leak gate globs on that prefix).
     3. The two seeded bugs are fixed: a committed test for struct-valued field
        reassignment passes and is leak-clean; a program using import collections;
        + Map compiles and runs via bcc (not just the test harness).
-    4. ARC-matrix tests are leak-clean: ./test_codegen.sh --leak-check over
-       the aggregate-ARC tests exits 0 with 0 leaks.
-    5. Fix-or-file, nothing dropped: docs/epics/functional-hardening/known-issues.md
-       exists; every bug a matrix surfaced that was NOT fixed has an entry with a
-       minimal repro and a justification; no committed matrix test is left failing.
+    4. ARC-matrix tests are leak-clean: ./test_codegen.sh --leak-check
+       test_files/codegen_arc_*.b exits 0 with 0 leaks (the glob is non-empty).
+    5. Fix-or-file, bounded: docs/epics/functional-hardening/known-issues.md
+       exists with structured ### KI-N entries (each a repro + justification);
+       grep -c '^### KI-' is ≤ 3 (more is a bulk-defer → Open Question, not a
+       pass); no committed matrix test is left failing; the seeded bugs never
+       appear there.
     6. CI runs the new tests green (they are auto-globbed into the suite; the
        CI run on the epic's final commit is green).
 
@@ -51,6 +55,9 @@ run:
     max_runtime_seconds: 1209600        # 14 days
     session_token_limit: 50000000       # 50M
     no_progress_threshold: 10
+  baseline:
+    codegen_tests: 85
+    run_tests: 195
   models:
     controller: claude-opus-4-8
     worker: claude-sonnet-5
@@ -60,7 +67,7 @@ units:
     reqs: [REQ-001, REQ-005]
     summary: Aggregate/field ARC matrix (~6-8 tests, leak-checked) + fix seeded struct-field reassignment bug
     depends_on: []
-    done: "ARC tests pass with goldens; --leak-check 0 leaks; struct_field_reassign test passes; other ARC bugs fixed or filed; suites green"
+    done: "ARC tests named codegen_arc_*.b (glob non-empty); pass with goldens; --leak-check codegen_arc_*.b 0 leaks; struct_field_reassign test passes; other ARC bugs fixed or filed (<=3, structured); suites green"
     speckit: arc-matrix
   - id: U2
     reqs: [REQ-002]
@@ -84,8 +91,11 @@ units:
     reqs: [REQ-006]
     summary: CI wiring + known-issues consolidation + docs/CLAUDE.md close-out
     depends_on: [U1, U2, U3, U4]
-    done: "evaluation.md Epic-level acceptance passes; new tests run green in CI; >= +20 codegen tests; known-issues.md consolidated"
+    done: "evaluation.md Epic-level acceptance passes; new tests run green in CI; codegen count >= 105 (baseline 85+20); known-issues.md has <=3 structured ### KI- entries"
     speckit: ci-closeout
+
+soft_conflicts:
+  - [U1, U3]   # both may edit CGStruct.cpp fixing field/aggregate bugs — serialize if a fix lands there
 
 foldback:
   status_into: overview.md
