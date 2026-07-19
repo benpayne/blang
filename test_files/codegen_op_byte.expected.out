@@ -1,0 +1,7 @@
+or 255
+and 0
+xor 255
+shr 100
+full 255
+shl 64
+PASS

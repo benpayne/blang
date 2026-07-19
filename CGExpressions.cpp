@@ -387,11 +387,73 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 
 llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 {
+	const string &op = ops->mOperation;
+
+	// Short-circuit logical operators (&&, ||): the RHS must be evaluated ONLY
+	// when the LHS does not already determine the result — so its side effects
+	// are skipped otherwise. This MUST run before the eager operand evaluation
+	// below (which would force the RHS). Lowers to a branch + i1 phi.
+	if ( op == "&&" || op == "||" )
+	{
+		bool isAnd = ( op == "&&" );
+		llvm::Function *func = mBuilder->GetInsertBlock()->getParent();
+
+		// Evaluate the LHS and coerce to i1 (!= 0 for int, != 0.0 for float).
+		llvm::Value *lhs = genExpression( ops->mOp1 );
+		if ( lhs == nullptr )
+			return nullptr;
+		llvm::Value *lBool = lhs->getType()->isFloatingPointTy()
+			? mBuilder->CreateFCmpONE( lhs, llvm::ConstantFP::get( lhs->getType(), 0.0 ), "lbool" )
+			: mBuilder->CreateICmpNE( lhs, llvm::ConstantInt::get( lhs->getType(), 0 ), "lbool" );
+
+		llvm::BasicBlock *entryBB = mBuilder->GetInsertBlock();
+		llvm::BasicBlock *rhsBB = llvm::BasicBlock::Create(
+			*mContext, isAnd ? "land.rhs" : "lor.rhs", func );
+		llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(
+			*mContext, isAnd ? "land.end" : "lor.end", func );
+
+		// &&: LHS true -> evaluate RHS, else short-circuit to false.
+		// ||: LHS true -> short-circuit to true, else evaluate RHS.
+		if ( isAnd )
+			mBuilder->CreateCondBr( lBool, rhsBB, mergeBB );
+		else
+			mBuilder->CreateCondBr( lBool, mergeBB, rhsBB );
+
+		// RHS block: evaluate the RHS (its side effects run only here) and
+		// coerce to i1.
+		mBuilder->SetInsertPoint( rhsBB );
+		llvm::Value *rhs = genExpression( ops->mOp2 );
+		if ( rhs == nullptr )
+			return nullptr;
+		llvm::Value *rBool = rhs->getType()->isFloatingPointTy()
+			? mBuilder->CreateFCmpONE( rhs, llvm::ConstantFP::get( rhs->getType(), 0.0 ), "rbool" )
+			: mBuilder->CreateICmpNE( rhs, llvm::ConstantInt::get( rhs->getType(), 0 ), "rbool" );
+		// Nested control flow in the RHS may have changed the current block, so
+		// snapshot the real predecessor for the phi.
+		llvm::BasicBlock *rhsEndBB = mBuilder->GetInsertBlock();
+		mBuilder->CreateBr( mergeBB );
+
+		// Merge: pick the short-circuit constant (false for &&, true for ||)
+		// from the entry edge, or the computed RHS bool from the RHS edge.
+		mBuilder->SetInsertPoint( mergeBB );
+		llvm::Type *i1Ty = llvm::Type::getInt1Ty( *mContext );
+		llvm::PHINode *phi = mBuilder->CreatePHI( i1Ty, 2, isAnd ? "landtmp" : "lortmp" );
+		phi->addIncoming( llvm::ConstantInt::get( i1Ty, isAnd ? 0 : 1 ), entryBB );
+		phi->addIncoming( rBool, rhsEndBB );
+		return phi;
+	}
+
 	llvm::Value *left = genExpression( ops->mOp1 );
 	llvm::Value *right = genExpression( ops->mOp2 );
 
 	if ( left == nullptr || right == nullptr )
 		return nullptr;
+
+	// `byte` is unsigned (byte->int conversion already zero-extends, see
+	// codegen_byte.b). Widen byte operands with ZExt (not SExt) and use a
+	// logical right shift, so byte arithmetic/print stays unsigned (0-255).
+	bool leftIsByte = isByteExpression( ops->mOp1 );
+	bool rightIsByte = isByteExpression( ops->mOp2 );
 
 	// Type promotion for mixed-width operands
 	if ( left->getType() != right->getType() )
@@ -402,14 +464,14 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 			unsigned rightBits = right->getType()->getIntegerBitWidth();
 			if ( leftBits < rightBits )
 			{
-				if ( leftBits == 1 )
+				if ( leftBits == 1 || leftIsByte )
 					left = mBuilder->CreateZExt( left, right->getType(), "bpromote" );
 				else
 					left = mBuilder->CreateSExt( left, right->getType(), "promote" );
 			}
 			else
 			{
-				if ( rightBits == 1 )
+				if ( rightBits == 1 || rightIsByte )
 					right = mBuilder->CreateZExt( right, left->getType(), "bpromote" );
 				else
 					right = mBuilder->CreateSExt( right, left->getType(), "promote" );
@@ -439,8 +501,6 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 
 	// Array operations: check if operands are array type
 	bool isArray = isArrayType( ops->mOp1 ) && isArrayType( ops->mOp2 );
-
-	const string &op = ops->mOperation;
 
 	// Array concatenation
 	if ( isArray && op == "+" )
@@ -475,7 +535,9 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 	if ( op == "|" )  return mBuilder->CreateOr( left, right, "ortmp" );
 	if ( op == "^" )  return mBuilder->CreateXor( left, right, "xortmp" );
 	if ( op == "<<" ) return mBuilder->CreateShl( left, right, "shltmp" );
-	if ( op == ">>" ) return mBuilder->CreateAShr( left, right, "shrtmp" );
+	if ( op == ">>" ) return ( leftIsByte )
+		? mBuilder->CreateLShr( left, right, "shrtmp" )
+		: mBuilder->CreateAShr( left, right, "shrtmp" );
 
 	// Comparisons (produce i1)
 	if ( op == "==" ) return isFloat ? mBuilder->CreateFCmpOEQ( left, right, "eqtmp" ) : mBuilder->CreateICmpEQ( left, right, "eqtmp" );
@@ -485,27 +547,8 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 	if ( op == "<=" ) return isFloat ? mBuilder->CreateFCmpOLE( left, right, "letmp" ) : mBuilder->CreateICmpSLE( left, right, "letmp" );
 	if ( op == ">=" ) return isFloat ? mBuilder->CreateFCmpOGE( left, right, "getmp" ) : mBuilder->CreateICmpSGE( left, right, "getmp" );
 
-	// Logical (treat operands as booleans via != 0)
-	if ( op == "&&" )
-	{
-		llvm::Value *lBool = isFloat
-			? mBuilder->CreateFCmpONE( left, llvm::ConstantFP::get( left->getType(), 0.0 ), "lbool" )
-			: mBuilder->CreateICmpNE( left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
-		llvm::Value *rBool = isFloat
-			? mBuilder->CreateFCmpONE( right, llvm::ConstantFP::get( right->getType(), 0.0 ), "rbool" )
-			: mBuilder->CreateICmpNE( right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
-		return mBuilder->CreateAnd( lBool, rBool, "landtmp" );
-	}
-	if ( op == "||" )
-	{
-		llvm::Value *lBool = isFloat
-			? mBuilder->CreateFCmpONE( left, llvm::ConstantFP::get( left->getType(), 0.0 ), "lbool" )
-			: mBuilder->CreateICmpNE( left, llvm::ConstantInt::get( left->getType(), 0 ), "lbool" );
-		llvm::Value *rBool = isFloat
-			? mBuilder->CreateFCmpONE( right, llvm::ConstantFP::get( right->getType(), 0.0 ), "rbool" )
-			: mBuilder->CreateICmpNE( right, llvm::ConstantInt::get( right->getType(), 0 ), "rbool" );
-		return mBuilder->CreateOr( lBool, rBool, "lortmp" );
-	}
+	// Logical operators &&/|| are handled at the top of this function with
+	// short-circuit branching (they never reach here).
 
 	cerr << "CodeGen: unknown binary operator '" << op << "'" << endl;
 	return nullptr;
@@ -747,8 +790,12 @@ llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 				}
 				else
 				{
-					llvm::Value *ext = mBuilder->CreateSExt( val,
-						llvm::Type::getInt64Ty( *mContext ), "ext64" );
+					// byte is unsigned: zero-extend so 0-255 prints unsigned.
+					llvm::Value *ext = isByteExpression( part )
+						? mBuilder->CreateZExt( val,
+							llvm::Type::getInt64Ty( *mContext ), "ext64" )
+						: mBuilder->CreateSExt( val,
+							llvm::Type::getInt64Ty( *mContext ), "ext64" );
 					strPart = mBuilder->CreateCall(
 						getOrDeclareIntToString(), { ext }, "intstr" );
 				}
@@ -1158,8 +1205,12 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				}
 				else if ( ph.type != '\0' )
 				{
-					llvm::Value *ext = mBuilder->CreateSExt( val,
-						llvm::Type::getInt64Ty( *mContext ), "ext64" );
+					// byte is unsigned: zero-extend so 0-255 formats unsigned.
+					llvm::Value *ext = isByteExpression( argExpr )
+						? mBuilder->CreateZExt( val,
+							llvm::Type::getInt64Ty( *mContext ), "ext64" )
+						: mBuilder->CreateSExt( val,
+							llvm::Type::getInt64Ty( *mContext ), "ext64" );
 					llvm::Constant *specData = mBuilder->CreateGlobalStringPtr(
 						ph.specifier, "print.spec" );
 					llvm::Value *specLen = llvm::ConstantInt::get(
@@ -1169,8 +1220,12 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				}
 				else
 				{
-					llvm::Value *ext = mBuilder->CreateSExt( val,
-						llvm::Type::getInt64Ty( *mContext ), "ext64" );
+					// byte is unsigned: zero-extend so 0-255 prints unsigned.
+					llvm::Value *ext = isByteExpression( argExpr )
+						? mBuilder->CreateZExt( val,
+							llvm::Type::getInt64Ty( *mContext ), "ext64" )
+						: mBuilder->CreateSExt( val,
+							llvm::Type::getInt64Ty( *mContext ), "ext64" );
 					strPart = mBuilder->CreateCall(
 						getOrDeclareIntToString(), { ext }, "print.intstr" );
 				}
