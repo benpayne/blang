@@ -2,7 +2,7 @@
 
 **Epic**: functional-hardening · **Unit**: U1 · **Branch**: `epic/functional-hardening/u1-arc-matrix`
 **Covers**: REQ-001 (aggregate/field ARC matrix, leak-clean) + REQ-005 (seeded fix S1: struct-valued field reassignment)
-**Speckit**: `arc-matrix` · **Status**: Draft (awaiting spec audit)
+**Speckit**: `arc-matrix` · **Status**: Approved (spec audit passed; SPEC-1/SPEC-2 folded in)
 
 ## Problem
 
@@ -34,10 +34,41 @@ fn main() -> int {
 }
 ```
 
-Observed: the write `o.inner = Inner { v: 99 }` does not take effect — the field
-still reads `1`, the assert fails (exit 1). A struct-valued field assignment
-must store the new value (and release the previously-held struct reference,
-retain the new one — leak-clean).
+### Corrected diagnosis (SPEC-2 — the real symptom)
+
+The spec-audit reviewer found the assert-only snippet above **passes today**
+(exit 0) — so an assert-only S1 test would have no teeth. The true symptom is a
+**read-path-dependent use-after-free**, confirmed under valgrind:
+
+- `o.inner = Inner { v: 99 }` **does** store the new pointer into the field.
+- But the RHS struct temporary is tracked as a statement temporary and
+  `__blang_rc_release`'d at end of statement — freeing the very block the field
+  now points to. The field is left dangling.
+- The **first** read right after (e.g. `int x = o.inner.v`) may still see `99`
+  because the freed block is not yet reused. Any **intervening allocation** —
+  notably the `println`/string-interpolation format path — reuses the freed
+  28-byte block, so a **subsequent** read of `o.inner.v` returns stale data
+  (`0`/garbage). That is why the bug is read-path- and sequence-dependent.
+
+valgrind on the pre-fix binary reports `Invalid read of size 4 ... block was
+free'd by __blang_rc_release`. So the fix is **not** "the store is dropped"; the
+store is fine — the bug is missing ARC ownership transfer on a struct-valued
+field assignment. The fix (in `CGStruct.cpp` `genFieldAssignment`, the
+struct-field `=` path) must take ownership of the new struct (untrack a fresh
+temporary, or retain an existing-owner source) and release the previously-held
+struct — mirroring struct-literal initialization plus an old-value release,
+retain-before-release so self-assignment is safe.
+
+### SPEC-1 — the S1 regression test MUST have teeth (fail pre-fix)
+
+Because the assert-only form passes today, `codegen_struct_field_reassign.b`
+MUST exercise the genuinely-buggy read path: **`println` the reassigned field
+value under a committed stdout golden showing `99`**, with a read sequence that
+forces the UAF pre-fix (a read-after-reassignment that follows an intervening
+`println`, i.e. two consecutive interpolated reads, whose pre-fix output is a
+stale `1`/`0`). The reviewer verifies at code audit that this test **fails
+pre-fix** (stale output ≠ golden) and **passes post-fix** (all reads `99`,
+leak-clean).
 
 ## Scope
 
@@ -74,7 +105,7 @@ golden. All run under `./test_codegen.sh --leak-check` with 0 leaks.
 
 **Plus the seeded fix regression test:**
 
-| S1 | `codegen_struct_field_reassign.b` | struct-valued field reassignment (`o.inner = Inner { v: 99 }`), the confirmed S1 repro | after reassignment `o.inner.v == 99`; old inner released; leak-clean |
+| S1 | `codegen_struct_field_reassign.b` | struct-valued field reassignment (`o.inner = Inner { v: 99 }`), the confirmed S1 repro — **prints the reassigned field twice via `println` under a golden showing `99`** (SPEC-1: fails pre-fix on the UAF read path, passes post-fix) | both interpolated reads show `99`; old inner released; leak-clean |
 
 That is **7 `codegen_arc_*.b` + 1 `codegen_struct_field_reassign.b` = 8 new
 `codegen_*.b` tests** toward the epic's ≥ 20 target (85 → 93 after U1).

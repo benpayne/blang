@@ -1318,13 +1318,52 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 	}
 	else
 	{
-		mBuilder->CreateStore( val, fieldPtr );
+		// Resolve the field's type name, mapping generic params (e.g. T -> Inner).
+		string fTypeName = fieldType != nullptr ? fieldType->getName() : "";
+		auto subIt = mTypeSubstitution.find( fTypeName );
+		if ( subIt != mTypeSubstitution.end() )
+			fTypeName = subIt->second->getName();
 
-		// If a fresh Array<T> rvalue temporary is stored into a field, ownership
-		// transfers to the struct — untrack it so it is not also released as a
-		// statement temporary (which would leave the field pointing at freed memory).
-		if ( fieldType != nullptr && fieldType->getName() == "Array" )
-			untrackTempArray( val );
+		if ( expr->mOperation == "=" && isUserStructType( fTypeName ) )
+		{
+			// Refcounted user-struct field reassignment (the S1 fix). A struct is
+			// a heap pointer; the RHS struct literal/call is tracked as a statement
+			// temporary, so a bare store leaves the field owning an un-counted
+			// reference that is then freed when the temp is released at end of
+			// statement — the field dangles and later reads hit freed memory (a
+			// read-path-dependent use-after-free: the first read may still see the
+			// value, but any intervening allocation, e.g. print/interpolation,
+			// reuses the freed block and later reads return stale data). Mirror
+			// struct initialization: take ownership of the new value and drop the
+			// previously-held struct. Whether the RHS is a fresh temporary
+			// (literal/call — ownership transfers) or an existing owner
+			// (variable/field access — must retain) decides how ownership is taken.
+			// Retain the new value BEFORE releasing the old so a self-assignment
+			// (o.inner = o.inner) cannot free a value it is about to keep.
+			bool srcIsExistingOwner =
+				( dynamic_cast<VariableExpression*>( (Expression*)expr->mValue ) != nullptr ||
+				  dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mValue ) != nullptr );
+
+			llvm::Value *oldVal = mBuilder->CreateLoad(
+				structType->getElementType( fieldIdx ), fieldPtr,
+				expr->mFieldName + ".old" );
+			mBuilder->CreateStore( val, fieldPtr );
+			if ( srcIsExistingOwner )
+				mBuilder->CreateCall( getOrDeclareRcRetain(), { val } );
+			else
+				untrackTempStruct( val );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { oldVal } );
+		}
+		else
+		{
+			mBuilder->CreateStore( val, fieldPtr );
+
+			// If a fresh Array<T> rvalue temporary is stored into a field, ownership
+			// transfers to the struct — untrack it so it is not also released as a
+			// statement temporary (which would leave the field pointing at freed memory).
+			if ( fTypeName == "Array" )
+				untrackTempArray( val );
+		}
 	}
 
 	return val;

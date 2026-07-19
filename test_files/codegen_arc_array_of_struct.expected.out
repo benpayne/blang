@@ -1,0 +1,8 @@
+len 3
+item apple 3
+item pear 5
+item plum 7
+idx0 apple 3
+idx2 plum 7
+idx0-again apple 3
+PASS
