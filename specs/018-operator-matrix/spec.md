@@ -2,7 +2,7 @@
 
 **Epic**: functional-hardening · **Unit**: U2 · **Branch**: `epic/functional-hardening/u2-operator-matrix`
 **Covers**: REQ-002 (operator matrix — unguarded primitives get behavioral goldens)
-**Speckit**: `operator-matrix` · **Status**: Draft (awaiting spec audit)
+**Speckit**: `operator-matrix` · **Status**: Approved (independent spec audit APPROVE; 3 non-blocking suggestions folded in)
 
 ## Problem
 
@@ -76,12 +76,12 @@ network/threading), so none is quarantined.
 
 | # | File | Shape covered | Key assertions / golden content |
 |---|------|---------------|---------------------------------|
-| 1 | `codegen_op_bitwise.b` | `& | ^` on `int` with several operand pairs, precedence with `+`/`==`, and unary `~` if supported | `12 & 10 == 8`, `12 | 10 == 14`, `12 ^ 10 == 6`, a masking example (`0b`-free decimal masks), each printed and asserted |
+| 1 | `codegen_op_bitwise.b` | `& | ^` on `int` with several operand pairs, precedence with `+`/`==` (confirmed C-correct: `1 + 2 & 3 == 3`, `12 & 10 == 8` binds tighter than `==`), and unary `~` (confirmed working: `~12 == -13`) | `12 & 10 == 8`, `12 | 10 == 14`, `12 ^ 10 == 6`, a masking example (`0b`-free decimal masks), each printed and asserted |
 | 2 | `codegen_op_shift.b` | `<< >>` on `int` including a **negative** LHS (`-8 >> 1 == -4`, signed arithmetic right) and a shift that builds a power of two (`1 << 30`) | printed + asserted; golden shows `-4`, `48`, `1073741824`, etc. |
 | 3 | `codegen_op_modulo.b` | `%` on `int` incl. a **negative** dividend (`-7 % 3`), and `%` inside a larger expression | printed + asserted; golden fixes the C-semantics result of negative `%` (`SRem`) |
 | 4 | `codegen_op_compound.b` | compound `%=` and `^=` (the two supported extended compound assigns), applied repeatedly, mixed with `+=` | printed + asserted; `6 %= 4 → 2`, `12 ^= 10 → 6`, chained updates |
 | 5 | `codegen_op_short_circuit.b` | `&&`/`||` **side-effect ordering** — a helper `fn touch(int) -> bool` that prints `"touch N"` and returns true. Four cases: `false && touch(1)` (RHS must **NOT** run), `true && touch(2)` (RHS **must** run), `true || touch(3)` (RHS must **NOT** run), `false || touch(4)` (RHS **must** run). Also asserts the final boolean value of each. | **This is the teeth test for the fix.** Golden contains exactly `touch 2` and `touch 4` (from the two cases whose RHS must run) and **not** `touch 1`/`touch 3`. Fails pre-fix (all four `touch N` print); passes post-fix. |
-| 6 | `codegen_op_byte.b` | `byte` unsigned bitwise (`&`,`|`,`^`) and unsigned right shift — `byte 200 >> 1 == 100`, `byte 240 | byte 15 == 255`, printed as unsigned | printed + asserted with the **correct unsigned** results. If the byte fix is deferred (filed), this test is NOT committed passing; its repro lives in `known-issues.md` and the byte-shift case is dropped from the committed matrix. |
+| 6 | `codegen_op_byte.b` | `byte` unsigned bitwise (`&`,`|`,`^`) and unsigned right shift — `byte 200 >> 1 == 100`, `byte 240 | byte 15 == 255`, **printed via `println` (the builtin `{}` path, not raw `printf`)** as unsigned | printed + asserted with the **correct unsigned** results. If the byte fix is deferred (filed), this test is NOT committed passing; its repro lives in `known-issues.md` and the byte-shift case is dropped from the committed matrix. |
 
 That is **6 `codegen_op_*.b`** tests toward the epic's ≥ 20 target (93 → 99
 after U2, contingent on the byte decision — at minimum 5 land if byte is filed).
@@ -118,7 +118,13 @@ short-circuit running).
 
 `byte` is unsigned. Two discrepancies: (a) `>>` on a `byte` should be a
 **logical** shift (`CreateLShr`), not arithmetic; (b) a `byte` value should print
-as **unsigned** (0–255). The intended path is to **fix both** if the change is
+as **unsigned** (0–255) — confirmed by spec audit to be a **general** byte-print
+issue, not shift-specific (`byte 255` alone prints `-1` via `println`). **This
+matters for the fix-or-file split:** the bitwise cases (`byte 240 | 15 == 255`)
+depend on the *same* unsigned-print fix as the shift case — so "ship bitwise, file
+shift" is only viable if the unsigned-print fix lands. If the print fix is
+deferred, the entire `codegen_op_byte.b` is filed (not just the shift case). The
+intended path is to **fix both** if the change is
 localized and low-risk (operand-type-aware shift selection in
 `genOperationsExpression`, mirroring the existing `isByteExpression` helper used
 elsewhere for casts; unsigned widening on the print/to_string path for `byte`).
