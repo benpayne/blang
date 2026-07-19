@@ -988,8 +988,32 @@ void Sema::resolveMethodCall( MethodCallExpression *mc, Type *baseType )
 		if ( method->getName() == name )
 		{
 			Type *rt = method->getReturnType();
-			if ( rt != nullptr && !isGenericParamName( structDef, rt->getName() ) )
-				mc->setResolvedType( rt );
+			if ( rt != nullptr )
+			{
+				if ( isGenericParamName( structDef, rt->getName() ) )
+				{
+					// B1: a generic return type (e.g. `V`) is substituted with the
+					// concrete type argument from the base type (e.g.
+					// Map<string,Point>.get -> Point), so a method-chain field
+					// access `m.get(k).field` can resolve the concrete struct type.
+					// Without this the call is left unannotated and codegen's
+					// field-access fallback finds no struct type (reads empty).
+					const auto &gps = structDef->getGenericParams();
+					for ( size_t gi = 0; gi < gps.size(); gi++ )
+					{
+						if ( gps[gi].mName == rt->getName() && baseType != nullptr &&
+						     (int)gi < baseType->getNumTypeParams() )
+						{
+							mc->setResolvedType( baseType->getTypeParam( gi ) );
+							break;
+						}
+					}
+				}
+				else
+				{
+					mc->setResolvedType( rt );
+				}
+			}
 			return;
 		}
 	}

@@ -1901,12 +1901,31 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		args.push_back( selfVal );
 	}
 
-	// Generate explicit arguments
-	for ( auto &argExpr : expr->mArgs )
+	// Generate explicit arguments. `self` occupies llvm param slot 0, so the
+	// i-th explicit argument maps to llvm param slot i+1.
+	for ( size_t ai = 0; ai < expr->mArgs.size(); ai++ )
 	{
-		llvm::Value *argVal = genExpression( argExpr );
+		llvm::Value *argVal = genExpression( expr->mArgs[ai] );
 		if ( argVal == nullptr )
 			return nullptr;
+
+		// Integer width coercion to the parameter type (B2): mirror the
+		// free-call path so an `int` argument widens to a `long` parameter (and
+		// narrows the other way) instead of emitting a type-mismatched call that
+		// fails IR verification — e.g. `file.read_into(buf, 11)` where the
+		// parameter is `long`.
+		size_t paramIdx = ai + 1; // +1 for self
+		if ( paramIdx < llvmFunc->arg_size() )
+		{
+			llvm::Type *paramType = llvmFunc->getFunctionType()->getParamType( paramIdx );
+			if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
+				 paramType->getIntegerBitWidth() > argVal->getType()->getIntegerBitWidth() )
+				argVal = mBuilder->CreateSExt( argVal, paramType, "marg.ext" );
+			else if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
+					  paramType->getIntegerBitWidth() < argVal->getType()->getIntegerBitWidth() )
+				argVal = mBuilder->CreateTrunc( argVal, paramType, "marg.trunc" );
+		}
+
 		args.push_back( argVal );
 	}
 
@@ -1935,6 +1954,13 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		// must be released at statement end unless it is stored / transferred.
 		else if ( mRetName == "Array" )
 			trackTempArray( methodResult );
+		// Track a string-returning method result as a temporary — a user method
+		// returning `string` yields an owned BlangString reference that must be
+		// released at statement end unless stored/transferred (mirrors the
+		// function-return path). Without this, `obj.method()` string results used
+		// directly (in ==, interpolation, or as a discarded statement) leak.
+		else if ( mRetName == "string" )
+			trackTempString( methodResult );
 	}
 
 	return methodResult;
