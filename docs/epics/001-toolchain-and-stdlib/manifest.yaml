@@ -1,0 +1,161 @@
+# manifest.yaml — machine-readable compilation of the 001-toolchain-and-stdlib epic.
+
+manifest_version: 0
+epic: 001-toolchain-and-stdlib
+entry: overview.md
+archetype: evolve
+constitution: .specify/memory/constitution.md
+
+run:
+  # Duplicated from overview.md "Done condition (epic level)" verbatim.
+  done_condition: |
+    All of the following hold on a clean checkout of the epic's final state
+    (concrete commands in evaluation.md):
+
+    1. Correctness preserved at every setting: ./run_tests.sh (LLVM and
+       parse-only), ./test_codegen.sh, and ctest --test-dir build exit 0; and
+       the codegen suite also passes when built at -O2 and with -g.
+    2. Diagnostics: a committed multi-error fixture with ≥ 3 independent errors
+       produces ≥ 3 located file:line:col: diagnostics from one qcc
+       invocation; qcc --json emits schema-valid JSON (severity/file/line/col/
+       message/code) parseable by python3 -c 'import json,sys; json.load(sys.stdin)';
+       a warning:-severity diagnostic is emitted by a committed fixture and
+       -Werror promotes it to a non-zero exit.
+    3. Optimization: bcc -O2 compiles and runs the whole codegen suite green
+       (correctness is the hard gate); a size/perf delta of -O2 vs -O0 is
+       measured and recorded in docs/epics/001-toolchain-and-stdlib/opt-delta.md
+       (informational, no threshold); --release builds; bcc --target
+       <non-host-triple> -c emits an object file (cross-compile smoke).
+    4. Debug info: bcc -g hello.b yields a binary whose DWARF shows line
+       tables and a DISubprogram per function (llvm-dwarfdump greps confirm);
+       a scripted gdb/lldb smoke test sets a breakpoint by .b file:line and
+       hits it; the -g × -O stance is implemented and tested (either -g forces
+       -O0, or debug info is opt-safe and the module verifies under -O2 -g).
+    5. Stdlib breadth: math, time, random, env, CLI-flag parsing, a
+       generic sort, and a hashed Map/Set are each usable via bcc
+       (import), each with ≥ 1 behavioral codegen_*.b test (golden where
+       deterministic); C-backed modules also have ctest runtime unit tests; the
+       new Map is hashed (not the O(n) scan) with a test demonstrating it.
+    6. Process + integration: each of the four areas has committed speckit
+       artifacts under specs/ that passed the architect's spec audit; the
+       codegen_*.b count grew by ≥ 25 vs the launch baseline (107); CI runs all
+       new legs green on the final commit.
+
+  guidance: |
+    Start by reading docs/epics/001-toolchain-and-stdlib/overview.md and its
+    companions: workplan.md, design.md, and the four area design docs
+    (design-diagnostics.md, design-optimization.md, design-debug-info.md,
+    design-stdlib.md), plus evaluation.md. Read .specify/memory/constitution.md
+    first — it governs all work. This is a LARGE, four-area Phase-4 epic at full
+    depth. Execute U0 FIRST (the pipeline foundation everything builds on), then
+    U1-U5 (diagnostics, optimization, debug info, native stdlib,
+    collections/CLI stdlib) in parallel, then U6 (integration + CI + close-out).
+    THREE roles: an ARCHITECT performs Phase-2 spec audits for every unit
+    (cross-area coherence, conformance to the design docs, that each unit threads
+    through U0's single flag/link path — a spec that re-duplicates or bypasses it
+    is a blocking finding); an IMPLEMENTER runs the speckit ceremony + builds; an
+    INDEPENDENT code reviewer does Phase-4 code audits + merges. Each of the four
+    areas produces committed speckit artifacts under specs/. Honor the design
+    decisions (opt gated on correctness + recorded delta not a perf threshold;
+    -g forces -O0 but emission stays verifier-clean under -O; new stdlib modules
+    import-gated via the 6-touchpoint recipe). Keep run_tests.sh, test_codegen.sh,
+    ctest, and --leak-check green at every unit boundary. When a "full depth"
+    sub-area needs splitting, raise an Open Question to the manager, not a silent
+    scope cut. Branch epic/001-toolchain-and-stdlib/uN-<slug>; squash-merge only;
+    never commit to master directly.
+
+  oversight_level: fully_autonomous
+  limits:
+    max_turns: 600
+    max_runtime_seconds: 1814400        # 21 days (largest epic in the program)
+    session_token_limit: 50000000       # 50M
+    no_progress_threshold: 10
+  baseline:
+    codegen_tests: 107
+    run_tests_llvm: 195
+  models:
+    controller: claude-opus-4-8
+    worker: claude-sonnet-5
+
+hires:
+  # Three roles (PM decision). The manager (controller, Opus) directs all three.
+  - role: architect
+    min_count: 1
+    max_count: 1
+    model: claude-opus-4-8            # stronger model for cross-area spec review
+    duties: >
+      Phase-2 spec audits for EVERY unit across all four areas: cross-area
+      coherence, conformance to the epic design docs, and that each unit threads
+      through U0's single flag/link path (re-duplication or bypass is a blocking
+      finding). A single cross-epic role so the four workstreams stay consistent.
+      Does NOT implement or do code audits.
+  - role: implementer
+    min_count: 1
+    max_count: 1
+    model: claude-sonnet-5
+    duties: >
+      Speckit ceremony (specify/plan/tasks/implement) + the code for one unit at
+      a time; runs per-unit gates locally; addresses architect + reviewer findings.
+  - role: code-reviewer
+    min_count: 1
+    max_count: 1
+    model: claude-sonnet-5
+    independence: must not implement any unit it reviews
+    duties: >
+      Phase-4 code audits + Phase-5 merge (rebase, re-gate, squash-merge). Sole
+      authority to merge to the epic base branch. Independent of the implementer.
+
+units:
+  - id: U0
+    reqs: [REQ-001]
+    summary: Pipeline foundation — consolidate the 4 duplicated bcc llc/qcc-invocation + link blocks; factor the flag-threading path
+    depends_on: []
+    done: "one llc-invocation helper (duplication gone); suites byte-identical/green; a flag/lib adds in one site"
+    speckit: pipeline-foundation
+  - id: U1
+    reqs: [REQ-002]
+    summary: Diagnostics — DiagnosticEngine collector, parser panic-mode recovery (multi-error), warnings + -Werror, --json
+    depends_on: [U0]
+    done: ">=3-error fixture -> >=3 located diagnostics in one run; --json schema-valid; warning emitted; -Werror non-zero; suites green"
+    speckit: diagnostics
+  - id: U2
+    reqs: [REQ-003]
+    summary: Optimization — in-process PassBuilder + llc -O, --release, --target cross-compile; correctness + recorded delta
+    depends_on: [U0]
+    done: "codegen suite green built at -O2; opt-delta.md recorded; --release builds; --target emits an object; suites green"
+    speckit: optimization
+  - id: U3
+    reqs: [REQ-004]
+    summary: Debug info (DWARF) — DIBuilder/DISubprogram/DebugLoc/dbg.declare, -g flag, -g x -O stance, ARC DebugLoc
+    depends_on: [U0]
+    done: "dwarfdump shows subprogram + line table; gdb/lldb breakpoint-by-file:line hits; -g -O2 verifies clean; suites green"
+    speckit: debug-info
+  - id: U4
+    reqs: [REQ-005]
+    summary: Native stdlib — math (libm), time/date, random, env via the 6-touchpoint recipe
+    depends_on: [U0]
+    done: "each usable via bcc import with a passing codegen test + ctest units (ASan-clean); suites green"
+    speckit: stdlib-native
+  - id: U5
+    reqs: [REQ-006]
+    summary: Collections/CLI stdlib — hashed Map/Set (replace O(n) collections.Map), generic sort, CLI flag parsing
+    depends_on: [U0]
+    done: "hashed Map/Set usable via bcc with a hashed-behavior test; sort sorts a fixture; flag parser parses a sample; suites green"
+    speckit: stdlib-collections
+  - id: U6
+    reqs: [REQ-007]
+    summary: Integration — cross-area verification (-O2, -g, -g -O2, --json both paths), CI legs, docs, close-out
+    depends_on: [U0, U1, U2, U3, U4, U5]
+    done: "evaluation.md Epic-level acceptance passes; codegen count >= 132; speckit artifacts present; CI green on final commit"
+    speckit: integration-closeout
+
+soft_conflicts:
+  - [U2, U3]   # the -g x -O matrix; stance in design-debug-info.md; second-to-merge rebases + re-verifies
+
+foldback:
+  status_into: overview.md
+
+devbot:
+  endpoint: null
+  directory_id: null
+  runs: []
