@@ -598,7 +598,7 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     `--leak-check`, `fuzz`), match-exhaustiveness has a single implementation in
     `Sema`, and `codegen_parked.txt` is empty (every feature ported).
   - `functional-hardening` (`docs/epics/functional-hardening/`) — status:
-    **planning**. Behavioral test matrices (aggregate/field ARC, operators,
+    **launched** (devbot run `7708a1f6-3ec0-402b-83f2-56902320ffa8`). Behavioral test matrices (aggregate/field ARC, operators,
     feature interactions, stdlib-via-`bcc`) plus fixing the bugs they surface
     (fix-or-file policy); seeds: struct-valued field reassignment, `Map` via
     `bcc`. From the 2026-07-19 functional-coverage evaluation.
