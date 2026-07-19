@@ -99,8 +99,10 @@ All of the following hold on a clean checkout of the epic's final state
 
 - **The two seeded bugs are known and reproduce today** (on branch
   `fix/nested-field-access`): struct-valued field reassignment
-  (`o.inner = Inner{...}` reads inconsistently) and `Map` via `bcc`
-  (`collections.b` not in `bcc`'s auto-include list — see `bcc.cpp` ~line 279).
+  (`o.inner = Inner{...}` reads inconsistently) and `Map` from the `collections`
+  module unusable — deeper than the `bcc.cpp:279` auto-include list: a
+  `Map<K,V> x` declaration fails to resolve even via `qcc --combine`, only
+  inline-defined `Map` works (see design.md S2 for U4's fuller diagnosis).
   These are required fixes (REQ-005), not deferrable.
 - **ARC bugs are the highest-value class** — 4 of the 5 session bugs were
   refcount handling in field/aggregate contexts. Prioritize the ARC matrix and
