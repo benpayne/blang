@@ -1,0 +1,96 @@
+# manifest.yaml — machine-readable compilation of the functional-hardening epic.
+
+manifest_version: 0
+epic: functional-hardening
+entry: overview.md
+archetype: evolve
+constitution: .specify/memory/constitution.md
+
+run:
+  # Duplicated from overview.md "Done condition (epic level)" verbatim.
+  done_condition: |
+    All of the following hold on a clean checkout of the epic's final state
+    (concrete commands in evaluation.md):
+
+    1. Both suites green, both build modes: ./run_tests.sh (LLVM and
+       parse-only), ./test_codegen.sh, and ctest --test-dir build all exit 0.
+    2. The four matrices exist: ≥ 20 new test_files/codegen_*.b tests added
+       across the aggregate-ARC, operator, interaction, and stdlib-via-bcc
+       matrices; every deterministic one has a committed stdout golden and passes.
+    3. The two seeded bugs are fixed: a committed test for struct-valued field
+       reassignment passes and is leak-clean; a program using import collections;
+       + Map compiles and runs via bcc (not just the test harness).
+    4. ARC-matrix tests are leak-clean: ./test_codegen.sh --leak-check over
+       the aggregate-ARC tests exits 0 with 0 leaks.
+    5. Fix-or-file, nothing dropped: docs/epics/functional-hardening/known-issues.md
+       exists; every bug a matrix surfaced that was NOT fixed has an entry with a
+       minimal repro and a justification; no committed matrix test is left failing.
+    6. CI runs the new tests green (they are auto-globbed into the suite; the
+       CI run on the epic's final commit is green).
+
+  guidance: |
+    Start by reading docs/epics/functional-hardening/overview.md and companions
+    (workplan.md, design.md, evaluation.md). Read .specify/memory/constitution.md
+    first — it governs all work. This is an ADDITIVE test-authoring + bug-fixing
+    epic: build the four behavioral matrices (aggregate/field ARC, operator,
+    interaction, stdlib-via-bcc), each with stdout goldens, ARC tests under
+    --leak-check. Reuse the existing harness; do not build new infrastructure.
+    Follow the fix-or-file policy (design.md): a failing authored test is FIXED
+    (test passes, leak-clean if ARC) or FILED in known-issues.md with a minimal
+    repro + justification and NOT committed failing; large/risky fixes are an
+    Open Question to the manager, not a silent defer. The two seeded bugs
+    (struct-valued field reassignment; Map via bcc) are required fixes. Test
+    stdlib through the real bcc driver, not just --combine. Follow the five-phase
+    lifecycle with an implementer hire and an independent secondary-reviewer hire;
+    squash-merge only; never commit to master directly. Keep run_tests.sh,
+    test_codegen.sh, ctest, and --leak-check green at every unit boundary.
+
+  oversight_level: fully_autonomous
+  limits:
+    max_turns: 400
+    max_runtime_seconds: 1209600        # 14 days
+    session_token_limit: 50000000       # 50M
+    no_progress_threshold: 10
+  models:
+    controller: claude-opus-4-8
+    worker: claude-sonnet-5
+
+units:
+  - id: U1
+    reqs: [REQ-001, REQ-005]
+    summary: Aggregate/field ARC matrix (~6-8 tests, leak-checked) + fix seeded struct-field reassignment bug
+    depends_on: []
+    done: "ARC tests pass with goldens; --leak-check 0 leaks; struct_field_reassign test passes; other ARC bugs fixed or filed; suites green"
+    speckit: arc-matrix
+  - id: U2
+    reqs: [REQ-002]
+    summary: Operator matrix — bitwise/shift/%/compound/short-circuit with side-effect ordering, behavioral goldens
+    depends_on: []
+    done: "bitwise/shift/%/compound/short-circuit each have a passing golden test; short-circuit skip proven; suites green"
+    speckit: operator-matrix
+  - id: U3
+    reqs: [REQ-003]
+    summary: Interaction matrix — match-bind/unwrap/method-chain to field, array-elem mutate, for-in aggregates
+    depends_on: []
+    done: "each interaction shape has a passing golden test; suites green"
+    speckit: interaction-matrix
+  - id: U4
+    reqs: [REQ-004, REQ-005]
+    summary: Stdlib-via-bcc — fix seeded Map-via-bcc bug + behavioral tests through the real driver
+    depends_on: []
+    done: "bcc compiles+runs a Map program via import collections; new stdlib behavioral tests pass; suites green"
+    speckit: stdlib-bcc
+  - id: U5
+    reqs: [REQ-006]
+    summary: CI wiring + known-issues consolidation + docs/CLAUDE.md close-out
+    depends_on: [U1, U2, U3, U4]
+    done: "evaluation.md Epic-level acceptance passes; new tests run green in CI; >= +20 codegen tests; known-issues.md consolidated"
+    speckit: ci-closeout
+
+foldback:
+  status_into: overview.md
+
+devbot:
+  endpoint: null
+  directory_id: null
+  runs: []
