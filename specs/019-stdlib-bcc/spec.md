@@ -75,6 +75,16 @@ reading `bcc.cpp` / `qcc.cpp`:
   names as types (`qcc.cpp:~822-831`). Functions remain namespace-qualified
   (preserving the `fs.`/`net.` convention). Lands in `qcc.cpp` (combine-mode
   scoping) — **does NOT touch `CGStruct.cpp`** (no soft-conflict with U1/U3).
+
+  **UPDATE (RC-1, code audit):** the committed `codegen_bcc_collections_map.b`
+  leaked 32 bytes via `Map.remove()` on a string-key Map — a pre-existing
+  `Array<refcounted>` ARC bug (pop transferred but never released the element;
+  `arr[i] = x` released the old slot but never retained the new) that the S2 fix
+  surfaced. Fixing it to be leak-clean required editing `CGStruct.cpp`
+  (`genArrayMethodCall` pop temp-tracking + `genIndexAssignment` retain-on-set).
+  **So U4 now DOES touch `CGStruct.cpp`** — flagged to the manager as a U1/U3
+  soft-conflict extension; U3 must rebase onto U4. The edits are in array
+  pop/index-assign, distinct from U3's `genMethodCall`/`isStringType` targets.
 - **Wire `collections` into the `bcc test` stdlib path** (`bcc.cpp:~279`) so
   `bcc test` on a file importing collections also resolves `Map` — gated on the
   file's imports (mirroring the main path), for completeness. (The primary S2
@@ -170,6 +180,9 @@ ctest --test-dir build                 # runtime units stay green
 # S2 fixed THROUGH THE REAL DRIVER (bcc), per the epic acceptance
 printf 'import collections;\nfn main() -> int { Map<string,int> m = Map<string,int> { keys: [], values: [] }; m.set("a", 1); assert m.get("a") == 1, "map"; return 0; }\n' > /tmp/mapchk.b
 bcc /tmp/mapchk.b -o /tmp/mapchk && /tmp/mapchk
+
+# the collections Map test is leak-clean (RC-1)
+./test_codegen.sh --leak-check test_files/codegen_bcc_collections_map.b test_files/codegen_bcc_fs_utils.b test_files/codegen_bcc_net_utils.b
 
 # the 3 U4 tests also compile+run through bcc directly (not only the harness)
 for t in codegen_bcc_collections_map codegen_bcc_fs_utils codegen_bcc_net_utils; do
