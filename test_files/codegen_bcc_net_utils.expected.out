@@ -1,0 +1,13 @@
+s200=OK
+s404=Not Found
+s500=Internal Server Error
+resp_starts=true
+resp_has_ct=true
+resp_has_len=true
+resp_ends_body=true
+method=GET
+path=/index.html
+version=HTTP/1.1
+hit_status=200 hit_body=home
+miss_status=404
+PASS
