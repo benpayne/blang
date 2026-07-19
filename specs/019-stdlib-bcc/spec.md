@@ -2,7 +2,7 @@
 
 **Epic**: functional-hardening · **Unit**: U4 · **Branch**: `epic/functional-hardening/u4-stdlib-bcc`
 **Covers**: REQ-004 (stdlib exercised through the real `bcc` driver) + REQ-005 (seeded fix S2: `Map` from the `collections` module usable via `bcc`)
-**Speckit**: `stdlib-bcc` · **Status**: Draft (awaiting spec audit)
+**Speckit**: `stdlib-bcc` · **Status**: Approved (independent spec audit: REQUIRED CHANGES folded in — fs/net tests reframed as driver-integration coverage; fs centered on read_into; deliberate content-grep gate noted)
 
 ## Problem
 
@@ -12,7 +12,7 @@ suite while being **unusable through the real `bcc` driver**. The headline case 
 the seeded bug **S2**: a program that does `import collections;` and declares a
 `Map<string,int>` fails to compile. This unit exercises stdlib **through `bcc`**
 (the driver users actually run), fixes S2, and adds behavioral coverage for
-currently-untested `net`/`fs` utility functions.
+`net`/`fs` utility functions that work via `--combine` today but have never been exercised through the real `bcc` driver.
 
 ### Grounding investigation (run on this branch's base — real current behavior)
 
@@ -53,10 +53,17 @@ reading `bcc.cpp` / `qcc.cpp`:
   module and calls **namespace-qualified**: `import fs; fs.write_all(p, s);
   fs.read_all(p)` and `import net; net.http_status_text(200)` both compile and run
   through `bcc`. (Free functions stay namespace-qualified; only *types* need the
-  unqualified-visibility fix.) The untested surface is the *less-common* helpers
-  (`fs` File methods `read_into`/`read_line`/`seek`/`tell`/`size`; `net` pure
-  helpers `build_http_response`/`parse_http_request_line`/`dispatch_request`),
-  which currently have no behavioral golden.
+  unqualified-visibility fix.) **Driver-integration gap (the real novelty of the
+  fs/net tests):** these `fs` File methods (`read_into`/`read_line`/`seek`/`tell`/
+  `size`) and `net` pure helpers (`build_http_response`/`parse_http_request_line`/
+  `dispatch_request`/`http_status_text`) ARE covered functionally by existing
+  `--combine` codegen tests (`codegen_file_io.b`, `codegen_http_blang.b`,
+  `codegen_http_routing.b`), but **`test_codegen.sh` never invokes `bcc`** — it
+  calls `qcc --combine` directly — so none of them has ever been exercised through
+  the real `bcc` driver. "Compiles+runs through `bcc`" is therefore the genuinely
+  new signal (D4), and it is the fs/net tests' reason to exist. The one `fs`
+  method with **no** existing codegen coverage at all is `read_into`, which the fs
+  test centers on.
 
 ## Scope
 
@@ -83,8 +90,8 @@ reading `bcc.cpp` / `qcc.cpp`:
   real driver"):
   - `codegen_bcc_collections_map.b` — S2 regression (Map via `import
     collections;`).
-  - `codegen_bcc_fs_utils.b` — untested `fs` File methods.
-  - `codegen_bcc_net_utils.b` — untested `net` pure HTTP helpers.
+  - `codegen_bcc_fs_utils.b` — `fs` File methods through the `bcc` driver (centered on `read_into`, the one method with no existing codegen coverage).
+  - `codegen_bcc_net_utils.b` — `net` pure HTTP helpers through the `bcc` driver.
 
 **Out of scope**
 - Operator / ARC / interaction matrices (U1/U2/U3).
@@ -105,8 +112,8 @@ string helpers — no sockets/threads), so none is quarantined.
 | # | File | Shape covered | Key assertions / golden content |
 |---|------|---------------|---------------------------------|
 | 1 | `codegen_bcc_collections_map.b` | **S2 regression.** `import collections;` then `Map<string,int>` full-literal init, `set`/`get`/`has`/`length`/`remove` — the exact cross-module path that fails today | `set("a",1)`,`set("b",2)`; `get("a")==1`, `get("b")==2`; `has("a")==true`, `has("z")==false`; `length()==2`; after `remove("a")`, `length()==1`, `has("a")==false`. Golden prints each. **Fails pre-fix** (`Failed parse varible`), **passes post-fix**. Also uses a `Map<string, Point>` (struct value) briefly to confirm a refcounted value type flows through the module `Map` (light ARC touch; not the ARC matrix). |
-| 2 | `codegen_bcc_fs_utils.b` | `import fs;` untested File methods — open a `/tmp` file, `write`, `seek(0)`/`tell()`, `read_into`/`read_line`, `size()`, `close`; then `fs.remove` | deterministic golden of the read-back lines + sizes/offsets; asserts each. Uses a fixed `/tmp/blang_u4_fs_*.txt` path. |
-| 3 | `codegen_bcc_net_utils.b` | `import net;` **pure** HTTP helpers (no socket) — `net.http_status_text(200/404/500)`, `net.build_http_response(...)`, `net.parse_http_request_line("GET /path HTTP/1.1")` into its fields, and `net.dispatch_request` against a small route table returning a matched response and a 404 | deterministic golden of status texts, the built response's status line, the parsed method/path, and the dispatch results; asserts each |
+| 2 | `codegen_bcc_fs_utils.b` | `import fs;` File methods **through the `bcc` driver** (novelty is the driver path — `test_codegen.sh` never runs `bcc`; `read_into` also has no existing codegen coverage) — open a `/tmp` file, `write`, `seek(0)`/`tell()`, `read_into`/`read_line`, `size()`, `close`; then `fs.remove` | deterministic golden of the read-back lines + sizes/offsets; asserts each. Uses a fixed `/tmp/blang_u4_fs_*.txt` path. |
+| 3 | `codegen_bcc_net_utils.b` | `import net;` **pure** HTTP helpers (no socket) **through the `bcc` driver** (novelty is the driver path; these helpers are covered by `codegen_http_blang.b`/`codegen_http_routing.b` via `--combine` but never via `bcc`) — `net.http_status_text(200/404/500)`, `net.build_http_response(...)`, `net.parse_http_request_line("GET /path HTTP/1.1")` into its fields, and `net.dispatch_request` against a small route table returning a matched response and a 404 | deterministic golden of status texts, the built response's status line, the parsed method/path, and the dispatch results; asserts each |
 
 That is **3 `codegen_*.b`** tests toward the epic's ≥ 20 target. (Running epic
 total after U1+U2+U4: 93 + ~6 + 3 ≈ 102; U3 adds the remainder to clear ≥ 105.)
@@ -182,8 +189,9 @@ ki=$(grep -c '^### KI-' docs/epics/functional-hardening/known-issues.md 2>/dev/n
   fixed); the committed `codegen_bcc_collections_map.b` fails pre-fix and passes
   post-fix, with a golden.
 - **SC-002**: `codegen_bcc_fs_utils.b` and `codegen_bcc_net_utils.b` pass with
-  goldens and exercise previously-untested `fs`/`net` helpers, verified through
-  `bcc`.
+  goldens and exercise `fs`/`net` helpers **through the real `bcc` driver** (the
+  new signal — `test_codegen.sh` never invokes `bcc`); `read_into` additionally
+  has no prior codegen coverage.
 - **SC-003**: S2 does not appear in `known-issues.md`; fix-or-file bounded (≤ 3).
 - **SC-004**: both `run_tests.sh` modes, `test_codegen.sh`, and `ctest` stay
   green; `codegen_*.b` count increases by 3.
