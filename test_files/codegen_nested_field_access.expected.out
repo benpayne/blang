@@ -1,0 +1,4 @@
+via var  : name=Alice age=30
+direct   : name=Alice age=30
+levels   : mid.m=7 n=99
+PASS

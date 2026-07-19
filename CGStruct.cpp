@@ -1017,6 +1017,33 @@ llvm::Value *CodeGen::genFieldAccess( FieldAccessExpression *expr )
 		}
 	}
 
+	// General fallback: when the object is not a simple VariableExpression
+	// (e.g. a chained field access `o.inner.x`, or a call result), resolve its
+	// struct type from the Sema-annotated resolved type of the object expression.
+	if ( structType == nullptr )
+	{
+		if ( Type *objType = ( (Expression*)expr->mObject )->getResolvedType() )
+		{
+			string typeName = objType->getName();
+			if ( objType->getNumTypeParams() > 0 )
+			{
+				std::vector<SmartPtr<Type>> typeArgs;
+				for ( int i = 0; i < objType->getNumTypeParams(); i++ )
+					typeArgs.push_back( objType->getTypeParam( i ) );
+				typeName = mangleGenericName( objType->getName(), typeArgs );
+			}
+			auto stIt = mStructTypeMap.find( typeName );
+			if ( stIt != mStructTypeMap.end() )
+				structType = stIt->second;
+			else
+			{
+				auto defIt = mStructDefMap.find( typeName );
+				if ( defIt != mStructDefMap.end() )
+					structType = getOrCreateStructType( defIt->second );
+			}
+		}
+	}
+
 	if ( structType == nullptr )
 		return nullptr;
 
