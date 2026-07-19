@@ -106,4 +106,4 @@ devbot:
   runs:
     - run_id: 7708a1f6-3ec0-402b-83f2-56902320ffa8
       launched: 2026-07-19
-      outcome: pending
+      outcome: completed  # U1-U5 merged to master (4e95ee9); done-condition verified; 0 deferred bugs

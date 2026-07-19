@@ -2,7 +2,7 @@
 
 **Archetype**: evolve (additive test authoring + fixing the bugs it surfaces)
 
-**Status**: launched
+**Status**: complete (all 5 units merged; done-condition independently verified; 0 known-issues)
 
 **Owner**: Ben Payne
 
@@ -130,6 +130,8 @@ All of the following hold on a clean checkout of the epic's final state
 | 2026-07-19 | — | readiness review round 1 | 5 findings. C1: +20 gate was commented-out + undefined BASELINE → pinned BASELINE=85, uncommented, added run.baseline. C2: ARC leak glob vacuous → U1 must name tests codegen_arc_*.b (invariant). C3: fix-or-file gameable → cap <=3 structured ### KI- entries. M1/S2: Map acceptance program refined; probe found the bug is DEEPER (Map from module unresolved via import AND --combine, not just bcc auto-include) — U4 scope updated. M2: soft_conflicts [U1,U3] recorded. done_condition re-synced. |
 | 2026-07-19 | — | readiness review passed (10/10); status → ready | All 5 findings resolved (BASELINE pinned=85, ARC-glob naming required, fix-or-file cap=3, S2 deepened, soft_conflicts recorded); branch merged to master + pushed (91298d6). |
 | 2026-07-19 | 7708a1f6 | launched on devbot | endpoint http://localhost:8000, dir a6b2f628, fully_autonomous, no_progress_threshold 10, 50M tokens, max 400 turns / 14 days. Team: 1 implementer + 1 independent reviewer (per PM). Baseline codegen=85 (master 91298d6). |
+| 2026-07-19 | 7708a1f6 | EPIC COMPLETE | U1-U5 merged to master 4e95ee9 (two-hire team). 4 matrices authored; both seeded bugs FIXED (incl. the deeper S2 Map-from-module resolution); 0 bugs filed (fix-or-file cap unused). |
+| 2026-07-19 | — | done-condition independently verified | Rebuilt LLVM+parse-only: run_tests 195/190, test_codegen 107/107 (+22, baseline 85), 7 codegen_arc_*.b, S1 struct_field_reassign PASS, S2 Map-via-bcc exit 0, --leak-check ARC matrix 8/8 0 leaks, known-issues.md 0 entries. All 6 clauses PASS. |
 | 2026-07-19 | 7708a1f6 | launch baseline confirmed GREEN | Both builds OK (LLVM `build` + parse-only `build-parse`). `run_tests.sh`=195 pass/0 fail (LLVM), 190 pass/0 fail (`BUILD_DIR=build-parse`). `test_codegen.sh`=85 pass/0 fail (78 golden-checked, 7 quarantined). `ctest --test-dir build`=54/54. codegen_*.b count=85 (matches manifest baseline); codegen_arc_*.b=0. All gates green. |
 | 2026-07-19 | 7708a1f6 | seeded bugs S1+S2 reproduced | **S1** (struct-field reassignment): `o.inner = Inner{v:99}` write dropped — prints `after 1`, assert fails, exit 1 (bcc). **S2** (Map via module): `Map<string,int> m` from `import collections;` → `error: Failed parse varible` at declaration, fails identically via `bcc` AND `qcc --combine stdlib/collections.b`. Both match design.md S1/S2. |
 | 2026-07-19 | 7708a1f6 | U1 spec drafted → spec audit | `specs/017-arc-matrix/spec.md` on branch `epic/functional-hardening/u1-arc-matrix`: 7 `codegen_arc_*.b` + `codegen_struct_field_reassign.b` (S1 fix), all leak-checked. OQ-U1-1 raised (S1 fix lands in CGStruct.cpp → soft conflict [U1,U3], serialize). STOP — handed to reviewer for spec audit. |
