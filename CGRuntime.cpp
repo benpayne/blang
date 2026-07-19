@@ -1106,6 +1106,10 @@ llvm::Value *CodeGen::genQueryExpression( QueryExpression *query )
 	{
 		// Unknown table — free the result and return an empty array.
 		mBuilder->CreateCall( getOrDeclareDbResultFree(), { result } );
+		// Fresh Array<T> rvalue: track as a statement temporary so a discarded
+		// `query T;` result is released at statement end. Consumers that keep
+		// the array (var-decl init, assignment, return) untrackTempArray it.
+		trackTempArray( arr );
 		return arr;
 	}
 
@@ -1204,6 +1208,11 @@ llvm::Value *CodeGen::genQueryExpression( QueryExpression *query )
 
 	mBuilder->SetInsertPoint( endBB );
 	mBuilder->CreateCall( getOrDeclareDbResultFree(), { result } );
+	// Fresh Array<T> rvalue: track as a statement temporary so a discarded
+	// `query T |> ...;` result (never bound to a variable) is released at
+	// statement end. Consumers that keep the array (var-decl init, assignment,
+	// return) call untrackTempArray to take ownership.
+	trackTempArray( arr );
 	return arr;
 }
 
