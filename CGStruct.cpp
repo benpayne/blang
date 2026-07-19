@@ -865,6 +865,14 @@ llvm::Value *CodeGen::genArrayMethodCall( MethodCallExpression *expr )
 	{
 		// Determine element type from the Array<T> type annotation
 		llvm::Type *elemType = llvm::Type::getInt32Ty( *mContext ); // default
+		// Resolved element type NAME (after generic substitution), used to give
+		// the popped value the same ARC temp-tracking as a function return: pop
+		// transfers the array's owned reference to the returned value, so a
+		// refcounted element (string/struct/Array) must be tracked as a temporary
+		// — released at statement end if discarded (e.g. `arr.pop();` inside
+		// Map.remove, which otherwise leaks the popped element), or adopted by an
+		// assignment if consumed (`x = arr.pop()`, which untracks the temp).
+		string popElemName;
 		if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
 		{
 			Type *varType = ve->mVariable->getVariableType();
@@ -874,9 +882,15 @@ llvm::Value *CodeGen::genArrayMethodCall( MethodCallExpression *expr )
 				string en = ep->getName();
 				auto subIt = mTypeSubstitution.find( en );
 				if ( subIt != mTypeSubstitution.end() )
+				{
 					elemType = getLLVMType( subIt->second );
+					popElemName = subIt->second->getName();
+				}
 				else
+				{
 					elemType = getLLVMType( ep );
+					popElemName = en;
+				}
 			}
 		}
 		else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mObject ) )
@@ -888,16 +902,33 @@ llvm::Value *CodeGen::genArrayMethodCall( MethodCallExpression *expr )
 				string en = ep->getName();
 				auto subIt = mTypeSubstitution.find( en );
 				if ( subIt != mTypeSubstitution.end() )
+				{
 					elemType = getLLVMType( subIt->second );
+					popElemName = subIt->second->getName();
+				}
 				else
+				{
 					elemType = getLLVMType( ep );
+					popElemName = en;
+				}
 			}
 		}
 
 		llvm::AllocaInst *outAlloca = mBuilder->CreateAlloca(
 			elemType, nullptr, "pop.out" );
 		mBuilder->CreateCall( getOrDeclareArrayPop(), { arrVal, outAlloca } );
-		return mBuilder->CreateLoad( elemType, outAlloca, "pop.val" );
+		llvm::Value *popVal = mBuilder->CreateLoad( elemType, outAlloca, "pop.val" );
+
+		// ARC: track the transferred reference of a refcounted popped element so
+		// it is not leaked when the result is discarded (see comment above).
+		if ( popElemName == "string" )
+			trackTempString( popVal );
+		else if ( popElemName == "Array" )
+			trackTempArray( popVal );
+		else if ( isUserStructType( popElemName ) )
+			trackTempStruct( popVal );
+
+		return popVal;
 	}
 
 	// clear(): no args
@@ -1410,6 +1441,39 @@ llvm::Value *CodeGen::genIndexAssignment( IndexAssignmentExpression *expr )
 		mBuilder->CreateStore( val, valAlloca );
 
 		mBuilder->CreateCall( setFn, { arrVal, idxVal, valAlloca } );
+
+		// ARC: the slot now owns a reference to `val`, so retain it for a
+		// refcounted element type — mirroring the retain-on-push path. Without
+		// this, `arr[i] = x` under-counts: __blang_array_set releases the old
+		// element but the new one is stored un-retained, so a temporary RHS is
+		// freed at statement end (dangling slot) and a shift `arr[j] = arr[j+1]`
+		// leaves two slots sharing one reference (double-free once pop releases
+		// the transferred reference). emitArrayElemRetain no-ops for value types.
+		if ( expr->mOperation == "=" )
+		{
+			std::string setElemType;
+			Type *arrElemQType = nullptr;
+			if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
+			{
+				Type *vt = ve->mVariable->getVariableType();
+				if ( vt != nullptr && vt->getNumTypeParams() > 0 )
+					arrElemQType = vt->getTypeParam( 0 );
+			}
+			else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mObject ) )
+			{
+				Type *ft = getFieldType( fa );
+				if ( ft != nullptr && ft->getNumTypeParams() > 0 )
+					arrElemQType = ft->getTypeParam( 0 );
+			}
+			if ( arrElemQType != nullptr )
+			{
+				std::string en = arrElemQType->getName();
+				auto subIt = mTypeSubstitution.find( en );
+				setElemType = subIt != mTypeSubstitution.end()
+					? subIt->second->getName() : en;
+				emitArrayElemRetain( val, setElemType );
+			}
+		}
 
 		return val;
 	}
