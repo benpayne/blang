@@ -2,7 +2,7 @@
 
 **Archetype**: evolve (additive test authoring + fixing the bugs it surfaces)
 
-**Status**: planning
+**Status**: ready
 
 **Owner**: Ben Payne
 
@@ -128,3 +128,4 @@ All of the following hold on a clean checkout of the epic's final state
 |------|-----|-------|-------|
 | 2026-07-19 | — | epic created | From the functional-coverage evaluation: suite strong for isolated core, thin on interactions/aggregate-ARC/unguarded primitives; 5 session bugs (3 fixed, 2 seeded). Scope: 4 matrices, fix-or-file (bounded). |
 | 2026-07-19 | — | readiness review round 1 | 5 findings. C1: +20 gate was commented-out + undefined BASELINE → pinned BASELINE=85, uncommented, added run.baseline. C2: ARC leak glob vacuous → U1 must name tests codegen_arc_*.b (invariant). C3: fix-or-file gameable → cap <=3 structured ### KI- entries. M1/S2: Map acceptance program refined; probe found the bug is DEEPER (Map from module unresolved via import AND --combine, not just bcc auto-include) — U4 scope updated. M2: soft_conflicts [U1,U3] recorded. done_condition re-synced. |
+| 2026-07-19 | — | readiness review passed (10/10); status → ready | All 5 findings resolved (BASELINE pinned=85, ARC-glob naming required, fix-or-file cap=3, S2 deepened, soft_conflicts recorded); branch merged to master + pushed (91298d6). |
