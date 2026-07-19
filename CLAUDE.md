@@ -610,3 +610,11 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     `sanitizers` CI job's full-suite `--leak-check` is green. `known-issues.md`
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
+  - `001-toolchain-and-stdlib` (`docs/epics/001-toolchain-and-stdlib/`) — status:
+    **planning**. Phase 4 at full depth across four areas: multi-error
+    diagnostics (+warnings/`--json`), optimization (`-O`/`--release`/cross-compile),
+    DWARF debug info (`-g`), and stdlib breadth (math/time/random/env/sort/
+    hashed-`Map`+`Set`/CLI-flags). 7 units (U0 pipeline foundation → U1–U5 →
+    U6 integration); 3-role team (architect for cross-area spec audits +
+    implementer + code reviewer); detailed per-area design docs. First
+    NNN-numbered epic.
