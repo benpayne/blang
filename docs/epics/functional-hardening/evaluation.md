@@ -78,7 +78,11 @@ test -n "$(ls test_files/codegen_arc_*.b 2>/dev/null)"                 # the mat
 #    unfixed matrix bugs. Beyond 3, the hire must have raised an Open Question,
 #    not bulk-deferred — acceptance FAILS.
 test -f docs/epics/functional-hardening/known-issues.md
-ki=$(grep -c '^### KI-' docs/epics/functional-hardening/known-issues.md || echo 0)
+# `grep -c` prints the count (0 when there are no KI entries) and exits 1 on
+# zero matches; the file's existence is asserted just above, so read the count
+# directly rather than `|| echo 0` (which would append a second "0" line and
+# make the 0-KI close-out state — the expected end state — spuriously fail).
+ki=$(grep -c '^### KI-' docs/epics/functional-hardening/known-issues.md)
 test "$ki" -le 3
 # (reviewer additionally confirms each ### KI-N repro reproduces and was raised
 #  as an Open Question before filing; seeded S1/S2 may never appear here.)
