@@ -26,6 +26,7 @@ STDLIB_FS="${SCRIPT_DIR}/stdlib/fs.b"
 STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
 STDLIB_BUFFER="${SCRIPT_DIR}/stdlib/buffer.b"
 STDLIB_TIMER="${SCRIPT_DIR}/stdlib/timer.b"
+STDLIB_COLLECTIONS="${SCRIPT_DIR}/stdlib/collections.b"
 
 # Colors — emitted only to a terminal. When stdout is a pipe/file (CI, and the
 # epic-acceptance greps like `grep -Eq 'Leaks:[[:space:]]*0'`), ANSI codes are
@@ -248,6 +249,17 @@ run_one_test() {
 	if [[ "${base_name}" == *"timer"* ]] || [[ "${base_name}" == *"event"* ]]; then
 		if [ -f "${STDLIB_TIMER}" ]; then
 			stdlib_files+=("${STDLIB_TIMER}")
+			need_combine=1
+		fi
+	fi
+	# collections.b (Map) is import-gated by content, mirroring bcc's real
+	# stdlib resolution: only combined when the test does `import collections;`.
+	# Content-gated (not filename-substring) so the inline codegen_map.b — which
+	# defines Map itself and does NOT import collections — never gets a second,
+	# conflicting Map definition.
+	if grep -q '^[[:space:]]*import[[:space:]]\+collections[[:space:]]*;' "${test_file}" 2>/dev/null; then
+		if [ -f "${STDLIB_COLLECTIONS}" ]; then
+			stdlib_files+=("${STDLIB_COLLECTIONS}")
 			need_combine=1
 		fi
 	fi

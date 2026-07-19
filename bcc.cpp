@@ -268,6 +268,8 @@ static vector<string> collectTestFiles( const string &searchRoot )
 // dispatches to __blang_test_main, forwarding `--filter <name>` when set.
 // Returns the test binary's exit code (non-zero iff a test failed), or a
 // non-zero sentinel on a compile/link failure.
+static set<string> parseImports( const string &path );
+
 static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 	const string &file, const string &filter, bool verbose )
 {
@@ -281,6 +283,21 @@ static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 		string candidate = exeDir + "/stdlib/" + name;
 		if ( access( candidate.c_str(), F_OK ) == 0 )
 			stdlibFiles.push_back( candidate );
+	}
+	// Import-gated extra modules (mirrors the main compile path): only pulled in
+	// when the test file imports them, so an unused module never pollutes the
+	// namespace. `collections` supplies Map (S2) and must be combined for a
+	// `bcc test` file that `import collections;`.
+	{
+		set<string> imports = parseImports( file );
+		for ( const char *name : { "collections", "timer" } )
+		{
+			if ( imports.count( name ) == 0 )
+				continue;
+			string candidate = exeDir + "/stdlib/" + name + ".b";
+			if ( access( candidate.c_str(), F_OK ) == 0 )
+				stdlibFiles.push_back( candidate );
+		}
 	}
 
 	// Step 1: qcc --combine <stdlib...> <file> --emit-test-main

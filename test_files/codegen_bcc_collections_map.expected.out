@@ -1,0 +1,10 @@
+alice=30
+bob=25
+has-alice=true
+has-carol=false
+len=2
+alice2=31
+after-remove len=1
+has-bob=false
+origin=3,4
+PASS

@@ -770,11 +770,21 @@ int main( int argc, char *argv[] )
 
 			// Last source file is the user's code — use combineScope directly.
 			// Stdlib files (not last) get their own namespace scope.
-			// Buffer is a special case — it defines a fundamental type that
-			// should be directly visible without namespace qualification.
+			// A few stdlib modules define fundamental TYPES that programs use
+			// unqualified (no `module.` prefix) after importing them, so they are
+			// parsed into combineScope directly rather than a namespace scope:
+			//   - buffer: the `Buffer` type.
+			//   - collections: the `Map<K,V>` container (S2). It defines only the
+			//     Map struct + its impl (no free functions), so promoting it to
+			//     combineScope makes `Map<...>` resolve in a variable declaration
+			//     (the seeded S2 bug: a generic type from a namespaced combined
+			//     module was invisible unqualified) without polluting the global
+			//     namespace with functions. bcc only combines collections.b when
+			//     the program `import collections;`, so it is never present unless
+			//     requested.
 			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
-			bool isBufferLib = ( moduleName == "buffer" );
-			if ( isUserFile || isBufferLib )
+			bool isGlobalTypeLib = ( moduleName == "buffer" || moduleName == "collections" );
+			if ( isUserFile || isGlobalTypeLib )
 			{
 				fileScope = combineScope;
 			}
