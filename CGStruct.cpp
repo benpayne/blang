@@ -1124,7 +1124,17 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 	// Get the object address
 	llvm::AllocaInst *objAddr = getExpressionAddress( expr->mObject );
 	if ( objAddr == nullptr )
-		return nullptr;
+	{
+		// The object is not a simple variable (e.g. a chained field assignment
+		// `o.inner.x = v`, or a call result). Structs are heap pointers, so
+		// generating the object expression yields a pointer to the target
+		// struct; stash it in a temp alloca so the GEP/store logic below works.
+		llvm::Value *objVal = genExpression( expr->mObject );
+		if ( objVal == nullptr )
+			return nullptr;
+		objAddr = mBuilder->CreateAlloca( objVal->getType(), nullptr, "tmp.obj" );
+		mBuilder->CreateStore( objVal, objAddr );
+	}
 
 	// Determine struct type from the alloca
 	llvm::Type *allocType = objAddr->getAllocatedType();
@@ -1187,6 +1197,33 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 							structType = getOrCreateStructType( defIt->second );
 					}
 				}
+			}
+		}
+	}
+
+	// General fallback: chained field assignment (`o.inner.x = v`) or a
+	// call-result object resolves its struct type from the Sema-annotated
+	// resolved type of the object expression.
+	if ( structType == nullptr )
+	{
+		if ( Type *objType = ( (Expression*)expr->mObject )->getResolvedType() )
+		{
+			string typeName = objType->getName();
+			if ( objType->getNumTypeParams() > 0 )
+			{
+				std::vector<SmartPtr<Type>> typeArgs;
+				for ( int i = 0; i < objType->getNumTypeParams(); i++ )
+					typeArgs.push_back( objType->getTypeParam( i ) );
+				typeName = mangleGenericName( objType->getName(), typeArgs );
+			}
+			auto stIt = mStructTypeMap.find( typeName );
+			if ( stIt != mStructTypeMap.end() )
+				structType = stIt->second;
+			else
+			{
+				auto defIt = mStructDefMap.find( typeName );
+				if ( defIt != mStructDefMap.end() )
+					structType = getOrCreateStructType( defIt->second );
 			}
 		}
 	}
@@ -1262,13 +1299,33 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 	}
 
 	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName + ".ptr" );
-	mBuilder->CreateStore( val, fieldPtr );
 
-	// If a fresh Array<T> rvalue temporary is stored into a field, ownership
-	// transfers to the struct — untrack it so it is not also released as a
-	// statement temporary (which would leave the field pointing at freed memory).
-	if ( fieldType != nullptr && fieldType->getName() == "Array" )
-		untrackTempArray( val );
+	// For a refcounted string field, take ownership of the new value and drop
+	// the previous one so the field holds a counted reference — this mirrors
+	// struct initialization, which stores + retains. Without the retain the
+	// stored string is under-counted and the statement-temp release frees it,
+	// leaving the field dangling (a double-free / use-after-free). Retain the
+	// new value before releasing the old so self-assignment is safe.
+	if ( fieldType != nullptr && fieldType->getName() == "string" &&
+		 expr->mOperation == "=" )
+	{
+		llvm::Value *oldVal = mBuilder->CreateLoad(
+			structType->getElementType( fieldIdx ), fieldPtr,
+			expr->mFieldName + ".old" );
+		mBuilder->CreateStore( val, fieldPtr );
+		mBuilder->CreateCall( getOrDeclareStringRetain(), { val } );
+		mBuilder->CreateCall( getOrDeclareStringRelease(), { oldVal } );
+	}
+	else
+	{
+		mBuilder->CreateStore( val, fieldPtr );
+
+		// If a fresh Array<T> rvalue temporary is stored into a field, ownership
+		// transfers to the struct — untrack it so it is not also released as a
+		// statement temporary (which would leave the field pointing at freed memory).
+		if ( fieldType != nullptr && fieldType->getName() == "Array" )
+			untrackTempArray( val );
+	}
 
 	return val;
 }

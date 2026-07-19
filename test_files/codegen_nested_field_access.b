@@ -31,6 +31,16 @@ fn main() -> int {
 	assert o.mid.inner.age == 30, "3-level age";
 	assert o.mid.m == 7, "2-level m";
 	assert o.n == 99, "1-level n";
+
+	// chained WRITE through nested fields (was silently dropped)
+	o.mid.inner.age = 42;
+	o.mid.inner.name = "Bob";
+	o.mid.m = 8;
+	println("wrote    : name={} age={} m={}", o.mid.inner.name, o.mid.inner.age, o.mid.m);
+	assert o.mid.inner.age == 42, "write 3-level age";
+	assert o.mid.inner.name == "Bob", "write 3-level name";
+	assert o.mid.m == 8, "write 2-level m";
+
 	println("PASS");
 	return 0;
 }
