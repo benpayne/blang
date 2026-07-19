@@ -1,0 +1,6 @@
+eq true
+ne true
+full [Ada Byte]
+interp hi / Ada Byte
+branch taken
+PASS

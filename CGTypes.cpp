@@ -599,12 +599,26 @@ bool CodeGen::isStringType( Expression *expr )
 	}
 	if ( auto *mc = dynamic_cast<MethodCallExpression*>( expr ) )
 	{
-		// String methods that return strings
+		// Builtin string methods that return strings.
 		const string &method = mc->mMethodName;
 		if ( isStringType( mc->mObject ) &&
 			 ( method == "to_upper" || method == "to_lower" || method == "trim" ||
 			   method == "substring" || method == "replace" || method == "concat" ) )
 			return true;
+		// User-defined method whose resolved return type is `string` (B3): the
+		// Sema pass annotates the method call with its return type. Without this,
+		// `obj.method() == "x"` (a string-returning method used directly as a
+		// comparison operand) would fall through to non-string (pointer/int)
+		// comparison instead of __blang_string_equals.
+		if ( Type *rt = mc->getResolvedType() )
+		{
+			string rtName = rt->getName();
+			auto subIt = mTypeSubstitution.find( rtName );
+			if ( subIt != mTypeSubstitution.end() )
+				rtName = subIt->second->getName();
+			if ( rtName == "string" )
+				return true;
+		}
 	}
 	// Check IndexExpression — array element type might be string
 	if ( auto *ie = dynamic_cast<IndexExpression*>( expr ) )
