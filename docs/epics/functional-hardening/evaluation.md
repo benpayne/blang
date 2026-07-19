@@ -79,10 +79,11 @@ test -n "$(ls test_files/codegen_arc_*.b 2>/dev/null)"                 # the mat
 #    not bulk-deferred — acceptance FAILS.
 test -f docs/epics/functional-hardening/known-issues.md
 # `grep -c` prints the count (0 when there are no KI entries) and exits 1 on
-# zero matches; the file's existence is asserted just above, so read the count
-# directly rather than `|| echo 0` (which would append a second "0" line and
-# make the 0-KI close-out state — the expected end state — spuriously fail).
-ki=$(grep -c '^### KI-' docs/epics/functional-hardening/known-issues.md)
+# zero matches; the file's existence is asserted just above. `|| true` keeps the
+# substitution's "0" while neutralizing grep's exit-1 so this line does not abort
+# under `set -e` in the 0-KI close-out state (the expected end state). Do NOT use
+# `|| echo 0`, which appends a second "0" line and makes `test` fail spuriously.
+ki=$(grep -c '^### KI-' docs/epics/functional-hardening/known-issues.md || true)
 test "$ki" -le 3
 # (reviewer additionally confirms each ### KI-N repro reproduces and was raised
 #  as an Open Question before filing; seeded S1/S2 may never appear here.)
