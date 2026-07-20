@@ -305,6 +305,7 @@ private:
 	llvm::Function *getOrDeclareStringConcat();
 	llvm::Function *getOrDeclareStringConcatMany();
 	llvm::Function *getOrDeclareStringEquals();
+	llvm::Function *getOrDeclareStringCompare();
 	llvm::Function *getOrDeclareStringLength();
 	llvm::Function *getOrDeclareStringCharAt();
 	llvm::Function *getOrDeclareIntToString();

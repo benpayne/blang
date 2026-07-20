@@ -316,6 +316,14 @@ llvm::Function *CodeGen::getOrDeclareStringEquals()
 		  llvm::PointerType::get( *mContext, 0 ) } );
 }
 
+llvm::Function *CodeGen::getOrDeclareStringCompare()
+{
+	// __blang_string_compare(a,b) -> i32 : <0, 0, >0 (lexicographic, like strcmp)
+	return declareExtern( "__blang_string_compare", llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ) } );
+}
+
 llvm::Function *CodeGen::getOrDeclareStringLength()
 {
 	return declareExtern( "__blang_string_length", llvm::Type::getInt64Ty( *mContext ),

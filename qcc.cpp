@@ -861,7 +861,13 @@ int main( int argc, char *argv[] )
 			//     the program `import collections;`, so it is never present unless
 			//     requested.
 			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
-			bool isGlobalTypeLib = ( moduleName == "buffer" || moduleName == "collections" );
+			//   - cli (U5): parsed into combineScope (global, unqualified
+			//     `has_flag(...)`) like collections. A namespaced module's
+			//     internal string-returning calls (has_flag -> flag_name_of) hit a
+			//     string-ARC double-free under the module-prefix codegen; global
+			//     modules (collections' Map methods calling each other) are clean.
+			bool isGlobalTypeLib = ( moduleName == "buffer" ||
+				moduleName == "collections" || moduleName == "cli" );
 			if ( isUserFile || isGlobalTypeLib )
 			{
 				fileScope = combineScope;

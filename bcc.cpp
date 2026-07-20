@@ -385,6 +385,7 @@ static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
 	// unconditionally (like sys/fs/net) and dropped when unreferenced — import
 	// gating happens at the .b combine layer (kKnownOrder), not here.
 	const char *bakedMath = nullptr, *bakedTime = nullptr, *bakedRandom = nullptr, *bakedEnv = nullptr;
+	const char *bakedHash = nullptr;   // U5: FNV-1a for hashed collections
 #ifdef BCC_TESTRUNNER_LIB
 	bakedTestRunner = BCC_TESTRUNNER_LIB;
 #endif
@@ -427,6 +428,9 @@ static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
 #ifdef BCC_ENV_LIB
 	bakedEnv = BCC_ENV_LIB;
 #endif
+#ifdef BCC_HASH_LIB
+	bakedHash = BCC_HASH_LIB;
+#endif
 
 	// Leading lib (test driver or db), then the shared dependents->deps chain.
 	vector<string> libs;
@@ -441,6 +445,10 @@ static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
 	libs.push_back( findLib( bakedTime, "blang_time" ) );
 	libs.push_back( findLib( bakedRandom, "blang_random" ) );
 	libs.push_back( findLib( bakedEnv, "blang_env" ) );
+	// blang_hash (U5) is a leaf dep of the collections .b combine layer (only
+	// user code references it), so its position is order-tolerant; placed before
+	// its blang_string dep for GNU ld.
+	libs.push_back( findLib( bakedHash, "blang_hash" ) );
 	libs.push_back( findLib( bakedFs, "blang_fs" ) );
 	libs.push_back( findLib( bakedNet, "blang_net" ) );
 	libs.push_back( findLib( bakedJson, "blang_json" ) );
@@ -986,7 +994,7 @@ static vector<string> resolveStdlibFiles( const string &exeDir,
 	// them, so an unused module never pollutes the namespace (e.g. collections'
 	// Map). Ordered so base modules resolve first under --combine.
 	static const char *kKnownOrder[] = { "collections", "timer",
-		"math", "time", "random", "env" };
+		"math", "time", "random", "env", "cli" };
 	for ( const char *name : kKnownOrder )
 	{
 		if ( imports.count( name ) && !handled.count( name ) )

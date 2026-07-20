@@ -212,6 +212,13 @@ set_target_properties(blang_env PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_env PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_link_libraries(blang_env blang_string)
 
+# BLang hash module (U5): FNV-1a over string bytes, backs the hashed Map/Set in
+# stdlib/collections.b. Import-gated like the other stdlib .a's.
+add_library(blang_hash STATIC runtime/blang_hash.c)
+set_target_properties(blang_hash PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_hash PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_hash blang_string)
+
 # BLang test-runner driver (behind `bcc test`): fork-isolated test dispatch.
 add_library(blang_testrunner STATIC runtime/blang_testrunner.c)
 set_target_properties(blang_testrunner PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -297,6 +304,7 @@ target_compile_definitions(bcc PRIVATE BCC_MATH_LIB="${CMAKE_BINARY_DIR}/libblan
 target_compile_definitions(bcc PRIVATE BCC_TIME_LIB="${CMAKE_BINARY_DIR}/libblang_time.a")
 target_compile_definitions(bcc PRIVATE BCC_RANDOM_LIB="${CMAKE_BINARY_DIR}/libblang_random.a")
 target_compile_definitions(bcc PRIVATE BCC_ENV_LIB="${CMAKE_BINARY_DIR}/libblang_env.a")
+target_compile_definitions(bcc PRIVATE BCC_HASH_LIB="${CMAKE_BINARY_DIR}/libblang_hash.a")
 target_compile_definitions(bcc PRIVATE BCC_TESTRUNNER_LIB="${CMAKE_BINARY_DIR}/libblang_testrunner.a")
 # Ensure the test-runner driver lib is built before bcc links against it via `bcc test`.
 add_dependencies(bcc blang_testrunner)
@@ -392,6 +400,10 @@ add_executable(test_env runtime/tests/test_env.c)
 target_link_libraries(test_env blang_env blang_string blang_array)
 set_target_properties(test_env PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 
+add_executable(test_hash runtime/tests/test_hash.c)
+target_link_libraries(test_hash blang_hash blang_string blang_array)
+set_target_properties(test_hash PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
 # One add_test per case (name must match the case table in each test_*.c).
 set(ARRAY_CASES  create_empty push_length get set pop pop_empty insert_remove concat clear grow get_oob set_oob get_null)
 set(STRING_CASES create_len empty equals concat substring to_upper to_lower trim contains starts_ends index_of compare to_int replace char_at_oob)
@@ -403,6 +415,7 @@ set(MATH_CASES   sqrt pow trig log_exp floor_ceil fabs abs_int)
 set(TIME_CASES   now_positive millis_ge_seconds monotonic_nondecreasing)
 set(RANDOM_CASES seeded_sequence seed_reproducible int_range_bounds int_range_empty float01_bounds)
 set(ENV_CASES    get_hit get_miss has_true has_false)
+set(HASH_CASES   deterministic distinct nonnegative empty_string)
 
 foreach(c ${ARRAY_CASES})
 	add_test(NAME array_${c} COMMAND test_array ${c})
@@ -433,4 +446,7 @@ foreach(c ${RANDOM_CASES})
 endforeach()
 foreach(c ${ENV_CASES})
 	add_test(NAME env_${c} COMMAND test_env ${c})
+endforeach()
+foreach(c ${HASH_CASES})
+	add_test(NAME hash_${c} COMMAND test_hash ${c})
 endforeach()

@@ -38,6 +38,7 @@ MATH_LIB="${BUILD_DIR}/libblang_math.a"
 TIME_LIB="${BUILD_DIR}/libblang_time.a"
 RANDOM_LIB="${BUILD_DIR}/libblang_random.a"
 ENV_LIB="${BUILD_DIR}/libblang_env.a"
+HASH_LIB="${BUILD_DIR}/libblang_hash.a"
 STDLIB_IO="${SCRIPT_DIR}/stdlib/io.b"
 STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
 STDLIB_FS="${SCRIPT_DIR}/stdlib/fs.b"
@@ -50,6 +51,7 @@ STDLIB_MATH="${SCRIPT_DIR}/stdlib/math.b"
 STDLIB_TIME="${SCRIPT_DIR}/stdlib/time.b"
 STDLIB_RANDOM="${SCRIPT_DIR}/stdlib/random.b"
 STDLIB_ENV="${SCRIPT_DIR}/stdlib/env.b"
+STDLIB_CLI="${SCRIPT_DIR}/stdlib/cli.b"
 
 # Colors — emitted only to a terminal. When stdout is a pipe/file (CI, and the
 # epic-acceptance greps like `grep -Eq 'Leaks:[[:space:]]*0'`), ANSI codes are
@@ -280,9 +282,17 @@ run_one_test() {
 	# Content-gated (not filename-substring) so the inline codegen_map.b — which
 	# defines Map itself and does NOT import collections — never gets a second,
 	# conflicting Map definition.
-	if grep -q '^[[:space:]]*import[[:space:]]\+collections[[:space:]]*;' "${test_file}" 2>/dev/null; then
+	# collections is combined when the test imports collections OR cli (cli.b
+	# uses collections' Map). collections.b must precede cli.b (Map before use).
+	if grep -qE '^[[:space:]]*import[[:space:]]+(collections|cli)[[:space:]]*;' "${test_file}" 2>/dev/null; then
 		if [ -f "${STDLIB_COLLECTIONS}" ]; then
 			stdlib_files+=("${STDLIB_COLLECTIONS}")
+			need_combine=1
+		fi
+	fi
+	if grep -q '^[[:space:]]*import[[:space:]]\+cli[[:space:]]*;' "${test_file}" 2>/dev/null; then
+		if [ -f "${STDLIB_CLI}" ]; then
+			stdlib_files+=("${STDLIB_CLI}")
 			need_combine=1
 		fi
 	fi
@@ -405,6 +415,7 @@ run_one_test() {
 	[ -f "${TIME_LIB}" ]   && stdlib_native_link="${stdlib_native_link} ${TIME_LIB}"
 	[ -f "${RANDOM_LIB}" ] && stdlib_native_link="${stdlib_native_link} ${RANDOM_LIB}"
 	[ -f "${ENV_LIB}" ]    && stdlib_native_link="${stdlib_native_link} ${ENV_LIB}"
+	[ -f "${HASH_LIB}" ]   && stdlib_native_link="${stdlib_native_link} ${HASH_LIB}"
 	# Database tests link the DB runtime + its SQLite backend. By this point a
 	# db test is known to have a SQLite-enabled libblang_db (otherwise skipped
 	# above), so resolve the sqlite link flags, preferring pkg-config but

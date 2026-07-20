@@ -522,6 +522,20 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 		llvm::Value *eq = mBuilder->CreateCall( getOrDeclareStringEquals(), { left, right }, "streq" );
 		return mBuilder->CreateNot( eq, "strne" );
 	}
+	// String relational operators are LEXICOGRAPHIC via __blang_string_compare
+	// (returns <0/0/>0), not a pointer compare. Without this, `<`/`>`/`<=`/`>=`
+	// on strings fell through to an integer compare of the string POINTERS —
+	// meaningless ordering (surfaced by U5's generic sort<string>).
+	if ( isString && ( op == "<" || op == ">" || op == "<=" || op == ">=" ) )
+	{
+		llvm::Value *cmp = mBuilder->CreateCall(
+			getOrDeclareStringCompare(), { left, right }, "strcmp" );
+		llvm::Value *zero = llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 0 );
+		if ( op == "<" )  return mBuilder->CreateICmpSLT( cmp, zero, "strlt" );
+		if ( op == ">" )  return mBuilder->CreateICmpSGT( cmp, zero, "strgt" );
+		if ( op == "<=" ) return mBuilder->CreateICmpSLE( cmp, zero, "strle" );
+		return mBuilder->CreateICmpSGE( cmp, zero, "strge" );
+	}
 
 	// Arithmetic
 	if ( op == "+" )  return isFloat ? mBuilder->CreateFAdd( left, right, "addtmp" ) : mBuilder->CreateAdd( left, right, "addtmp" );

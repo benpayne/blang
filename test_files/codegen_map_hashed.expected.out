@@ -1,0 +1,11 @@
+length = 500
+buckets >= 512 = true
+buckets power-of-two = 1
+buckets > keys = true
+all 500 keys read back correctly = 1
+overwrite key_3 = 999
+length after overwrite = 500
+absent get_or = -1
+has absent = false
+has key_0 after remove = false
+length after remove = 499
