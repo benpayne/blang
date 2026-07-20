@@ -381,6 +381,10 @@ static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
 	const char *bakedTestRunner = nullptr, *bakedRuntime = nullptr, *bakedString = nullptr;
 	const char *bakedArray = nullptr, *bakedBuffer = nullptr, *bakedJson = nullptr;
 	const char *bakedNet = nullptr, *bakedFs = nullptr, *bakedSys = nullptr, *bakedDb = nullptr;
+	// Native stdlib modules (U4). Their .a's are offered to the linker
+	// unconditionally (like sys/fs/net) and dropped when unreferenced — import
+	// gating happens at the .b combine layer (kKnownOrder), not here.
+	const char *bakedMath = nullptr, *bakedTime = nullptr, *bakedRandom = nullptr, *bakedEnv = nullptr;
 #ifdef BCC_TESTRUNNER_LIB
 	bakedTestRunner = BCC_TESTRUNNER_LIB;
 #endif
@@ -411,6 +415,18 @@ static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
 #ifdef BCC_DB_LIB
 	bakedDb = BCC_DB_LIB;
 #endif
+#ifdef BCC_MATH_LIB
+	bakedMath = BCC_MATH_LIB;
+#endif
+#ifdef BCC_TIME_LIB
+	bakedTime = BCC_TIME_LIB;
+#endif
+#ifdef BCC_RANDOM_LIB
+	bakedRandom = BCC_RANDOM_LIB;
+#endif
+#ifdef BCC_ENV_LIB
+	bakedEnv = BCC_ENV_LIB;
+#endif
 
 	// Leading lib (test driver or db), then the shared dependents->deps chain.
 	vector<string> libs;
@@ -419,6 +435,12 @@ static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
 	if ( profile.withDb )
 		libs.push_back( findLib( bakedDb, "blang_db" ) );
 	libs.push_back( findLib( bakedSys, "blang_sys" ) );
+	// Native stdlib modules (U4) — placed before their deps (string/array) so
+	// GNU ld resolves them; math's libm dep is added as a trailing -lm below.
+	libs.push_back( findLib( bakedMath, "blang_math" ) );
+	libs.push_back( findLib( bakedTime, "blang_time" ) );
+	libs.push_back( findLib( bakedRandom, "blang_random" ) );
+	libs.push_back( findLib( bakedEnv, "blang_env" ) );
 	libs.push_back( findLib( bakedFs, "blang_fs" ) );
 	libs.push_back( findLib( bakedNet, "blang_net" ) );
 	libs.push_back( findLib( bakedJson, "blang_json" ) );
@@ -432,6 +454,12 @@ static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
 		if ( !lib.empty() )
 			cmd.push_back( lib );
 	}
+
+	// Math (U4) needs libm. Appended as a trailing system-linker token (not a
+	// findLib path) AFTER blang_math.a so GNU ld resolves math's sqrt/pow/etc.
+	// Harmless when math is unused (no libm symbol is referenced, so nothing is
+	// pulled in). System libm is always present.
+	cmd.push_back( "-lm" );
 }
 
 // Check whether a path is an existing directory
@@ -957,7 +985,8 @@ static vector<string> resolveStdlibFiles( const string &exeDir,
 	// Origin's import-gated extras: only pulled in when the program imports
 	// them, so an unused module never pollutes the namespace (e.g. collections'
 	// Map). Ordered so base modules resolve first under --combine.
-	static const char *kKnownOrder[] = { "collections", "timer" };
+	static const char *kKnownOrder[] = { "collections", "timer",
+		"math", "time", "random", "env" };
 	for ( const char *name : kKnownOrder )
 	{
 		if ( imports.count( name ) && !handled.count( name ) )

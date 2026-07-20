@@ -710,7 +710,15 @@ llvm::Value *CodeGen::genUnaryExpression( UnaryExpression *unary )
 	const string &op = unary->mOperation;
 
 	if ( op == "-" )
+	{
+		// Float/double negation must use fneg — CreateNeg emits an integer
+		// `sub 0, x`, which is invalid on floating-point operands (surfaced by
+		// U4's first float codegen test: `math.fabs(-2.5)` produced an illegal
+		// `sub (double 0.0, double 2.5)` constexpr).
+		if ( operand->getType()->isFloatingPointTy() )
+			return mBuilder->CreateFNeg( operand, "negtmp" );
 		return mBuilder->CreateNeg( operand, "negtmp" );
+	}
 
 	if ( op == "!" )
 	{

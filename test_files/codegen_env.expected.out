@@ -1,0 +1,4 @@
+has PATH = true
+unset var = none
+get_or fallback = default_val
+has missing = false

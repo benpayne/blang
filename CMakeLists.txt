@@ -190,6 +190,28 @@ set_target_properties(blang_sys PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_sys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_link_libraries(blang_sys blang_string blang_array)
 
+# BLang native stdlib modules (U4): math (libm), time, random, env. Each is an
+# import-gated static lib (linked unconditionally by bcc; the linker drops it
+# when unreferenced — import-gating happens at the .b combine layer via
+# kKnownOrder, not at link).
+add_library(blang_math STATIC runtime/blang_math.c)
+set_target_properties(blang_math PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_math m)
+
+add_library(blang_time STATIC runtime/blang_time.c)
+set_target_properties(blang_time PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_time PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+add_library(blang_random STATIC runtime/blang_random.c)
+set_target_properties(blang_random PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_random PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+add_library(blang_env STATIC runtime/blang_env.c)
+set_target_properties(blang_env PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_env PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_env blang_string)
+
 # BLang test-runner driver (behind `bcc test`): fork-isolated test dispatch.
 add_library(blang_testrunner STATIC runtime/blang_testrunner.c)
 set_target_properties(blang_testrunner PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -271,6 +293,10 @@ target_compile_definitions(bcc PRIVATE BCC_JSON_LIB="${CMAKE_BINARY_DIR}/libblan
 target_compile_definitions(bcc PRIVATE BCC_NET_LIB="${CMAKE_BINARY_DIR}/libblang_net.a")
 target_compile_definitions(bcc PRIVATE BCC_FS_LIB="${CMAKE_BINARY_DIR}/libblang_fs.a")
 target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang_sys.a")
+target_compile_definitions(bcc PRIVATE BCC_MATH_LIB="${CMAKE_BINARY_DIR}/libblang_math.a")
+target_compile_definitions(bcc PRIVATE BCC_TIME_LIB="${CMAKE_BINARY_DIR}/libblang_time.a")
+target_compile_definitions(bcc PRIVATE BCC_RANDOM_LIB="${CMAKE_BINARY_DIR}/libblang_random.a")
+target_compile_definitions(bcc PRIVATE BCC_ENV_LIB="${CMAKE_BINARY_DIR}/libblang_env.a")
 target_compile_definitions(bcc PRIVATE BCC_TESTRUNNER_LIB="${CMAKE_BINARY_DIR}/libblang_testrunner.a")
 # Ensure the test-runner driver lib is built before bcc links against it via `bcc test`.
 add_dependencies(bcc blang_testrunner)
@@ -349,6 +375,23 @@ add_executable(test_net runtime/tests/test_net.c)
 target_link_libraries(test_net blang_net blang_runtime blang_string blang_buffer blang_array Threads::Threads)
 set_target_properties(test_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 
+# Native stdlib module unit tests (U4).
+add_executable(test_math runtime/tests/test_math.c)
+target_link_libraries(test_math blang_math m)
+set_target_properties(test_math PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_time runtime/tests/test_time.c)
+target_link_libraries(test_time blang_time)
+set_target_properties(test_time PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_random runtime/tests/test_random.c)
+target_link_libraries(test_random blang_random)
+set_target_properties(test_random PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_env runtime/tests/test_env.c)
+target_link_libraries(test_env blang_env blang_string blang_array)
+set_target_properties(test_env PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
 # One add_test per case (name must match the case table in each test_*.c).
 set(ARRAY_CASES  create_empty push_length get set pop pop_empty insert_remove concat clear grow get_oob set_oob get_null)
 set(STRING_CASES create_len empty equals concat substring to_upper to_lower trim contains starts_ends index_of compare to_int replace char_at_oob)
@@ -356,6 +399,10 @@ set(BUFFER_CASES create append_byte from_string append_string get_set to_string 
 set(JSON_CASES   decode_int decode_string decode_bool decode_error object_roundtrip array_build object_get_missing)
 set(FS_CASES     write_read seek size remove mkdir_list)
 set(NET_CASES    connect_refused connect_bad_host selector_lifecycle close_invalid)
+set(MATH_CASES   sqrt pow trig log_exp floor_ceil fabs abs_int)
+set(TIME_CASES   now_positive millis_ge_seconds monotonic_nondecreasing)
+set(RANDOM_CASES seeded_sequence seed_reproducible int_range_bounds int_range_empty float01_bounds)
+set(ENV_CASES    get_hit get_miss has_true has_false)
 
 foreach(c ${ARRAY_CASES})
 	add_test(NAME array_${c} COMMAND test_array ${c})
@@ -374,4 +421,16 @@ foreach(c ${FS_CASES})
 endforeach()
 foreach(c ${NET_CASES})
 	add_test(NAME net_${c} COMMAND test_net ${c})
+endforeach()
+foreach(c ${MATH_CASES})
+	add_test(NAME math_${c} COMMAND test_math ${c})
+endforeach()
+foreach(c ${TIME_CASES})
+	add_test(NAME time_${c} COMMAND test_time ${c})
+endforeach()
+foreach(c ${RANDOM_CASES})
+	add_test(NAME random_${c} COMMAND test_random ${c})
+endforeach()
+foreach(c ${ENV_CASES})
+	add_test(NAME env_${c} COMMAND test_env ${c})
 endforeach()

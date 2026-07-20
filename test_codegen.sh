@@ -34,6 +34,10 @@ NET_LIB="${BUILD_DIR}/libblang_net.a"
 FS_LIB="${BUILD_DIR}/libblang_fs.a"
 SYS_LIB="${BUILD_DIR}/libblang_sys.a"
 DB_LIB="${BUILD_DIR}/libblang_db.a"
+MATH_LIB="${BUILD_DIR}/libblang_math.a"
+TIME_LIB="${BUILD_DIR}/libblang_time.a"
+RANDOM_LIB="${BUILD_DIR}/libblang_random.a"
+ENV_LIB="${BUILD_DIR}/libblang_env.a"
 STDLIB_IO="${SCRIPT_DIR}/stdlib/io.b"
 STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
 STDLIB_FS="${SCRIPT_DIR}/stdlib/fs.b"
@@ -41,6 +45,11 @@ STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
 STDLIB_BUFFER="${SCRIPT_DIR}/stdlib/buffer.b"
 STDLIB_TIMER="${SCRIPT_DIR}/stdlib/timer.b"
 STDLIB_COLLECTIONS="${SCRIPT_DIR}/stdlib/collections.b"
+# Native stdlib modules (U4) — content-gated by `import <m>;` (see below).
+STDLIB_MATH="${SCRIPT_DIR}/stdlib/math.b"
+STDLIB_TIME="${SCRIPT_DIR}/stdlib/time.b"
+STDLIB_RANDOM="${SCRIPT_DIR}/stdlib/random.b"
+STDLIB_ENV="${SCRIPT_DIR}/stdlib/env.b"
 
 # Colors — emitted only to a terminal. When stdout is a pipe/file (CI, and the
 # epic-acceptance greps like `grep -Eq 'Leaks:[[:space:]]*0'`), ANSI codes are
@@ -277,6 +286,18 @@ run_one_test() {
 			need_combine=1
 		fi
 	fi
+	# Native stdlib modules (U4): content-gated on `import <m>;`, mirroring bcc's
+	# kKnownOrder resolution — combined only when the test imports the module.
+	local _mod _modfile
+	for _mod in math time random env; do
+		eval "_modfile=\${STDLIB_${_mod^^}}"
+		if grep -q "^[[:space:]]*import[[:space:]]\+${_mod}[[:space:]]*;" "${test_file}" 2>/dev/null; then
+			if [ -f "${_modfile}" ]; then
+				stdlib_files+=("${_modfile}")
+				need_combine=1
+			fi
+		fi
+	done
 	if [ $need_combine -eq 1 ]; then
 		qcc_args+=("--combine" "${stdlib_files[@]}")
 	fi
@@ -376,6 +397,14 @@ run_one_test() {
 	if [ -f "${SYS_LIB}" ]; then
 		sys_link="${SYS_LIB}"
 	fi
+	# Native stdlib modules (U4). Linked when present (before their string/array
+	# deps); the linker drops any that the test does not reference. -lm follows
+	# blang_math.a for GNU ld resolution of libm symbols.
+	local stdlib_native_link=""
+	[ -f "${MATH_LIB}" ]   && stdlib_native_link="${stdlib_native_link} ${MATH_LIB}"
+	[ -f "${TIME_LIB}" ]   && stdlib_native_link="${stdlib_native_link} ${TIME_LIB}"
+	[ -f "${RANDOM_LIB}" ] && stdlib_native_link="${stdlib_native_link} ${RANDOM_LIB}"
+	[ -f "${ENV_LIB}" ]    && stdlib_native_link="${stdlib_native_link} ${ENV_LIB}"
 	# Database tests link the DB runtime + its SQLite backend. By this point a
 	# db test is known to have a SQLite-enabled libblang_db (otherwise skipped
 	# above), so resolve the sqlite link flags, preferring pkg-config but
@@ -405,9 +434,9 @@ run_one_test() {
 		fi
 	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${stdlib_native_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread -lm ${extra_libs} -o "${bin_file}" 2>&1)
 	else
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${db_link} ${sys_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${db_link} ${sys_link} ${stdlib_native_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lm -o "${bin_file}" 2>&1)
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"

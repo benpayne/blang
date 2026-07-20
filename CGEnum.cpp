@@ -103,6 +103,12 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 
 llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 {
+	// Snapshot the temp-string stack so we can release ONLY the temporaries
+	// created while evaluating the subject (e.g. string-literal args to a
+	// subject call like `match env.get("X")`), not any pre-existing live temps
+	// from an enclosing expression (which the arms may still need). See the
+	// flush below.
+	size_t tempMarkBeforeSubject = mTempStrings.size();
 	llvm::Value *subject = genExpression( expr->mSubject );
 	if ( subject == nullptr )
 		return nullptr;
@@ -183,6 +189,30 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 					llvm::Type::getInt32Ty( *mContext ), tagPtr, "match.tag" );
 			}
 		}
+	}
+
+	// The subject expression is fully evaluated and (for an enum) copied into
+	// subjectAlloca, so any temporary strings created while evaluating it — e.g.
+	// string-literal arguments to a subject call like `match env.get("X")` —
+	// must be released HERE, in this single pre-branch block, so they are freed
+	// on every arm path. Deferring to the arms let the first arm's
+	// releaseTempStrings() consume them, leaking on the other arms / fall-through
+	// (surfaced by codegen_env.b: the arg literal leaked on the none path).
+	//
+	// SURGICAL: release only the temps created DURING subject evaluation
+	// (indices >= tempMarkBeforeSubject), never pre-existing temps from an
+	// enclosing expression (e.g. a sibling string-literal arg in `foo("lit",
+	// match ...)`), which the arms/rest of the statement may still use. Only for
+	// the enum case, where the subject value is already copied into
+	// subjectAlloca; the payload string (some(v)) is untracked at construction
+	// and released via mEnumScopeStack, so it is not among these temps.
+	if ( isEnumStruct &&
+	     mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+	{
+		for ( size_t k = tempMarkBeforeSubject; k < mTempStrings.size(); k++ )
+			mBuilder->CreateCall( getOrDeclareStringRelease(), { mTempStrings[k] } );
+		if ( mTempStrings.size() > tempMarkBeforeSubject )
+			mTempStrings.resize( tempMarkBeforeSubject );
 	}
 
 	// Find the default (wildcard) arm, or create a default that falls through
