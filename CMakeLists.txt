@@ -92,7 +92,7 @@ set(QCC_SOURCES
 if(LLVM_FOUND)
 	list(APPEND QCC_SOURCES
 		CodeGen.cpp CGStatements.cpp CGExpressions.cpp CGTypes.cpp
-		CGStruct.cpp CGEnum.cpp CGLambda.cpp CGRuntime.cpp)
+		CGStruct.cpp CGEnum.cpp CGLambda.cpp CGRuntime.cpp CGDebug.cpp)
 endif()
 
 add_executable(qcc ${QCC_SOURCES})

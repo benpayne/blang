@@ -6,6 +6,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/OptimizationLevel.h"
+#include "llvm/IR/DIBuilder.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 
 #include <iostream>
 
@@ -28,6 +30,43 @@ bool CodeGen::generate( Module *mod )
 	// Store the module scope and pointer for type resolution and SQL gen
 	mScope = mod->mScope;
 	mQLangModule = mod;
+
+	// Debug info (U3): create the DIBuilder + compile unit up front so
+	// per-function DISubprograms and per-statement DebugLocs can attach as
+	// codegen proceeds. Gated on mDebugInfo (-g); no-op otherwise, so a non-`-g`
+	// build is byte-identical. The compile unit is anchored on the primary
+	// (last, user) source file; each --combine source gets its own DIFile lazily.
+	// In --combine mode generate() runs once per module on the same mModule, so
+	// the DIBuilder/compile-unit/module-flags are created exactly once (guarded
+	// on mDIBuilder) — re-adding the module flags would fail the verifier
+	// ("module flag identifiers must be unique").
+	if ( mDebugInfo && mDIBuilder == nullptr )
+	{
+		mDIBuilder = std::make_unique<llvm::DIBuilder>( *mModule );
+
+		// Pick the primary source file: the last function that carries a set
+		// location (the user program in --combine ordering: stdlib first, user
+		// last). Fall back to the module name.
+		std::string primaryPath = mModule->getName().str();
+		for ( auto &func : mod->mFunctionList )
+		{
+			if ( func->getLocation().isSet() )
+				primaryPath = func->getLocation().file;
+		}
+
+		llvm::DIFile *primaryFile = getOrCreateDIFile( primaryPath );
+		// DW_LANG_C is deliberate: there is no registered BLang DWARF language
+		// code, so gdb/dwarfdump will report the language as C (spec §A note).
+		mDICompileUnit = mDIBuilder->createCompileUnit(
+			llvm::dwarf::DW_LANG_C, primaryFile, "blang",
+			/*isOptimized*/ false, /*Flags*/ "", /*RV*/ 0 );
+
+		// Mandatory: without the "Debug Info Version" module flag, llc silently
+		// strips all debug metadata across the text-.ll boundary (spec §A/Risks).
+		mModule->addModuleFlag( llvm::Module::Warning, "Debug Info Version",
+			llvm::DEBUG_METADATA_VERSION );
+		mModule->addModuleFlag( llvm::Module::Warning, "Dwarf Version", 4 );
+	}
 
 	// Register all struct definitions and create LLVM struct types
 	for ( auto &structDef : mod->mStructList )
@@ -308,6 +347,10 @@ bool CodeGen::generate( Module *mod )
 	if ( mHasError )
 		return false;
 
+	// Debug info is finalized in verify() (idempotent), which the caller invokes
+	// after the last module is generated — in --combine mode generate() runs per
+	// module, so finalizing here (per call) would be premature.
+
 	return true;
 }
 
@@ -383,6 +426,11 @@ bool CodeGen::optimize( const std::string &level )
 
 bool CodeGen::verify()
 {
+	// Debug info (U3): finalize DWARF metadata before verifying. Idempotent, so
+	// the two verify() call sites (pre- and post-optimize) are both safe, and in
+	// --combine mode this runs after the last module has been generated.
+	finalizeDebugInfo();
+
 	std::string errStr;
 	llvm::raw_string_ostream errStream( errStr );
 
@@ -662,6 +710,14 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 		*mContext, "entry", llvmFunc );
 	mBuilder->SetInsertPoint( entryBB );
 
+	// Debug info (U3): attach a DISubprogram to this function and set a default
+	// DebugLoc in its scope so every instruction emitted for the body (incl. ARC
+	// releases and inlinable calls to other debug-info functions) inherits a
+	// valid location — the "inlinable call must have !dbg" verifier rule fires
+	// even at -O0. Per-statement locations refine this via applyDebugLoc.
+	createDISubprogram( llvmFunc, func->getLocation(), func->getName() );
+	applyDebugLoc( func->getLocation() );
+
 	// Track current function for contract support
 	mCurrentFunction = func;
 	mResultAlloca = nullptr;
@@ -873,6 +929,10 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	mResultAlloca = nullptr;
 	mVariableMap.clear();
 	mMovedVariables.clear();
+
+	// Debug info (U3): drop the builder's DebugLoc + current subprogram so no
+	// stale scope leaks into the next function's instructions.
+	clearDebugLoc();
 
 	return llvmFunc;
 }
@@ -1130,6 +1190,11 @@ void CodeGen::genStatement( Statement *stmt )
 	// Don't generate code after a terminator
 	if ( mBuilder->GetInsertBlock()->getTerminator() != nullptr )
 		return;
+
+	// Debug info (U3): refine the current DebugLoc to this statement's source
+	// position (no-op when !mDebugInfo). All instructions emitted for this
+	// statement — including nested calls and ARC releases — inherit it.
+	applyDebugLoc( stmt->getLocation() );
 
 	if ( auto *block = dynamic_cast<Block*>( stmt ) )
 	{

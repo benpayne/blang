@@ -48,6 +48,7 @@ struct Options
 	string optLevel;             // -O<n>: "" none, else 0..3/s/z (U2)
 	bool release = false;        // --release: implies -O2 (U2)
 	string targetTriple;         // --target <triple>: cross-compile (U2)
+	bool debugInfo = false;      // -g: emit DWARF debug info; forces -O0 (U3)
 	vector<string> linkerFlags;  // -l, -L, etc.
 };
 
@@ -72,6 +73,7 @@ static void printUsage( const char *progName )
 	cerr << "  -O<n>        Optimize (0..3, s, z); bare -O = -O2" << endl;
 	cerr << "  --release    Optimized build (implies -O2)" << endl;
 	cerr << "  --target <t> Cross-compile to target triple (object emission)" << endl;
+	cerr << "  -g           Emit DWARF debug info (forces -O0)" << endl;
 	cerr << "  -l<lib>      Link with library" << endl;
 	cerr << "  -L<dir>      Add library search path" << endl;
 	cerr << "  -h, --help   Show this help" << endl;
@@ -137,6 +139,10 @@ static bool parseArgs( int argc, char *argv[], Options &opts )
 		else if ( arg.size() > 2 && arg.substr( 0, 2 ) == "-O" )
 		{
 			opts.optLevel = arg.substr( 2 );   // -O0/1/2/3/s/z
+		}
+		else if ( arg == "-g" )
+		{
+			opts.debugInfo = true;             // DWARF debug info (U3)
 		}
 		else if ( arg.substr( 0, 2 ) == "-l" || arg.substr( 0, 2 ) == "-L" )
 		{
@@ -299,11 +305,18 @@ static string resolveLlc()
 //   optLevel     — "" for none, else "0".."3"/"s"/"z" → llc -O<n>.
 //   targetTriple — "" for the host-baked triple (byte-identical to pre-U2), else
 //                  the given triple (cross-compile, U2 --target).
+//   debugInfo    — currently informational only: DWARF debug metadata carried in
+//                  the textual .ll is emitted into the object by llc automatically
+//                  (llc has no -g flag). qcc already forced -O0 when -g (S-A
+//                  stance). Kept as a parameter so the single llc site owns the
+//                  knob if a future backend needs an explicit flag.
 static int emitObject( const string &llc, const string &llFile,
                        const string &objFile, bool verbose,
                        const string &optLevel = "",
-                       const string &targetTriple = "" )
+                       const string &targetTriple = "",
+                       bool debugInfo = false )
 {
+	(void)debugInfo;
 	vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
 	if ( !optLevel.empty() )
 	{
@@ -1419,6 +1432,14 @@ int main( int argc, char *argv[] )
 	if ( effectiveOpt.empty() && opts.release )
 		effectiveOpt = "2";
 
+	// Debug info stance (U3, S-A): `-g` forces -O0 for best line-table fidelity.
+	// It overrides any -O/--release, and is computed here — in the single
+	// effectiveOpt block — so both qcc (layer 1) and emitObject/llc (layer 2)
+	// see -O0. (Emission stays verifier-clean under -O; a future -g -O2 is a
+	// small step — spec §"the -g × -O stance".)
+	if ( opts.debugInfo )
+		effectiveOpt = "0";
+
 	// Locate qcc (same directory as bcc)
 	string qcc = exeDir + "/qcc";
 
@@ -1442,6 +1463,8 @@ int main( int argc, char *argv[] )
 			cmd.push_back( "-Werror" );
 		if ( !effectiveOpt.empty() )
 			cmd.push_back( string( "-O" ) + effectiveOpt );   // layer 1: IR passes
+		if ( opts.debugInfo )
+			cmd.push_back( "-g" );                            // DWARF debug info (U3)
 		if ( !stdlibFiles.empty() )
 		{
 			cmd.push_back( "--combine" );
@@ -1535,9 +1558,9 @@ int main( int argc, char *argv[] )
 
 	string objFile = "/tmp/" + baseName + ".o";
 	{
-		// Layer 2 of -O (llc backend) + cross-compile triple (U2).
+		// Layer 2 of -O (llc backend) + cross-compile triple (U2) + DWARF (U3).
 		int ret = emitObject( llc, irFile, objFile, opts.verbose,
-			effectiveOpt, opts.targetTriple );
+			effectiveOpt, opts.targetTriple, opts.debugInfo );
 		if ( ret != 0 )
 		{
 			cerr << "error: IR compilation failed" << endl;

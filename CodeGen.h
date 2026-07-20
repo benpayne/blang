@@ -16,6 +16,19 @@
 #include "SQLGen.h"
 #include "FormatString.h"
 
+// Forward declarations for the LLVM debug-info types (U3). The full definitions
+// live in llvm/IR/DIBuilder.h + DebugInfoMetadata.h, included only in the .cpp
+// files that emit DWARF — keeping this header light. unique_ptr<DIBuilder> with
+// an incomplete type is fine because ~CodeGen() is defined in CodeGen.cpp where
+// DIBuilder is complete.
+namespace llvm
+{
+	class DIBuilder;
+	class DICompileUnit;
+	class DIFile;
+	class DISubprogram;
+}
+
 namespace QLang
 {
 
@@ -50,6 +63,11 @@ public:
 	// print a located <file>:<line>: diagnostic on failure. Off by default, so
 	// normal (bcc build / single-file) codegen is byte-for-byte unchanged.
 	void setTestMode( bool on ) { mTestMode = on; }
+
+	// Enable DWARF debug info emission (qcc -g, U3). Off by default so a
+	// non-`-g` build is byte-identical. Drives the DIBuilder setup in generate()
+	// and the per-function/per-statement debug-location hooks.
+	void setDebugInfo( bool on ) { mDebugInfo = on; }
 
 	// Configure the default database connection opened in main() (from the
 	// [database] section of blang.toml, forwarded by bcc via qcc flags).
@@ -427,6 +445,27 @@ private:
 	std::unique_ptr<llvm::LLVMContext> mContext;
 	std::unique_ptr<llvm::Module> mModule;
 	std::unique_ptr<llvm::IRBuilder<>> mBuilder;
+
+	// Debug info (DWARF, U3). Off by default so a non-`-g` build is
+	// byte-identical to pre-U3. Enabled via setDebugInfo(true) from qcc's -g arg.
+	bool mDebugInfo = false;
+	bool mDebugFinalized = false;   // guards finalizeDebugInfo() (idempotent)
+	std::unique_ptr<llvm::DIBuilder> mDIBuilder;
+	llvm::DICompileUnit *mDICompileUnit = nullptr;
+	// Per-source-path DIFile cache (--combine gives each .b its own DIFile so
+	// line tables point at the correct source).
+	std::map<std::string, llvm::DIFile*> mDIFileCache;
+	// The DISubprogram scope of the function currently being generated (null
+	// outside a function / when debug info is off). DebugLocs resolve against it.
+	llvm::DISubprogram *mCurrentDISubprogram = nullptr;
+
+	// Debug-info helpers (all no-ops when !mDebugInfo). Defined in CGDebug.cpp.
+	llvm::DIFile *getOrCreateDIFile( const std::string &path );
+	llvm::DISubprogram *createDISubprogram( llvm::Function *llvmFunc,
+		const SourceLocation &loc, const std::string &name );
+	void applyDebugLoc( const SourceLocation &loc );
+	void clearDebugLoc();
+	void finalizeDebugInfo();
 
 	// Raw text from the most recent failing verify(); surfaced only under
 	// --debug-compiler (U2, FR-010).

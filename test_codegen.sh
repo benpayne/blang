@@ -21,6 +21,10 @@ LLC_OPT_LEVEL="${OPT_LEVEL}"
 if [ "${LLC_OPT_LEVEL}" = "s" ] || [ "${LLC_OPT_LEVEL}" = "z" ]; then
 	LLC_OPT_LEVEL="2"
 fi
+# U3 (debug info): DEBUG_INFO=1 builds the whole suite with -g (DWARF emission)
+# so correctness with debug info is a hard gate (done-condition #1). Empty =
+# no debug info (default, byte-identical to pre-U3).
+DEBUG_INFO="${DEBUG_INFO:-}"
 RUNTIME_LIB="${BUILD_DIR}/libblang_runtime.a"
 STRING_LIB="${BUILD_DIR}/libblang_string.a"
 ARRAY_LIB="${BUILD_DIR}/libblang_array.a"
@@ -278,6 +282,9 @@ run_one_test() {
 	fi
 	if [ -n "${OPT_LEVEL}" ]; then
 		qcc_args+=("-O${OPT_LEVEL}")   # layer 1: in-process IR passes
+	fi
+	if [ -n "${DEBUG_INFO}" ]; then
+		qcc_args+=("-g")              # U3: emit DWARF debug info
 	fi
 	local qcc_output
 	qcc_output=$("${QCC}" "${qcc_args[@]}" "${test_file}" 2>&1)

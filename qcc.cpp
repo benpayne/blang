@@ -550,6 +550,7 @@ int main( int argc, char *argv[] )
 	bool jsonDiagnostics = false;   // --json: emit diagnostics as a JSON array
 	bool werror = false;            // -Werror: promote warnings to errors (exit)
 	std::string optLevel;           // -O<n>: in-process IR optimization level
+	bool debugInfo = false;         // -g: emit DWARF debug info (U3)
 	bool emitTestMain = false;
 	std::string outputFile;
 	std::string emitBmodFile;
@@ -593,6 +594,8 @@ int main( int argc, char *argv[] )
 			optLevel = "2";                 // bare -O means -O2 (gcc convention)
 		else if ( arg.size() > 2 && arg.substr( 0, 2 ) == "-O" )
 			optLevel = arg.substr( 2 );     // -O0/1/2/3/s/z; validated at optimize()
+		else if ( arg == "-g" )
+			debugInfo = true;               // -g: emit DWARF debug info (U3)
 		else if ( arg == "--emit-bmod" )
 		{
 			if ( i + 1 < argc )
@@ -1073,6 +1076,7 @@ int main( int argc, char *argv[] )
 
 			QLang::CodeGen codegen( combinedName.c_str() );
 			codegen.setTestMode( emitTestMain );
+			codegen.setDebugInfo( debugInfo );
 			codegen.registerExternalTypes( allStructs, allEnums );
 			codegen.setDbConfig( dbDriver, dbUrl );
 			for ( auto &c : dbNamedConns )
@@ -1186,6 +1190,7 @@ int main( int argc, char *argv[] )
 				const std::string &inputFile = inputFiles[ idx ];
 				QLang::CodeGen codegen( inputFile.c_str() );
 				codegen.setTestMode( emitTestMain );
+				codegen.setDebugInfo( debugInfo );
 				codegen.setDbConfig( dbDriver, dbUrl );
 				for ( auto &c : dbNamedConns )
 					codegen.addDbNamedConn( c.name, c.driver, c.url );
