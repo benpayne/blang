@@ -11,6 +11,16 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/build}"
 QCC="${BUILD_DIR}/qcc"
+# U2 (optimization): OPT_LEVEL=<0..3|s|z> builds the whole suite at that -O level
+# (qcc in-process IR passes + llc backend -O) so correctness under optimization
+# is a hard gate. Empty = unoptimized (default, byte-identical to pre-U2).
+OPT_LEVEL="${OPT_LEVEL:-}"
+# llc accepts only numeric -O; the size levels run as IR passes in qcc, so map
+# s/z to backend -O2 for the llc step.
+LLC_OPT_LEVEL="${OPT_LEVEL}"
+if [ "${LLC_OPT_LEVEL}" = "s" ] || [ "${LLC_OPT_LEVEL}" = "z" ]; then
+	LLC_OPT_LEVEL="2"
+fi
 RUNTIME_LIB="${BUILD_DIR}/libblang_runtime.a"
 STRING_LIB="${BUILD_DIR}/libblang_string.a"
 ARRAY_LIB="${BUILD_DIR}/libblang_array.a"
@@ -266,6 +276,9 @@ run_one_test() {
 	if [ $need_combine -eq 1 ]; then
 		qcc_args+=("--combine" "${stdlib_files[@]}")
 	fi
+	if [ -n "${OPT_LEVEL}" ]; then
+		qcc_args+=("-O${OPT_LEVEL}")   # layer 1: in-process IR passes
+	fi
 	local qcc_output
 	qcc_output=$("${QCC}" "${qcc_args[@]}" "${test_file}" 2>&1)
 	local qcc_exit=$?
@@ -301,8 +314,12 @@ run_one_test() {
 
 	# Step 2: Compile IR to object file
 	local llc_output
-	llc_output=$(llc-18 -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1) || \
-	llc_output=$(llc -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1)
+	local llc_opt_flag=()
+	if [ -n "${LLC_OPT_LEVEL}" ]; then
+		llc_opt_flag=("-O${LLC_OPT_LEVEL}")   # layer 2: backend codegen opt
+	fi
+	llc_output=$(llc-18 "${llc_opt_flag[@]}" -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1) || \
+	llc_output=$(llc "${llc_opt_flag[@]}" -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1)
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (llc failed)"
 		if [ "$VERBOSE" -eq 1 ]; then

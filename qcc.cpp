@@ -549,6 +549,7 @@ int main( int argc, char *argv[] )
 	bool debugCompiler = false;
 	bool jsonDiagnostics = false;   // --json: emit diagnostics as a JSON array
 	bool werror = false;            // -Werror: promote warnings to errors (exit)
+	std::string optLevel;           // -O<n>: in-process IR optimization level
 	bool emitTestMain = false;
 	std::string outputFile;
 	std::string emitBmodFile;
@@ -588,6 +589,10 @@ int main( int argc, char *argv[] )
 			jsonDiagnostics = true;
 		else if ( arg == "-Werror" )
 			werror = true;
+		else if ( arg == "-O" )
+			optLevel = "2";                 // bare -O means -O2 (gcc convention)
+		else if ( arg.size() > 2 && arg.substr( 0, 2 ) == "-O" )
+			optLevel = arg.substr( 2 );     // -O0/1/2/3/s/z; validated at optimize()
 		else if ( arg == "--emit-bmod" )
 		{
 			if ( i + 1 < argc )
@@ -1113,6 +1118,25 @@ int main( int argc, char *argv[] )
 				return -1;
 			}
 
+			// Layer 1 of -O: run the in-process IR optimization pipeline (opt-in;
+			// empty/-O0 leaves the module byte-identical to the unoptimized build),
+			// then re-verify (opt must not produce invalid IR).
+			if ( !optLevel.empty() && optLevel != "0" )
+			{
+				if ( !codegen.optimize( optLevel ) )
+				{
+					cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+					return -1;
+				}
+				if ( !codegen.verify() )
+				{
+					cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
+					if ( debugCompiler )
+						cerr << codegen.getVerifyError() << endl;
+					return -1;
+				}
+			}
+
 			// Determine output IR file path
 			std::string irFile;
 			if ( !outputFile.empty() )
@@ -1181,6 +1205,24 @@ int main( int argc, char *argv[] )
 					if ( debugCompiler )
 						cerr << codegen.getVerifyError() << endl;
 					return -1;
+				}
+
+				// Layer 1 of -O (see combine path above): in-process IR passes,
+				// opt-in, then re-verify. Empty/-O0 leaves the module unchanged.
+				if ( !optLevel.empty() && optLevel != "0" )
+				{
+					if ( !codegen.optimize( optLevel ) )
+					{
+						cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+						return -1;
+					}
+					if ( !codegen.verify() )
+					{
+						cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
+						if ( debugCompiler )
+							cerr << codegen.getVerifyError() << endl;
+						return -1;
+					}
 				}
 
 				// Determine output file path for IR. When multiple input files are

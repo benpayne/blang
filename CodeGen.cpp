@@ -4,6 +4,8 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/OptimizationLevel.h"
 
 #include <iostream>
 
@@ -335,6 +337,48 @@ void CodeGen::registerExternalTypes(
 void CodeGen::print( llvm::raw_ostream &os )
 {
 	mModule->print( os, nullptr );
+}
+
+bool CodeGen::optimize( const std::string &level )
+{
+	// Map the -O level string to an LLVM OptimizationLevel.
+	llvm::OptimizationLevel optLevel;
+	if ( level.empty() || level == "0" )
+		optLevel = llvm::OptimizationLevel::O0;
+	else if ( level == "1" )
+		optLevel = llvm::OptimizationLevel::O1;
+	else if ( level == "2" )
+		optLevel = llvm::OptimizationLevel::O2;
+	else if ( level == "3" )
+		optLevel = llvm::OptimizationLevel::O3;
+	else if ( level == "s" )
+		optLevel = llvm::OptimizationLevel::Os;
+	else if ( level == "z" )
+		optLevel = llvm::OptimizationLevel::Oz;
+	else
+		return false;   // invalid level; the driver reports it
+
+	// LLVM 18 new PassManager. The four analysis managers must outlive the run.
+	llvm::LoopAnalysisManager LAM;
+	llvm::FunctionAnalysisManager FAM;
+	llvm::CGSCCAnalysisManager CGAM;
+	llvm::ModuleAnalysisManager MAM;
+
+	llvm::PassBuilder PB;
+	PB.registerModuleAnalyses( MAM );
+	PB.registerCGSCCAnalyses( CGAM );
+	PB.registerFunctionAnalyses( FAM );
+	PB.registerLoopAnalyses( LAM );
+	PB.crossRegisterProxies( LAM, FAM, CGAM, MAM );
+
+	llvm::ModulePassManager MPM;
+	if ( optLevel == llvm::OptimizationLevel::O0 )
+		MPM = PB.buildO0DefaultPipeline( optLevel );
+	else
+		MPM = PB.buildPerModuleDefaultPipeline( optLevel );
+
+	MPM.run( *mModule, MAM );
+	return true;
 }
 
 bool CodeGen::verify()

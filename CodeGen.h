@@ -29,6 +29,14 @@ public:
 	void print( llvm::raw_ostream &os );
 	bool verify();
 
+	// Run the LLVM new-PassManager per-module optimization pipeline over the
+	// generated module, in-process, before print(). `level` is one of
+	// "0","1","2","3","s","z" (empty or "0" => O0). Returns false on an invalid
+	// level (the driver reports it). This is layer 1 of the -O pipeline (IR
+	// passes); llc -O<n> is layer 2 (backend). Target-independent — no
+	// TargetMachine is required, so qcc needs no per-target backend libs.
+	bool optimize( const std::string &level );
+
 	// Raw LLVM verifier text captured by the most recent failing verify().
 	// The driver surfaces this only under --debug-compiler (U2, FR-010).
 	const std::string &getVerifyError() const { return mVerifyError; }

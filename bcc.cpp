@@ -45,6 +45,9 @@ struct Options
 	bool verbose = false;        // -v
 	bool jsonDiagnostics = false;// --json  (forwarded to qcc)
 	bool werror = false;         // -Werror (forwarded to qcc)
+	string optLevel;             // -O<n>: "" none, else 0..3/s/z (U2)
+	bool release = false;        // --release: implies -O2 (U2)
+	string targetTriple;         // --target <triple>: cross-compile (U2)
 	vector<string> linkerFlags;  // -l, -L, etc.
 };
 
@@ -66,6 +69,9 @@ static void printUsage( const char *progName )
 	cerr << "  -v           Verbose output" << endl;
 	cerr << "  --json       Emit compiler diagnostics as JSON" << endl;
 	cerr << "  -Werror      Treat warnings as errors" << endl;
+	cerr << "  -O<n>        Optimize (0..3, s, z); bare -O = -O2" << endl;
+	cerr << "  --release    Optimized build (implies -O2)" << endl;
+	cerr << "  --target <t> Cross-compile to target triple (object emission)" << endl;
 	cerr << "  -l<lib>      Link with library" << endl;
 	cerr << "  -L<dir>      Add library search path" << endl;
 	cerr << "  -h, --help   Show this help" << endl;
@@ -110,6 +116,27 @@ static bool parseArgs( int argc, char *argv[], Options &opts )
 		else if ( arg == "-Werror" )
 		{
 			opts.werror = true;
+		}
+		else if ( arg == "--release" )
+		{
+			opts.release = true;
+		}
+		else if ( arg == "--target" )
+		{
+			if ( i + 1 >= argc )
+			{
+				cerr << "error: --target requires a triple argument" << endl;
+				return false;
+			}
+			opts.targetTriple = argv[++i];
+		}
+		else if ( arg == "-O" )
+		{
+			opts.optLevel = "2";               // bare -O means -O2
+		}
+		else if ( arg.size() > 2 && arg.substr( 0, 2 ) == "-O" )
+		{
+			opts.optLevel = arg.substr( 2 );   // -O0/1/2/3/s/z
 		}
 		else if ( arg.substr( 0, 2 ) == "-l" || arg.substr( 0, 2 ) == "-L" )
 		{
@@ -266,19 +293,40 @@ static string resolveLlc()
 }
 
 // Emit a native object from a textual .ll via llc. Owns the -filetype=obj flag
-// vector and the host-baked target triple. Returns llc's exit code (0 == ok).
-// Per-path error messages and IR-file cleanup stay at the call sites.
+// vector, the backend optimization level (U2 layer 2), and the target triple.
+// Returns llc's exit code (0 == ok). Per-path error messages and IR-file cleanup
+// stay at the call sites.
+//   optLevel     — "" for none, else "0".."3"/"s"/"z" → llc -O<n>.
+//   targetTriple — "" for the host-baked triple (byte-identical to pre-U2), else
+//                  the given triple (cross-compile, U2 --target).
 static int emitObject( const string &llc, const string &llFile,
-                       const string &objFile, bool verbose )
+                       const string &objFile, bool verbose,
+                       const string &optLevel = "",
+                       const string &targetTriple = "" )
 {
 	vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
+	if ( !optLevel.empty() )
+	{
+		// llc's -O accepts only numeric 0..3. The size levels (-Os/-Oz) are
+		// applied as IR passes in qcc (layer 1); map them to backend -O2 here so
+		// llc gets a valid level.
+		string llcOpt = ( optLevel == "s" || optLevel == "z" ) ? "2" : optLevel;
+		cmd.push_back( string( "-O" ) + llcOpt );
+	}
+	if ( !targetTriple.empty() )
+	{
+		cmd.push_back( string( "-mtriple=" ) + targetTriple );
+	}
+	else
+	{
 #if defined(BCC_HOST_ARCH)
 #if defined(PLATFORM_DARWIN)
-	cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
 #elif defined(PLATFORM_LINUX)
-	cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
 #endif
 #endif
+	}
 	cmd.push_back( llFile );
 	cmd.push_back( "-o" );
 	cmd.push_back( objFile );
@@ -1365,6 +1413,12 @@ int main( int argc, char *argv[] )
 	string baseName = getBaseName( opts.inputFile );
 	string srcDir = getDirName( opts.inputFile );
 
+	// Effective optimization level: an explicit -O wins; otherwise --release
+	// implies -O2 (design D3: --release keeps asserts, just optimizes).
+	string effectiveOpt = opts.optLevel;
+	if ( effectiveOpt.empty() && opts.release )
+		effectiveOpt = "2";
+
 	// Locate qcc (same directory as bcc)
 	string qcc = exeDir + "/qcc";
 
@@ -1386,6 +1440,8 @@ int main( int argc, char *argv[] )
 			cmd.push_back( "--json" );
 		if ( opts.werror )
 			cmd.push_back( "-Werror" );
+		if ( !effectiveOpt.empty() )
+			cmd.push_back( string( "-O" ) + effectiveOpt );   // layer 1: IR passes
 		if ( !stdlibFiles.empty() )
 		{
 			cmd.push_back( "--combine" );
@@ -1479,7 +1535,9 @@ int main( int argc, char *argv[] )
 
 	string objFile = "/tmp/" + baseName + ".o";
 	{
-		int ret = emitObject( llc, irFile, objFile, opts.verbose );
+		// Layer 2 of -O (llc backend) + cross-compile triple (U2).
+		int ret = emitObject( llc, irFile, objFile, opts.verbose,
+			effectiveOpt, opts.targetTriple );
 		if ( ret != 0 )
 		{
 			cerr << "error: IR compilation failed" << endl;
