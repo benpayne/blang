@@ -611,10 +611,21 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
   - `001-toolchain-and-stdlib` (`docs/epics/001-toolchain-and-stdlib/`) — status:
-    **launched** (devbot run `3a358cfb-38ff-4189-82f5-172d64f05c14`). Phase 4 at full depth across four areas: multi-error
-    diagnostics (+warnings/`--json`), optimization (`-O`/`--release`/cross-compile),
-    DWARF debug info (`-g`), and stdlib breadth (math/time/random/env/sort/
-    hashed-`Map`+`Set`/CLI-flags). 7 units (U0 pipeline foundation → U1–U5 →
-    U6 integration); 3-role team (architect for cross-area spec audits +
-    implementer + code reviewer); detailed per-area design docs. First
-    NNN-numbered epic.
+    **complete** (devbot run `3a358cfb-38ff-4189-82f5-172d64f05c14`; all 7 units
+    U0–U6 merged to master, done-conditions #1–#6 verified on the final commit
+    `c870a3e`). Phase 4 at full depth across four areas: multi-error diagnostics
+    (multi-error recovery + `--json` + warnings/`-Werror`), optimization
+    (`-O0..3/s/z` in-process pass pipeline + `llc -O` + `--release` +
+    `--target` cross-compile, informational `opt-delta.md`), DWARF debug info
+    (`-g` via DIBuilder — per-function `DISubprogram` + line tables + gdb
+    breakpoints; `-g`→`-O0` stance, emission verifier-clean under `-O`), and
+    stdlib breadth (C-backed math/time/random/env via the 6-touchpoint recipe;
+    hashed `Map`/`Set` replacing the O(n) scan; generic value-type `sort`; CLI
+    flag parsing). 3-role team (architect spec audits + implementer + independent
+    code reviewer); each area has committed architect-reviewed speckit artifacts
+    under `specs/`. codegen_*.b matrix 107 → **134**. Along the way it fixed
+    several codegen bugs (unary float negation, `math.abs_int` ABI, a `match`
+    temp-string leak, lexicographic string `<`) and **filed** the deeper
+    array/aggregate ARC edges it surfaced (refcounted-element `sort<string>`,
+    struct-valued hashed Map under churn, etc.) in
+    `docs/epics/001-toolchain-and-stdlib/known-issues.md`. First NNN-numbered epic.
