@@ -163,4 +163,4 @@ devbot:
   runs:
     - run_id: 3a358cfb-38ff-4189-82f5-172d64f05c14
       launched: 2026-07-20
-      outcome: pending
+      outcome: completed  # 7 units merged; #1-#5 independently verified; #6 (CI-green) pending push
