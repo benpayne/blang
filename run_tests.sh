@@ -209,12 +209,40 @@ if [ -n "$PASS_FILES" ]; then
 fi
 
 # --- Fail tests ---
-FAIL_FILES=$(find "$SCRIPT_DIR/test_files/fail" -name '*.b' 2>/dev/null | sort)
+# fail/warn/ is a distinct WARNING category (below): those fixtures compile with
+# exit 0 (a warning is not an error) unless -Werror is given, so they must not be
+# swept into the exit-non-zero fail glob.
+FAIL_FILES=$(find "$SCRIPT_DIR/test_files/fail" -name '*.b' -not -path '*/fail/warn/*' 2>/dev/null | sort)
 if [ -n "$FAIL_FILES" ]; then
 	echo -e "${CYAN}--- Tests expected to FAIL (negative tests) ---${NC}"
 	while IFS= read -r f; do
 		run_test "$f" "fail" "--parse-only"
 	done <<< "$FAIL_FILES"
+	echo ""
+fi
+
+# --- Warning tests (fail/warn/) ---
+# Each fixture must: (a) without -Werror, exit 0 AND print a `warning:` line;
+# (b) with -Werror, exit non-zero (promotion). This gives the warning severity +
+# -Werror contract teeth in the standard suite (U1, diagnostics).
+WARN_FILES=$(find "$SCRIPT_DIR/test_files/fail/warn" -name '*.b' 2>/dev/null | sort)
+if [ -n "$WARN_FILES" ]; then
+	echo -e "${CYAN}--- Warning tests (fail/warn/) ---${NC}"
+	while IFS= read -r f; do
+		[ -z "$f" ] && continue
+		w_out=$(timeout 10 "$QCC" --parse-only "$f" 2>&1 >/dev/null)
+		w_rc=$?
+		timeout 10 "$QCC" -Werror --parse-only "$f" >/dev/null 2>&1
+		we_rc=$?
+		if [ "$w_rc" -eq 0 ] && printf '%s' "$w_out" | grep -q 'warning:' && [ "$we_rc" -ne 0 ]; then
+			echo -e "  ${GREEN}PASS${NC}  $f  (warns; -Werror promotes)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		else
+			echo -e "  ${RED}FAIL${NC}  $f  (rc=$w_rc warn?=$(printf '%s' "$w_out" | grep -qc 'warning:') werror_rc=$we_rc)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		fi
+		TOTAL=$((TOTAL + 1))
+	done <<< "$WARN_FILES"
 	echo ""
 fi
 

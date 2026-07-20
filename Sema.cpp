@@ -140,10 +140,22 @@ void Sema::visitFunction( FunctionDefinition *func )
 	mMoved.clear();
 	mDeclLoopDepth.clear();
 	mDeclSpawnDepth.clear();
+	mLocalDecls.clear();
+	mReferencedNames.clear();
 	mLoopDepth = 0;
 	mSpawnDepth = 0;
 	if ( func->mFuncBody != nullptr )
 		visitStmt( func->mFuncBody );
+
+	// U1: warn on local variables declared but never referenced anywhere in the
+	// function body. A pure lint (severity Warning); it does NOT set mReported, so
+	// the compile still succeeds unless -Werror promotes it.
+	for ( VariableDefinition *v : mLocalDecls )
+	{
+		if ( v != nullptr && mReferencedNames.count( v->getName() ) == 0 )
+			mDiag.warning( v->getLocation(),
+				"unused variable '" + v->getName() + "'", "unused-variable" );
+	}
 
 	mCurrentFunc = saved;
 }
@@ -218,6 +230,9 @@ void Sema::visitStmt( Statement *stmt )
 	{
 		for ( auto &decl : s->mVariables )
 		{
+			// U1: track this local as an unused-variable-lint candidate.
+			if ( decl.mVaribale != nullptr )
+				mLocalDecls.push_back( decl.mVaribale );
 			Type *initType = visitExpr( decl.mInitialValue );
 			// Initializer compatibility (FR-004). Only when both types are
 			// determinable and provably incompatible.
@@ -338,6 +353,9 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *ve = dynamic_cast<VariableExpression *>( expr ) )
 	{
 		VariableDefinition *var = ve->getVariable();
+		// U1: a variable read counts as a reference (suppresses the unused lint).
+		if ( var != nullptr )
+			mReferencedNames.insert( var->getName() );
 		if ( var != nullptr && var->getOwnership() == OwnershipQualifier::kOwnership_Own )
 		{
 			// U6: use of a moved own value.
@@ -454,6 +472,9 @@ Type *Sema::visitExpr( Expression *expr )
 	{
 		for ( auto &p : ic->mParams )
 			visitExpr( p );
+		// U1: calling through a fn-typed variable is a use of that variable.
+		if ( ic->mFnVariable != nullptr )
+			mReferencedNames.insert( ic->mFnVariable->getName() );
 		Type *t = nullptr;
 		if ( ic->mFnVariable != nullptr )
 		{
@@ -569,6 +590,10 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *as = dynamic_cast<AssignmentExpression *>( expr ) )
 	{
 		visitExpr( as->mValue );
+		// U1: a write also counts as a reference (conservative — avoids flagging
+		// a variable that is assigned to but, e.g., read only in codegen paths).
+		if ( as->mVariable != nullptr )
+			mReferencedNames.insert( as->mVariable->getName() );
 		// U6: reassigning a variable clears its moved state (it holds a value again).
 		if ( as->mVariable != nullptr )
 			mMoved.erase( as->mVariable );

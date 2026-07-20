@@ -33,6 +33,54 @@ Scope *gScope;
 // until main() installs it; the catch falls back to a local engine if unset.
 DiagnosticEngine *gDiag = nullptr;
 
+// True if `sym` can start a top-level declaration — a panic-mode resync target.
+static bool isTopLevelStarter( int sym )
+{
+	switch ( sym )
+	{
+		case Lexer::KEYWORD_IMPORT:
+		case Lexer::KEYWORD_PUB:
+		case Lexer::KEYWORD_TABLE:
+		case Lexer::KEYWORD_STRUCT:
+		case Lexer::KEYWORD_PROTOCOL:
+		case Lexer::KEYWORD_IMPL:
+		case Lexer::KEYWORD_ENUM:
+		case Lexer::KEYWORD_TEST:
+		case Lexer::KEYWORD_ON:
+		case Lexer::KEYWORD_FN:
+		case Lexer::KEYWORD_ASYNC:
+		case Lexer::TYPE_MODIFIER:   // extern
+		case Lexer::AT_SIGN:         // @annotation
+			return true;
+		default:
+			return false;
+	}
+}
+
+// Panic-mode recovery after a top-level parse error: consume the current token
+// then skip to the next top-level declaration starter (at brace depth 0, so a
+// `fn` inside a lambda/body is not a false resync point) or EOF. Guarantees
+// forward progress so Module::Parse's loop cannot spin.
+static void resyncTopLevel( Lexer &l )
+{
+	int depth = 0;
+	bool first = true;
+	while ( !l.isEOF() )
+	{
+		int p = l.peekSymbol();
+		if ( p == -1 )
+			break;
+		if ( !first && depth == 0 && isTopLevelStarter( p ) )
+			break;
+		int sym = l.getSymbol();
+		if ( sym == '{' )
+			depth++;
+		else if ( sym == '}' && depth > 0 )
+			depth--;
+		first = false;
+	}
+}
+
 string CompileError::getMessage() const
 {
 	// Raw message body only. The located "<file>:<line>:<col>: error: " prefix
@@ -50,14 +98,17 @@ Module *Module::Parse( Lexer &l, Scope *s )
 	Module *mod = new Module();
 	mod->mScope = s;
 	SmartPtr<FunctionDefinition> def;
-	try {
-		while( !l.isEOF() )
-		{
-			// Peek past any trailing whitespace/comments to check for real EOF
-			int nextSym = l.peekSymbol();
-			if ( nextSym == -1 )
-				break;
+	while( !l.isEOF() )
+	{
+		// Peek past any trailing whitespace/comments to check for real EOF
+		int nextSym = l.peekSymbol();
+		if ( nextSym == -1 )
+			break;
 
+		// Per-declaration try/catch enables panic-mode recovery: one bad
+		// declaration is reported and skipped, and parsing continues so a single
+		// compile reports all top-level syntax errors.
+		try {
 			// Handle import statements
 			if ( nextSym == Lexer::KEYWORD_IMPORT )
 			{
@@ -320,14 +371,19 @@ Module *Module::Parse( Lexer &l, Scope *s )
 
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
+		} catch( CompileError &err ) {
+			// Buffer the located diagnostic through the single reporting path,
+			// then resync to the next top-level declaration so parsing continues.
+			// gDiag is installed by main() before parsing; fall back defensively.
+			// The fallback is a collector like gDiag, so on the (degenerate)
+			// gDiag==null path finish() it immediately or the error is dropped.
+			DiagnosticEngine fallback;
+			DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
+			eng.reportCompileError( err );
+			if ( gDiag == nullptr )
+				fallback.finish();
+			resyncTopLevel( l );
 		}
-	} catch( CompileError &err ) {
-		// Render the located diagnostic through the single reporting path.
-		// gDiag is installed by main() before parsing; fall back defensively.
-		DiagnosticEngine fallback;
-		DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
-		eng.reportCompileError( err );
-		return nullptr;
 	}
 
 	return mod;
@@ -491,6 +547,8 @@ int main( int argc, char *argv[] )
 	bool dumpLocations = false;
 	bool verbose = false;
 	bool debugCompiler = false;
+	bool jsonDiagnostics = false;   // --json: emit diagnostics as a JSON array
+	bool werror = false;            // -Werror: promote warnings to errors (exit)
 	bool emitTestMain = false;
 	std::string outputFile;
 	std::string emitBmodFile;
@@ -526,6 +584,10 @@ int main( int argc, char *argv[] )
 			verbose = true;
 		else if ( arg == "--debug-compiler" )
 			debugCompiler = true;
+		else if ( arg == "--json" )
+			jsonDiagnostics = true;
+		else if ( arg == "-Werror" )
+			werror = true;
 		else if ( arg == "--emit-bmod" )
 		{
 			if ( i + 1 < argc )
@@ -619,6 +681,8 @@ int main( int argc, char *argv[] )
 	// top-level parse-catch (Module::Parse) renders located errors through it.
 	DiagnosticEngine diagnostics;
 	diagnostics.setDebugCompiler( debugCompiler );
+	diagnostics.setJson( jsonDiagnostics );
+	diagnostics.setWerror( werror );
 	gDiag = &diagnostics;
 
 	// Set up the global scope with built-in types. All per-file module scopes
@@ -746,6 +810,12 @@ int main( int argc, char *argv[] )
 	if ( !verbose || dumpLocations )
 		savedCoutBuf = std::cout.rdbuf( discardSink.rdbuf() );
 
+	// U1: accumulate failure across all files instead of aborting at the first,
+	// so one compile reports every file's diagnostics. Buffered diagnostics are
+	// rendered once by gDiag->finish() after the loop; codegen runs only if no
+	// errors remain (Constitution III).
+	bool hadError = false;
+
 	for ( std::size_t fileIdx = 0; fileIdx < inputFiles.size(); fileIdx++ )
 	{
 		const auto &inputFile = inputFiles[fileIdx];
@@ -858,7 +928,13 @@ int main( int argc, char *argv[] )
 
 		SmartPtr<Module> mod = Module::Parse( l, fileScope );
 		if ( mod == nullptr )
-			return -1;
+		{
+			// Catastrophic (unrecoverable) parse failure for this file. The
+			// located diagnostic was already buffered; record failure and move on
+			// so remaining files still report their errors.
+			hadError = true;
+			continue;
+		}
 
 		if ( isBmod )
 		{
@@ -885,8 +961,16 @@ int main( int argc, char *argv[] )
 		// analyzed (Sema::analyze skips them). On any sema error the compile
 		// fails (non-zero exit) and codegen is not reached for this file.
 		if ( !isBmod && !Sema::analyze( (Module *)mod, fileScope, *gDiag ) )
-			return -1;
+			hadError = true;
 	}
+
+	// U1: render all buffered diagnostics once (human text or --json array), then
+	// stop before any output-producing stage if the compile had errors — never
+	// codegen a rejected program (Constitution III). finish() also flushes
+	// warnings (which do not, without -Werror, set hadError) on the success path.
+	gDiag->finish();
+	if ( hadError || gDiag->hasErrors() )
+		return 1;
 
 	// --dump-locations: restore stdout and print one line per AST node for
 	// each parsed source module (command-line order), then exit. This is

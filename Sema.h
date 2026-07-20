@@ -86,6 +86,14 @@ namespace QLang
 			std::set<VariableDefinition*> &refs,
 			std::set<VariableDefinition*> &locals );
 
+		// U1 (diagnostics): unused-local-variable lint, per function. Collect
+		// declared locals and every referenced/assigned variable name; warn on a
+		// local never mentioned again. Name-based and conservative — a name used
+		// anywhere in the function suppresses the warning, so it only ever misses
+		// warnings, never false-positives a genuinely used variable.
+		std::vector<VariableDefinition*> mLocalDecls;
+		std::set<std::string> mReferencedNames;
+
 		Scope *mScope;
 		DiagnosticEngine &mDiag;
 		bool mReported = false;  // any sema diagnostic emitted this run

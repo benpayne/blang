@@ -43,6 +43,8 @@ struct Options
 	bool emitIROnly = false;     // -S
 	bool compileOnly = false;    // -c
 	bool verbose = false;        // -v
+	bool jsonDiagnostics = false;// --json  (forwarded to qcc)
+	bool werror = false;         // -Werror (forwarded to qcc)
 	vector<string> linkerFlags;  // -l, -L, etc.
 };
 
@@ -62,6 +64,8 @@ static void printUsage( const char *progName )
 	cerr << "  -S           Emit LLVM IR only (.ll)" << endl;
 	cerr << "  -c           Compile to object file only (.o)" << endl;
 	cerr << "  -v           Verbose output" << endl;
+	cerr << "  --json       Emit compiler diagnostics as JSON" << endl;
+	cerr << "  -Werror      Treat warnings as errors" << endl;
 	cerr << "  -l<lib>      Link with library" << endl;
 	cerr << "  -L<dir>      Add library search path" << endl;
 	cerr << "  -h, --help   Show this help" << endl;
@@ -98,6 +102,14 @@ static bool parseArgs( int argc, char *argv[], Options &opts )
 		else if ( arg == "-v" )
 		{
 			opts.verbose = true;
+		}
+		else if ( arg == "--json" )
+		{
+			opts.jsonDiagnostics = true;
+		}
+		else if ( arg == "-Werror" )
+		{
+			opts.werror = true;
 		}
 		else if ( arg.substr( 0, 2 ) == "-l" || arg.substr( 0, 2 ) == "-L" )
 		{
@@ -1370,6 +1382,10 @@ int main( int argc, char *argv[] )
 
 	{
 		vector<string> cmd = { qcc };
+		if ( opts.jsonDiagnostics )
+			cmd.push_back( "--json" );
+		if ( opts.werror )
+			cmd.push_back( "-Werror" );
 		if ( !stdlibFiles.empty() )
 		{
 			cmd.push_back( "--combine" );
@@ -1377,11 +1393,27 @@ int main( int argc, char *argv[] )
 				cmd.push_back( sf );
 		}
 		cmd.push_back( opts.inputFile );
+		// Always capture qcc output (its IR goes to stdout, diagnostics to stderr).
 		int ret = runCommand( cmd, opts.verbose, true );
+		// In --json mode, replay qcc's captured stderr verbatim — it is exactly the
+		// JSON diagnostics array (quiet mode emits nothing else there) — so the
+		// user sees pure JSON and never the IR (which went to the discarded stdout).
+		if ( opts.jsonDiagnostics && !opts.verbose )
+		{
+			FILE *jf = fopen( "/tmp/bcc_stderr.txt", "r" );
+			if ( jf )
+			{
+				char jbuf[1024];
+				while ( fgets( jbuf, sizeof( jbuf ), jf ) )
+					fputs( jbuf, stderr );
+				fclose( jf );
+			}
+		}
 		if ( ret != 0 )
 		{
-			// Show captured compiler errors
-			if ( !opts.verbose )
+			// Show captured compiler errors. In --json mode the JSON was already
+			// replayed above, so skip the human summary to keep the output pure.
+			if ( !opts.verbose && !opts.jsonDiagnostics )
 			{
 				FILE *f = fopen( "/tmp/bcc_stderr.txt", "r" );
 				if ( f )
@@ -1400,7 +1432,9 @@ int main( int argc, char *argv[] )
 					fclose( f );
 				}
 			}
-			cerr << "error: compilation failed" << endl;
+			// Keep --json output pure: qcc already emitted the JSON diagnostics.
+			if ( !opts.jsonDiagnostics )
+				cerr << "error: compilation failed" << endl;
 			return 1;
 		}
 	}
