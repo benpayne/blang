@@ -1,0 +1,4 @@
+has PATH = true
+has __NOPE__ = false
+get_or unset = fallback
+unset is none

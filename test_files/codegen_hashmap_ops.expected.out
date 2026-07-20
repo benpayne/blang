@@ -1,0 +1,11 @@
+empty = true
+empty after set = false
+length = 2
+get a = 11
+get_or b = 20
+get_or missing = -1
+has a = true
+has zzz = false
+remove b = true
+remove missing = false
+final length = 1

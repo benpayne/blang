@@ -1,0 +1,6 @@
+length = 200
+length after updates = 200
+all 200 correct after update = 1
+length after 50 removes = 150
+has n0 = false
+has n100 = true

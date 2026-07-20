@@ -84,6 +84,99 @@ jobs:
             echo "FAIL: --selfcheck did not print SELFCHECK: OK"; cat selfcheck.log; exit 1; }
           echo "Golden teeth verified: --selfcheck flipped red as designed."
 
+  # ---- 1b. Optimization: whole codegen suite built at -O2 (U2/U6) ----
+  # Correctness under optimization is the hard gate: every codegen_*.b golden
+  # must match with the in-process -O2 pipeline + llc -O2. Executes the suite,
+  # never greps.
+  opt-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev pkg-config libsqlite3-dev
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Codegen suite at -O2 (correctness under optimization)
+        run: OPT_LEVEL=2 ./test_codegen.sh
+      - name: ARC survives optimization (--leak-check at -O2)
+        run: OPT_LEVEL=2 ./test_codegen.sh --leak-check
+      - name: opt-delta.md recorded
+        run: test -f docs/epics/001-toolchain-and-stdlib/opt-delta.md
+      - name: --release builds and runs
+        run: ./build/bcc --release demos/01_fibonacci.b -o /tmp/rel && /tmp/rel
+      - name: cross-compile smoke (skip if no aarch64 target)
+        run: |
+          if llc-18 --version | grep -q aarch64; then
+            ./build/bcc --target aarch64-unknown-linux-gnu -c test_files/pass/func_simple.b -o /tmp/x.o
+            file /tmp/x.o | grep -qi aarch64
+            echo "cross-compile: aarch64 object emitted"
+          else
+            echo "SKIP: llc-18 has no aarch64 target"
+          fi
+
+  # ---- 1c. Debug info: whole codegen suite built with -g + DWARF/gdb (U3/U6) ----
+  debug-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev pkg-config libsqlite3-dev gdb
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Codegen suite with -g (correctness with debug info)
+        run: DEBUG_INFO=1 ./test_codegen.sh
+      - name: ARC survives debug info (--leak-check with -g)
+        run: DEBUG_INFO=1 ./test_codegen.sh --leak-check
+      - name: DWARF present + line table names the .b + -g -O2 verifies
+        run: |
+          ./build/bcc -g demos/01_fibonacci.b -o /tmp/fib
+          llvm-dwarfdump-18 /tmp/fib | grep -q DW_TAG_subprogram
+          llvm-dwarfdump-18 --debug-line /tmp/fib | grep -q 01_fibonacci.b
+          ./build/bcc -g -O2 demos/01_fibonacci.b -o /tmp/fibg   # verifies clean under -O
+      - name: gdb breakpoint smoke (function breakpoint = edit-stable)
+        run: gdb -batch -ex 'break main' -ex run -ex bt /tmp/fib 2>&1 | grep -q 'Breakpoint 1'
+      - name: DWARF/gdb smoke script
+        run: ./test_files/debug/dwarf_gdb_smoke.sh
+
+  # ---- 1d. Epic acceptance smoke: diagnostics + stdlib + count (U1/U4/U5/U6) ----
+  epic-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libuv1-dev llvm-18-dev llvm-18 libzstd-dev pkg-config libsqlite3-dev python3
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Diagnostics — multi-error (>= 3 located) + JSON schema + warning/-Werror
+        run: |
+          ./build/qcc test_files/fail/multi/three_errors.b 2>&1 | grep -Ec ':[0-9]+:[0-9]+: (error|warning):' | { read n; test "$n" -ge 3; }
+          ./build/qcc --json test_files/fail/multi/three_errors.b 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d)>=3 and all(k in d[0] for k in ("severity","file","line","col","message"))'
+          ./build/qcc test_files/fail/warn/unused.b 2>&1 | grep -q 'warning:'
+          if ./build/qcc -Werror test_files/fail/warn/unused.b 2>/dev/null; then echo "FAIL: -Werror did not promote"; exit 1; fi
+      - name: Stdlib module tests (each area usable via bcc import)
+        run: ./test_codegen.sh test_files/codegen_math_*.b test_files/codegen_time_*.b test_files/codegen_random_*.b test_files/codegen_env_*.b test_files/codegen_sort_*.b test_files/codegen_hashmap_*.b test_files/codegen_flags_*.b
+      - name: New-test count >= 132 (baseline 107 + 25)
+        run: test "$(ls test_files/codegen_*.b | wc -l)" -ge 132
+      - name: Per-area specs exist AND were architect-reviewed
+        run: |
+          for a in diagnostics optimization debug stdlib; do
+            ls specs/*"$a"* >/dev/null
+            grep -rq 'Reviewed-by: architect' specs/*"$a"*
+          done
+          echo "All four area specs present + architect-reviewed."
+
   # ---- 2. Real bcc test runner (fixtures) ----
   bcc-test:
     runs-on: ubuntu-latest
