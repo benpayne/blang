@@ -2,7 +2,7 @@
 
 **Archetype**: evolve (extends the existing compiler and standard library)
 
-**Status**: planning
+**Status**: ready
 
 **Owner**: Ben Payne
 
@@ -157,3 +157,4 @@ All of the following hold on a clean checkout of the epic's final state
 |------|-----|-------|-------|
 | 2026-07-19 | — | epic created | Phase 4, all four areas at full depth; 3-role team (architect + implementer + code reviewer); 7 units; grounded in two recon reports. |
 | 2026-07-19 | — | readiness review round 1 | 2 blockers + mediums (fresh-context + self audit). Blocker-1: acceptance used bare qcc/bcc (not on PATH) + llvm-dwarfdump (only -18 exists) + lldb (absent) → all fixed to ./build/qcc, ./build/bcc, llvm-dwarfdump-18, gdb-only, + a Prerequisites block. Blocker-2 (too big / no real parallelism with 1 implementer): PM chose keep-one-epic-serial (OQ Q1 resolved); 'parallel' language corrected to serial. HIGH-3: gdb gate made literal (break main) + asserted (grep 'Breakpoint 1') + added to acceptance block. MEDIUM-5: warning/-Werror, --release, JSON schema-keys folded into the runnable block. MEDIUM-6: specs glob marked necessary-not-sufficient + Reviewed-by: architect marker. MEDIUM-7: U2/U3 Principle-II carve-out added. Cleared: aarch64 target present, baseline pinned 132, done_condition verbatim, DAG acyclic, hires well-formed. |
+| 2026-07-19 | — | readiness review passed (10/10); status → ready | Both blockers + mediums resolved; scope kept one-epic-serial (PM); tool paths/prereqs fixed; done_condition verbatim. |
