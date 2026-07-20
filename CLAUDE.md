@@ -611,7 +611,7 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
   - `001-toolchain-and-stdlib` (`docs/epics/001-toolchain-and-stdlib/`) — status:
-    **planning**. Phase 4 at full depth across four areas: multi-error
+    **launched** (devbot run `3a358cfb-38ff-4189-82f5-172d64f05c14`). Phase 4 at full depth across four areas: multi-error
     diagnostics (+warnings/`--json`), optimization (`-O`/`--release`/cross-compile),
     DWARF debug info (`-g`), and stdlib breadth (math/time/random/env/sort/
     hashed-`Map`+`Set`/CLI-flags). 7 units (U0 pipeline foundation → U1–U5 →
