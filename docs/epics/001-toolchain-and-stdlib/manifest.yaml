@@ -27,10 +27,11 @@ run:
        (informational, no threshold); --release builds; bcc --target
        <non-host-triple> -c emits an object file (cross-compile smoke).
     4. Debug info: bcc -g hello.b yields a binary whose DWARF shows line
-       tables and a DISubprogram per function (llvm-dwarfdump greps confirm);
-       a scripted gdb/lldb smoke test sets a breakpoint by .b file:line and
-       hits it; the -g × -O stance is implemented and tested (either -g forces
-       -O0, or debug info is opt-safe and the module verifies under -O2 -g).
+       tables (naming the .b file) and a DISubprogram per function
+       (llvm-dwarfdump-18 greps confirm); a scripted gdb smoke test sets a
+       breakpoint in the binary and hits it; the -g × -O stance is implemented
+       and tested (either -g forces -O0, or debug info is opt-safe and the
+       module verifies under -O2 -g).
     5. Stdlib breadth: math, time, random, env, CLI-flag parsing, a
        generic sort, and a hashed Map/Set are each usable via bcc
        (import), each with ≥ 1 behavioral codegen_*.b test (golden where
@@ -49,7 +50,8 @@ run:
     first — it governs all work. This is a LARGE, four-area Phase-4 epic at full
     depth. Execute U0 FIRST (the pipeline foundation everything builds on), then
     U1-U5 (diagnostics, optimization, debug info, native stdlib,
-    collections/CLI stdlib) in parallel, then U6 (integration + CI + close-out).
+    collections/CLI stdlib) which are INDEPENDENT but run SERIALLY (single
+    implementer, PM decision — no parallel fan-out), then U6 (integration + CI + close-out).
     THREE roles: an ARCHITECT performs Phase-2 spec audits for every unit
     (cross-area coherence, conformance to the design docs, that each unit threads
     through U0's single flag/link path — a spec that re-duplicates or bypasses it
@@ -128,7 +130,7 @@ units:
     reqs: [REQ-004]
     summary: Debug info (DWARF) — DIBuilder/DISubprogram/DebugLoc/dbg.declare, -g flag, -g x -O stance, ARC DebugLoc
     depends_on: [U0]
-    done: "dwarfdump shows subprogram + line table; gdb/lldb breakpoint-by-file:line hits; -g -O2 verifies clean; suites green"
+    done: "llvm-dwarfdump-18 shows subprogram + line table; gdb breakpoint smoke hits; -g -O2 verifies clean; suites green"
     speckit: debug-info
   - id: U4
     reqs: [REQ-005]

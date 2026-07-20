@@ -69,10 +69,11 @@ All of the following hold on a clean checkout of the epic's final state
    (informational, no threshold); `--release` builds; `bcc --target
    <non-host-triple> -c` emits an object file (cross-compile smoke).
 4. **Debug info**: `bcc -g hello.b` yields a binary whose DWARF shows line
-   tables and a `DISubprogram` per function (`llvm-dwarfdump` greps confirm);
-   a scripted `gdb`/`lldb` smoke test sets a breakpoint by `.b` `file:line` and
-   hits it; the `-g` × `-O` stance is implemented and tested (either `-g` forces
-   `-O0`, or debug info is opt-safe and the module verifies under `-O2 -g`).
+   tables (naming the `.b` file) and a `DISubprogram` per function
+   (`llvm-dwarfdump-18` greps confirm); a scripted `gdb` smoke test sets a
+   breakpoint in the binary and hits it; the `-g` × `-O` stance is implemented
+   and tested (either `-g` forces `-O0`, or debug info is opt-safe and the
+   module verifies under `-O2 -g`).
 5. **Stdlib breadth**: `math`, `time`, `random`, `env`, CLI-flag parsing, a
    generic `sort`, and a **hashed** `Map`/`Set` are each usable via `bcc`
    (`import`), each with ≥ 1 behavioral `codegen_*.b` test (golden where
@@ -148,10 +149,11 @@ All of the following hold on a clean checkout of the epic's final state
 
 | # | Question | Blocking | Status | Answer |
 |---|----------|----------|--------|--------|
-| — | (scope/depth/team decided at plan time; readiness review to weigh a split) | | | |
+| Q1 | Split this epic (compiler-toolchain vs stdlib) before launch, given its size and single-implementer serial execution? | Yes (pre-launch) | **Resolved** | PM (2026-07-19): **keep one epic, single implementer, serial**. Accept the exhaustion risk; if the run halts mid-way, resume/redo (a supported, previously-exercised pattern). U1–U5 are independent but the single implementer runs them sequentially. |
 
 ## Status log
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
 | 2026-07-19 | — | epic created | Phase 4, all four areas at full depth; 3-role team (architect + implementer + code reviewer); 7 units; grounded in two recon reports. |
+| 2026-07-19 | — | readiness review round 1 | 2 blockers + mediums (fresh-context + self audit). Blocker-1: acceptance used bare qcc/bcc (not on PATH) + llvm-dwarfdump (only -18 exists) + lldb (absent) → all fixed to ./build/qcc, ./build/bcc, llvm-dwarfdump-18, gdb-only, + a Prerequisites block. Blocker-2 (too big / no real parallelism with 1 implementer): PM chose keep-one-epic-serial (OQ Q1 resolved); 'parallel' language corrected to serial. HIGH-3: gdb gate made literal (break main) + asserted (grep 'Breakpoint 1') + added to acceptance block. MEDIUM-5: warning/-Werror, --release, JSON schema-keys folded into the runnable block. MEDIUM-6: specs glob marked necessary-not-sufficient + Reviewed-by: architect marker. MEDIUM-7: U2/U3 Principle-II carve-out added. Cleared: aarch64 target present, baseline pinned 132, done_condition verbatim, DAG acyclic, hires well-formed. |

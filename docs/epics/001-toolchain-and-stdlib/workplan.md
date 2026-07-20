@@ -21,8 +21,8 @@ U0 (pipeline foundation) ─▶ U1 (diagnostics) ──┐
 ```
 
 U0 is the shared foundation (consolidates the duplicated bcc invocation/link
-blocks + the flag-threading path). U1–U5 fan out after it; they are largely
-independent, with one soft conflict (U2 × U3 on the `-g`×`-O` matrix, resolved
+blocks + the flag-threading path). U1–U5 build on it; they are largely independent (the manager sequences
+them — a single implementer runs them serially, PM decision), with one soft conflict (U2 × U3 on the `-g`×`-O` matrix, resolved
 in `design-debug-info.md` and re-verified in U6). U6 is the capstone.
 
 ## Units
@@ -77,9 +77,9 @@ in `design-debug-info.md` and re-verified in U6). U6 is the capstone.
   ARC-emitted instructions** (else the verifier rejects under `-O`); `-g` flag
   threaded to the `llc` step; each `--combine` source gets its own file entry.
   Implement the `-g`×`-O` stance from the design doc. See `design-debug-info.md`.
-- **Done condition**: overview done-condition #4 (`llvm-dwarfdump` shows line
-  tables + `DISubprogram`; a `gdb`/`lldb` breakpoint-by-`file:line` smoke test
-  hits; the `-g`×`-O` stance verified); suites green.
+- **Done condition**: overview done-condition #4 (`llvm-dwarfdump-18` shows line
+  tables naming the `.b` + `DISubprogram`; a `gdb` breakpoint smoke test hits;
+  the `-g`×`-O` stance verified — `-g -O2` verifies clean); suites green.
 - **Speckit**: `debug-info`
 
 ### U4 — Native stdlib modules (math, time, random, env)
@@ -124,7 +124,7 @@ in `design-debug-info.md` and re-verified in U6). U6 is the capstone.
 ## Sequencing notes for the manager
 - **U0 first, always** — U1–U5 all extend the flag-threading/link path it
   consolidates; starting them before U0 lands means re-doing the wiring 3×.
-- U1–U5 are parallel after U0. **Soft conflict U2 × U3** (the `-g`×`-O` matrix):
+- U1–U5 are independent after U0 but run serially (single implementer). **Soft conflict U2 × U3** (the `-g`×`-O` matrix):
   the stance is fixed in `design-debug-info.md`; whichever merges second rebases
   and re-runs the matrix. Recorded in `manifest.yaml soft_conflicts`.
 - The **architect** reviews every unit's spec before implementation — it is the
