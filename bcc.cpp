@@ -228,6 +228,139 @@ static string findTool( const string &name, const vector<string> &alternatives )
 	return "";
 }
 
+// ---------------------------------------------------------------------------
+// Pipeline foundation (epic 001-toolchain-and-stdlib, U0)
+//
+// The bcc→qcc→llc→cc pipeline used to duplicate the llc object-emission block
+// 4x and the runtime-link library list 3x. These helpers are the single site
+// for each. Later units extend the pipeline HERE, in one place:
+//   - U2 (-O / --target): emitObject() owns the llc flags + the host triple.
+//   - U3 (-g): emitObject() is the llc-side hook (the qcc-emit side is the qcc
+//     arg loop); debug metadata must survive the text-.ll boundary through here.
+//   - U4/U5 (new stdlib .a): appendRuntimeLibs() is the one place a lib is added.
+// ---------------------------------------------------------------------------
+
+// Resolve the llc tool once (build-time baked path, then PATH). Empty on failure.
+static string resolveLlc()
+{
+	string llc;
+#ifdef BCC_LLC_PATH
+	if ( access( BCC_LLC_PATH, X_OK ) == 0 )
+		llc = BCC_LLC_PATH;
+#endif
+	if ( llc.empty() )
+		llc = findTool( "llc-18", { "llc" } );
+	return llc;
+}
+
+// Emit a native object from a textual .ll via llc. Owns the -filetype=obj flag
+// vector and the host-baked target triple. Returns llc's exit code (0 == ok).
+// Per-path error messages and IR-file cleanup stay at the call sites.
+static int emitObject( const string &llc, const string &llFile,
+                       const string &objFile, bool verbose )
+{
+	vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
+#if defined(BCC_HOST_ARCH)
+#if defined(PLATFORM_DARWIN)
+	cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+#elif defined(PLATFORM_LINUX)
+	cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
+#endif
+#endif
+	cmd.push_back( llFile );
+	cmd.push_back( "-o" );
+	cmd.push_back( objFile );
+	return runCommand( cmd, verbose );
+}
+
+// Which runtime libs a link line needs. The `bcc test` path links the test
+// driver and omits the db lib; program builds (single-file + combined) link the
+// db lib and omit the test driver.
+struct RuntimeLinkProfile
+{
+	bool withTestRunner;
+	bool withDb;
+};
+
+// Append the ordered libblang_*.a list to a link command (dependents before
+// dependencies). THIS IS THE ONE PLACE a new stdlib .a is added (U4/U5). Only
+// the libblang_*.a list is appended here; each path's tail (BCC_DB_LINKFLAGS,
+// -lpthread, -o, user linker flags, -luv) stays at the call site so argument
+// order is preserved byte-for-byte.
+static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
+                               const RuntimeLinkProfile &profile )
+{
+	auto findLib = [&]( const char *baked, const char *name ) -> string {
+		string lib;
+		if ( baked != nullptr )
+			lib = baked;
+		if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
+		{
+			string fallback = exeDir + "/lib" + name + ".a";
+			if ( access( fallback.c_str(), F_OK ) == 0 )
+				lib = fallback;
+			else
+				lib.clear();
+		}
+		return lib;
+	};
+
+	const char *bakedTestRunner = nullptr, *bakedRuntime = nullptr, *bakedString = nullptr;
+	const char *bakedArray = nullptr, *bakedBuffer = nullptr, *bakedJson = nullptr;
+	const char *bakedNet = nullptr, *bakedFs = nullptr, *bakedSys = nullptr, *bakedDb = nullptr;
+#ifdef BCC_TESTRUNNER_LIB
+	bakedTestRunner = BCC_TESTRUNNER_LIB;
+#endif
+#ifdef BCC_RUNTIME_LIB
+	bakedRuntime = BCC_RUNTIME_LIB;
+#endif
+#ifdef BCC_STRING_LIB
+	bakedString = BCC_STRING_LIB;
+#endif
+#ifdef BCC_ARRAY_LIB
+	bakedArray = BCC_ARRAY_LIB;
+#endif
+#ifdef BCC_BUFFER_LIB
+	bakedBuffer = BCC_BUFFER_LIB;
+#endif
+#ifdef BCC_JSON_LIB
+	bakedJson = BCC_JSON_LIB;
+#endif
+#ifdef BCC_NET_LIB
+	bakedNet = BCC_NET_LIB;
+#endif
+#ifdef BCC_FS_LIB
+	bakedFs = BCC_FS_LIB;
+#endif
+#ifdef BCC_SYS_LIB
+	bakedSys = BCC_SYS_LIB;
+#endif
+#ifdef BCC_DB_LIB
+	bakedDb = BCC_DB_LIB;
+#endif
+
+	// Leading lib (test driver or db), then the shared dependents->deps chain.
+	vector<string> libs;
+	if ( profile.withTestRunner )
+		libs.push_back( findLib( bakedTestRunner, "blang_testrunner" ) );
+	if ( profile.withDb )
+		libs.push_back( findLib( bakedDb, "blang_db" ) );
+	libs.push_back( findLib( bakedSys, "blang_sys" ) );
+	libs.push_back( findLib( bakedFs, "blang_fs" ) );
+	libs.push_back( findLib( bakedNet, "blang_net" ) );
+	libs.push_back( findLib( bakedJson, "blang_json" ) );
+	libs.push_back( findLib( bakedBuffer, "blang_buffer" ) );
+	libs.push_back( findLib( bakedArray, "blang_array" ) );
+	libs.push_back( findLib( bakedString, "blang_string" ) );
+	libs.push_back( findLib( bakedRuntime, "blang_runtime" ) );
+
+	for ( const auto &lib : libs )
+	{
+		if ( !lib.empty() )
+			cmd.push_back( lib );
+	}
+}
+
 // Check whether a path is an existing directory
 static bool isDirectory( const string &path )
 {
@@ -326,13 +459,7 @@ static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 	}
 
 	// Step 2: llc -> object
-	string llc;
-#ifdef BCC_LLC_PATH
-	if ( access( BCC_LLC_PATH, X_OK ) == 0 )
-		llc = BCC_LLC_PATH;
-#endif
-	if ( llc.empty() )
-		llc = findTool( "llc-18", { "llc" } );
+	string llc = resolveLlc();
 	if ( llc.empty() )
 	{
 		cerr << "bcc test: llc not found" << endl;
@@ -342,18 +469,7 @@ static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 
 	string objFile = "/tmp/" + baseName + "_bcctest.o";
 	{
-		vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
-#if defined(BCC_HOST_ARCH)
-#if defined(PLATFORM_DARWIN)
-		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
-#elif defined(PLATFORM_LINUX)
-		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
-#endif
-#endif
-		cmd.push_back( irFile );
-		cmd.push_back( "-o" );
-		cmd.push_back( objFile );
-		int ret = runCommand( cmd, verbose );
+		int ret = emitObject( llc, irFile, objFile, verbose );
 		remove( irFile.c_str() );
 		if ( ret != 0 )
 		{
@@ -376,70 +492,10 @@ static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 #endif
 		cmd.push_back( objFile );
 
-		auto findLib = [&]( const char *baked, const char *name ) -> string {
-			string lib;
-			if ( baked != nullptr )
-				lib = baked;
-			if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
-			{
-				string fallback = exeDir + "/lib" + name + ".a";
-				if ( access( fallback.c_str(), F_OK ) == 0 )
-					lib = fallback;
-				else
-					lib.clear();
-			}
-			return lib;
-		};
-
-		const char *bakedTestRunner = nullptr;
-		const char *bakedRuntime = nullptr, *bakedString = nullptr;
-		const char *bakedArray = nullptr, *bakedBuffer = nullptr;
-		const char *bakedJson = nullptr, *bakedNet = nullptr;
-		const char *bakedFs = nullptr, *bakedSys = nullptr;
-#ifdef BCC_TESTRUNNER_LIB
-		bakedTestRunner = BCC_TESTRUNNER_LIB;
-#endif
-#ifdef BCC_RUNTIME_LIB
-		bakedRuntime = BCC_RUNTIME_LIB;
-#endif
-#ifdef BCC_STRING_LIB
-		bakedString = BCC_STRING_LIB;
-#endif
-#ifdef BCC_ARRAY_LIB
-		bakedArray = BCC_ARRAY_LIB;
-#endif
-#ifdef BCC_BUFFER_LIB
-		bakedBuffer = BCC_BUFFER_LIB;
-#endif
-#ifdef BCC_JSON_LIB
-		bakedJson = BCC_JSON_LIB;
-#endif
-#ifdef BCC_NET_LIB
-		bakedNet = BCC_NET_LIB;
-#endif
-#ifdef BCC_FS_LIB
-		bakedFs = BCC_FS_LIB;
-#endif
-#ifdef BCC_SYS_LIB
-		bakedSys = BCC_SYS_LIB;
-#endif
-		// Driver first (referenced by the emitted main), then higher-level libs
-		// before their base libs.
-		for ( const auto &lib : {
-			findLib( bakedTestRunner, "blang_testrunner" ),
-			findLib( bakedSys, "blang_sys" ),
-			findLib( bakedFs, "blang_fs" ),
-			findLib( bakedNet, "blang_net" ),
-			findLib( bakedJson, "blang_json" ),
-			findLib( bakedBuffer, "blang_buffer" ),
-			findLib( bakedArray, "blang_array" ),
-			findLib( bakedString, "blang_string" ),
-			findLib( bakedRuntime, "blang_runtime" ),
-		} )
-		{
-			if ( !lib.empty() )
-				cmd.push_back( lib );
-		}
+		// Test driver first (referenced by the emitted main), then the runtime
+		// libs; the test path links no db lib.
+		appendRuntimeLibs( cmd, exeDir,
+			RuntimeLinkProfile{ /*withTestRunner=*/true, /*withDb=*/false } );
 
 		cmd.push_back( "-lpthread" );
 		cmd.push_back( "-o" );
@@ -1015,13 +1071,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		}
 
 		// Compile each .ll to .o
-		string llc;
-#ifdef BCC_LLC_PATH
-		if ( access( BCC_LLC_PATH, X_OK ) == 0 )
-			llc = BCC_LLC_PATH;
-#endif
-		if ( llc.empty() )
-			llc = findTool( "llc-18", { "llc" } );
+		string llc = resolveLlc();
 		if ( llc.empty() )
 		{
 			cerr << "error: llc not found" << endl;
@@ -1040,19 +1090,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( access( llFile.c_str(), F_OK ) != 0 )
 				continue;
 
-			vector<string> llcCmd = { llc, "-filetype=obj", "--relocation-model=pic" };
-#if defined(BCC_HOST_ARCH)
-#if defined(PLATFORM_DARWIN)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
-#elif defined(PLATFORM_LINUX)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
-#endif
-#endif
-			llcCmd.push_back( llFile );
-			llcCmd.push_back( "-o" );
-			llcCmd.push_back( objFile );
-
-			ret = runCommand( llcCmd, verbose );
+			ret = emitObject( llc, llFile, objFile, verbose );
 			if ( ret != 0 )
 			{
 				cerr << "error: IR compilation failed for " << base << endl;
@@ -1137,13 +1175,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		}
 
 		// Compile each .ll to .o
-		string llc;
-#ifdef BCC_LLC_PATH
-		if ( access( BCC_LLC_PATH, X_OK ) == 0 )
-			llc = BCC_LLC_PATH;
-#endif
-		if ( llc.empty() )
-			llc = findTool( "llc-18", { "llc" } );
+		string llc = resolveLlc();
 		if ( llc.empty() )
 		{
 			cerr << "error: llc not found" << endl;
@@ -1180,19 +1212,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( access( llFile.c_str(), F_OK ) != 0 )
 				continue;
 
-			vector<string> llcCmd = { llc, "-filetype=obj", "--relocation-model=pic" };
-#if defined(BCC_HOST_ARCH)
-#if defined(PLATFORM_DARWIN)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
-#elif defined(PLATFORM_LINUX)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
-#endif
-#endif
-			llcCmd.push_back( llFile );
-			llcCmd.push_back( "-o" );
-			llcCmd.push_back( objFile );
-
-			ret = runCommand( llcCmd, verbose );
+			ret = emitObject( llc, llFile, objFile, verbose );
 			if ( ret != 0 )
 			{
 				cerr << "error: IR compilation failed for " << getBaseName( llFile ) << endl;
@@ -1222,68 +1242,8 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			linkCmd.push_back( depA );
 
 		// Link BLang runtime libraries (order: dependents before dependencies)
-		auto findBuildLib = [&]( const char *baked, const char *name ) -> string {
-			string lib;
-			if ( baked != nullptr )
-				lib = baked;
-			if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
-			{
-				string fallback = exeDir + "/lib" + name + ".a";
-				if ( access( fallback.c_str(), F_OK ) == 0 )
-					lib = fallback;
-				else
-					lib.clear();
-			}
-			return lib;
-		};
-
-		const char *bkRuntime = nullptr, *bkString = nullptr, *bkArray = nullptr;
-		const char *bkBuffer = nullptr;
-		const char *bkJson = nullptr, *bkNet = nullptr, *bkFs = nullptr, *bkSys = nullptr;
-		const char *bkDb = nullptr;
-#ifdef BCC_RUNTIME_LIB
-		bkRuntime = BCC_RUNTIME_LIB;
-#endif
-#ifdef BCC_STRING_LIB
-		bkString = BCC_STRING_LIB;
-#endif
-#ifdef BCC_ARRAY_LIB
-		bkArray = BCC_ARRAY_LIB;
-#endif
-#ifdef BCC_BUFFER_LIB
-		bkBuffer = BCC_BUFFER_LIB;
-#endif
-#ifdef BCC_JSON_LIB
-		bkJson = BCC_JSON_LIB;
-#endif
-#ifdef BCC_NET_LIB
-		bkNet = BCC_NET_LIB;
-#endif
-#ifdef BCC_FS_LIB
-		bkFs = BCC_FS_LIB;
-#endif
-#ifdef BCC_SYS_LIB
-		bkSys = BCC_SYS_LIB;
-#endif
-#ifdef BCC_DB_LIB
-		bkDb = BCC_DB_LIB;
-#endif
-
-		for ( const auto &lib : {
-			findBuildLib( bkDb, "blang_db" ),
-			findBuildLib( bkSys, "blang_sys" ),
-			findBuildLib( bkFs, "blang_fs" ),
-			findBuildLib( bkNet, "blang_net" ),
-			findBuildLib( bkJson, "blang_json" ),
-			findBuildLib( bkBuffer, "blang_buffer" ),
-			findBuildLib( bkArray, "blang_array" ),
-			findBuildLib( bkString, "blang_string" ),
-			findBuildLib( bkRuntime, "blang_runtime" ),
-		} )
-		{
-			if ( !lib.empty() )
-				linkCmd.push_back( lib );
-		}
+		appendRuntimeLibs( linkCmd, exeDir,
+			RuntimeLinkProfile{ /*withTestRunner=*/false, /*withDb=*/true } );
 
 		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
 #ifdef BCC_DB_LINKFLAGS
@@ -1475,14 +1435,7 @@ int main( int argc, char *argv[] )
 	if ( opts.verbose )
 		cerr << "--- Step 2: Compiling IR to object file ---" << endl;
 
-	string llc;
-#ifdef BCC_LLC_PATH
-	// Use the llc path discovered at build time
-	if ( access( BCC_LLC_PATH, X_OK ) == 0 )
-		llc = BCC_LLC_PATH;
-#endif
-	if ( llc.empty() )
-		llc = findTool( "llc-18", { "llc" } );
+	string llc = resolveLlc();
 	if ( llc.empty() )
 	{
 		cerr << "error: llc not found (install llvm-18 or llvm)" << endl;
@@ -1492,18 +1445,7 @@ int main( int argc, char *argv[] )
 
 	string objFile = "/tmp/" + baseName + ".o";
 	{
-		vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
-#if defined(BCC_HOST_ARCH)
-#if defined(PLATFORM_DARWIN)
-		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
-#elif defined(PLATFORM_LINUX)
-		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
-#endif
-#endif
-		cmd.push_back( irFile );
-		cmd.push_back( "-o" );
-		cmd.push_back( objFile );
-		int ret = runCommand( cmd, opts.verbose );
+		int ret = emitObject( llc, irFile, objFile, opts.verbose );
 		if ( ret != 0 )
 		{
 			cerr << "error: IR compilation failed" << endl;
@@ -1542,76 +1484,9 @@ int main( int argc, char *argv[] )
 #endif
 		cmd.push_back( objFile );
 
-		// Link BLang libraries (order: dependents before dependencies)
-		auto findLib = [&]( const char *baked, const char *name ) -> string {
-			string lib;
-			if ( baked != nullptr )
-				lib = baked;
-			if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
-			{
-				string fallback = exeDir + "/lib" + name + ".a";
-				if ( access( fallback.c_str(), F_OK ) == 0 )
-					lib = fallback;
-				else
-					lib.clear();
-			}
-			return lib;
-		};
-
-		// Order matters: higher-level libs first, base libs last
-		const char *bakedRuntime = nullptr;
-		const char *bakedString = nullptr;
-		const char *bakedArray = nullptr;
-		const char *bakedBuffer = nullptr;
-		const char *bakedJson = nullptr;
-		const char *bakedNet = nullptr;
-		const char *bakedFs = nullptr;
-		const char *bakedSys = nullptr;
-		const char *bakedDb = nullptr;
-#ifdef BCC_RUNTIME_LIB
-		bakedRuntime = BCC_RUNTIME_LIB;
-#endif
-#ifdef BCC_STRING_LIB
-		bakedString = BCC_STRING_LIB;
-#endif
-#ifdef BCC_ARRAY_LIB
-		bakedArray = BCC_ARRAY_LIB;
-#endif
-#ifdef BCC_BUFFER_LIB
-		bakedBuffer = BCC_BUFFER_LIB;
-#endif
-#ifdef BCC_JSON_LIB
-		bakedJson = BCC_JSON_LIB;
-#endif
-#ifdef BCC_NET_LIB
-		bakedNet = BCC_NET_LIB;
-#endif
-#ifdef BCC_FS_LIB
-		bakedFs = BCC_FS_LIB;
-#endif
-#ifdef BCC_SYS_LIB
-		bakedSys = BCC_SYS_LIB;
-#endif
-#ifdef BCC_DB_LIB
-		bakedDb = BCC_DB_LIB;
-#endif
-
-		// Push in dependency order: db→sys→fs→net→json→buffer→array→string→runtime
-		for ( const auto &lib : {
-			findLib( bakedDb, "blang_db" ),
-			findLib( bakedSys, "blang_sys" ),
-			findLib( bakedFs, "blang_fs" ),
-			findLib( bakedNet, "blang_net" ),
-			findLib( bakedJson, "blang_json" ),
-			findLib( bakedBuffer, "blang_buffer" ),
-			findLib( bakedArray, "blang_array" ),
-			findLib( bakedString, "blang_string" ),
-			findLib( bakedRuntime, "blang_runtime" ),
-		} )
-		{
-			if ( !lib.empty() )
-				cmd.push_back( lib );
-		}
+		// Link BLang runtime libraries (order: dependents before dependencies)
+		appendRuntimeLibs( cmd, exeDir,
+			RuntimeLinkProfile{ /*withTestRunner=*/false, /*withDb=*/true } );
 
 		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
 #ifdef BCC_DB_LINKFLAGS
