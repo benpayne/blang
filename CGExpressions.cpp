@@ -420,7 +420,15 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 			mBuilder->CreateCondBr( lBool, mergeBB, rhsBB );
 
 		// RHS block: evaluate the RHS (its side effects run only here) and
-		// coerce to i1.
+		// coerce to i1. Refcounted temporaries born during the RHS (e.g. the
+		// string argument of `s.has("a")`) must be released INSIDE this block,
+		// not deferred to statement scope: the statement-end release lands in the
+		// merge block, which the RHS block does not dominate when the LHS
+		// short-circuits — so the release would use a value defined only on the
+		// taken edge ("instruction does not dominate all uses" → IR-verify ICE).
+		// Snapshot the temp lists, then flush what the RHS added, in this block.
+		size_t tmMarkStr = mTempStrings.size(), tmMarkLam = mTempLambdaCtxs.size();
+		size_t tmMarkStruct = mTempStructs.size(), tmMarkArr = mTempArrays.size();
 		mBuilder->SetInsertPoint( rhsBB );
 		llvm::Value *rhs = genExpression( ops->mOp2 );
 		if ( rhs == nullptr )
@@ -428,6 +436,18 @@ llvm::Value *CodeGen::genOperationsExpression( OperationsExpression *ops )
 		llvm::Value *rBool = rhs->getType()->isFloatingPointTy()
 			? mBuilder->CreateFCmpONE( rhs, llvm::ConstantFP::get( rhs->getType(), 0.0 ), "rbool" )
 			: mBuilder->CreateICmpNE( rhs, llvm::ConstantInt::get( rhs->getType(), 0 ), "rbool" );
+		// Release RHS-born temporaries here (the RHS result is an i1, never a
+		// tracked temp), confining them to the RHS edge.
+		auto flushTempsSince = [&]( std::vector<llvm::Value*> &v, size_t mark,
+			llvm::FunctionCallee fn ) {
+			for ( size_t i = mark; i < v.size(); ++i )
+				mBuilder->CreateCall( fn, { v[i] } );
+			v.resize( mark );
+		};
+		flushTempsSince( mTempStrings, tmMarkStr, getOrDeclareStringRelease() );
+		flushTempsSince( mTempLambdaCtxs, tmMarkLam, getOrDeclareLambdaCtxRelease() );
+		flushTempsSince( mTempStructs, tmMarkStruct, getOrDeclareRcRelease() );
+		flushTempsSince( mTempArrays, tmMarkArr, getOrDeclareArrayRelease() );
 		// Nested control flow in the RHS may have changed the current block, so
 		// snapshot the real predecessor for the phi.
 		llvm::BasicBlock *rhsEndBB = mBuilder->GetInsertBlock();

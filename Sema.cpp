@@ -576,6 +576,25 @@ Type *Sema::visitExpr( Expression *expr )
 				}
 			}
 		}
+		// String '+' is concatenation and requires BOTH operands to be string.
+		// `"k" + i` (string + int) is a type error — not an implicit int→string
+		// coercion (BLang is explicit-over-implicit; use interpolation `"k{i}"`).
+		// Without this it reaches codegen as `add ptr, i32` → IR-verify ICE.
+		if ( oper == "+" && lt != nullptr && rt != nullptr &&
+		     !lt->getName().empty() && !rt->getName().empty() &&
+		     !looksGenericParam( lt->getName() ) &&
+		     !looksGenericParam( rt->getName() ) )
+		{
+			bool lStr = ( lt->getName() == "string" );
+			bool rStr = ( rt->getName() == "string" );
+			if ( lStr != rStr )   // exactly one operand is a string
+			{
+				mDiag.error( op->getLocation(),
+					"operator '+' cannot be applied to 'string' and '" +
+					typeName( lStr ? rt : lt ) + "' (use string interpolation)" );
+				mReported = true;
+			}
+		}
 		Type *resultType = isBoolResult ? mScope->findType( "bool" ) : lt;
 		expr->setResolvedType( resultType );
 		return resultType;
