@@ -687,7 +687,33 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 			untrackTempArray( rhs );
 		}
 
-		mBuilder->CreateStore( rhs, alloca );
+		// Coerce integer RHS to the destination width before storing. Without this,
+		// assigning a bool literal (`true`/`false` — codegen'd as i32) to an i1 bool
+		// variable emits `store i32 into i1*`, a 4-byte write into a 1-byte stack slot
+		// that corrupts adjacent locals (e.g. a loop counter → infinite loop). The
+		// var-decl initializer path already coerces; the assignment path must too.
+		llvm::Value *storeVal = rhs;
+		llvm::Type *destTy = alloca->getAllocatedType();
+		if ( rhs->getType()->isIntegerTy() && destTy->isIntegerTy() &&
+			 rhs->getType() != destTy )
+		{
+			if ( destTy->isIntegerTy( 1 ) )
+			{
+				// Any nonzero value becomes true.
+				storeVal = mBuilder->CreateICmpNE(
+					rhs, llvm::ConstantInt::get( rhs->getType(), 0 ), "assign.tobool" );
+			}
+			else
+			{
+				unsigned srcBits = rhs->getType()->getIntegerBitWidth();
+				unsigned dstBits = destTy->getIntegerBitWidth();
+				storeVal = ( dstBits < srcBits )
+					? mBuilder->CreateTrunc( rhs, destTy, "assign.trunc" )
+					: mBuilder->CreateSExt( rhs, destTy, "assign.sext" );
+			}
+		}
+
+		mBuilder->CreateStore( storeVal, alloca );
 
 		// Move semantics: if assigning an own variable from another own variable,
 		// mark the source as moved
