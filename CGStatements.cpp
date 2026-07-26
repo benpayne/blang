@@ -283,6 +283,22 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 						}
 					}
 
+					// Same borrowed-source rule for Array-typed locals: binding an
+					// element of a nested array (Array<int> row = grid[i]) — or a
+					// variable/field copy — creates a second tracked owner, so it
+					// must retain. Without this, the local's scope-exit release and
+					// the outer array's elem_dtor double-free the same array.
+					if ( varType != nullptr && varType->getName() == "Array" )
+					{
+						Expression *srcExpr = (Expression *)data.mInitialValue;
+						if ( dynamic_cast<VariableExpression*>( srcExpr ) != nullptr ||
+							 dynamic_cast<FieldAccessExpression*>( srcExpr ) != nullptr ||
+							 dynamic_cast<IndexExpression*>( srcExpr ) != nullptr )
+						{
+							mBuilder->CreateCall( getOrDeclareArrayRetain(), { initVal } );
+						}
+					}
+
 					// Cast if types don't match (skip for struct ptrs which are already ptr)
 					if ( !isStructVar && initVal->getType() != llvmType )
 					{

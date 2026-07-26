@@ -397,10 +397,17 @@ Module *Module::Parse( Lexer &l, Scope *s )
 	// function signature is registered in scope (forward references / mutual
 	// recursion). Each body gets its own try/catch so one bad body is reported
 	// through the diagnostic engine and the rest still parse.
-	for ( FunctionDefinition *f : deferredFuncs )
+	//
+	// Bodies are parsed in REVERSE source order: parsing a body can rewrite the
+	// lexer's symbol-replay list (splitShiftIntoCloseAngles inserts a '>' when a
+	// nested generic closes with ">>"), which shifts every position AFTER the
+	// insert. Going last-to-first, any insertion lands in a region whose body is
+	// already parsed, so the remaining (earlier, smaller) recorded body
+	// positions stay valid.
+	for ( auto it = deferredFuncs.rbegin(); it != deferredFuncs.rend(); ++it )
 	{
 		try {
-			f->ParseDeferredBody( l );
+			(*it)->ParseDeferredBody( l );
 		} catch( CompileError &err ) {
 			DiagnosticEngine fallback;
 			DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
