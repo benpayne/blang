@@ -12,12 +12,14 @@ LambdaExpression *LambdaExpression::Parse( Lexer &l, Scope *scope )
 {
 	// 'fn' already consumed by caller (ParsePrimary)
 
+	SourceLocation loc = l.getTokenLocation();
 	// Parse '('
 	int sym = l.getSymbol();
 	if ( sym != '(' )
 		COMPILE_ERROR( l, "Expected '(' in lambda expression" );
 
 	LambdaExpression *lambda = new LambdaExpression();
+	lambda->setLocation( loc );
 
 	// Create a child scope for the lambda body
 	SmartPtr<Scope> lambdaScope = new Scope( Scope::kScope_Function );

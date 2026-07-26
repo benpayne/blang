@@ -20,6 +20,7 @@ std::ostream &QLang::operator<<(std::ostream &out, const VariableDefinition &var
 
 VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool isExtern, int paramIndex )
 {
+	SourceLocation loc = l.getTokenLocation();
 	VariableDefinition *def = nullptr;
 
 	// Handle 'self' parameter specially — it has an implicit type
@@ -28,6 +29,7 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool
 		l.getSymbol(); // consume 'self'
 		SmartPtr<Type> selfType = new Type( "self" );
 		def = new VariableDefinition( selfType, "self" );
+		def->setLocation( loc );
 		s->addSymbol( def );
 		return def;
 	}
@@ -85,12 +87,17 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool
 	if ( def != nullptr && ownership != OwnershipQualifier::kOwnership_Value )
 		def->setOwnership( ownership );
 
+	if ( def != nullptr )
+		def->setLocation( loc );
+
 	return def;
 }
 
 VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 {
+	SourceLocation loc = l.getTokenLocation();
 	VariableDeclaration *def = new VariableDeclaration;
+	def->setLocation( loc );
 	bool isConst = false;
 	bool isVar = false;
 	OwnershipQualifier ownership = OwnershipQualifier::kOwnership_Value;
@@ -155,6 +162,7 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 			data.mVaribale = new VariableDefinition( t, l.getSymbolText() );
 			data.mVaribale->setConst( isConst );
 			data.mVaribale->setOwnership( ownership );
+			data.mVaribale->setLocation( loc );
 		}
 		else
 		{

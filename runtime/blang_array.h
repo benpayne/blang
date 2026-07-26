@@ -53,6 +53,11 @@ void __blang_array_set_elem_dtor( BlangArray *a, blang_array_elem_dtor_fn dtor )
 /* Utility */
 void __blang_array_clear( BlangArray *a );
 
+/* String <-> byte array helpers (for Buffer implementation in BLang) */
+#include "blang_string.h"
+void __blang_string_copy_to_byte_array( BlangString *s, BlangArray *arr );
+BlangString *__blang_string_from_byte_array( BlangArray *arr, int64_t start, int64_t end );
+
 #ifdef __cplusplus
 }
 #endif

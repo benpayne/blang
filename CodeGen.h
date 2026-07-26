@@ -16,6 +16,19 @@
 #include "SQLGen.h"
 #include "FormatString.h"
 
+// Forward declarations for the LLVM debug-info types (U3). The full definitions
+// live in llvm/IR/DIBuilder.h + DebugInfoMetadata.h, included only in the .cpp
+// files that emit DWARF — keeping this header light. unique_ptr<DIBuilder> with
+// an incomplete type is fine because ~CodeGen() is defined in CodeGen.cpp where
+// DIBuilder is complete.
+namespace llvm
+{
+	class DIBuilder;
+	class DICompileUnit;
+	class DIFile;
+	class DISubprogram;
+}
+
 namespace QLang
 {
 
@@ -29,13 +42,32 @@ public:
 	void print( llvm::raw_ostream &os );
 	bool verify();
 
+	// Run the LLVM new-PassManager per-module optimization pipeline over the
+	// generated module, in-process, before print(). `level` is one of
+	// "0","1","2","3","s","z" (empty or "0" => O0). Returns false on an invalid
+	// level (the driver reports it). This is layer 1 of the -O pipeline (IR
+	// passes); llc -O<n> is layer 2 (backend). Target-independent — no
+	// TargetMachine is required, so qcc needs no per-target backend libs.
+	bool optimize( const std::string &level );
+
+	// Raw LLVM verifier text captured by the most recent failing verify().
+	// The driver surfaces this only under --debug-compiler (U2, FR-010).
+	const std::string &getVerifyError() const { return mVerifyError; }
+
 	// Set a module prefix for name mangling (e.g. "sys" → functions become "sys__funcName")
 	void setModulePrefix( const std::string &prefix ) { mModulePrefix = prefix; }
 
-	// Test-main mode: emit the test runner as the program's `main` (and skip the
-	// user's own `main`) so `bcc test` can build a runnable test binary from a
-	// file that also defines main. Set by qcc's --test-main flag.
-	void setTestMainMode( bool on ) { mTestMainMode = on; }
+	// Test-runner mode (qcc --emit-test-main). When set, a module carrying
+	// test{} blocks emits a real main() that registers each test with the C
+	// test driver and dispatches to __blang_test_main; asserts inside test mode
+	// print a located <file>:<line>: diagnostic on failure. Off by default, so
+	// normal (bcc build / single-file) codegen is byte-for-byte unchanged.
+	void setTestMode( bool on ) { mTestMode = on; }
+
+	// Enable DWARF debug info emission (qcc -g, U3). Off by default so a
+	// non-`-g` build is byte-identical. Drives the DIBuilder setup in generate()
+	// and the per-function/per-statement debug-location hooks.
+	void setDebugInfo( bool on ) { mDebugInfo = on; }
 
 	// Configure the default database connection opened in main() (from the
 	// [database] section of blang.toml, forwarded by bcc via qcc flags).
@@ -67,6 +99,13 @@ private:
 	void genStatement( Statement *stmt );
 	void genVariableDeclaration( VariableDeclaration *decl );
 	void genReturnStatement( ReturnStatement *ret );
+
+	// Emit ARC releases for every in-scope local (shared/sync, string, array,
+	// buffer, lambda ctx, struct, enum payload) across all open scopes. Shared
+	// by genReturnStatement and the `?` operator's early-return error path so an
+	// error propagated by `?` runs the same cleanup a normal return does
+	// (otherwise locals live at the failing `?` leak).
+	void emitScopeStackReleases();
 	void genIfStatement( IfStatement *ifStmt );
 	void genWhileStatement( WhileStatement *whileStmt );
 	void genForStatement( ForStatement *forStmt );
@@ -102,6 +141,7 @@ private:
 		FunctionDefinition *genericDef,
 		const std::vector<SmartPtr<Type>> &typeArgs );
 	llvm::Value *genStructLiteral( StructLiteralExpression *expr );
+	llvm::Value *genConstructExpression( ConstructExpression *expr );
 	llvm::Value *genFieldAccess( FieldAccessExpression *expr );
 	llvm::Value *genFieldAssignment( FieldAssignmentExpression *expr );
 	llvm::Value *genIndexAssignment( IndexAssignmentExpression *expr );
@@ -158,9 +198,22 @@ private:
 	// Set element destructor on an array based on element type name
 	void emitArrayElemDtor( llvm::Value *arrayPtr, const std::string &elemTypeName );
 
+	// Retain a refcounted element being stored into an array that owns its
+	// elements (an elem_dtor was/will be set — see emitArrayElemDtor).
+	// __blang_array_push does NOT retain, so pushing a refcounted value without
+	// this leaves the array holding a reference it never took: the pushed
+	// temporary/variable is released at scope exit while the array still points
+	// at it, causing a dangling pointer and a double-free at array release.
+	// Mirrors emitArrayElemDtor's per-type mapping (string/Array/Buffer/struct).
+	// No-op for non-refcounted element types (int, byte, ...).
+	void emitArrayElemRetain( llvm::Value *elemVal, const std::string &elemTypeName );
+
 	// Array type helper
 	bool isArrayType( Expression *expr );
 	int getElementSize( Type *elemType );
+
+	// Byte type helper (for unsigned extension)
+	bool isByteExpression( Expression *expr );
 
 	// Buffer type helper
 	bool isBufferType( Expression *expr );
@@ -237,19 +290,11 @@ private:
 	llvm::Function *genTestBlock( TestBlock *testBlock );
 	void genTestRunner( const std::vector<llvm::Function*> &testFunctions,
 		const std::vector<SmartPtr<TestBlock>> &testBlocks );
+	// Test-mode entry point (qcc --emit-test-main): emits main() that registers
+	// each test with the C driver and returns __blang_test_main(argc, argv).
+	void genTestMain( const std::vector<llvm::Function*> &testFunctions,
+		const std::vector<SmartPtr<TestBlock>> &testBlocks );
 	void genContractCheck( Expression *condition, const std::string &message );
-
-	// Emit ARC releases for every in-scope local (shared/sync, string, array,
-	// buffer, lambda ctx, struct, enum payload) across all open scopes. Shared by
-	// genReturnStatement and the `?` operator's early-return path so an error
-	// propagated by `?` runs the same cleanup a normal return does (otherwise
-	// locals on the error path leak).
-	void emitScopeStackReleases();
-
-	// Test framework runtime declarations
-	llvm::Function *getOrDeclareRunOneTest();
-	llvm::Function *getOrDeclareAssertFail();
-	llvm::Function *getOrDeclareTestReport();
 
 	// Runtime helper declarations
 	llvm::Function *getOrDeclarePuts();
@@ -267,6 +312,7 @@ private:
 	llvm::Function *getOrDeclareStringConcat();
 	llvm::Function *getOrDeclareStringConcatMany();
 	llvm::Function *getOrDeclareStringEquals();
+	llvm::Function *getOrDeclareStringCompare();
 	llvm::Function *getOrDeclareStringLength();
 	llvm::Function *getOrDeclareStringCharAt();
 	llvm::Function *getOrDeclareIntToString();
@@ -316,11 +362,6 @@ private:
 	llvm::Function *getOrDeclareChanSend();
 	llvm::Function *getOrDeclareChanRecv();
 	llvm::Function *getOrDeclareChanClose();
-	llvm::Function *getOrDeclareChanRetain();
-	llvm::Function *getOrDeclareChanRelease();
-	// Emit __blang_chan_release for every channel local tracked in the current
-	// body (used at each exit path).
-	void releaseFunctionChannels();
 	llvm::Function *getOrDeclareChanDestroy();
 	llvm::Function *getOrDeclareEventOn();
 	llvm::Function *getOrDeclareAsyncCall();
@@ -404,10 +445,39 @@ private:
 	// Type mapping
 	llvm::Type *getLLVMType( Type *type );
 
+	// Shared helper for declaring external functions (reduces getOrDeclare boilerplate)
+	llvm::Function *declareExtern( const char *name, llvm::Type *retType,
+		std::initializer_list<llvm::Type*> paramTypes, bool isVariadic = false );
+
 	// LLVM state
 	std::unique_ptr<llvm::LLVMContext> mContext;
 	std::unique_ptr<llvm::Module> mModule;
 	std::unique_ptr<llvm::IRBuilder<>> mBuilder;
+
+	// Debug info (DWARF, U3). Off by default so a non-`-g` build is
+	// byte-identical to pre-U3. Enabled via setDebugInfo(true) from qcc's -g arg.
+	bool mDebugInfo = false;
+	bool mDebugFinalized = false;   // guards finalizeDebugInfo() (idempotent)
+	std::unique_ptr<llvm::DIBuilder> mDIBuilder;
+	llvm::DICompileUnit *mDICompileUnit = nullptr;
+	// Per-source-path DIFile cache (--combine gives each .b its own DIFile so
+	// line tables point at the correct source).
+	std::map<std::string, llvm::DIFile*> mDIFileCache;
+	// The DISubprogram scope of the function currently being generated (null
+	// outside a function / when debug info is off). DebugLocs resolve against it.
+	llvm::DISubprogram *mCurrentDISubprogram = nullptr;
+
+	// Debug-info helpers (all no-ops when !mDebugInfo). Defined in CGDebug.cpp.
+	llvm::DIFile *getOrCreateDIFile( const std::string &path );
+	llvm::DISubprogram *createDISubprogram( llvm::Function *llvmFunc,
+		const SourceLocation &loc, const std::string &name );
+	void applyDebugLoc( const SourceLocation &loc );
+	void clearDebugLoc();
+	void finalizeDebugInfo();
+
+	// Raw text from the most recent failing verify(); surfaced only under
+	// --debug-compiler (U2, FR-010).
+	std::string mVerifyError;
 
 	// Maps from AST nodes to LLVM values
 	std::map<VariableDefinition*, llvm::AllocaInst*> mVariableMap;
@@ -444,10 +514,6 @@ private:
 	// Module prefix for namespace name mangling (empty for user code)
 	std::string mModulePrefix;
 
-	// When true, the test runner is emitted as `main` and the user's own `main`
-	// is skipped (see setTestMainMode).
-	bool mTestMainMode = false;
-
 	// Database configuration (from blang.toml [database], forwarded by bcc).
 	std::string mDbDriver;   // "sqlite" / "postgres" (default sqlite)
 	std::string mDbUrl;      // connection string; empty => runtime env fallback
@@ -471,12 +537,6 @@ private:
 	// Buffer refcount tracking: buffer variables per scope depth
 	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mBufferScopeStack;
 
-	// Channel (chan<T>) refcount tracking: the channel allocas declared in the
-	// current function/spawn/lambda body. Released (the creating-scope's
-	// reference) at every exit path of that body. Saved/cleared/restored around
-	// nested bodies so each body manages only its own channels.
-	std::vector<llvm::AllocaInst*> mFunctionChannels;
-
 	// Lambda/fn-typed variable tracking: release ctx on scope exit
 	std::vector<std::vector<std::pair<llvm::AllocaInst*, VariableDefinition*>>> mLambdaScopeStack;
 
@@ -498,24 +558,32 @@ private:
 	bool isUserStructType( const std::string &typeName );
 
 	// Enum variable tracking: release refcounted payloads at scope exit.
-	// Each entry carries the alloca, the enum definition (for tag-based cleanup),
-	// and the variable's concrete QLang type (with type args) so a generic enum
-	// like Result<int, string> can recover its concrete payload type — the enum
-	// definition alone only has the erased param names (T/E).
-	struct EnumScopeVar
+	// Each entry pairs an alloca with the enum definition for tag-based cleanup.
+	// mConcreteType carries the subject's concrete instantiation (e.g.
+	// Result<int,string>) when the enum is generic (built-in Option/Result), so
+	// a generic-param payload (T/E) can be resolved to its concrete refcounted
+	// type at release time; nullptr for non-generic enums whose payload types are
+	// already concrete in the definition.
+	struct EnumCleanupEntry
 	{
 		llvm::AllocaInst *alloca;
-		EnumDefinition *def;
-		Type *concreteType;  // variable's declared type with type args (may be null)
+		EnumDefinition *enumDef;
+		Type *concreteType;
 	};
-	std::vector<std::vector<EnumScopeVar>> mEnumScopeStack;
+	std::vector<std::vector<EnumCleanupEntry>> mEnumScopeStack;
 
-	// Emit cleanup code for an enum variable's refcounted payload. When
-	// concreteType is provided, generic payload types (T/E) are resolved to their
-	// concrete types from it; otherwise the enum's declared associated types are
-	// used (correct for non-generic user enums).
+	// Emit cleanup code for an enum variable's refcounted payload. concreteEnumType
+	// (optional) supplies type arguments for a generic enum so generic-param
+	// payloads resolve to their concrete refcounted types.
 	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef,
-		Type *concreteType = nullptr );
+		Type *concreteEnumType = nullptr );
+
+	// Resolve a variant's associated type to a concrete type: if it names one of
+	// the enum's generic parameters, substitute the matching argument from
+	// concreteEnumType; otherwise return it unchanged. Returns the input when no
+	// substitution applies (never null for a non-null input).
+	Type *resolveVariantPayloadType( Type *assocType, EnumDefinition *enumDef,
+		Type *concreteEnumType );
 
 	// Runtime declaration for __blang_rc_alloc_dtor
 	llvm::Function *getOrDeclareRcAllocDtor();
@@ -541,6 +609,23 @@ private:
 	void releaseTempLambdaCtxs();
 	void untrackTempLambdaCtx( llvm::Value *ctxPtr );
 
+	// Temporary struct tracking: struct literals created as expression temporaries
+	// (e.g., function arguments) that need to be released after the enclosing statement.
+	std::vector<llvm::Value*> mTempStructs;
+	void trackTempStruct( llvm::Value *structPtr );
+	void releaseTempStructs();
+	void untrackTempStruct( llvm::Value *structPtr );
+
+	// Temporary array tracking: arrays produced as expression rvalues (a call or
+	// method that returns Array<T>) that are not bound to a variable and must be
+	// released after the enclosing statement. Mirrors the struct-temp discipline:
+	// tracked at the producing call/method, untracked when ownership transfers
+	// (stored into a variable / struct field / enum payload / returned).
+	std::vector<llvm::Value*> mTempArrays;
+	void trackTempArray( llvm::Value *arrPtr );
+	void releaseTempArrays();
+	void untrackTempArray( llvm::Value *arrPtr );
+
 	// Ownership move tracking: own variables that have been moved
 	std::set<VariableDefinition*> mMovedVariables;
 
@@ -555,6 +640,9 @@ private:
 
 	// Flag indicating a codegen error occurred (e.g., ownership violation)
 	bool mHasError = false;
+
+	// Test-runner mode (qcc --emit-test-main); see setTestMode().
+	bool mTestMode = false;
 
 	// Current function context (for contract support)
 	FunctionDefinition *mCurrentFunction = nullptr;

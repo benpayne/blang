@@ -1,0 +1,2 @@
+# return mismatch
+^[^:]+\.b:[0-9]+:[0-9]+: error: cannot return 'string' from function 'f' returning 'int'$

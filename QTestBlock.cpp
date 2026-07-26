@@ -17,6 +17,7 @@ using namespace std;
 
 TestBlock *TestBlock::Parse( Lexer &l, Scope *s )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_TEST )
 	{
@@ -35,6 +36,7 @@ TestBlock *TestBlock::Parse( Lexer &l, Scope *s )
 	testScope->setParent( s );
 
 	TestBlock *testBlock = new TestBlock( name );
+	testBlock->setLocation( loc );
 
 	testBlock->mBody = Block::Parse( l, testScope );
 

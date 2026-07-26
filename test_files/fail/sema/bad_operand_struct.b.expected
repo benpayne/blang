@@ -1,0 +1,2 @@
+# bad operand
+^[^:]+\.b:[0-9]+:[0-9]+: error: operator '\+' cannot be applied to a value of type 'Point'$

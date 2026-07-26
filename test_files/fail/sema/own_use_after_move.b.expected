@@ -1,0 +1,2 @@
+# U6: use of a moved own value.
+^[^:]+\.b:[0-9]+:[0-9]+: error: use of moved variable 'a'$

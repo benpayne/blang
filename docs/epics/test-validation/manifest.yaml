@@ -1,0 +1,148 @@
+# manifest.yaml — machine-readable compilation of the test-validation epic.
+
+manifest_version: 0
+epic: test-validation
+entry: overview.md
+archetype: evolve
+constitution: .specify/memory/constitution.md
+
+run:
+  # Duplicated from overview.md "Done condition (epic level)" verbatim.
+  done_condition: |
+    All of the following succeed on a clean checkout of the epic's final state,
+    run from the repo root. Every clause is a runnable teeth-proof, not just an
+    "exit 0"; exact commands in evaluation.md Epic-level acceptance.
+
+    1. Goldens with teeth. At least 55 codegen tests have a committed stdout
+       golden (`ls test_files/codegen_*.expected.out | wc -l` >= 55), and the
+       quarantine file test_files/codegen_quarantine.txt diff-equals the approved
+       list in design.md (so the quarantine cannot be widened to nullify goldens);
+       ./test_codegen.sh exits 0 comparing captured stdout to each golden; and the
+       harness self-check proves teeth — ./test_codegen.sh --selfcheck corrupts a
+       real golden internally, asserts the suite goes red, prints SELFCHECK: OK,
+       and exits non-zero, while a scripted wrong-output patch to one test flips
+       ./test_codegen.sh from green to red.
+    2. Real bcc test. `bcc test test_files/testblock/all_pass.b` exits 0 and its
+       output matches [0-9]+ passed; `bcc test test_files/testblock/has_failure.b`
+       exits non-zero and its output matches both FAIL and the location regex
+       [^:]+\.b:[0-9]+:; and `bcc test --filter add_two test_files/testblock/all_pass.b`
+       runs a strict, non-empty subset (its passed count is > 0 and < the
+       unfiltered count).
+    3. Sanitizers in CI, with teeth. `cmake -S . -B build-asan
+       -DBLANG_SANITIZE=address,undefined && cmake --build build-asan` builds clean
+       and `BUILD_DIR=build-asan ./run_tests.sh` exits 0; `./test_codegen.sh
+       --leak-check` exits non-zero when a leak is present (proven by an
+       injected-leak fixture) and exits 0 reporting Leaks: 0 on the deterministic
+       suite; both are CI jobs (see #6).
+    4. Runtime unit tests. `test "$(ctest --test-dir build -N | grep -c 'Test #')"
+       -ge 30` holds, `ctest --test-dir build` exits 0, `ctest --test-dir build-asan`
+       exits 0 (tests run under ASan), and at least one runtime test is proven to
+       fail when its library's bounds check is removed (demonstrated in the U5 PR).
+    5. Bounded fuzzing with teeth. fuzz_parse builds; `ls test_files/fuzz/corpus
+       | wc -l` >= 20 (seeded from pass/fail); replaying the corpus
+       `build/fuzz_parse test_files/fuzz/corpus/ -runs=0` exits 0; the target
+       provably reaches the parser (a committed poison input crashes a
+       deliberately-broken parser, shown in the U6 PR); and CI runs a fixed-budget
+       campaign (-max_total_time=60).
+    6. CI enforces it all. .github/workflows/ci.yml defines jobs that execute the
+       golden compare, bcc test fixtures, the ASan build + leak-check legs, ctest
+       runtime units, the fuzz campaign, and `make -C demos run`; each runs green
+       on the epic's final commit (verified via the CI run, not by grepping ci.yml
+       text). Configuring these as branch-protection required checks is a
+       documented manual manager step.
+
+  guidance: |
+    Start by reading docs/epics/test-validation/overview.md and its companion
+    documents (workplan.md, design.md, evaluation.md). Read
+    .specify/memory/constitution.md first — it governs all work; the quality
+    gates and audit pattern are non-negotiable. Follow the five-phase unit
+    lifecycle (create spec via speckit → spec audit → implement → code audit →
+    merge) for every unit, in dependency order (U1→U2 chain; U3/U4/U5/U6
+    parallel after baseline; U7 capstone last). Use an implementer hire and an
+    independent secondary-reviewer hire; the reviewer must not implement what it
+    reviews and is the only actor that merges. All work on
+    epic/test-validation/uN-<slug> branches; squash-merge only; never commit to
+    master directly. Every unit boundary leaves ./run_tests.sh and
+    ./test_codegen.sh green. New checks must have teeth — a gate that passes
+    trivially is a review-blocking finding. Handle test non-determinism with an
+    explicit quarantine list, never loose matching. When a wrong-output or memory
+    bug is surfaced, fixing it is in scope; if the fix is large/risky or needs a
+    language decision, raise an Open Question via run status instead of guessing.
+
+  oversight_level: fully_autonomous
+  limits:
+    # Lesson from blang-ast: the launch run halted on a no_progress alert
+    # (threshold 3) triggered by Anthropic usage-window pauses, not by the token
+    # budget. High no_progress_threshold + large session cap avoid that.
+    max_turns: 400
+    max_runtime_seconds: 1209600        # 14 days
+    session_token_limit: 50000000       # 50M; effectively "extended way out"
+    no_progress_threshold: 10
+  models:
+    controller: claude-opus-4-8
+    worker: claude-sonnet-5
+
+units:
+  - id: U1
+    reqs: [REQ-001]
+    summary: Golden-output harness — capture+compare stdout, --update-goldens, --selfcheck (real teeth), quarantine mechanism, >=1 sample golden
+    depends_on: []
+    done: "--selfcheck corrupts a real golden, asserts suite red, prints SELFCHECK: OK, exits non-zero; scripted wrong-output patch flips suite red; all suites green"
+    speckit: golden-harness
+  - id: U2
+    reqs: [REQ-002]
+    summary: Golden migration — commit stdout goldens for all deterministic codegen tests; quarantine file equals the approved pinned list
+    depends_on: [U1]
+    done: "golden count >= 55; codegen_quarantine.txt diff-equals approved_quarantine.txt; ./test_codegen.sh exit 0; reviewer correctness spot-check note attached"
+    speckit: golden-migration
+  - id: U3
+    reqs: [REQ-003]
+    summary: Real bcc test runner — compile+run test{} blocks, counts, --filter, file:line on failure
+    depends_on: []
+    done: "all_pass exit 0 matches '[0-9]+ passed'; has_failure exit non-zero matches FAIL + '.b:<line>:'; --filter add_two = strict non-empty subset"
+    speckit: bcc-test-runner
+  - id: U4
+    reqs: [REQ-004]
+    summary: Fix --leak-check to be fatal on leaks; add BLANG_SANITIZE build + ASan/LSan CI legs
+    depends_on: []
+    done: "build-asan builds; BUILD_DIR=build-asan run_tests exit 0; --leak-check exits non-zero on injected leak and 0 with Leaks:0 on clean suite; wired in CI"
+    speckit: sanitizer-ci
+  - id: U5
+    reqs: [REQ-005]
+    summary: Runtime C unit tests for array/string/buffer/net/fs/json via CTest, in build and build-asan
+    depends_on: []
+    done: "ctest -N count >= 30 asserted; ctest --test-dir build and build-asan exit 0; a removed-bounds-check test shown failing in PR"
+    speckit: runtime-unit-tests
+  - id: U6
+    reqs: [REQ-006]
+    summary: Bounded libFuzzer target for lexer+parser; >=20 seed corpus; -max_total_time=60 campaign; poison-input reachability proof
+    depends_on: []
+    done: "fuzz_parse builds; corpus >=20; replay -runs=0 exit 0; poison-input proof in PR; CI campaign leg; crashes fixed or quarantined"
+    speckit: parser-fuzzing
+  - id: U7
+    reqs: [REQ-007]
+    summary: CI integration (jobs that execute each check) + demos run leg + docs/close-out
+    depends_on: [U1, U2, U3, U4, U5, U6, U8]
+    done: "evaluation.md Epic-level acceptance block passes; each new CI job runs green on the final commit; make -C demos run is a CI leg"
+    speckit: ci-integration
+
+  - id: U8
+    reqs: [REQ-008]
+    summary: Fix the 4 codegen ARC leaks from OQ-1 (rvalue-temporary release); empty the leak quarantine
+    depends_on: [U4]
+    done: "./test_codegen.sh --leak-check exit 0 Leaks:0; codegen_leak_quarantine.txt has 0 active entries; injected-leak still fatal; suites green"
+    speckit: arc-leak-fix
+
+foldback:
+  status_into: overview.md
+
+devbot:
+  endpoint: http://localhost:8000
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b
+  runs:
+    - run_id: 0e8fef6a-a9b3-417f-8596-0c8efc7d1ef3
+      launched: 2026-07-14
+      outcome: halted   # transient worker usage-window pause at turn 10; U1-U6 + U8 merged (7/8 REQs); only U7 (CI capstone) remained. Continue via a scoped resume run.
+    - run_id: 68a2b35a-c441-473f-8c77-0c807014895c
+      launched: 2026-07-15
+      outcome: completed  # U7 CI capstone merged; all 8 units done; epic done-condition verified

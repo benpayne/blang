@@ -37,6 +37,7 @@ std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &fun
 
 FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern, bool isPublic, bool deferBody )
 {
+	SourceLocation loc = l.getTokenLocation();
 	FunctionDefinition *func;
 
 	// All function declarations use the fn keyword:
@@ -68,6 +69,7 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 		COMPILE_ERROR( l, "Expected function name after 'fn'" );
 
 	func = new FunctionDefinition( l.getSymbolText() );
+	func->setLocation( loc );
 	func->mIsExtern = isExtern;
 	func->mIsPublic = isPublic;
 	func->mIsAsync = isAsync;
@@ -270,4 +272,57 @@ Type *FunctionDefinition::getParamType( int p )
 VariableDefinition *FunctionDefinition::getParam( int p )
 {
 	return mParameters[ p ];
+}
+
+FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s )
+{
+	// 'init' keyword has already been consumed by the caller.
+	// Parse: init(params) { body }
+	// Creates a method named "init" with implicit self parameter.
+
+	FunctionDefinition *func = new FunctionDefinition( "init" );
+	func->setLocation( l.getTokenLocation() );
+	func->mIsInit = true;
+	func->mFuncScope = new Scope( Scope::kScope_Function, "init" );
+	func->mFuncScope->setParent( s );
+
+	// Add implicit self parameter
+	Type *selfType = new Type( "self" );
+	VariableDefinition *selfParam = new VariableDefinition( selfType, "self" );
+	selfParam->setLocation( func->getLocation() );
+	func->mParameters.push_back( selfParam );
+	func->mFuncScope->addSymbol( selfParam );
+
+	// Parse parameter list: init(int x, int y)
+	int sym = l.getSymbol();
+	if ( sym != '(' )
+		COMPILE_ERROR( l, "Expected '(' after 'init'" );
+
+	sym = l.peekSymbol();
+	if ( sym != ')' )
+	{
+		int paramIndex = 0;
+		do {
+			VariableDefinition *param = VariableDefinition::ParseFuncParam( l, func->mFuncScope );
+			func->mParameters.push_back( param );
+			func->mFuncScope->addSymbol( param );
+			paramIndex++;
+			sym = l.getSymbol();
+		} while ( sym == ',' );
+		if ( sym != ')' )
+			COMPILE_ERROR( l, "Expected ')' after init parameters" );
+	}
+	else
+	{
+		l.getSymbol(); // consume ')'
+	}
+
+	// No return type — init is void (caller allocates and passes self)
+	func->mReturnType = nullptr;
+
+	// Parse body
+	func->mFuncBody = Block::Parse( l, func->mFuncScope );
+
+	cout << "Completed init constructor" << endl;
+	return func;
 }

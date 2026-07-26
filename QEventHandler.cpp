@@ -19,6 +19,7 @@ EventHandler *EventHandler::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume 'on' keyword
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_ON )
@@ -27,6 +28,7 @@ EventHandler *EventHandler::Parse( Lexer &l, Scope *scope )
 	}
 
 	EventHandler *handler = new EventHandler;
+	handler->setLocation( loc );
 
 	// Parse the event expression (e.g., timer.every(1000))
 	handler->mEventExpression = Expression::ParseExpr( l, scope, 0 );

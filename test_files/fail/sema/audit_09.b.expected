@@ -1,0 +1,2 @@
+# audit_09: non-exhaustive match (variant 'blue' unhandled).
+^[^:]+\.b:[0-9]+:[0-9]+: error: non-exhaustive match: variant 'blue' of enum 'Color' is not handled$

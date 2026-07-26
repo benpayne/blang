@@ -1,0 +1,5 @@
+# U4 fail/sema fixture (relocated from origin's cgfail/): a match on an enum that
+# omits a variant without a wildcard is non-exhaustive and is rejected by Sema in
+# ALL build modes with a located error. Pattern combines the canonical
+# file:line:col: error: format with the specific missing-variant message.
+^[^:]+\.b:[0-9]+:[0-9]+: error: non-exhaustive match: variant '[a-zA-Z_]+' of enum '[A-Za-z_]+' is not handled$

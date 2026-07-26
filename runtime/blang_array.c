@@ -1,4 +1,5 @@
 #include "blang_array.h"
+#include "blang_string.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -186,6 +187,17 @@ void __blang_array_set( BlangArray *a, int64_t index, const void *value )
 			(long long)index, (long long)a->length );
 		exit( 1 );
 	}
+	/* Release the old element via elem_dtor before overwriting.
+	   This prevents leaks when refcounted elements (strings, etc.) are
+	   replaced — e.g. during Map.remove shift operations. */
+	if ( a->elem_dtor != NULL )
+	{
+		void *slot = elem_ptr( a, index );
+		void *old_val = *(void **)slot;
+		void *new_val = *(void **)value;
+		if ( old_val != NULL && old_val != new_val )
+			a->elem_dtor( old_val );
+	}
 	memcpy( elem_ptr( a, index ), value, (size_t)a->elem_size );
 }
 
@@ -316,4 +328,35 @@ void __blang_array_clear( BlangArray *a )
 		}
 	}
 	a->length = 0;
+}
+
+/* ========================================================================
+   String <-> byte array helpers (for Buffer implementation in BLang)
+   ======================================================================== */
+
+void __blang_string_copy_to_byte_array( BlangString *s, BlangArray *arr )
+{
+	if ( s == NULL || arr == NULL )
+		return;
+	for ( int64_t i = 0; i < s->length; i++ )
+	{
+		uint8_t byte = (uint8_t)s->data[i];
+		__blang_array_push( arr, &byte );
+	}
+}
+
+BlangString *__blang_string_from_byte_array( BlangArray *arr, int64_t start, int64_t end )
+{
+	if ( arr == NULL )
+		return __blang_string_create( "", 0 );
+	if ( start < 0 )
+		start = 0;
+	if ( end > arr->length )
+		end = arr->length;
+	int64_t len = end - start;
+	if ( len <= 0 )
+		return __blang_string_create( "", 0 );
+
+	const char *data = (const char *)arr->data + start;
+	return __blang_string_create( data, len );
 }

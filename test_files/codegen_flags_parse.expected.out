@@ -1,0 +1,7 @@
+output = out.txt
+level = 3
+verbose = true
+f = true
+f bool = true
+nope = false
+positionals: src.b extra

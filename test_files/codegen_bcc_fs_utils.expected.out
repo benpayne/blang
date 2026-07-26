@@ -1,0 +1,7 @@
+read_into n=11
+chunk=[hello world]
+tell=11
+size=24
+all_len=24
+line1_len=12
+PASS

@@ -21,8 +21,10 @@ extern fn __blang_tcp_close(int fd);
 extern fn __blang_tcp_connect(cstring host, int port) -> int;
 extern fn __blang_tcp_read(int fd, int max_len) -> string;
 extern fn __blang_tcp_write_string(int fd, string data) -> int;
-extern fn __blang_tcp_read_into_buffer(int fd, Buffer buf, int max_len) -> int;
-extern fn __blang_tcp_write_buffer(int fd, Buffer buf) -> int;
+extern fn __blang_tcp_read_into_byte_array(int fd, Array<byte> arr, long max_len) -> long;
+extern fn __blang_tcp_write_byte_array(int fd, Array<byte> arr) -> long;
+extern fn __blang_tcp_write_all(int fd, string data) -> long;
+extern fn __blang_sendfile(int sock_fd, int file_fd, long offset, long count) -> long;
 
 extern fn __blang_selector_create() -> int;
 extern fn __blang_selector_add_read(int sel, int fd, fn(int) handler);
@@ -32,10 +34,6 @@ extern fn __blang_selector_run(int sel);
 extern fn __blang_selector_wait(int sel);
 extern fn __blang_selector_shutdown(int sel);
 extern fn __blang_selector_destroy(int sel);
-
-// Buffer creation externs (Buffer is a builtin type with codegen methods)
-extern fn __blang_buffer_create(long capacity) -> Buffer;
-extern fn __blang_buffer_create_from_string(string s) -> Buffer;
 
 // --- FileOps protocol (shared by Socket and ServerSocket) ---
 pub protocol FileOps {
@@ -65,11 +63,34 @@ impl FileOps for Socket {
 
 impl Socket {
 	fn read_into(self, Buffer buf, int max_len) -> int {
-		return __blang_tcp_read_into_buffer(self.fd, buf, max_len);
+		long max_long = max_len;
+		long n = __blang_tcp_read_into_byte_array(self.fd, buf.get_bytes(), max_long);
+		int result = n;
+		return result;
 	}
 
 	fn write_buffer(self, Buffer buf) -> int {
-		return __blang_tcp_write_buffer(self.fd, buf);
+		long n = __blang_tcp_write_byte_array(self.fd, buf.get_bytes());
+		int result = n;
+		return result;
+	}
+
+	// Write all bytes, retrying on partial writes.
+	fn write_all(self, string data) -> int {
+		long n = __blang_tcp_write_all(self.fd, data);
+		int result = n;
+		return result;
+	}
+
+	// Stream a file directly to this socket.
+	// Reads from file_fd at the given offset, sends count bytes.
+	// Uses 8KB kernel-space chunks — no BLang-level buffering needed.
+	fn sendfile(self, int file_fd, long offset, long count) -> long {
+		return __blang_sendfile(self.fd, file_fd, offset, count);
+	}
+
+	fn get_fd(self) -> int {
+		return self.fd;
 	}
 }
 
@@ -154,8 +175,10 @@ impl Selector {
 pub fn selector_create() -> Selector {
 	int h = __blang_selector_create();
 	Selector sel = Selector { handle: h };
-	// The event loop runs on a dedicated spawned thread.
-	spawn { __blang_selector_run(sel.handle); }
+	// The event loop runs on a dedicated spawned thread. Capture only the int
+	// handle (not the Selector struct) so nothing crosses the spawn boundary that
+	// would require shared/sync (U7 concurrency safety).
+	spawn { __blang_selector_run(h); }
 	return sel;
 }
 
@@ -194,18 +217,12 @@ pub fn http_not_found() -> HttpResponse {
 	return HttpResponse { status: 404, content_type: "text/plain", body: "Not Found" };
 }
 
-// --- Route: a (method, path) pair bound to a handler ---
+// A single method+path route with its handler. HttpServer keeps a table of
+// these; dispatch_request matches a request against them. (Ported from origin.)
 pub struct Route {
 	string method;
 	string path;
 	fn(HttpRequest) -> HttpResponse handler;
-}
-
-// --- HttpServer struct (impl block is below, after HTTP utility functions) ---
-pub struct HttpServer {
-	int _selector_handle;
-	int _server_fd;
-	Array<Route> _routes;
 }
 
 // Find the route matching a request and invoke its handler, returning the
@@ -225,6 +242,13 @@ pub fn dispatch_request(Array<Route> routes, HttpRequest req) -> HttpResponse {
 	return http_not_found();
 }
 
+// --- HttpServer struct (impl block is below, after HTTP utility functions) ---
+pub struct HttpServer {
+	int _selector_handle;
+	int _server_fd;
+	Array<Route> _routes;
+}
+
 // ================================================================
 // BLang-native HTTP utilities
 // ================================================================
@@ -232,6 +256,23 @@ pub fn dispatch_request(Array<Route> routes, HttpRequest req) -> HttpResponse {
 // These functions implement HTTP parsing and response building in
 // pure BLang, using Buffer for byte-level manipulation and string
 // operations for response construction.
+
+// --- Hex conversion for chunked encoding ---
+// Converts a non-negative integer to a lowercase hex string.
+pub fn int_to_hex(int value) -> string {
+	if value == 0 { return "0"; }
+	string digits = "0123456789abcdef";
+	string result = "";
+	int v = value;
+	for {
+		if v <= 0 { break; }
+		int rem = v % 16;
+		string d = digits.substring(rem, rem + 1);
+		result = d + result;
+		v = v / 16;
+	}
+	return result;
+}
 
 // --- HTTP status text ---
 // Returns the standard HTTP reason phrase for a status code.
@@ -262,6 +303,29 @@ pub fn build_http_response(int status, string content_type, string body) -> stri
 	return response;
 }
 
+// --- Streaming HTTP response helpers ---
+
+// Send HTTP response headers on a socket (status line + custom headers + blank line).
+// Does NOT send a body. The caller can stream body data after this call.
+pub fn send_http_headers(Socket conn, int status, string headers) -> int {
+	string reason = http_status_text(status);
+	string head = "HTTP/1.1 {status} {reason}\r\n{headers}\r\n";
+	return conn.write_all(head);
+}
+
+// Send a single chunk in HTTP chunked transfer encoding on a socket.
+pub fn send_http_chunk(Socket conn, string data) -> int {
+	int len = data.length;
+	string hex_len = int_to_hex(len);
+	string chunk = hex_len + "\r\n" + data + "\r\n";
+	return conn.write_all(chunk);
+}
+
+// Send the final zero-length chunk to end chunked transfer encoding.
+pub fn end_http_chunked(Socket conn) -> int {
+	return conn.write_all("0\r\n\r\n");
+}
+
 // --- HTTP request parsing (pure BLang, using Buffer) ---
 
 // Parsed HTTP request line components.
@@ -272,12 +336,8 @@ pub struct HttpRequestLine {
 }
 
 // Parse the HTTP request line from a Buffer.
-// Expects the buffer to start with "METHOD PATH VERSION\r\n...".
-// Returns an HttpRequestLine with method, path, and version extracted.
-// If parsing fails, returns empty strings.
 pub fn parse_http_request_line(Buffer buf) -> HttpRequestLine {
-	// Find the first line ending (\r\n)
-	Buffer crlf = __blang_buffer_create(2);
+	Buffer crlf = Buffer(2);
 	crlf.append_byte(13);
 	crlf.append_byte(10);
 	int line_end = buf.index_of(crlf, 0);
@@ -285,14 +345,12 @@ pub fn parse_http_request_line(Buffer buf) -> HttpRequestLine {
 		return HttpRequestLine { method: "", path: "", version: "" };
 	}
 
-	// Extract the request line as a string
 	string line = buf.to_string_range(0, line_end);
 
-	// Find first space (between method and path)
-	Buffer space = __blang_buffer_create(1);
+	Buffer space = Buffer(1);
 	space.append_byte(32);
 
-	Buffer line_buf = __blang_buffer_create_from_string(line);
+	Buffer line_buf = Buffer.from_string(line);
 	int sp1 = line_buf.index_of(space, 0);
 	if sp1 < 0 {
 		return HttpRequestLine { method: "", path: "", version: "" };
@@ -300,7 +358,6 @@ pub fn parse_http_request_line(Buffer buf) -> HttpRequestLine {
 
 	string method = line_buf.to_string_range(0, sp1);
 
-	// Find second space (between path and version)
 	int sp2 = line_buf.index_of(space, sp1 + 1);
 	if sp2 < 0 {
 		return HttpRequestLine { method: "", path: "", version: "" };
@@ -313,8 +370,6 @@ pub fn parse_http_request_line(Buffer buf) -> HttpRequestLine {
 }
 
 // Parse HTTP headers from a Buffer into parallel arrays of key-value strings.
-// The buffer should contain the full HTTP message (request line + headers + body).
-// Returns an HttpParsedHeaders struct with arrays of keys and values.
 pub struct HttpParsedHeaders {
 	Array<string> keys;
 	Array<string> values;
@@ -324,8 +379,7 @@ pub fn parse_http_headers_from_buffer(Buffer buf) -> HttpParsedHeaders {
 	Array<string> keys = [];
 	Array<string> values = [];
 
-	// Find \r\n\r\n (header terminator)
-	Buffer crlf2 = __blang_buffer_create(4);
+	Buffer crlf2 = Buffer(4);
 	crlf2.append_byte(13);
 	crlf2.append_byte(10);
 	crlf2.append_byte(13);
@@ -335,8 +389,7 @@ pub fn parse_http_headers_from_buffer(Buffer buf) -> HttpParsedHeaders {
 		return HttpParsedHeaders { keys: keys, values: values };
 	}
 
-	// Find end of first line (request line) — skip it
-	Buffer crlf = __blang_buffer_create(2);
+	Buffer crlf = Buffer(2);
 	crlf.append_byte(13);
 	crlf.append_byte(10);
 	int first_line_end = buf.index_of(crlf, 0);
@@ -344,17 +397,15 @@ pub fn parse_http_headers_from_buffer(Buffer buf) -> HttpParsedHeaders {
 		return HttpParsedHeaders { keys: keys, values: values };
 	}
 
-	// Parse each header line from after the request line to before the blank line
 	int pos = first_line_end + 2;
 
-	Buffer colon = __blang_buffer_create(1);
+	Buffer colon = Buffer(1);
 	colon.append_byte(58);
 
 	for {
 		if pos >= header_end {
 			break;
 		}
-		// Find end of this header line
 		int line_end = buf.index_of(crlf, pos);
 		if line_end < 0 {
 			break;
@@ -363,16 +414,12 @@ pub fn parse_http_headers_from_buffer(Buffer buf) -> HttpParsedHeaders {
 			break;
 		}
 
-		// Find colon within this line
-		// Extract the line as a sub-buffer to search within it
 		Buffer line_buf = buf.slice(pos, line_end);
 		int colon_pos = line_buf.index_of(colon, 0);
 		if colon_pos >= 0 {
 			string key = line_buf.to_string_range(0, colon_pos);
 
-			// Skip ": " (colon + optional space)
 			int val_start = colon_pos + 1;
-			// Skip leading spaces in value
 			for {
 				if val_start >= line_end - pos {
 					break;
@@ -394,9 +441,8 @@ pub fn parse_http_headers_from_buffer(Buffer buf) -> HttpParsedHeaders {
 }
 
 // Extract the body from an HTTP message in a Buffer.
-// Returns the portion after the \r\n\r\n header separator.
 pub fn extract_http_body(Buffer buf) -> string {
-	Buffer sep = __blang_buffer_create(4);
+	Buffer sep = Buffer(4);
 	sep.append_byte(13);
 	sep.append_byte(10);
 	sep.append_byte(13);
@@ -406,23 +452,21 @@ pub fn extract_http_body(Buffer buf) -> string {
 		return "";
 	}
 	int body_start = header_end + 4;
-	if body_start >= buf.length {
+	int buf_len = buf.get_length();
+	if body_start >= buf_len {
 		return "";
 	}
-	return buf.to_string_range(body_start, buf.length);
+	return buf.to_string_range(body_start, buf_len);
 }
 
 // --- BLang-native HTTP GET client (using Buffer) ---
-// Performs a blocking HTTP GET request and returns the response body.
 pub fn http_get_buffered(string host, int port, string path) -> string {
 	Socket sock = tcp_connect(host, port);
 
-	// Build GET request using string interpolation
 	string request = "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n";
 	sock.write(request);
 
-	// Read response into buffer
-	Buffer buf = __blang_buffer_create(4096);
+	Buffer buf = Buffer(4096);
 	for {
 		int n = sock.read_into(buf, 8192);
 		if n <= 0 {
@@ -431,35 +475,12 @@ pub fn http_get_buffered(string host, int port, string path) -> string {
 	}
 	sock.close();
 
-	// Extract body (after \r\n\r\n)
 	return extract_http_body(buf);
 }
 
 // --- HTTP Client (public API) ---
-// Uses BLang-native implementation with Buffer I/O (no C runtime needed)
 pub fn http_get(string host, int port, string path) -> string {
 	return http_get_buffered(host, port, path);
-}
-
-// Performs a blocking HTTP POST with a request body and returns the response
-// body. content_type sets the Content-Type header (e.g. "application/json").
-pub fn http_post(string host, int port, string path, string content_type, string body) -> string {
-	Socket sock = tcp_connect(host, port);
-
-	int body_len = body.length;
-	string request = "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n" + body;
-	sock.write(request);
-
-	Buffer buf = __blang_buffer_create(4096);
-	for {
-		int n = sock.read_into(buf, 8192);
-		if n <= 0 {
-			break;
-		}
-	}
-	sock.close();
-
-	return extract_http_body(buf);
 }
 
 // ================================================================
@@ -467,8 +488,9 @@ pub fn http_post(string host, int port, string path, string content_type, string
 // ================================================================
 
 impl HttpServer {
-	// --- Route registration ---
-	// Register a handler for a given method + path. get()/post() are sugar.
+	// --- Route registration (ported from origin). get()/post()/put() are sugar
+	// over route(); `delete` is a reserved keyword, so DELETE routes use
+	// route("DELETE", ...). Handlers are stored in _routes and matched by serve().
 	fn route(self, string method, string path, fn(HttpRequest) -> HttpResponse handler) {
 		self._routes.push(Route { method: method, path: path, handler: handler });
 	}
@@ -485,31 +507,33 @@ impl HttpServer {
 		self._routes.push(Route { method: "PUT", path: path, handler: handler });
 	}
 
-	// Note: there is no dedicated delete() method because `delete` is a reserved
-	// keyword. Use route("DELETE", path, handler) for DELETE routes.
-
-	// Start serving registered routes. Each accepted connection is parsed into
-	// an HttpRequest, dispatched to the matching route (or 404), and the
-	// response is written back. Call after registering routes; then join().
+	// Serve registered routes: parse each accepted connection into an
+	// HttpRequest, dispatch to the matching route (or 404), write the response.
+	// Modeled on on_request but dispatching through the route table; uses local's
+	// byte-array TCP helpers (origin's version used the Buffer-based helpers).
 	fn serve(self) {
+		Array<Route> routes = self._routes;
 		int sel = self._selector_handle;
 		int sfd = self._server_fd;
-		Array<Route> routes = self._routes;
 		__blang_selector_add_accept(sel, sfd, fn(int new_fd) {
-			Buffer buf = __blang_buffer_create(4096);
-			Buffer sep = __blang_buffer_create(4);
+			Buffer buf = Buffer(4096);
+
+			Buffer sep = Buffer(4);
 			sep.append_byte(13);
 			sep.append_byte(10);
 			sep.append_byte(13);
 			sep.append_byte(10);
+
+			long max_read = 4096;
 			for {
-				int n = __blang_tcp_read_into_buffer(new_fd, buf, 4096);
+				long n = __blang_tcp_read_into_byte_array(new_fd, buf.get_bytes(), max_read);
 				if n <= 0 { break; }
 				if buf.index_of(sep, 0) >= 0 { break; }
 			}
 
 			HttpRequestLine rline = parse_http_request_line(buf);
 			string body = extract_http_body(buf);
+
 			HttpRequest req = HttpRequest {
 				method: rline.method,
 				path: rline.path,
@@ -527,24 +551,21 @@ impl HttpServer {
 		int sel = self._selector_handle;
 		int sfd = self._server_fd;
 		__blang_selector_add_accept(sel, sfd, fn(int new_fd) {
-			// Read HTTP request (blocking) into buffer
-			Buffer buf = __blang_buffer_create(4096);
+			Buffer buf = Buffer(4096);
 
-			// Build \r\n\r\n separator for header detection
-			Buffer sep = __blang_buffer_create(4);
+			Buffer sep = Buffer(4);
 			sep.append_byte(13);
 			sep.append_byte(10);
 			sep.append_byte(13);
 			sep.append_byte(10);
 
-			// Read until complete headers or EOF
+			long max_read = 4096;
 			for {
-				int n = __blang_tcp_read_into_buffer(new_fd, buf, 4096);
+				long n = __blang_tcp_read_into_byte_array(new_fd, buf.get_bytes(), max_read);
 				if n <= 0 { break; }
 				if buf.index_of(sep, 0) >= 0 { break; }
 			}
 
-			// Parse request line and body
 			HttpRequestLine rline = parse_http_request_line(buf);
 			string body = extract_http_body(buf);
 
@@ -554,12 +575,47 @@ impl HttpServer {
 				body: body
 			};
 
-			// Dispatch to user handler
 			HttpResponse resp = handler(req);
 
-			// Build and send HTTP response
 			string response_str = build_http_response(resp.status, resp.content_type, resp.body);
 			__blang_tcp_write_string(new_fd, response_str);
+			__blang_tcp_close(new_fd);
+		});
+	}
+
+	// Streaming handler: callback receives HttpRequest + Socket.
+	// The handler is responsible for sending response headers and body
+	// directly through the socket, then the connection is closed.
+	fn on_stream_request(self, fn(HttpRequest, Socket) handler) {
+		int sel = self._selector_handle;
+		int sfd = self._server_fd;
+		__blang_selector_add_accept(sel, sfd, fn(int new_fd) {
+			Buffer buf = Buffer(4096);
+
+			Buffer sep = Buffer(4);
+			sep.append_byte(13);
+			sep.append_byte(10);
+			sep.append_byte(13);
+			sep.append_byte(10);
+
+			long max_read = 4096;
+			for {
+				long n = __blang_tcp_read_into_byte_array(new_fd, buf.get_bytes(), max_read);
+				if n <= 0 { break; }
+				if buf.index_of(sep, 0) >= 0 { break; }
+			}
+
+			HttpRequestLine rline = parse_http_request_line(buf);
+			string body = extract_http_body(buf);
+
+			HttpRequest req = HttpRequest {
+				method: rline.method,
+				path: rline.path,
+				body: body
+			};
+
+			Socket conn = Socket { fd: new_fd };
+			handler(req, conn);
 			__blang_tcp_close(new_fd);
 		});
 	}
@@ -576,7 +632,6 @@ impl HttpServer {
 pub fn http_server(string host, int port) -> HttpServer {
 	int server_fd = __blang_tcp_listen(host, port, 10);
 	int sel = __blang_selector_create();
-	// Spawn the event loop on a dedicated thread.
 	spawn { __blang_selector_run(sel); }
 	Array<Route> routes = [];
 	return HttpServer { _selector_handle: sel, _server_fd: server_fd, _routes: routes };

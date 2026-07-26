@@ -1,0 +1,2 @@
+int_range [50,60) 1000 draws in bounds = 1
+float01 1000 draws in [0,1) = 1

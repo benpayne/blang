@@ -1,0 +1,2 @@
+# Expected-error pattern (U2 harness): canonical located error + specific message.
+^[^:]+\.b:[0-9]+:[0-9]+: error: Expected test name string after 'test'

@@ -1,0 +1,2 @@
+# arg type mismatch
+^[^:]+\.b:[0-9]+:[0-9]+: error: argument 1 to 'takes_int': cannot pass 'string' as 'int'$

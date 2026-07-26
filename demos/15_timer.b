@@ -1,4 +1,4 @@
-// Demo 14: Timer event loop
+// Demo 15: Timer event loop
 //
 // Registers a repeating timer on the global event loop, then enters the loop
 // explicitly with timer.run(). The handler runs every 200ms and stops the loop

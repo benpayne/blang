@@ -1,0 +1,7 @@
+init  1
+read1 99
+read2 99
+via-var 99
+again1 7
+again2 7
+PASS

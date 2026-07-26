@@ -1,5 +1,8 @@
 // Demo 8: JSON Roundtrip — Address Book
-// Features: @json annotation, nested structs, struct literals, field access
+// Features: @json annotation, nested structs, struct literals, field access,
+//           file I/O (write the JSON to disk and read it back)
+
+import fs;
 
 @json
 struct Contact {
@@ -67,7 +70,33 @@ fn main() -> int {
 	assert book2.primary.age == 30, "Alice age should be 30";
 	assert book2.secondary.age == 25, "Bob age should be 25";
 
+	// --- Persist to a file and read it back (file I/O) ---
+	string path = "/tmp/blang_addressbook_demo.json";
 	println();
-	println("JSON address book demo passed!");
+	println("Writing JSON to {} ...", path);
+	fs.write_all(path, book_json);
+
+	string loaded = fs.read_all(path);
+	assert loaded == book_json, "file roundtrip: bytes on disk should match";
+
+	// Parse the JSON that came back off disk and verify nested fields survived
+	AddressBook book3 = AddressBook_from_json(loaded);
+	println("Read back and parsed from disk:");
+	println("  title: {}", book3.title);
+	println("  primary.name: {}", book3.primary.name);
+	println("  primary.age: {}", book3.primary.age);
+	println("  secondary.email: {}", book3.secondary.email);
+
+	assert book3.title == "My Contacts", "file roundtrip: title";
+	assert book3.primary.age == 30, "file roundtrip: Alice age";
+	assert book3.primary.name == "Alice Smith", "file roundtrip: Alice name";
+	assert book3.secondary.email == "bob@example.com", "file roundtrip: nested email";
+
+	// Clean up the temp file
+	fs.remove(path);
+	assert fs.exists(path) == false, "file should be removed";
+
+	println();
+	println("JSON address book demo passed (with file I/O)!");
 	return 0;
 }

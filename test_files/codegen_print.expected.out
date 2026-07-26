@@ -1,0 +1,10 @@
+
+hello world
+no newline
+x = 42
+pi = 3.14159
+flag = true
+name = BLang
+10 + 20 = 10
+use {{}} for placeholders
+print codegen test passed!

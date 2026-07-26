@@ -19,6 +19,7 @@ SpawnStatement *SpawnStatement::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume 'spawn' keyword
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_SPAWN )
@@ -27,6 +28,7 @@ SpawnStatement *SpawnStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	SpawnStatement *statement = new SpawnStatement;
+	statement->setLocation( loc );
 
 	// Create anonymous scope for spawn body
 	Scope *spawn_scope = new Scope( Scope::kScope_Anonymous );
@@ -49,6 +51,7 @@ WaitStatement *WaitStatement::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume 'wait' keyword
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_WAIT )
@@ -57,6 +60,7 @@ WaitStatement *WaitStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	WaitStatement *statement = new WaitStatement;
+	statement->setLocation( loc );
 
 	// Parse the expression (Task variable to wait on)
 	statement->mExpr = Expression::ParseExpr( l, scope, 0 );
@@ -81,6 +85,7 @@ WaitAllStatement *WaitAllStatement::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume 'wait_all' keyword
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_WAIT_ALL )
@@ -89,6 +94,7 @@ WaitAllStatement *WaitAllStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	WaitAllStatement *statement = new WaitAllStatement;
+	statement->setLocation( loc );
 
 	// Expect semicolon
 	sym = l.getSymbol();

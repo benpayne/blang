@@ -1,0 +1,9 @@
+length = 3
+has apple = true
+has banana = true
+has durian = false
+length after 300 adds = 303
+all 300 present = 1
+remove banana = true
+has banana after remove = false
+remove missing = false

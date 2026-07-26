@@ -1,0 +1,8 @@
+name = alice
+has verbose = true
+verbose bool = true
+x bool = true
+count = 3
+missing = default
+has missing = false
+positionals: input.txt

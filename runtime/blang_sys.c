@@ -30,6 +30,14 @@ BlangArray *__blang_sys_get_args( void )
 		/* If never initialized, return empty array */
 		g_sys_args = __blang_array_create( (int32_t)sizeof( BlangString * ), 0 );
 	}
+	/* g_sys_args is an immortal process-lifetime singleton (its base reference is
+	   never released). Array-returning functions follow an "owned return"
+	   contract: the caller receives a +1 reference and releases it when done.
+	   Retain here so a caller that owns-and-releases the result cannot drive the
+	   shared global to refcount 0 and free it out from under the process (which,
+	   because the args array carries no element destructor, would also orphan its
+	   BlangString elements — the leak surfaced by test-validation U8). */
+	__blang_array_retain( g_sys_args );
 	return g_sys_args;
 }
 

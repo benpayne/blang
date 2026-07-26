@@ -6,10 +6,10 @@ enum Result<T, E> {
 }
 
 fn might_fail() -> Result<int, string> {
-    return 42;
+    return Result.ok(42);
 }
 
 fn caller() -> Result<int, string> {
     var x = might_fail()?;
-    return x;
+    return Result.ok(x);
 }

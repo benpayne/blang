@@ -43,6 +43,12 @@ struct Options
 	bool emitIROnly = false;     // -S
 	bool compileOnly = false;    // -c
 	bool verbose = false;        // -v
+	bool jsonDiagnostics = false;// --json  (forwarded to qcc)
+	bool werror = false;         // -Werror (forwarded to qcc)
+	string optLevel;             // -O<n>: "" none, else 0..3/s/z (U2)
+	bool release = false;        // --release: implies -O2 (U2)
+	string targetTriple;         // --target <triple>: cross-compile (U2)
+	bool debugInfo = false;      // -g: emit DWARF debug info; forces -O0 (U3)
 	vector<string> linkerFlags;  // -l, -L, etc.
 };
 
@@ -62,6 +68,12 @@ static void printUsage( const char *progName )
 	cerr << "  -S           Emit LLVM IR only (.ll)" << endl;
 	cerr << "  -c           Compile to object file only (.o)" << endl;
 	cerr << "  -v           Verbose output" << endl;
+	cerr << "  --json       Emit compiler diagnostics as JSON" << endl;
+	cerr << "  -Werror      Treat warnings as errors" << endl;
+	cerr << "  -O<n>        Optimize (0..3, s, z); bare -O = -O2" << endl;
+	cerr << "  --release    Optimized build (implies -O2)" << endl;
+	cerr << "  --target <t> Cross-compile to target triple (object emission)" << endl;
+	cerr << "  -g           Emit DWARF debug info (forces -O0)" << endl;
 	cerr << "  -l<lib>      Link with library" << endl;
 	cerr << "  -L<dir>      Add library search path" << endl;
 	cerr << "  -h, --help   Show this help" << endl;
@@ -98,6 +110,39 @@ static bool parseArgs( int argc, char *argv[], Options &opts )
 		else if ( arg == "-v" )
 		{
 			opts.verbose = true;
+		}
+		else if ( arg == "--json" )
+		{
+			opts.jsonDiagnostics = true;
+		}
+		else if ( arg == "-Werror" )
+		{
+			opts.werror = true;
+		}
+		else if ( arg == "--release" )
+		{
+			opts.release = true;
+		}
+		else if ( arg == "--target" )
+		{
+			if ( i + 1 >= argc )
+			{
+				cerr << "error: --target requires a triple argument" << endl;
+				return false;
+			}
+			opts.targetTriple = argv[++i];
+		}
+		else if ( arg == "-O" )
+		{
+			opts.optLevel = "2";               // bare -O means -O2
+		}
+		else if ( arg.size() > 2 && arg.substr( 0, 2 ) == "-O" )
+		{
+			opts.optLevel = arg.substr( 2 );   // -O0/1/2/3/s/z
+		}
+		else if ( arg == "-g" )
+		{
+			opts.debugInfo = true;             // DWARF debug info (U3)
 		}
 		else if ( arg.substr( 0, 2 ) == "-l" || arg.substr( 0, 2 ) == "-L" )
 		{
@@ -228,6 +273,203 @@ static string findTool( const string &name, const vector<string> &alternatives )
 	return "";
 }
 
+// ---------------------------------------------------------------------------
+// Pipeline foundation (epic 001-toolchain-and-stdlib, U0)
+//
+// The bcc→qcc→llc→cc pipeline used to duplicate the llc object-emission block
+// 4x and the runtime-link library list 3x. These helpers are the single site
+// for each. Later units extend the pipeline HERE, in one place:
+//   - U2 (-O / --target): emitObject() owns the llc flags + the host triple.
+//   - U3 (-g): emitObject() is the llc-side hook (the qcc-emit side is the qcc
+//     arg loop); debug metadata must survive the text-.ll boundary through here.
+//   - U4/U5 (new stdlib .a): appendRuntimeLibs() is the one place a lib is added.
+// ---------------------------------------------------------------------------
+
+// Resolve the llc tool once (build-time baked path, then PATH). Empty on failure.
+static string resolveLlc()
+{
+	string llc;
+#ifdef BCC_LLC_PATH
+	if ( access( BCC_LLC_PATH, X_OK ) == 0 )
+		llc = BCC_LLC_PATH;
+#endif
+	if ( llc.empty() )
+		llc = findTool( "llc-18", { "llc" } );
+	return llc;
+}
+
+// Emit a native object from a textual .ll via llc. Owns the -filetype=obj flag
+// vector, the backend optimization level (U2 layer 2), and the target triple.
+// Returns llc's exit code (0 == ok). Per-path error messages and IR-file cleanup
+// stay at the call sites.
+//   optLevel     — "" for none, else "0".."3"/"s"/"z" → llc -O<n>.
+//   targetTriple — "" for the host-baked triple (byte-identical to pre-U2), else
+//                  the given triple (cross-compile, U2 --target).
+//   debugInfo    — currently informational only: DWARF debug metadata carried in
+//                  the textual .ll is emitted into the object by llc automatically
+//                  (llc has no -g flag). qcc already forced -O0 when -g (S-A
+//                  stance). Kept as a parameter so the single llc site owns the
+//                  knob if a future backend needs an explicit flag.
+static int emitObject( const string &llc, const string &llFile,
+                       const string &objFile, bool verbose,
+                       const string &optLevel = "",
+                       const string &targetTriple = "",
+                       bool debugInfo = false )
+{
+	(void)debugInfo;
+	vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
+	if ( !optLevel.empty() )
+	{
+		// llc's -O accepts only numeric 0..3. The size levels (-Os/-Oz) are
+		// applied as IR passes in qcc (layer 1); map them to backend -O2 here so
+		// llc gets a valid level.
+		string llcOpt = ( optLevel == "s" || optLevel == "z" ) ? "2" : optLevel;
+		cmd.push_back( string( "-O" ) + llcOpt );
+	}
+	if ( !targetTriple.empty() )
+	{
+		cmd.push_back( string( "-mtriple=" ) + targetTriple );
+	}
+	else
+	{
+#if defined(BCC_HOST_ARCH)
+#if defined(PLATFORM_DARWIN)
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
+#elif defined(PLATFORM_LINUX)
+		cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
+#endif
+#endif
+	}
+	cmd.push_back( llFile );
+	cmd.push_back( "-o" );
+	cmd.push_back( objFile );
+	return runCommand( cmd, verbose );
+}
+
+// Which runtime libs a link line needs. The `bcc test` path links the test
+// driver and omits the db lib; program builds (single-file + combined) link the
+// db lib and omit the test driver.
+struct RuntimeLinkProfile
+{
+	bool withTestRunner;
+	bool withDb;
+};
+
+// Append the ordered libblang_*.a list to a link command (dependents before
+// dependencies). THIS IS THE ONE PLACE a new stdlib .a is added (U4/U5). Only
+// the libblang_*.a list is appended here; each path's tail (BCC_DB_LINKFLAGS,
+// -lpthread, -o, user linker flags, -luv) stays at the call site so argument
+// order is preserved byte-for-byte.
+static void appendRuntimeLibs( vector<string> &cmd, const string &exeDir,
+                               const RuntimeLinkProfile &profile )
+{
+	auto findLib = [&]( const char *baked, const char *name ) -> string {
+		string lib;
+		if ( baked != nullptr )
+			lib = baked;
+		if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
+		{
+			string fallback = exeDir + "/lib" + name + ".a";
+			if ( access( fallback.c_str(), F_OK ) == 0 )
+				lib = fallback;
+			else
+				lib.clear();
+		}
+		return lib;
+	};
+
+	const char *bakedTestRunner = nullptr, *bakedRuntime = nullptr, *bakedString = nullptr;
+	const char *bakedArray = nullptr, *bakedBuffer = nullptr, *bakedJson = nullptr;
+	const char *bakedNet = nullptr, *bakedFs = nullptr, *bakedSys = nullptr, *bakedDb = nullptr;
+	// Native stdlib modules (U4). Their .a's are offered to the linker
+	// unconditionally (like sys/fs/net) and dropped when unreferenced — import
+	// gating happens at the .b combine layer (kKnownOrder), not here.
+	const char *bakedMath = nullptr, *bakedTime = nullptr, *bakedRandom = nullptr, *bakedEnv = nullptr;
+	const char *bakedHash = nullptr;   // U5: FNV-1a for hashed collections
+#ifdef BCC_TESTRUNNER_LIB
+	bakedTestRunner = BCC_TESTRUNNER_LIB;
+#endif
+#ifdef BCC_RUNTIME_LIB
+	bakedRuntime = BCC_RUNTIME_LIB;
+#endif
+#ifdef BCC_STRING_LIB
+	bakedString = BCC_STRING_LIB;
+#endif
+#ifdef BCC_ARRAY_LIB
+	bakedArray = BCC_ARRAY_LIB;
+#endif
+#ifdef BCC_BUFFER_LIB
+	bakedBuffer = BCC_BUFFER_LIB;
+#endif
+#ifdef BCC_JSON_LIB
+	bakedJson = BCC_JSON_LIB;
+#endif
+#ifdef BCC_NET_LIB
+	bakedNet = BCC_NET_LIB;
+#endif
+#ifdef BCC_FS_LIB
+	bakedFs = BCC_FS_LIB;
+#endif
+#ifdef BCC_SYS_LIB
+	bakedSys = BCC_SYS_LIB;
+#endif
+#ifdef BCC_DB_LIB
+	bakedDb = BCC_DB_LIB;
+#endif
+#ifdef BCC_MATH_LIB
+	bakedMath = BCC_MATH_LIB;
+#endif
+#ifdef BCC_TIME_LIB
+	bakedTime = BCC_TIME_LIB;
+#endif
+#ifdef BCC_RANDOM_LIB
+	bakedRandom = BCC_RANDOM_LIB;
+#endif
+#ifdef BCC_ENV_LIB
+	bakedEnv = BCC_ENV_LIB;
+#endif
+#ifdef BCC_HASH_LIB
+	bakedHash = BCC_HASH_LIB;
+#endif
+
+	// Leading lib (test driver or db), then the shared dependents->deps chain.
+	vector<string> libs;
+	if ( profile.withTestRunner )
+		libs.push_back( findLib( bakedTestRunner, "blang_testrunner" ) );
+	if ( profile.withDb )
+		libs.push_back( findLib( bakedDb, "blang_db" ) );
+	libs.push_back( findLib( bakedSys, "blang_sys" ) );
+	// Native stdlib modules (U4) — placed before their deps (string/array) so
+	// GNU ld resolves them; math's libm dep is added as a trailing -lm below.
+	libs.push_back( findLib( bakedMath, "blang_math" ) );
+	libs.push_back( findLib( bakedTime, "blang_time" ) );
+	libs.push_back( findLib( bakedRandom, "blang_random" ) );
+	libs.push_back( findLib( bakedEnv, "blang_env" ) );
+	// blang_hash (U5) is a leaf dep of the collections .b combine layer (only
+	// user code references it), so its position is order-tolerant; placed before
+	// its blang_string dep for GNU ld.
+	libs.push_back( findLib( bakedHash, "blang_hash" ) );
+	libs.push_back( findLib( bakedFs, "blang_fs" ) );
+	libs.push_back( findLib( bakedNet, "blang_net" ) );
+	libs.push_back( findLib( bakedJson, "blang_json" ) );
+	libs.push_back( findLib( bakedBuffer, "blang_buffer" ) );
+	libs.push_back( findLib( bakedArray, "blang_array" ) );
+	libs.push_back( findLib( bakedString, "blang_string" ) );
+	libs.push_back( findLib( bakedRuntime, "blang_runtime" ) );
+
+	for ( const auto &lib : libs )
+	{
+		if ( !lib.empty() )
+			cmd.push_back( lib );
+	}
+
+	// Math (U4) needs libm. Appended as a trailing system-linker token (not a
+	// findLib path) AFTER blang_math.a so GNU ld resolves math's sqrt/pow/etc.
+	// Harmless when math is unused (no libm symbol is referenced, so nothing is
+	// pulled in). System libm is always present.
+	cmd.push_back( "-lm" );
+}
+
 // Check whether a path is an existing directory
 static bool isDirectory( const string &path )
 {
@@ -260,362 +502,215 @@ static vector<string> collectTestFiles( const string &searchRoot )
 	return files;
 }
 
-// Forward declarations (defined later) so the test runner can resolve stdlib
-// imports the same way `bcc build` / single-file compilation does.
+// Compile a single .b test file with the test-runner entry point and run it.
+//
+// Mirrors the normal bcc pipeline (qcc --combine <stdlib> <file>
+// --emit-test-main -> llc -> cc) but links the fork-isolated test driver
+// (libblang_testrunner.a). The produced binary registers each test{} block and
+// dispatches to __blang_test_main, forwarding `--filter <name>` when set.
+// Returns the test binary's exit code (non-zero iff a test failed), or a
+// non-zero sentinel on a compile/link failure.
 static set<string> parseImports( const string &path );
-static vector<string> resolveStdlibFiles( const string &exeDir,
-	const set<string> &imports );
 
-// Append the BLang runtime archives (+ DB backend link flags + -lpthread) to a
-// link command, in dependency order. Shared by the single-file compile path and
-// the test runner so both link the same set (avoids drift, e.g. the DB backend).
-static void appendBlangRuntimeLibs( vector<string> &cmd, const string &exeDir )
-{
-	auto findLib = [&]( const char *baked, const char *name ) -> string {
-		string lib;
-		if ( baked != nullptr )
-			lib = baked;
-		if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
-		{
-			string fallback = exeDir + "/lib" + name + ".a";
-			if ( access( fallback.c_str(), F_OK ) == 0 )
-				lib = fallback;
-			else
-				lib.clear();
-		}
-		return lib;
-	};
-
-	const char *bakedRuntime = nullptr;
-	const char *bakedString = nullptr;
-	const char *bakedArray = nullptr;
-	const char *bakedBuffer = nullptr;
-	const char *bakedJson = nullptr;
-	const char *bakedNet = nullptr;
-	const char *bakedSys = nullptr;
-	const char *bakedDb = nullptr;
-#ifdef BCC_RUNTIME_LIB
-	bakedRuntime = BCC_RUNTIME_LIB;
-#endif
-#ifdef BCC_STRING_LIB
-	bakedString = BCC_STRING_LIB;
-#endif
-#ifdef BCC_ARRAY_LIB
-	bakedArray = BCC_ARRAY_LIB;
-#endif
-#ifdef BCC_BUFFER_LIB
-	bakedBuffer = BCC_BUFFER_LIB;
-#endif
-#ifdef BCC_JSON_LIB
-	bakedJson = BCC_JSON_LIB;
-#endif
-#ifdef BCC_NET_LIB
-	bakedNet = BCC_NET_LIB;
-#endif
-#ifdef BCC_SYS_LIB
-	bakedSys = BCC_SYS_LIB;
-#endif
-#ifdef BCC_DB_LIB
-	bakedDb = BCC_DB_LIB;
-#endif
-
-	for ( const auto &lib : {
-		findLib( bakedDb, "blang_db" ),
-		findLib( bakedSys, "blang_sys" ),
-		findLib( bakedNet, "blang_net" ),
-		findLib( bakedJson, "blang_json" ),
-		findLib( bakedBuffer, "blang_buffer" ),
-		findLib( bakedArray, "blang_array" ),
-		findLib( bakedString, "blang_string" ),
-		findLib( bakedRuntime, "blang_runtime" ),
-	} )
-	{
-		if ( !lib.empty() )
-			cmd.push_back( lib );
-	}
-
-#ifdef BCC_DB_LINKFLAGS
-	{
-		string dbFlags = BCC_DB_LINKFLAGS;
-		istringstream dbf( dbFlags );
-		string tok;
-		while ( dbf >> tok )
-			cmd.push_back( tok );
-	}
-#endif
-
-	cmd.push_back( "-lpthread" );
-}
-
-// Locate llc (baked-in path preferred, else on PATH). Empty string if missing.
-static string findLlc()
-{
-	string llc;
-#ifdef BCC_LLC_PATH
-	if ( access( BCC_LLC_PATH, X_OK ) == 0 )
-		llc = BCC_LLC_PATH;
-#endif
-	if ( llc.empty() )
-		llc = findTool( "llc-18", { "llc" } );
-	return llc;
-}
-
-// Compile an LLVM IR .ll file to a native object file via llc. Returns llc's
-// exit code, or -1 if llc could not be found.
-static int compileIrToObj( const string &irFile, const string &objFile, bool verbose )
-{
-	string llc = findLlc();
-	if ( llc.empty() )
-		return -1;
-
-	vector<string> cmd = { llc, "-filetype=obj", "--relocation-model=pic" };
-#if defined(BCC_HOST_ARCH)
-#if defined(PLATFORM_DARWIN)
-	cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
-#elif defined(PLATFORM_LINUX)
-	cmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
-#endif
-#endif
-	cmd.push_back( irFile );
-	cmd.push_back( "-o" );
-	cmd.push_back( objFile );
-	return runCommand( cmd, verbose );
-}
-
-// Link a native object file into an executable, pulling in the BLang runtime
-// archives. Returns cc's exit code.
-static int linkExecutable( const string &exeDir, const string &objFile,
-	const string &outFile, const vector<string> &linkerFlags, bool verbose )
-{
-	string cc = "cc";
-#ifdef BCC_CC_PATH
-	cc = BCC_CC_PATH;
-#endif
-	vector<string> cmd = { cc };
-#if defined(BCC_HOST_ARCH) && defined(PLATFORM_DARWIN)
-	cmd.push_back( "-arch" );
-	cmd.push_back( BCC_HOST_ARCH );
-#endif
-	cmd.push_back( objFile );
-	appendBlangRuntimeLibs( cmd, exeDir );
-	cmd.push_back( "-o" );
-	cmd.push_back( outFile );
-	for ( const auto &flag : linkerFlags )
-		cmd.push_back( flag );
-#ifdef BCC_HAS_LIBUV
-	cmd.push_back( "-luv" );
-#endif
-	return runCommand( cmd, verbose );
-}
-
-// Does a source file contain any `test "..." { }` blocks? Cheap text scan so
-// `bcc test` only tries to build+run files that actually define tests (files
-// without tests would have no generated main in --test-main mode).
-static bool fileHasTestBlocks( const string &path )
-{
-	ifstream in( path );
-	if ( !in )
-		return false;
-	stringstream ss;
-	ss << in.rdbuf();
-	string src = ss.str();
-
-	// Look for the `test` keyword at a token boundary followed by a string
-	// literal, skipping obvious substrings (e.g. "latest", "fastest").
-	size_t pos = 0;
-	while ( ( pos = src.find( "test", pos ) ) != string::npos )
-	{
-		bool leftOk = ( pos == 0 ) ||
-			( !isalnum( (unsigned char)src[pos - 1] ) && src[pos - 1] != '_' );
-		size_t after = pos + 4;
-		// Skip whitespace after `test`
-		size_t j = after;
-		while ( j < src.size() && ( src[j] == ' ' || src[j] == '\t' ) )
-			j++;
-		bool rightOk = ( j < src.size() && src[j] == '"' );
-		if ( leftOk && rightOk )
-			return true;
-		pos = after;
-	}
-	return false;
-}
-
-// Build a single test file into a runnable test binary (qcc --test-main -> llc
-// -> cc) and execute it. The generated main IS the test runner, which prints
-// per-test PASS/FAIL and a summary and exits nonzero if any test failed.
-// Returns the test binary's exit code, or -1 if the build failed.
-static int buildAndRunTestFile( const string &exeDir, const string &qcc,
-	const string &file, bool verbose )
+static int compileAndRunTestFile( const string &exeDir, const string &qcc,
+	const string &file, const string &filter, bool verbose )
 {
 	string baseName = getBaseName( file );
 	string srcDir = getDirName( file );
 
-	// Step 1: qcc --test-main (combine stdlib modules the file imports).
-	vector<string> stdlibFiles = resolveStdlibFiles( exeDir, parseImports( file ) );
-	vector<string> qccCmd = { qcc, "--test-main" };
-	if ( !stdlibFiles.empty() )
+	// Collect stdlib .b files for --combine (same order as normal bcc).
+	vector<string> stdlibFiles;
+	for ( const char *name : { "sys.b", "buffer.b", "fs.b", "net.b" } )
 	{
-		qccCmd.push_back( "--combine" );
-		for ( const auto &sf : stdlibFiles )
-			qccCmd.push_back( sf );
+		string candidate = exeDir + "/stdlib/" + name;
+		if ( access( candidate.c_str(), F_OK ) == 0 )
+			stdlibFiles.push_back( candidate );
 	}
-	qccCmd.push_back( file );
-	if ( runCommand( qccCmd, verbose, !verbose ) != 0 )
+	// Import-gated extra modules (mirrors the main compile path): only pulled in
+	// when the test file imports them, so an unused module never pollutes the
+	// namespace. `collections` supplies Map (S2) and must be combined for a
+	// `bcc test` file that `import collections;`.
 	{
-		if ( !verbose )
+		set<string> imports = parseImports( file );
+		for ( const char *name : { "collections", "timer" } )
 		{
-			FILE *f = fopen( "/tmp/bcc_stderr.txt", "r" );
-			if ( f )
-			{
-				char buf[1024];
-				while ( fgets( buf, sizeof( buf ), f ) )
-				{
-					string line = buf;
-					if ( line.find( "[TRACE]" ) == string::npos &&
-					     line.find( "Saving position" ) == string::npos &&
-					     line.find( "Not a decl" ) == string::npos &&
-					     line.find( "resetting position" ) == string::npos )
-						cerr << line;
-				}
-				fclose( f );
-			}
+			if ( imports.count( name ) == 0 )
+				continue;
+			string candidate = exeDir + "/stdlib/" + name + ".b";
+			if ( access( candidate.c_str(), F_OK ) == 0 )
+				stdlibFiles.push_back( candidate );
 		}
-		cerr << "  error: failed to compile test file " << file << endl;
-		return -1;
 	}
 
-	// Locate the generated .ll (qcc writes it next to the source, or in cwd).
+	// Step 1: qcc --combine <stdlib...> <file> --emit-test-main
+	{
+		vector<string> cmd = { qcc, "--combine" };
+		for ( const auto &sf : stdlibFiles )
+			cmd.push_back( sf );
+		cmd.push_back( file );
+		cmd.push_back( "--emit-test-main" );
+		int ret = runCommand( cmd, verbose, !verbose );
+		if ( ret != 0 )
+		{
+			cerr << "bcc test: compilation failed for " << file << endl;
+			return 2;
+		}
+	}
+
+	// qcc (combine mode) writes IR derived from the last source file (the user
+	// file) as <file-with-.ll>.
 	string irFile = srcDir + "/" + baseName + ".ll";
 	if ( access( irFile.c_str(), F_OK ) != 0 )
 	{
-		irFile = baseName + ".ll";
-		if ( access( irFile.c_str(), F_OK ) != 0 )
+		cerr << "bcc test: no .ll generated for " << file
+		     << " (is qcc built with LLVM?)" << endl;
+		return 2;
+	}
+
+	// Step 2: llc -> object
+	string llc = resolveLlc();
+	if ( llc.empty() )
+	{
+		cerr << "bcc test: llc not found" << endl;
+		remove( irFile.c_str() );
+		return 2;
+	}
+
+	string objFile = "/tmp/" + baseName + "_bcctest.o";
+	{
+		int ret = emitObject( llc, irFile, objFile, verbose );
+		remove( irFile.c_str() );
+		if ( ret != 0 )
 		{
-			cerr << "  error: no .ll generated for " << file
-			     << " (is qcc built with LLVM?)" << endl;
-			return -1;
+			cerr << "bcc test: IR compilation failed for " << file << endl;
+			return 2;
 		}
 	}
 
-	// Step 2: llc -> object.
-	string objFile = "/tmp/" + baseName + "_test.o";
-	int ret = compileIrToObj( irFile, objFile, verbose );
-	remove( irFile.c_str() );
-	if ( ret == -1 )
+	// Step 3: link with the test driver + BLang runtime libs
+	string binFile = "/tmp/" + baseName + "_bcctest_bin";
 	{
-		cerr << "  error: llc not found (install llvm-18 or llvm)" << endl;
-		return -1;
-	}
-	if ( ret != 0 )
-	{
-		cerr << "  error: IR compilation failed for " << file << endl;
-		return -1;
+		string cc = "cc";
+#ifdef BCC_CC_PATH
+		cc = BCC_CC_PATH;
+#endif
+		vector<string> cmd = { cc };
+#if defined(BCC_HOST_ARCH) && defined(PLATFORM_DARWIN)
+		cmd.push_back( "-arch" );
+		cmd.push_back( BCC_HOST_ARCH );
+#endif
+		cmd.push_back( objFile );
+
+		// Test driver first (referenced by the emitted main), then the runtime
+		// libs; the test path links no db lib.
+		appendRuntimeLibs( cmd, exeDir,
+			RuntimeLinkProfile{ /*withTestRunner=*/true, /*withDb=*/false } );
+
+		cmd.push_back( "-lpthread" );
+		cmd.push_back( "-o" );
+		cmd.push_back( binFile );
+#ifdef BCC_HAS_LIBUV
+		cmd.push_back( "-luv" );
+#endif
+		int ret = runCommand( cmd, verbose );
+		remove( objFile.c_str() );
+		if ( ret != 0 )
+		{
+			cerr << "bcc test: linking failed for " << file << endl;
+			return 2;
+		}
 	}
 
-	// Step 3: link -> test binary.
-	string binFile = "/tmp/" + baseName + "_test";
-	ret = linkExecutable( exeDir, objFile, binFile, {}, verbose );
-	remove( objFile.c_str() );
-	if ( ret != 0 )
+	// Step 4: run the test binary, forwarding --filter. Its stdout/stderr are
+	// inherited so per-test PASS/FAIL, located failures, and the summary appear.
+	int exitCode;
 	{
-		cerr << "  error: linking test binary failed for " << file << endl;
-		return -1;
+		string runCmd = "\"" + binFile + "\"";
+		if ( !filter.empty() )
+			runCmd += " --filter \"" + filter + "\"";
+		int ret = system( runCmd.c_str() );
+		if ( WIFEXITED( ret ) )
+			exitCode = WEXITSTATUS( ret );
+		else
+			exitCode = 3; // crashed / signaled
 	}
-
-	// Step 4: run the test binary (its output streams to the console).
-	int status = system( ( "\"" + binFile + "\"" ).c_str() );
 	remove( binFile.c_str() );
-	if ( WIFEXITED( status ) )
-		return WEXITSTATUS( status );
-	return -1;
+	return exitCode;
 }
 
 // bcc test subcommand
 //
-// Discovery strategy:
-//   1. If a tests/ subdirectory exists in the current directory, search there.
-//   2. Otherwise search the current directory for *_test.b files.
+//   bcc test [--filter <name>] <file.b> [<file2.b> ...]
+//     Compile each file with the test-runner entry point and run its test{}
+//     blocks, reporting per-test PASS/FAIL with file:line on failure. Exit code
+//     is non-zero iff any test fails.
 //
-// Each discovered .b file that defines `test` blocks is compiled into a test
-// binary and run; results are reported with a summary. Exit code is non-zero
-// when any test fails.
-static int runTests( int argc, char *argv[] )
+//   bcc test [--filter <name>]        (no file given)
+//     Legacy discovery: search tests/ (or the current directory) and run each
+//     discovered .b file the same way.
+static int runTests( int argc, char *argv[], const string &exeDir )
 {
 	bool verbose = false;
+	string filter;
+	vector<string> fileArgs;
+
 	for ( int i = 2; i < argc; i++ )
 	{
 		string arg = argv[i];
 		if ( arg == "--verbose" || arg == "-v" )
 			verbose = true;
+		else if ( arg == "--filter" && i + 1 < argc )
+			filter = argv[++i];
+		else if ( arg.rfind( "--filter=", 0 ) == 0 )
+			filter = arg.substr( 9 );
+		else if ( !arg.empty() && arg[0] != '-' )
+			fileArgs.push_back( arg );
 	}
 
-	// Locate qcc alongside bcc
-	char exeBuf[4096];
-	string exeDir = ".";
-	ssize_t len = readlink( "/proc/self/exe", exeBuf, sizeof( exeBuf ) - 1 );
-	if ( len > 0 )
-	{
-		exeBuf[len] = '\0';
-		string exePath = exeBuf;
-		size_t slash = exePath.rfind( '/' );
-		if ( slash != string::npos )
-			exeDir = exePath.substr( 0, slash );
-	}
 	string qcc = exeDir + "/qcc";
 
-	// Determine search root
-	string searchRoot;
-	bool testsSubdirExists = isDirectory( "tests" );
-	if ( testsSubdirExists )
+	// Determine the set of files to run: explicit args, else discovery.
+	vector<string> files = fileArgs;
+	if ( files.empty() )
 	{
-		searchRoot = "tests";
-		cerr << "bcc test: searching tests/ directory" << endl;
+		string searchRoot;
+		if ( isDirectory( "tests" ) )
+		{
+			searchRoot = "tests";
+			cerr << "bcc test: searching tests/ directory" << endl;
+		}
+		else
+		{
+			searchRoot = ".";
+			cerr << "bcc test: no tests/ directory found, searching current directory for *.b files" << endl;
+		}
+		files = collectTestFiles( searchRoot );
 	}
-	else
-	{
-		searchRoot = ".";
-		cerr << "bcc test: no tests/ directory found, searching current directory for *.b files" << endl;
-	}
-
-	vector<string> allFiles = collectTestFiles( searchRoot );
-
-	// Only build+run files that actually define `test` blocks.
-	vector<string> files;
-	for ( const auto &f : allFiles )
-		if ( fileHasTestBlocks( f ) )
-			files.push_back( f );
 
 	if ( files.empty() )
 	{
-		cerr << "bcc test: no test blocks found in " << searchRoot << endl;
+		cerr << "bcc test: no .b files found" << endl;
 		return 0;
 	}
 
-	int fileErrors = 0;   // files that failed to build
-	int fileFailed = 0;   // files with >=1 failing test
-	int filePassed = 0;   // files where every test passed
-
+	int worstExit = 0;
 	for ( const auto &file : files )
 	{
-		cerr << endl << "=== " << file << " ===" << endl;
-		int rc = buildAndRunTestFile( exeDir, qcc, file, verbose );
-		if ( rc < 0 )
-			fileErrors++;
-		else if ( rc == 0 )
-			filePassed++;
-		else
-			fileFailed++;
+		if ( files.size() > 1 )
+			cout << "=== " << file << " ===" << endl;
+		int rc = compileAndRunTestFile( exeDir, qcc, file, filter, verbose );
+		if ( rc != 0 )
+			worstExit = rc;
 	}
 
-	cerr << endl;
-	cerr << "Test files: " << filePassed << " passed, " << fileFailed
-	     << " failed";
-	if ( fileErrors > 0 )
-		cerr << ", " << fileErrors << " build errors";
-	cerr << " (" << files.size() << " total)" << endl;
-
-	return ( fileFailed > 0 || fileErrors > 0 ) ? 1 : 0;
+	return worstExit;
 }
+
+// Forward declarations (defined later) so migrate can resolve stdlib imports
+// the same way `bcc build` does.
+static set<string> parseImports( const string &path );
+static vector<string> resolveStdlibFiles( const string &exeDir,
+	const set<string> &imports );
 
 // bcc migrate subcommand
 //
@@ -880,23 +975,30 @@ static vector<string> resolveStdlibFiles( const string &exeDir,
 	const set<string> &imports )
 {
 	vector<string> files;
+	set<string> handled;
 	auto addIfPresent = [&]( const string &name ) {
 		string candidate = exeDir + "/stdlib/" + name + ".b";
 		if ( access( candidate.c_str(), F_OK ) == 0 )
 			files.push_back( candidate );
+		handled.insert( name );
 	};
 
-	// Known stdlib modules, ordered so any future cross-module dependency
-	// (base modules first) resolves correctly under --combine.
-	static const char *kKnownOrder[] = { "sys", "collections", "net", "timer" };
-	set<string> handled;
+	// Local's base modules are always combined, in dependency-safe order:
+	// buffer.b must precede fs.b and net.b (they use Buffer). These ship with
+	// the compiler and many programs use them (File, Socket, Buffer) without an
+	// explicit import, so inclusion is unconditional (preserves local behavior).
+	for ( const char *name : { "sys", "buffer", "fs", "net" } )
+		addIfPresent( name );
+
+	// Origin's import-gated extras: only pulled in when the program imports
+	// them, so an unused module never pollutes the namespace (e.g. collections'
+	// Map). Ordered so base modules resolve first under --combine.
+	static const char *kKnownOrder[] = { "collections", "timer",
+		"math", "time", "random", "env", "cli" };
 	for ( const char *name : kKnownOrder )
 	{
-		if ( imports.count( name ) )
-		{
+		if ( imports.count( name ) && !handled.count( name ) )
 			addIfPresent( name );
-			handled.insert( name );
-		}
 	}
 	// Any other imported name that happens to ship a stdlib file.
 	for ( const string &name : imports )
@@ -1079,13 +1181,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		}
 
 		// Compile each .ll to .o
-		string llc;
-#ifdef BCC_LLC_PATH
-		if ( access( BCC_LLC_PATH, X_OK ) == 0 )
-			llc = BCC_LLC_PATH;
-#endif
-		if ( llc.empty() )
-			llc = findTool( "llc-18", { "llc" } );
+		string llc = resolveLlc();
 		if ( llc.empty() )
 		{
 			cerr << "error: llc not found" << endl;
@@ -1104,19 +1200,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( access( llFile.c_str(), F_OK ) != 0 )
 				continue;
 
-			vector<string> llcCmd = { llc, "-filetype=obj", "--relocation-model=pic" };
-#if defined(BCC_HOST_ARCH)
-#if defined(PLATFORM_DARWIN)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
-#elif defined(PLATFORM_LINUX)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
-#endif
-#endif
-			llcCmd.push_back( llFile );
-			llcCmd.push_back( "-o" );
-			llcCmd.push_back( objFile );
-
-			ret = runCommand( llcCmd, verbose );
+			ret = emitObject( llc, llFile, objFile, verbose );
 			if ( ret != 0 )
 			{
 				cerr << "error: IR compilation failed for " << base << endl;
@@ -1201,13 +1285,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		}
 
 		// Compile each .ll to .o
-		string llc;
-#ifdef BCC_LLC_PATH
-		if ( access( BCC_LLC_PATH, X_OK ) == 0 )
-			llc = BCC_LLC_PATH;
-#endif
-		if ( llc.empty() )
-			llc = findTool( "llc-18", { "llc" } );
+		string llc = resolveLlc();
 		if ( llc.empty() )
 		{
 			cerr << "error: llc not found" << endl;
@@ -1244,19 +1322,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( access( llFile.c_str(), F_OK ) != 0 )
 				continue;
 
-			vector<string> llcCmd = { llc, "-filetype=obj", "--relocation-model=pic" };
-#if defined(BCC_HOST_ARCH)
-#if defined(PLATFORM_DARWIN)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-apple-darwin" );
-#elif defined(PLATFORM_LINUX)
-			llcCmd.push_back( string( "-mtriple=" ) + BCC_HOST_ARCH + "-unknown-linux-gnu" );
-#endif
-#endif
-			llcCmd.push_back( llFile );
-			llcCmd.push_back( "-o" );
-			llcCmd.push_back( objFile );
-
-			ret = runCommand( llcCmd, verbose );
+			ret = emitObject( llc, llFile, objFile, verbose );
 			if ( ret != 0 )
 			{
 				cerr << "error: IR compilation failed for " << getBaseName( llFile ) << endl;
@@ -1286,64 +1352,8 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			linkCmd.push_back( depA );
 
 		// Link BLang runtime libraries (order: dependents before dependencies)
-		auto findBuildLib = [&]( const char *baked, const char *name ) -> string {
-			string lib;
-			if ( baked != nullptr )
-				lib = baked;
-			if ( lib.empty() || access( lib.c_str(), F_OK ) != 0 )
-			{
-				string fallback = exeDir + "/lib" + name + ".a";
-				if ( access( fallback.c_str(), F_OK ) == 0 )
-					lib = fallback;
-				else
-					lib.clear();
-			}
-			return lib;
-		};
-
-		const char *bkRuntime = nullptr, *bkString = nullptr, *bkArray = nullptr;
-		const char *bkBuffer = nullptr;
-		const char *bkJson = nullptr, *bkNet = nullptr, *bkSys = nullptr;
-		const char *bkDb = nullptr;
-#ifdef BCC_RUNTIME_LIB
-		bkRuntime = BCC_RUNTIME_LIB;
-#endif
-#ifdef BCC_STRING_LIB
-		bkString = BCC_STRING_LIB;
-#endif
-#ifdef BCC_ARRAY_LIB
-		bkArray = BCC_ARRAY_LIB;
-#endif
-#ifdef BCC_BUFFER_LIB
-		bkBuffer = BCC_BUFFER_LIB;
-#endif
-#ifdef BCC_JSON_LIB
-		bkJson = BCC_JSON_LIB;
-#endif
-#ifdef BCC_NET_LIB
-		bkNet = BCC_NET_LIB;
-#endif
-#ifdef BCC_SYS_LIB
-		bkSys = BCC_SYS_LIB;
-#endif
-#ifdef BCC_DB_LIB
-		bkDb = BCC_DB_LIB;
-#endif
-
-		for ( const auto &lib : {
-			findBuildLib( bkDb, "blang_db" ),
-			findBuildLib( bkSys, "blang_sys" ),
-			findBuildLib( bkNet, "blang_net" ),
-			findBuildLib( bkJson, "blang_json" ),
-			findBuildLib( bkBuffer, "blang_buffer" ),
-			findBuildLib( bkArray, "blang_array" ),
-			findBuildLib( bkString, "blang_string" ),
-			findBuildLib( bkRuntime, "blang_runtime" ),
-		} )
-		{
-			if ( !lib.empty() )
-				linkCmd.push_back( lib );
-		}
+		appendRuntimeLibs( linkCmd, exeDir,
+			RuntimeLinkProfile{ /*withTestRunner=*/false, /*withDb=*/true } );
 
 		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
 #ifdef BCC_DB_LINKFLAGS
@@ -1436,7 +1446,7 @@ int main( int argc, char *argv[] )
 	}
 	if ( argc >= 2 && string( argv[1] ) == "test" )
 	{
-		return runTests( argc, argv );
+		return runTests( argc, argv, exeDir );
 	}
 	if ( argc >= 2 && string( argv[1] ) == "migrate" )
 	{
@@ -1453,13 +1463,28 @@ int main( int argc, char *argv[] )
 	string baseName = getBaseName( opts.inputFile );
 	string srcDir = getDirName( opts.inputFile );
 
+	// Effective optimization level: an explicit -O wins; otherwise --release
+	// implies -O2 (design D3: --release keeps asserts, just optimizes).
+	string effectiveOpt = opts.optLevel;
+	if ( effectiveOpt.empty() && opts.release )
+		effectiveOpt = "2";
+
+	// Debug info stance (U3, S-A): `-g` forces -O0 for best line-table fidelity.
+	// It overrides any -O/--release, and is computed here — in the single
+	// effectiveOpt block — so both qcc (layer 1) and emitObject/llc (layer 2)
+	// see -O0. (Emission stays verifier-clean under -O; a future -g -O2 is a
+	// small step — spec §"the -g × -O stance".)
+	if ( opts.debugInfo )
+		effectiveOpt = "0";
+
 	// Locate qcc (same directory as bcc)
 	string qcc = exeDir + "/qcc";
 
-	// Check for stdlib files to include via --combine. Driven by the program's
-	// `import` statements so only modules it actually uses are pulled in (e.g.
-	// `import timer;` brings in stdlib/timer.b). The matching runtime libraries
-	// are linked unconditionally in step 3, so any stdlib module resolves.
+	// Check for stdlib files to include via --combine. Local's base modules
+	// (sys, buffer, fs, net) are always included in dependency order (buffer
+	// before fs/net); origin's import-gated extras (collections, timer, ...)
+	// are pulled in only when the program imports them. The matching runtime
+	// libraries are linked unconditionally in step 3, so any module resolves.
 	vector<string> stdlibFiles =
 		resolveStdlibFiles( exeDir, parseImports( opts.inputFile ) );
 
@@ -1469,6 +1494,14 @@ int main( int argc, char *argv[] )
 
 	{
 		vector<string> cmd = { qcc };
+		if ( opts.jsonDiagnostics )
+			cmd.push_back( "--json" );
+		if ( opts.werror )
+			cmd.push_back( "-Werror" );
+		if ( !effectiveOpt.empty() )
+			cmd.push_back( string( "-O" ) + effectiveOpt );   // layer 1: IR passes
+		if ( opts.debugInfo )
+			cmd.push_back( "-g" );                            // DWARF debug info (U3)
 		if ( !stdlibFiles.empty() )
 		{
 			cmd.push_back( "--combine" );
@@ -1476,11 +1509,27 @@ int main( int argc, char *argv[] )
 				cmd.push_back( sf );
 		}
 		cmd.push_back( opts.inputFile );
+		// Always capture qcc output (its IR goes to stdout, diagnostics to stderr).
 		int ret = runCommand( cmd, opts.verbose, true );
+		// In --json mode, replay qcc's captured stderr verbatim — it is exactly the
+		// JSON diagnostics array (quiet mode emits nothing else there) — so the
+		// user sees pure JSON and never the IR (which went to the discarded stdout).
+		if ( opts.jsonDiagnostics && !opts.verbose )
+		{
+			FILE *jf = fopen( "/tmp/bcc_stderr.txt", "r" );
+			if ( jf )
+			{
+				char jbuf[1024];
+				while ( fgets( jbuf, sizeof( jbuf ), jf ) )
+					fputs( jbuf, stderr );
+				fclose( jf );
+			}
+		}
 		if ( ret != 0 )
 		{
-			// Show captured compiler errors
-			if ( !opts.verbose )
+			// Show captured compiler errors. In --json mode the JSON was already
+			// replayed above, so skip the human summary to keep the output pure.
+			if ( !opts.verbose && !opts.jsonDiagnostics )
 			{
 				FILE *f = fopen( "/tmp/bcc_stderr.txt", "r" );
 				if ( f )
@@ -1499,7 +1548,9 @@ int main( int argc, char *argv[] )
 					fclose( f );
 				}
 			}
-			cerr << "error: compilation failed" << endl;
+			// Keep --json output pure: qcc already emitted the JSON diagnostics.
+			if ( !opts.jsonDiagnostics )
+				cerr << "error: compilation failed" << endl;
 			return 1;
 		}
 	}
@@ -1534,21 +1585,29 @@ int main( int argc, char *argv[] )
 	if ( opts.verbose )
 		cerr << "--- Step 2: Compiling IR to object file ---" << endl;
 
+	string llc = resolveLlc();
+	if ( llc.empty() )
+	{
+		cerr << "error: llc not found (install llvm-18 or llvm)" << endl;
+		remove( irFile.c_str() );
+		return 1;
+	}
+
 	string objFile = "/tmp/" + baseName + ".o";
 	{
-		int ret = compileIrToObj( irFile, objFile, opts.verbose );
-		remove( irFile.c_str() );  // intermediate
-		if ( ret == -1 )
-		{
-			cerr << "error: llc not found (install llvm-18 or llvm)" << endl;
-			return 1;
-		}
+		// Layer 2 of -O (llc backend) + cross-compile triple (U2) + DWARF (U3).
+		int ret = emitObject( llc, irFile, objFile, opts.verbose,
+			effectiveOpt, opts.targetTriple, opts.debugInfo );
 		if ( ret != 0 )
 		{
 			cerr << "error: IR compilation failed" << endl;
+			remove( irFile.c_str() );
 			return 1;
 		}
 	}
+
+	// Clean up IR file (it was an intermediate)
+	remove( irFile.c_str() );
 
 	// If -c, we're done — just move the object to the output location
 	if ( opts.compileOnly )
@@ -1566,7 +1625,42 @@ int main( int argc, char *argv[] )
 
 	string outFile = opts.outputFile.empty() ? "a.out" : opts.outputFile;
 	{
-		int ret = linkExecutable( exeDir, objFile, outFile, opts.linkerFlags, opts.verbose );
+		string cc = "cc";
+#ifdef BCC_CC_PATH
+		cc = BCC_CC_PATH;
+#endif
+		vector<string> cmd = { cc };
+#if defined(BCC_HOST_ARCH) && defined(PLATFORM_DARWIN)
+		cmd.push_back( "-arch" );
+		cmd.push_back( BCC_HOST_ARCH );
+#endif
+		cmd.push_back( objFile );
+
+		// Link BLang runtime libraries (order: dependents before dependencies)
+		appendRuntimeLibs( cmd, exeDir,
+			RuntimeLinkProfile{ /*withTestRunner=*/false, /*withDb=*/true } );
+
+		// DB backend link flags (e.g. -lsqlite3); must follow libblang_db.a.
+#ifdef BCC_DB_LINKFLAGS
+		{
+			string dbFlags = BCC_DB_LINKFLAGS;
+			istringstream dbf( dbFlags );
+			string tok;
+			while ( dbf >> tok )
+				cmd.push_back( tok );
+		}
+#endif
+
+		cmd.push_back( "-lpthread" );
+
+		cmd.push_back( "-o" );
+		cmd.push_back( outFile );
+		for ( const auto &flag : opts.linkerFlags )
+			cmd.push_back( flag );
+#ifdef BCC_HAS_LIBUV
+		cmd.push_back( "-luv" );
+#endif
+		int ret = runCommand( cmd, opts.verbose );
 		if ( ret != 0 )
 		{
 			cerr << "error: linking failed" << endl;

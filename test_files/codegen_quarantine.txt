@@ -1,0 +1,18 @@
+# Golden-comparison quarantine list (test-validation epic).
+#
+# Tests listed here are EXEMPT from stdout-golden comparison because their output
+# is timing/order-dependent or binds real sockets; they STILL run for exit code.
+# Blank lines and '#' comment lines are ignored. Entries may be listed with or
+# without the .b extension.
+#
+# This set is FIXED and must equal docs/epics/test-validation/approved_quarantine.txt
+# (comments/blanks ignored). Widening it is an epic-scope decision (raise an Open
+# Question), never a hire's call. U1 seeds the mechanism; U2 owns the pinned list.
+
+codegen_http.b
+codegen_http_blang.b
+codegen_http_streaming.b
+codegen_tcp_echo.b
+codegen_selector.b
+codegen_spawn_threaded.b
+codegen_channel_spawn.b

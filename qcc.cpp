@@ -13,6 +13,9 @@
 #include "logging.h"
 
 #include "BmodEmitter.h"
+#include "LocationDumper.h"
+#include "DiagnosticEngine.h"
+#include "Sema.h"
 #include "SchemaMigration.h"
 
 #ifdef BLANG_HAS_LLVM
@@ -25,12 +28,65 @@ using namespace std;
 
 Scope *gScope;
 
+// The single diagnostic reporting path, owned by main() and referenced here so
+// the top-level parse-catch (inside Module::Parse) renders through it. Null
+// until main() installs it; the catch falls back to a local engine if unset.
+DiagnosticEngine *gDiag = nullptr;
+
+// True if `sym` can start a top-level declaration — a panic-mode resync target.
+static bool isTopLevelStarter( int sym )
+{
+	switch ( sym )
+	{
+		case Lexer::KEYWORD_IMPORT:
+		case Lexer::KEYWORD_PUB:
+		case Lexer::KEYWORD_TABLE:
+		case Lexer::KEYWORD_STRUCT:
+		case Lexer::KEYWORD_PROTOCOL:
+		case Lexer::KEYWORD_IMPL:
+		case Lexer::KEYWORD_ENUM:
+		case Lexer::KEYWORD_TEST:
+		case Lexer::KEYWORD_ON:
+		case Lexer::KEYWORD_FN:
+		case Lexer::KEYWORD_ASYNC:
+		case Lexer::TYPE_MODIFIER:   // extern
+		case Lexer::AT_SIGN:         // @annotation
+			return true;
+		default:
+			return false;
+	}
+}
+
+// Panic-mode recovery after a top-level parse error: consume the current token
+// then skip to the next top-level declaration starter (at brace depth 0, so a
+// `fn` inside a lambda/body is not a false resync point) or EOF. Guarantees
+// forward progress so Module::Parse's loop cannot spin.
+static void resyncTopLevel( Lexer &l )
+{
+	int depth = 0;
+	bool first = true;
+	while ( !l.isEOF() )
+	{
+		int p = l.peekSymbol();
+		if ( p == -1 )
+			break;
+		if ( !first && depth == 0 && isTopLevelStarter( p ) )
+			break;
+		int sym = l.getSymbol();
+		if ( sym == '{' )
+			depth++;
+		else if ( sym == '}' && depth > 0 )
+			depth--;
+		first = false;
+	}
+}
+
 string CompileError::getMessage() const
 {
-	stringstream s;
-	s << "Compiler Error in " << mFilename << ":" << mLineno << endl;
-	s << mMessage << " at line: " << mLexer.getLineNumber();
-	return s.str();
+	// Raw message body only. The located "<file>:<line>:<col>: error: " prefix
+	// and any compiler-internal C++ throw-site detail are the DiagnosticEngine's
+	// job (U2, FR-001/FR-003); this accessor no longer formats them.
+	return mMessage;
 }
 
 Module *Module::Parse( Lexer &l, Scope *s )
@@ -47,17 +103,21 @@ Module *Module::Parse( Lexer &l, Scope *s )
 	// references / mutual recursion). Bodies are parsed after the declaration
 	// loop below.
 	std::vector<FunctionDefinition*> deferredFuncs;
-	try {
-		while( !l.isEOF() )
-		{
-			// Peek past any trailing whitespace/comments to check for real EOF
-			int nextSym = l.peekSymbol();
-			if ( nextSym == -1 )
-				break;
+	while( !l.isEOF() )
+	{
+		// Peek past any trailing whitespace/comments to check for real EOF
+		int nextSym = l.peekSymbol();
+		if ( nextSym == -1 )
+			break;
 
+		// Per-declaration try/catch enables panic-mode recovery: one bad
+		// declaration is reported and skipped, and parsing continues so a single
+		// compile reports all top-level syntax errors.
+		try {
 			// Handle import statements
 			if ( nextSym == Lexer::KEYWORD_IMPORT )
 			{
+				SourceLocation importLoc = l.getTokenLocation();
 				l.getSymbol(); // consume 'import'
 				int importSym = l.getSymbol();
 				if ( importSym != Lexer::SYMBOL )
@@ -80,7 +140,11 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				if ( semi != ';' )
 					COMPILE_ERROR( l, "Expected ';' after import statement" );
 
-				mod->mImports.push_back( new ImportStatement( moduleName ) );
+				{
+					ImportStatement *imp = new ImportStatement( moduleName );
+					imp->setLocation( importLoc );
+					mod->mImports.push_back( imp );
+				}
 
 				// Validate and register the import for qualified access
 				Scope *ns = s->findNamespace( moduleName );
@@ -314,15 +378,36 @@ Module *Module::Parse( Lexer &l, Scope *s )
 
 			mod->mFunctionList.push_back( def );
 			cout << *def << endl;
+		} catch( CompileError &err ) {
+			// Buffer the located diagnostic through the single reporting path,
+			// then resync to the next top-level declaration so parsing continues.
+			// gDiag is installed by main() before parsing; fall back defensively.
+			// The fallback is a collector like gDiag, so on the (degenerate)
+			// gDiag==null path finish() it immediately or the error is dropped.
+			DiagnosticEngine fallback;
+			DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
+			eng.reportCompileError( err );
+			if ( gDiag == nullptr )
+				fallback.finish();
+			resyncTopLevel( l );
 		}
+	}
 
-		// Second pass: parse the deferred function bodies now that every
-		// top-level function signature is registered in scope.
-		for ( FunctionDefinition *f : deferredFuncs )
+	// Second pass: parse the deferred function bodies now that every top-level
+	// function signature is registered in scope (forward references / mutual
+	// recursion). Each body gets its own try/catch so one bad body is reported
+	// through the diagnostic engine and the rest still parse.
+	for ( FunctionDefinition *f : deferredFuncs )
+	{
+		try {
 			f->ParseDeferredBody( l );
-	} catch( CompileError &err ) {
-		cerr << err.getMessage() << endl;
-		return nullptr;
+		} catch( CompileError &err ) {
+			DiagnosticEngine fallback;
+			DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
+			eng.reportCompileError( err );
+			if ( gDiag == nullptr )
+				fallback.finish();
+		}
 	}
 
 	return mod;
@@ -330,6 +415,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 
 WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_WHILE )
 	{
@@ -337,6 +423,7 @@ WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	WhileStatement *statement = new WhileStatement;
+	statement->setLocation( loc );
 
 	statement->mLoopExpression = Expression::ParseExpr( l, scope, 0 );
 
@@ -358,6 +445,7 @@ WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
 
 IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_IF )
 	{
@@ -365,6 +453,7 @@ IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	IfStatement *statement = new IfStatement;
+	statement->setLocation( loc );
 
 	statement->mIfExpression = Expression::ParseExpr( l, scope, 0 );
 
@@ -398,6 +487,7 @@ IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
 
 ForStatement *ForStatement::Parse( Lexer &l, Scope *scope )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_FOR )
 	{
@@ -411,6 +501,7 @@ ForStatement *ForStatement::Parse( Lexer &l, Scope *scope )
 	}
 
 	ForStatement *statement = new ForStatement;
+	statement->setLocation( loc );
 
 	statement->mInitialExpression = Expression::Parse( l, scope );
 	if ( statement->mInitialExpression == nullptr )
@@ -451,12 +542,20 @@ static void printUsage( const char *progName )
 	std::cerr << "  -o, --output FILE Output file name" << std::endl;
 	std::cerr << "  --parse-only      Parse only, no code generation" << std::endl;
 	std::cerr << "  --combine         Combine all .b files into a single .ll output" << std::endl;
-	std::cerr << "  --test-main       Emit the test runner as main() (for `bcc test`)" << std::endl;
+	std::cerr << "  --emit-test-main  Emit a main() that runs test{} blocks via the test driver" << std::endl;
 #endif
+	std::cerr << "  --dump-locations  Print <file>:<line>:<col> <NodeKind> per AST node and exit" << std::endl;
 	std::cerr << "  --emit-bmod FILE  Emit .bmod interface file" << std::endl;
+	std::cerr << "  -v, --verbose     Emit parse-progress/trace output (quiet by default)" << std::endl;
+	std::cerr << "  --debug-compiler  Show compiler-internal detail on errors (throw site, raw IR)" << std::endl;
 	std::cerr << "  -h, --help        Show this help" << std::endl;
 }
 
+// The libFuzzer harness (fuzz/fuzz_parse.cpp, U5) reuses this translation unit's
+// Module::Parse and the file-scope gScope/gDiag globals, but must NOT provide a
+// second `main` (libFuzzer supplies its own). Building fuzz_parse defines
+// BLANG_FUZZ_HARNESS to compile out qcc's main. No-op for normal qcc/bcc builds.
+#ifndef BLANG_FUZZ_HARNESS
 int main( int argc, char *argv[] )
 {
 	if ( argc < 2 )
@@ -469,7 +568,14 @@ int main( int argc, char *argv[] )
 	bool emitObj = false;
 	bool parseOnly = false;
 	bool combineMode = false;
-	bool testMainMode = false;
+	bool dumpLocations = false;
+	bool verbose = false;
+	bool debugCompiler = false;
+	bool jsonDiagnostics = false;   // --json: emit diagnostics as a JSON array
+	bool werror = false;            // -Werror: promote warnings to errors (exit)
+	std::string optLevel;           // -O<n>: in-process IR optimization level
+	bool debugInfo = false;         // -g: emit DWARF debug info (U3)
+	bool emitTestMain = false;
 	std::string outputFile;
 	std::string emitBmodFile;
 	std::string emitSchemaFile;
@@ -489,10 +595,31 @@ int main( int argc, char *argv[] )
 			emitObj = true;
 		else if ( arg == "--parse-only" )
 			parseOnly = true;
+		else if ( arg == "--dump-locations" )
+		{
+			// Print one <file>:<line>:<col> <NodeKind> line per AST node,
+			// then exit. Implies parse-only; no LLVM dependency.
+			dumpLocations = true;
+			parseOnly = true;
+		}
 		else if ( arg == "--combine" )
 			combineMode = true;
-		else if ( arg == "--test-main" )
-			testMainMode = true;
+		else if ( arg == "--emit-test-main" )
+			emitTestMain = true;
+		else if ( arg == "-v" || arg == "--verbose" )
+			verbose = true;
+		else if ( arg == "--debug-compiler" )
+			debugCompiler = true;
+		else if ( arg == "--json" )
+			jsonDiagnostics = true;
+		else if ( arg == "-Werror" )
+			werror = true;
+		else if ( arg == "-O" )
+			optLevel = "2";                 // bare -O means -O2 (gcc convention)
+		else if ( arg.size() > 2 && arg.substr( 0, 2 ) == "-O" )
+			optLevel = arg.substr( 2 );     // -O0/1/2/3/s/z; validated at optimize()
+		else if ( arg == "-g" )
+			debugInfo = true;               // -g: emit DWARF debug info (U3)
 		else if ( arg == "--emit-bmod" )
 		{
 			if ( i + 1 < argc )
@@ -582,6 +709,14 @@ int main( int argc, char *argv[] )
 		return -1;
 	}
 
+	// Install the single diagnostic reporting path for this process. The
+	// top-level parse-catch (Module::Parse) renders located errors through it.
+	DiagnosticEngine diagnostics;
+	diagnostics.setDebugCompiler( debugCompiler );
+	diagnostics.setJson( jsonDiagnostics );
+	diagnostics.setWerror( werror );
+	gDiag = &diagnostics;
+
 	// Set up the global scope with built-in types. All per-file module scopes
 	// will parent to this scope so they share the same primitive type set.
 	gScope = new Scope( Scope::kScope_Global );
@@ -593,6 +728,7 @@ int main( int argc, char *argv[] )
 	gScope->addType( new Type( "double" ) );
 	gScope->addType( new Type( "long" ) );
 	gScope->addType( new Type( "short" ) );
+	gScope->addType( new Type( "byte" ) );
 	gScope->addType( new Type( "Task" ) );
 	gScope->addType( new Type( "Array" ) );
 	gScope->addType( new Type( "Buffer" ) );
@@ -673,6 +809,45 @@ int main( int argc, char *argv[] )
 		combineScope->setParent( gScope );
 	}
 
+	// Quiet by default (FR-007): the parser and codegen emit informational
+	// stdout — per-file "Completed …" progress, "Wrote IR to …", and the
+	// lexer's per-token trace. Divert all of it to a discard sink unless -v
+	// was passed. --dump-locations always diverts here regardless of -v and
+	// restores std::cout just before writing its node dump, so its output is
+	// exactly the dump (U1 golden contract). Error diagnostics are unaffected:
+	// they go to std::cerr, never std::cout.
+	std::ostringstream discardSink;
+	std::streambuf *savedCoutBuf = nullptr;
+	// RAII: guarantee std::cout's original buffer is restored on EVERY exit
+	// path from here on — the two early `return -1` failures below, and the
+	// normal success return. Without this, a quiet (non-verbose) compile left
+	// std::cout pointing at the stack-local `discardSink` after this function
+	// returned; the standard-stream teardown in std::ios_base::Init::~Init()
+	// then flushed that dangling stack streambuf at process exit — an invalid
+	// read that is benign on some hosts but SIGSEGVs on others (surfaced by CI,
+	// invisible locally). Declared after `discardSink` so the guard destructs
+	// FIRST (restoring the real buffer) and `discardSink` dies afterward.
+	struct CoutBufGuard
+	{
+		std::streambuf **saved;
+		~CoutBufGuard()
+		{
+			if ( *saved != nullptr )
+			{
+				std::cout.rdbuf( *saved );
+				*saved = nullptr;
+			}
+		}
+	} coutBufGuard{ &savedCoutBuf };
+	if ( !verbose || dumpLocations )
+		savedCoutBuf = std::cout.rdbuf( discardSink.rdbuf() );
+
+	// U1: accumulate failure across all files instead of aborting at the first,
+	// so one compile reports every file's diagnostics. Buffered diagnostics are
+	// rendered once by gDiag->finish() after the loop; codegen runs only if no
+	// errors remain (Constitution III).
+	bool hadError = false;
+
 	for ( std::size_t fileIdx = 0; fileIdx < inputFiles.size(); fileIdx++ )
 	{
 		const auto &inputFile = inputFiles[fileIdx];
@@ -697,8 +872,27 @@ int main( int argc, char *argv[] )
 
 			// Last source file is the user's code — use combineScope directly.
 			// Stdlib files (not last) get their own namespace scope.
+			// A few stdlib modules define fundamental TYPES that programs use
+			// unqualified (no `module.` prefix) after importing them, so they are
+			// parsed into combineScope directly rather than a namespace scope:
+			//   - buffer: the `Buffer` type.
+			//   - collections: the `Map<K,V>` container (S2). It defines only the
+			//     Map struct + its impl (no free functions), so promoting it to
+			//     combineScope makes `Map<...>` resolve in a variable declaration
+			//     (the seeded S2 bug: a generic type from a namespaced combined
+			//     module was invisible unqualified) without polluting the global
+			//     namespace with functions. bcc only combines collections.b when
+			//     the program `import collections;`, so it is never present unless
+			//     requested.
 			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
-			if ( isUserFile )
+			//   - cli (U5): parsed into combineScope (global, unqualified
+			//     `has_flag(...)`) like collections. A namespaced module's
+			//     internal string-returning calls (has_flag -> flag_name_of) hit a
+			//     string-ARC double-free under the module-prefix codegen; global
+			//     modules (collections' Map methods calling each other) are clean.
+			bool isGlobalTypeLib = ( moduleName == "buffer" ||
+				moduleName == "collections" || moduleName == "cli" );
+			if ( isUserFile || isGlobalTypeLib )
 			{
 				fileScope = combineScope;
 			}
@@ -706,7 +900,7 @@ int main( int argc, char *argv[] )
 			{
 				// Create a namespace scope for this stdlib module
 				Scope *nsScope = new Scope( Scope::kScope_Namespace );
-				nsScope->setParent( gScope );
+				nsScope->setParent( combineScope );
 				combineScope->addNamespace( moduleName, nsScope );
 				moduleNamespaces[moduleName] = nsScope;
 				fileScope = nsScope;
@@ -767,10 +961,18 @@ int main( int argc, char *argv[] )
 
 		LexerReader reader( inputFile.c_str() );
 		Lexer l( &reader );
+		// Per-token "Symbol …" trace only under -v, never in --dump-locations.
+		l.setTraceEnabled( verbose && !dumpLocations );
 
 		SmartPtr<Module> mod = Module::Parse( l, fileScope );
 		if ( mod == nullptr )
-			return -1;
+		{
+			// Catastrophic (unrecoverable) parse failure for this file. The
+			// located diagnostic was already buffered; record failure and move on
+			// so remaining files still report their errors.
+			hadError = true;
+			continue;
+		}
 
 		if ( isBmod )
 		{
@@ -789,6 +991,43 @@ int main( int argc, char *argv[] )
 
 		modules.push_back( mod );
 		cout << "Completed parse" << endl;
+
+		// Semantic analysis (U3): runs in ALL build modes, immediately after a
+		// non-extern module parses and before any code generation, resolving
+		// member references and annotating expression types through the single
+		// DiagnosticEngine. Extern .bmod modules provide types only and are not
+		// analyzed (Sema::analyze skips them). On any sema error the compile
+		// fails (non-zero exit) and codegen is not reached for this file.
+		if ( !isBmod && !Sema::analyze( (Module *)mod, fileScope, *gDiag ) )
+			hadError = true;
+	}
+
+	// U1: render all buffered diagnostics once (human text or --json array), then
+	// stop before any output-producing stage if the compile had errors — never
+	// codegen a rejected program (Constitution III). finish() also flushes
+	// warnings (which do not, without -Werror, set hadError) on the success path.
+	gDiag->finish();
+	if ( hadError || gDiag->hasErrors() )
+		return 1;
+
+	// --dump-locations: restore stdout and print one line per AST node for
+	// each parsed source module (command-line order), then exit. This is
+	// the entire stdout of a dump run.
+	if ( dumpLocations )
+	{
+		// Restore now (the dump below writes to the real std::cout) and disarm
+		// the RAII guard so it does not restore a second time.
+		if ( savedCoutBuf != nullptr )
+		{
+			std::cout.rdbuf( savedCoutBuf );
+			savedCoutBuf = nullptr;
+		}
+		for ( auto &mod : modules )
+		{
+			if ( !mod->isExtern() )
+				LocationDumper::dump( (Module*)mod, std::cout );
+		}
+		return 0;
 	}
 
 	// Emit .bmod interface file if requested (runs after parsing, before codegen)
@@ -866,8 +1105,9 @@ int main( int argc, char *argv[] )
 			}
 
 			QLang::CodeGen codegen( combinedName.c_str() );
+			codegen.setTestMode( emitTestMain );
+			codegen.setDebugInfo( debugInfo );
 			codegen.registerExternalTypes( allStructs, allEnums );
-			codegen.setTestMainMode( testMainMode );
 			codegen.setDbConfig( dbDriver, dbUrl );
 			for ( auto &c : dbNamedConns )
 				codegen.addDbNamedConn( c.name, c.driver, c.url );
@@ -906,8 +1146,29 @@ int main( int argc, char *argv[] )
 
 			if ( !codegen.verify() )
 			{
-				cerr << "Module verification failed (combined)" << endl;
+				cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
+				if ( debugCompiler )
+					cerr << codegen.getVerifyError() << endl;
 				return -1;
+			}
+
+			// Layer 1 of -O: run the in-process IR optimization pipeline (opt-in;
+			// empty/-O0 leaves the module byte-identical to the unoptimized build),
+			// then re-verify (opt must not produce invalid IR).
+			if ( !optLevel.empty() && optLevel != "0" )
+			{
+				if ( !codegen.optimize( optLevel ) )
+				{
+					cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+					return -1;
+				}
+				if ( !codegen.verify() )
+				{
+					cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
+					if ( debugCompiler )
+						cerr << codegen.getVerifyError() << endl;
+					return -1;
+				}
 			}
 
 			// Determine output IR file path
@@ -958,7 +1219,8 @@ int main( int argc, char *argv[] )
 
 				const std::string &inputFile = inputFiles[ idx ];
 				QLang::CodeGen codegen( inputFile.c_str() );
-				codegen.setTestMainMode( testMainMode );
+				codegen.setTestMode( emitTestMain );
+				codegen.setDebugInfo( debugInfo );
 				codegen.setDbConfig( dbDriver, dbUrl );
 				for ( auto &c : dbNamedConns )
 					codegen.addDbNamedConn( c.name, c.driver, c.url );
@@ -974,8 +1236,28 @@ int main( int argc, char *argv[] )
 
 				if ( !codegen.verify() )
 				{
-					cerr << "Module verification failed for " << inputFile << endl;
+					cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
+					if ( debugCompiler )
+						cerr << codegen.getVerifyError() << endl;
 					return -1;
+				}
+
+				// Layer 1 of -O (see combine path above): in-process IR passes,
+				// opt-in, then re-verify. Empty/-O0 leaves the module unchanged.
+				if ( !optLevel.empty() && optLevel != "0" )
+				{
+					if ( !codegen.optimize( optLevel ) )
+					{
+						cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+						return -1;
+					}
+					if ( !codegen.verify() )
+					{
+						cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
+						if ( debugCompiler )
+							cerr << codegen.getVerifyError() << endl;
+						return -1;
+					}
 				}
 
 				// Determine output file path for IR. When multiple input files are
@@ -1019,7 +1301,9 @@ int main( int argc, char *argv[] )
 	(void)emitObj;
 	(void)parseOnly;
 	(void)combineMode;
+	(void)emitTestMain;
 #endif
 
 	return 0;
 }
+#endif // BLANG_FUZZ_HARNESS

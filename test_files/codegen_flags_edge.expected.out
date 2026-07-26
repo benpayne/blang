@@ -1,0 +1,5 @@
+only-pos count = 3
+has any flag = false
+get_or default = DEF
+debug bool (=false) = false
+trace bool = true

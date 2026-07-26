@@ -14,6 +14,7 @@ using namespace std;
 
 StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 {
+	SourceLocation loc = l.getTokenLocation();
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_STRUCT )
 	{
@@ -27,6 +28,7 @@ StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 	}
 
 	StructDefinition *structDef = new StructDefinition( l.getSymbolText() );
+	structDef->setLocation( loc );
 	structDef->mIsPublic = isPublic;
 
 	// Check for generic parameters: struct Name<T> or struct Name<T: Constraint>
@@ -72,6 +74,7 @@ StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 
 	while ( l.peekSymbol() != '}' )
 	{
+		SourceLocation fieldLoc = l.getTokenLocation();
 		SmartPtr<Type> fieldType = Type::Parse( l, s, false );
 		if ( fieldType == nullptr )
 		{
@@ -89,6 +92,7 @@ StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 		}
 
 		VariableDefinition *field = new VariableDefinition( fieldType, l.getSymbolText() );
+		field->setLocation( fieldLoc );
 		structDef->mFields.push_back( field );
 
 		sym = l.getSymbol();

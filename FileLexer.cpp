@@ -99,9 +99,6 @@ void Lexer::readStringConst()
 	
 	while ( !mReader->isEOF() )
 	{
-		if ( mReader->peekChar() == '\n' )
-			printf( "Multi-line string constant on line %d\n", lineno );
-		
 		if ( mReader->peekChar() == '\\' )
 		{
 			switch ( (*mReader)[ 1 ] )
@@ -150,6 +147,16 @@ void Lexer::readStringConst()
 					mMatchString.append( 1, '\0' );
 					mReader->popChar( 2 );
 					break;
+				default:
+					// Unrecognized escape (e.g. "\l") or a backslash at
+					// end-of-input: consume the backslash literally so the
+					// lexer always makes forward progress. Without this the
+					// loop would spin forever (peekChar() keeps returning
+					// '\\' and isEOF() stays false), hanging the parser on
+					// crafted input. The following character is handled by
+					// the next loop iteration.
+					mMatchString.append( 1, mReader->popChar() );
+					break;
 			}
 		}
 		else if ( mReader->peekChar() != '\"' )
@@ -171,10 +178,7 @@ void Lexer::readCharacterConst()
 	
 	while ( !mReader->isEOF() )
 	{
-		if ( mReader->peekChar() == '\n' )
-			printf( "Multi-line char constant on line %d\n", lineno );
-
-		// could improve the proper grammmer for the constant value.		
+		// could improve the proper grammmer for the constant value.
 		if ( mReader->peekChar() != '\'' )
 		{
 			mMatchString.append( 1, mReader->popChar() );
@@ -310,7 +314,7 @@ int Lexer::getSymbolInternal()
 	if ( mCurrentPos == mSymbolList.size() )
 	{
 		sym = getSymbolFromFile();
-		mSymbolList.push_back( SymbolInfo( sym, mMatchString ) );
+		mSymbolList.push_back( SymbolInfo( sym, mMatchString, mScanLine, mScanCol ) );
 	}
 	else
 	{
@@ -318,23 +322,50 @@ int Lexer::getSymbolInternal()
 		mMatchString = mSymbolList[ mCurrentPos ].symbolText;
 	}
 
-	if ( sym <= Lexer::QUESTION_MARK || (sym >= 256 && sym < Lexer::NUM_SYMBOLS) )
-		std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
-	else
-		std::cout << "Symbol " << (char)sym << std::endl;
-	
+	if ( mTraceEnabled )
+	{
+		if ( sym <= Lexer::QUESTION_MARK || (sym >= 256 && sym < Lexer::NUM_SYMBOLS) )
+			std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
+		else
+			std::cout << "Symbol " << (char)sym << std::endl;
+	}
+
 	return sym;
+}
+
+SourceLocation Lexer::getTokenLocation()
+{
+	// Ensure the token at the current parse position has been scanned into
+	// the symbol list (peekSymbol reads at mCurrentPos without advancing).
+	peekSymbol();
+	if ( mCurrentPos >= 0 && (std::size_t)mCurrentPos < mSymbolList.size() )
+	{
+		const SymbolInfo &info = mSymbolList[ mCurrentPos ];
+		return SourceLocation( mReader->getFileName(), info.line, info.col );
+	}
+	// Fallback: position at end of input (e.g. missing closing brace).
+	return SourceLocation( mReader->getFileName(), mReader->getLine(), mReader->getCol() );
 }
 
 int Lexer::getSymbolFromFile()
 {
 	mMatchString.clear();
 	mLastSym = -1;
-	
+
+	// Position used if we fall through to EOF without recognizing a token.
+	mScanLine = mReader->getLine();
+	mScanCol = mReader->getCol();
+
 	while ( !mReader->isEOF() )
 	{
 		//std::cout << "Lexer Symbol " << (int)mReader->peekChar() << std::endl;
-		
+
+		// Snapshot the position of this candidate token's first character.
+		// Whitespace/comment branches below consume and re-loop, so the
+		// snapshot that survives to a return is the real token start.
+		mScanLine = mReader->getLine();
+		mScanCol = mReader->getCol();
+
 		// check for keywords
 		switch ( mReader->peekChar() )
 		{
@@ -347,7 +378,9 @@ int Lexer::getSymbolFromFile()
 					return KEYWORD_AWAIT;
 				break;
 			case 'b':
-				if ( matchKeyword( "bool" ) )
+				if ( matchKeyword( "byte" ) )
+					return BUILTIN_TYPE;
+				else if ( matchKeyword( "bool" ) )
 					return BOOL;
 				else if ( matchKeyword( "break" ) )
 					return KEYWORD_BREAK;
@@ -393,16 +426,18 @@ int Lexer::getSymbolFromFile()
 					return KEYWORD_FN;
 				break;
 			case 'i':
-				if ( matchKeyword( "int" ) )
+				if ( matchKeyword( "import" ) )
+					return KEYWORD_IMPORT;
+				else if ( matchKeyword( "insert" ) )
+					return KEYWORD_INSERT;
+				else if ( matchKeyword( "init" ) )
+					return KEYWORD_INIT;
+				else if ( matchKeyword( "int" ) )
 					return BUILTIN_TYPE;
 				else if ( matchKeyword( "if" ) )
 					return KEYWORD_IF;
 				else if ( matchKeyword( "impl" ) )
 					return KEYWORD_IMPL;
-				else if ( matchKeyword( "import" ) )
-					return KEYWORD_IMPORT;
-				else if ( matchKeyword( "insert" ) )
-					return KEYWORD_INSERT;
 				else if ( matchKeyword( "in" ) )
 					return KEYWORD_IN;
 				break;
@@ -438,7 +473,7 @@ int Lexer::getSymbolFromFile()
 				else if ( matchKeyword( "struct" ) )
 					return KEYWORD_STRUCT;
 				else if ( matchKeyword( "static" ) )
-					return TYPE_MODIFIER;
+					return KEYWORD_STATIC;
 				else if ( matchKeyword( "signed" ) )
 					return TYPE_MODIFIER;
 				else if ( matchKeyword( "shared" ) )
@@ -633,7 +668,11 @@ int Lexer::getSymbolFromFile()
 				break;
 			
 			default:
-				printf( "Unknown Charater %d\n", mReader->peekChar() );
+				// Quiet by default (REQ-003): only trace this under -v. ':' and
+				// other single characters reach here via valid constructs
+				// (e.g. generic constraints `<T: Comparable>`) during parsing.
+				if ( mTraceEnabled )
+					printf( "Unknown Charater %d\n", mReader->peekChar() );
 				return mReader->popChar();
 				break;
 		}			

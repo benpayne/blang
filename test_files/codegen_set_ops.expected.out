@@ -1,0 +1,6 @@
+length after dups = 3
+length after 250 = 253
+all 250 present = 1
+has red = true
+remove red = true
+has red after = false

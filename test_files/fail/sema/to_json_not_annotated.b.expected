@@ -1,0 +1,6 @@
+# U6 fail/sema fixture (relocated from origin's cgfail/): the builtin to_json(v)
+# requires a @json-annotated struct. Calling it on a plain (non-@json) struct is
+# rejected by Sema in ALL build modes with a located error (reject, don't
+# coerce). Origin validated this at codegen with a non-located cerr; local's Sema
+# is the source of truth (a codegen backstop remains).
+^[^:]+\.b:[0-9]+:[0-9]+: error: to_json requires a @json-annotated struct, but '[A-Za-z_][A-Za-z_0-9]*' is not annotated @json$

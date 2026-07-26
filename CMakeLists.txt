@@ -33,6 +33,22 @@ else()
 	message(STATUS "LLVM not found -- building without code generation support")
 endif()
 
+# Optional sanitizer instrumentation (opt-in; OFF by default so normal/CI
+# non-sanitizer builds are byte-for-byte unchanged). Comma-separated list, e.g.
+#   cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined
+# Flags are added to BOTH compile and link lines and, because this block precedes
+# every target definition, apply uniformly to the compiler (qcc/bcc/lexer) and
+# the C runtime libraries. UBSan is made FATAL (-fno-sanitize-recover) so real UB
+# fails the build's test run rather than printing and continuing.
+set(BLANG_SANITIZE "" CACHE STRING
+	"Comma-separated sanitizers to instrument with (e.g. address,undefined). Empty = off.")
+if(BLANG_SANITIZE)
+	message(STATUS "Sanitizers enabled: ${BLANG_SANITIZE}")
+	add_compile_options(-fsanitize=${BLANG_SANITIZE} -fno-sanitize-recover=all
+		-fno-omit-frame-pointer -g)
+	add_link_options(-fsanitize=${BLANG_SANITIZE})
+endif()
+
 # Lexer test targets
 add_executable(lexerTest LexerTest.cpp FileLexer.cpp LexerReader.cpp)
 set_target_properties(lexerTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
@@ -67,15 +83,24 @@ set(QCC_SOURCES
 	QQueryExpression.cpp
 	QLambdaExpression.cpp
 	BmodEmitter.cpp
+	LocationDumper.cpp
+	DiagnosticEngine.cpp
+	Sema.cpp
 	FormatString.cpp)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
-	list(APPEND QCC_SOURCES CodeGen.cpp)
+	list(APPEND QCC_SOURCES
+		CodeGen.cpp CGStatements.cpp CGExpressions.cpp CGTypes.cpp
+		CGStruct.cpp CGEnum.cpp CGLambda.cpp CGRuntime.cpp CGDebug.cpp)
 endif()
 
 add_executable(qcc ${QCC_SOURCES})
-target_compile_definitions(qcc PRIVATE JH_VERBOSE_LOGGING)
+# NOTE: JH_VERBOSE_LOGGING is intentionally NOT defined on qcc. It would enable
+# logging.h's LOG/TRACE_BEGIN macros, which fprintf compiler-developer trace
+# ([TRACE] …, "Saving position", …) to stderr on every parse — incompatible
+# with U2's quiet-by-default contract (FR-007 / Gate D). Compiler developers
+# who want that trace can build with -DJH_VERBOSE_LOGGING.
 set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # blang_sqlgen (SQLGen + SchemaMigration) is always needed: codegen uses SQLGen
@@ -85,6 +110,34 @@ target_link_libraries(qcc blang_sqlgen)
 if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
 	target_link_libraries(qcc ${llvm_libs})
+endif()
+
+# ---------------------------------------------------------------------------
+# Bounded parser fuzzing (libFuzzer) — opt-in, clang-only (U5, REQ-006).
+# Configure a dedicated clang build:
+#   cmake -S . -B build-fuzz -DBLANG_ENABLE_LLVM=OFF -DBLANG_FUZZ=ON \
+#         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+#   cmake --build build-fuzz --target fuzz_parse
+# Uses the PARSE-ONLY compiler sources (QCC_SOURCES here has no CodeGen because
+# the fuzz build sets BLANG_ENABLE_LLVM=OFF) with qcc's main() compiled out.
+# ---------------------------------------------------------------------------
+option(BLANG_FUZZ "Build the libFuzzer parser target fuzz_parse (requires clang)" OFF)
+if(BLANG_FUZZ)
+	if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+		message(FATAL_ERROR "BLANG_FUZZ requires clang (libFuzzer). Reconfigure with -DCMAKE_CXX_COMPILER=clang++.")
+	endif()
+	add_executable(fuzz_parse ${QCC_SOURCES} fuzz/fuzz_parse.cpp)
+	set_target_properties(fuzz_parse PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+	target_include_directories(fuzz_parse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	target_compile_definitions(fuzz_parse PRIVATE BLANG_FUZZ_HARNESS)
+	target_compile_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address -fno-omit-frame-pointer -g)
+	target_link_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address)
+	if(LLVM_FOUND)
+		# The parser needs no LLVM; keep fuzz_parse lean. (Normally the fuzz build
+		# is configured BLANG_ENABLE_LLVM=OFF so this branch is not taken.)
+		target_compile_definitions(fuzz_parse PRIVATE BLANG_HAS_LLVM)
+		target_link_libraries(fuzz_parse ${llvm_libs} blang_sqlgen)
+	endif()
 endif()
 
 # BLang runtime library (ARC, thread pool, channels, async)
@@ -125,11 +178,51 @@ set_target_properties(blang_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_link_libraries(blang_net blang_string blang_buffer)
 
+# BLang filesystem runtime library (file I/O + directory ops)
+add_library(blang_fs STATIC runtime/blang_fs.c)
+set_target_properties(blang_fs PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_fs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_fs blang_string blang_buffer blang_array)
+
 # BLang sys runtime library (argc/argv capture for sys.args)
 add_library(blang_sys STATIC runtime/blang_sys.c)
 set_target_properties(blang_sys PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(blang_sys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_link_libraries(blang_sys blang_string blang_array)
+
+# BLang native stdlib modules (U4): math (libm), time, random, env. Each is an
+# import-gated static lib (linked unconditionally by bcc; the linker drops it
+# when unreferenced — import-gating happens at the .b combine layer via
+# kKnownOrder, not at link).
+add_library(blang_math STATIC runtime/blang_math.c)
+set_target_properties(blang_math PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_math m)
+
+add_library(blang_time STATIC runtime/blang_time.c)
+set_target_properties(blang_time PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_time PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+add_library(blang_random STATIC runtime/blang_random.c)
+set_target_properties(blang_random PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_random PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+
+add_library(blang_env STATIC runtime/blang_env.c)
+set_target_properties(blang_env PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_env PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_env blang_string)
+
+# BLang hash module (U5): FNV-1a over string bytes, backs the hashed Map/Set in
+# stdlib/collections.b. Import-gated like the other stdlib .a's.
+add_library(blang_hash STATIC runtime/blang_hash.c)
+set_target_properties(blang_hash PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_hash PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_link_libraries(blang_hash blang_string)
+
+# BLang test-runner driver (behind `bcc test`): fork-isolated test dispatch.
+add_library(blang_testrunner STATIC runtime/blang_testrunner.c)
+set_target_properties(blang_testrunner PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(blang_testrunner PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 
 # BLang database runtime library
 add_library(blang_db STATIC runtime/blang_db.c)
@@ -205,7 +298,16 @@ target_compile_definitions(bcc PRIVATE BCC_ARRAY_LIB="${CMAKE_BINARY_DIR}/libbla
 target_compile_definitions(bcc PRIVATE BCC_BUFFER_LIB="${CMAKE_BINARY_DIR}/libblang_buffer.a")
 target_compile_definitions(bcc PRIVATE BCC_JSON_LIB="${CMAKE_BINARY_DIR}/libblang_json.a")
 target_compile_definitions(bcc PRIVATE BCC_NET_LIB="${CMAKE_BINARY_DIR}/libblang_net.a")
+target_compile_definitions(bcc PRIVATE BCC_FS_LIB="${CMAKE_BINARY_DIR}/libblang_fs.a")
 target_compile_definitions(bcc PRIVATE BCC_SYS_LIB="${CMAKE_BINARY_DIR}/libblang_sys.a")
+target_compile_definitions(bcc PRIVATE BCC_MATH_LIB="${CMAKE_BINARY_DIR}/libblang_math.a")
+target_compile_definitions(bcc PRIVATE BCC_TIME_LIB="${CMAKE_BINARY_DIR}/libblang_time.a")
+target_compile_definitions(bcc PRIVATE BCC_RANDOM_LIB="${CMAKE_BINARY_DIR}/libblang_random.a")
+target_compile_definitions(bcc PRIVATE BCC_ENV_LIB="${CMAKE_BINARY_DIR}/libblang_env.a")
+target_compile_definitions(bcc PRIVATE BCC_HASH_LIB="${CMAKE_BINARY_DIR}/libblang_hash.a")
+target_compile_definitions(bcc PRIVATE BCC_TESTRUNNER_LIB="${CMAKE_BINARY_DIR}/libblang_testrunner.a")
+# Ensure the test-runner driver lib is built before bcc links against it via `bcc test`.
+add_dependencies(bcc blang_testrunner)
 target_compile_definitions(bcc PRIVATE BCC_DB_LIB="${CMAKE_BINARY_DIR}/libblang_db.a")
 # Linker flags for the DB backend(s) (e.g. -lsqlite3, -lpq) baked into bcc so
 # final binaries that use the DB runtime link the right system libraries.
@@ -248,3 +350,103 @@ if(LLVM_FOUND)
 		target_compile_definitions(bcc PRIVATE BCC_LLC_PATH="${LLC_EXECUTABLE}")
 	endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# Runtime C unit tests (CTest). Dependency-free assert harness in runtime/tests/
+# (test_util.h). One add_test() per behavior so `ctest -N` reports each case.
+# These build in every configuration, so a BLANG_SANITIZE build (build-asan)
+# runs them under ASan/UBSan automatically.
+# ---------------------------------------------------------------------------
+enable_testing()
+
+add_executable(test_array runtime/tests/test_array.c)
+target_link_libraries(test_array blang_array blang_string)
+set_target_properties(test_array PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_string runtime/tests/test_string.c)
+target_link_libraries(test_string blang_string blang_array)
+set_target_properties(test_string PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_buffer runtime/tests/test_buffer.c)
+target_link_libraries(test_buffer blang_buffer blang_array blang_string)
+set_target_properties(test_buffer PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_json runtime/tests/test_json.c)
+target_link_libraries(test_json blang_json)
+set_target_properties(test_json PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_fs runtime/tests/test_fs.c)
+target_link_libraries(test_fs blang_fs blang_buffer blang_array blang_string)
+set_target_properties(test_fs PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_net runtime/tests/test_net.c)
+target_link_libraries(test_net blang_net blang_runtime blang_string blang_buffer blang_array Threads::Threads)
+set_target_properties(test_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+# Native stdlib module unit tests (U4).
+add_executable(test_math runtime/tests/test_math.c)
+target_link_libraries(test_math blang_math m)
+set_target_properties(test_math PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_time runtime/tests/test_time.c)
+target_link_libraries(test_time blang_time)
+set_target_properties(test_time PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_random runtime/tests/test_random.c)
+target_link_libraries(test_random blang_random)
+set_target_properties(test_random PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_env runtime/tests/test_env.c)
+target_link_libraries(test_env blang_env blang_string blang_array)
+set_target_properties(test_env PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(test_hash runtime/tests/test_hash.c)
+target_link_libraries(test_hash blang_hash blang_string blang_array)
+set_target_properties(test_hash PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+# One add_test per case (name must match the case table in each test_*.c).
+set(ARRAY_CASES  create_empty push_length get set pop pop_empty insert_remove concat clear grow get_oob set_oob get_null)
+set(STRING_CASES create_len empty equals concat substring to_upper to_lower trim contains starts_ends index_of compare to_int replace char_at_oob)
+set(BUFFER_CASES create append_byte from_string append_string get_set to_string slice index_of clear get_oob)
+set(JSON_CASES   decode_int decode_string decode_bool decode_error object_roundtrip array_build object_get_missing)
+set(FS_CASES     write_read seek size remove mkdir_list)
+set(NET_CASES    connect_refused connect_bad_host selector_lifecycle close_invalid)
+set(MATH_CASES   sqrt pow trig log_exp floor_ceil fabs abs_int)
+set(TIME_CASES   now_positive millis_ge_seconds monotonic_nondecreasing)
+set(RANDOM_CASES seeded_sequence seed_reproducible int_range_bounds int_range_empty float01_bounds)
+set(ENV_CASES    get_hit get_miss has_true has_false)
+set(HASH_CASES   deterministic distinct nonnegative empty_string)
+
+foreach(c ${ARRAY_CASES})
+	add_test(NAME array_${c} COMMAND test_array ${c})
+endforeach()
+foreach(c ${STRING_CASES})
+	add_test(NAME string_${c} COMMAND test_string ${c})
+endforeach()
+foreach(c ${BUFFER_CASES})
+	add_test(NAME buffer_${c} COMMAND test_buffer ${c})
+endforeach()
+foreach(c ${JSON_CASES})
+	add_test(NAME json_${c} COMMAND test_json ${c})
+endforeach()
+foreach(c ${FS_CASES})
+	add_test(NAME fs_${c} COMMAND test_fs ${c})
+endforeach()
+foreach(c ${NET_CASES})
+	add_test(NAME net_${c} COMMAND test_net ${c})
+endforeach()
+foreach(c ${MATH_CASES})
+	add_test(NAME math_${c} COMMAND test_math ${c})
+endforeach()
+foreach(c ${TIME_CASES})
+	add_test(NAME time_${c} COMMAND test_time ${c})
+endforeach()
+foreach(c ${RANDOM_CASES})
+	add_test(NAME random_${c} COMMAND test_random ${c})
+endforeach()
+foreach(c ${ENV_CASES})
+	add_test(NAME env_${c} COMMAND test_env ${c})
+endforeach()
+foreach(c ${HASH_CASES})
+	add_test(NAME hash_${c} COMMAND test_hash ${c})
+endforeach()

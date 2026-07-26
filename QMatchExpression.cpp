@@ -19,6 +19,7 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
+	SourceLocation loc = l.getTokenLocation();
 	// Consume 'match' keyword
 	int sym = l.getSymbol();
 	if ( sym != Lexer::KEYWORD_MATCH )
@@ -27,6 +28,7 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope )
 	}
 
 	MatchExpression *expr = new MatchExpression;
+	expr->setLocation( loc );
 
 	// Parse the subject expression (a primary expression before '{')
 	expr->mSubject = Expression::ParsePrimary( l, scope );

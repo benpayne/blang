@@ -1257,7 +1257,7 @@ LLVM IR code generation (when built with `llvm-18-dev`) covers:
 - Return statements
 - If/else, while, for loops
 - Function calls
-- Binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence)
+- Binary expressions (arithmetic, comparison, logical, bitwise with correct operator precedence). `&&`/`||` short-circuit — the right operand (and its side effects) is evaluated only when the left operand does not already determine the result. `byte` is unsigned (0–255): byte operands widen with zero-extension, `>>` on a byte is a logical shift, and a byte prints unsigned.
 - Assignment expressions (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`)
 - Constant expressions (int, float, string, char)
 - End-to-end compilation: parse → `.ll` → `llc` → native binary

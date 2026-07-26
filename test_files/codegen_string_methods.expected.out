@@ -1,0 +1,7 @@
+length=13
+index_of=7
+upper=HELLO, WORLD!
+lower=hello, world!
+trimmed='hi'
+sub='Hello'
+replaced='Hello, BLang!'

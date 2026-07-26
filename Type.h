@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "RefCount.h"
+#include "SourceLocation.h"
 
 //#include "Expression.h"
 
@@ -31,9 +32,18 @@ namespace QLang
 
 		static Statement *Parse( Lexer &l, Scope *scope );
 
+		// Source location of the construct's first token, stamped at parse
+		// time. Every reachable AST node carries a set location (line/col
+		// >= 1); see spec REQ-001 / FR-003.
+		void setLocation( const SourceLocation &loc ) { mLocation = loc; }
+		const SourceLocation &getLocation() const { return mLocation; }
+
 	protected:
 		Statement() {}
+		SourceLocation mLocation;
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class Type : virtual public RefCount
@@ -51,11 +61,17 @@ namespace QLang
 
 		virtual bool isFunctionType() const { return false; }
 
+		void setLocation( const SourceLocation &loc ) { mLocation = loc; }
+		const SourceLocation &getLocation() const { return mLocation; }
+
 		friend std::ostream &operator<<(std::ostream &out, const Type &type);
 
 	private:
 		std::string mName;
 		std::vector<SmartPtr<Type>> mTypeParams;
+		SourceLocation mLocation;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class FunctionType : public Type
@@ -76,6 +92,8 @@ namespace QLang
 		SmartPtr<Type> mReturnType;  // nullptr = void
 		std::vector<SmartPtr<Type>> mParamTypes;
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class Symbol : virtual public RefCount
@@ -94,8 +112,14 @@ namespace QLang
 
 		virtual SymbolType getSymbolType() = 0;
 
+		void setLocation( const SourceLocation &loc ) { mLocation = loc; }
+		const SourceLocation &getLocation() const { return mLocation; }
+
 	private:
 		std::string mName;
+		SourceLocation mLocation;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class Scope : virtual public RefCount
@@ -223,8 +247,14 @@ namespace QLang
 
 		const std::string &getModuleName() const { return mModuleName; }
 
+		void setLocation( const SourceLocation &loc ) { mLocation = loc; }
+		const SourceLocation &getLocation() const { return mLocation; }
+
 	private:
 		std::string mModuleName;
+		SourceLocation mLocation;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class StructDefinition;
@@ -249,6 +279,8 @@ namespace QLang
 	private:
 		Module() {}
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
 		std::vector<SmartPtr<ImportStatement>> mImports;
@@ -271,6 +303,7 @@ namespace QLang
 		// enabling forward references and mutual recursion.
 		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false,
 			bool isPublic = false, bool deferBody = false );
+		static FunctionDefinition *ParseInit( Lexer &l, Scope *s );
 
 		// Parse the previously-skipped body (see deferBody above) into this same
 		// function object, using its already-built scope.
@@ -305,6 +338,9 @@ namespace QLang
 		bool isPublic() const { return mIsPublic; }
 		bool isAsync() const { return mIsAsync; }
 		bool isBuiltin() const { return mIsBuiltin; }
+		bool isStatic() const { return mIsStatic; }
+		void setStatic( bool s ) { mIsStatic = s; }
+		bool isInit() const { return mIsInit; }
 		const std::vector<GenericParam> &getGenericParams() const { return mGenericParams; }
 		bool hasRequires() const { return !mRequiresClauses.empty(); }
 		bool hasEnsures() const { return !mEnsuresClauses.empty(); }
@@ -324,6 +360,8 @@ namespace QLang
 		bool mIsPublic = false;
 		bool mIsAsync = false;
 		bool mIsBuiltin = false;
+		bool mIsStatic = false;
+		bool mIsInit = false;
 		std::vector<GenericParam> mGenericParams;
 		std::vector<SmartPtr<Expression>> mRequiresClauses;
 		std::vector<SmartPtr<Expression>> mEnsuresClauses;
@@ -331,6 +369,8 @@ namespace QLang
 		int mBodyPos = -1;   // lexer position of a deferred body's '{', else -1
 
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 		friend class Module;
 	};
 
@@ -354,7 +394,7 @@ namespace QLang
 
 		Type *getVariableType() { return mType; }
 		const Type *getVariableType() const { return mType; }
-		void setVariableType( Type *t ) { mType = t; }
+		void setType( Type *type ) { mType = type; }
 
 		bool isConst() const { return mIsConst; }
 		void setConst( bool isConst ) { mIsConst = isConst; }
@@ -381,6 +421,9 @@ namespace QLang
 		virtual Symbol::SymbolType getSymbolType() { return Symbol::TypeVariable; }
 
 		void addMethod( FunctionDefinition *method ) { mMethods.push_back( method ); }
+		void setInitMethod( FunctionDefinition *method ) { mInitMethod = method; }
+		FunctionDefinition *getInitMethod() { return mInitMethod; }
+		bool hasInit() const { return mInitMethod != nullptr; }
 		bool isGeneric() const { return !mGenericParams.empty(); }
 		bool isPublic() const { return mIsPublic; }
 		bool isTable() const { return mIsTable; }
@@ -398,11 +441,14 @@ namespace QLang
 
 		std::vector<SmartPtr<VariableDefinition> > mFields;
 		std::vector<SmartPtr<FunctionDefinition> > mMethods;
+		SmartPtr<FunctionDefinition> mInitMethod;
 		std::vector<GenericParam> mGenericParams;
 		std::vector<AnnotationNode> mAnnotations;
 		bool mIsPublic = false;
 		bool mIsTable = false;
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class ProtocolDefinition : public Symbol
@@ -436,6 +482,8 @@ namespace QLang
 		std::vector<GenericParam> mGenericParams;
 		bool mIsPublic = false;
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class EnumDefinition : public Symbol
@@ -509,6 +557,8 @@ namespace QLang
 		std::vector<AnnotationNode> mAnnotations;
 		bool mIsPublic = false;
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 	class TestBlock : virtual public RefCount
@@ -520,10 +570,16 @@ namespace QLang
 
 		const std::string &getName() const { return mName; }
 
+		void setLocation( const SourceLocation &loc ) { mLocation = loc; }
+		const SourceLocation &getLocation() const { return mLocation; }
+
 	private:
 		std::string mName;
 		SmartPtr<Block> mBody;
+		SourceLocation mLocation;
 		friend class CodeGen;
+		friend class LocationDumper;
+		friend class Sema;
 	};
 
 };

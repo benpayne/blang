@@ -1,4 +1,6 @@
 #include "blang_net.h"
+#include "blang_array.h"
+#include "blang_runtime.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -198,6 +200,38 @@ int64_t __blang_tcp_read_into_buffer( int fd, BlangBuffer *buf, int64_t max_len 
 	return (int64_t)n;
 }
 
+int64_t __blang_tcp_read_into_byte_array( int fd, BlangArray *arr, int64_t max_len )
+{
+	if ( arr == NULL || max_len <= 0 )
+		return -1;
+
+	/* Single read() per call: callers poll for protocol delimiters
+	 * (e.g. HTTP's \r\n\r\n) between calls, so looping until max_len
+	 * here would block on peers that keep the connection open. */
+	uint8_t tmp[4096];
+	int64_t chunk = max_len;
+	if ( chunk > 4096 )
+		chunk = 4096;
+
+	ssize_t n = read( fd, tmp, (size_t)chunk );
+	if ( n < 0 )
+		return -1;
+
+	for ( ssize_t i = 0; i < n; i++ )
+		__blang_array_push( arr, &tmp[i] );
+
+	return (int64_t)n;
+}
+
+int64_t __blang_tcp_write_byte_array( int fd, BlangArray *arr )
+{
+	if ( arr == NULL || arr->data == NULL || arr->length <= 0 )
+		return 0;
+
+	ssize_t n = write( fd, arr->data, (size_t)arr->length );
+	return ( n < 0 ) ? -1 : (int64_t)n;
+}
+
 int64_t __blang_tcp_write_buffer( int fd, BlangBuffer *buf )
 {
 	if ( buf == NULL || buf->data == NULL || buf->length <= 0 )
@@ -205,6 +239,84 @@ int64_t __blang_tcp_write_buffer( int fd, BlangBuffer *buf )
 
 	ssize_t n = write( fd, buf->data, (size_t)buf->length );
 	return ( n < 0 ) ? -1 : (int64_t)n;
+}
+
+/* Write all bytes from a string, retrying on partial writes. */
+int64_t __blang_tcp_write_all( int fd, const BlangString *data )
+{
+	if ( data == NULL || data->data == NULL || data->length <= 0 )
+		return 0;
+
+	const char *ptr = data->data;
+	int64_t remaining = data->length;
+	int64_t total = 0;
+	while ( remaining > 0 )
+	{
+		ssize_t n = write( fd, ptr, (size_t)remaining );
+		if ( n < 0 )
+		{
+			if ( errno == EINTR )
+				continue;
+			return ( total > 0 ) ? total : -1;
+		}
+		if ( n == 0 )
+			break;
+		ptr += n;
+		remaining -= n;
+		total += n;
+	}
+	return total;
+}
+
+/* Stream a file to a socket in chunks. Reads from file_fd and writes to sock_fd.
+   Returns total bytes transferred, -1 on error. */
+int64_t __blang_sendfile( int sock_fd, int file_fd, int64_t offset, int64_t count )
+{
+	if ( sock_fd < 0 || file_fd < 0 || count <= 0 )
+		return -1;
+
+	/* Seek to offset */
+	if ( offset > 0 )
+	{
+		off_t r = lseek( file_fd, (off_t)offset, SEEK_SET );
+		if ( r < 0 )
+			return -1;
+	}
+
+	char buf[8192];
+	int64_t total = 0;
+	while ( total < count )
+	{
+		int64_t remaining = count - total;
+		size_t chunk = ( remaining > 8192 ) ? 8192 : (size_t)remaining;
+		ssize_t nr = read( file_fd, buf, chunk );
+		if ( nr < 0 )
+		{
+			if ( errno == EINTR )
+				continue;
+			return ( total > 0 ) ? total : -1;
+		}
+		if ( nr == 0 )
+			break;
+
+		/* Write all bytes read */
+		const char *wptr = buf;
+		ssize_t nleft = nr;
+		while ( nleft > 0 )
+		{
+			ssize_t nw = write( sock_fd, wptr, (size_t)nleft );
+			if ( nw < 0 )
+			{
+				if ( errno == EINTR )
+					continue;
+				return ( total > 0 ) ? total : -1;
+			}
+			wptr += nw;
+			nleft -= nw;
+		}
+		total += nr;
+	}
+	return total;
 }
 
 /* ========================================================================
@@ -324,6 +436,7 @@ void __blang_selector_add_read( int sel_handle, int fd,
 	sel->entries[idx].is_oneshot = 0;
 	sel->entries[idx].handler = handler;
 	sel->entries[idx].ctx = ctx;
+	__blang_lambda_ctx_retain( ctx );
 	sel->count++;
 	sel->active_count++;
 
@@ -347,6 +460,7 @@ void __blang_selector_add_accept( int sel_handle, int listen_fd,
 	sel->entries[idx].is_oneshot = 0;
 	sel->entries[idx].handler = handler;
 	sel->entries[idx].ctx = ctx;
+	__blang_lambda_ctx_retain( ctx );
 	sel->count++;
 	sel->active_count++;
 
@@ -363,6 +477,7 @@ void __blang_selector_remove( int sel_handle, int fd )
 	{
 		if ( sel->entries[i].fd == fd )
 		{
+			__blang_lambda_ctx_release( sel->entries[i].ctx );
 			/* Shift remaining entries down */
 			for ( int j = i; j < sel->count - 1; j++ )
 			{
@@ -451,6 +566,8 @@ void __blang_selector_run( int sel_handle )
 
 			if ( sel->fds[i].revents & ( POLLHUP | POLLERR | POLLNVAL ) )
 			{
+				/* Release lambda context before removing dead fd */
+				__blang_lambda_ctx_release( sel->entries[i].ctx );
 				/* Remove dead fd */
 				for ( int j = i; j < sel->count - 1; j++ )
 				{
@@ -503,6 +620,9 @@ void __blang_selector_wait( int sel_handle )
 	while ( !sel->stopped )
 		pthread_cond_wait( &sel->stop_cond, &sel->stop_mutex );
 	pthread_mutex_unlock( &sel->stop_mutex );
+
+	/* Auto-destroy after event loop has stopped */
+	__blang_selector_destroy( sel_handle );
 }
 
 void __blang_selector_shutdown( int sel_handle )
@@ -520,6 +640,10 @@ void __blang_selector_destroy( int sel_handle )
 	BlangSelector *sel = get_selector( sel_handle );
 	if ( sel == NULL )
 		return;
+
+	/* Release lambda contexts for all remaining entries (skip pipe at index 0) */
+	for ( int i = 1; i < sel->count; i++ )
+		__blang_lambda_ctx_release( sel->entries[i].ctx );
 
 	close( sel->pipe_fd[0] );
 	close( sel->pipe_fd[1] );

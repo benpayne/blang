@@ -1,0 +1,10 @@
+# codegen_parked.txt — origin/master feature codegen tests parked during the
+# feature-integration epic. test_codegen.sh SKIPS every test listed here
+# (reported as PARKED, excluded from pass/fail) because its codegen has not yet
+# been ported from origin's monolithic CodeGen.cpp into local's CG*/Sema
+# architecture. Each of U2-U6 removes its own entries as it lands the port;
+# U8 requires this file EMPTY (every feature ported).
+#
+# Blank lines and lines beginning with '#' are ignored. One test basename (with
+# or without the .b suffix) per line.
+

@@ -97,12 +97,48 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 	// Parse methods until '}'
 	while ( l.peekSymbol() != '}' )
 	{
+		// Check for 'static fn' methods
+		bool isStatic = false;
+		if ( l.peekSymbol() == Lexer::KEYWORD_STATIC )
+		{
+			l.getSymbol(); // consume 'static'
+			isStatic = true;
+		}
+
+		// Check for 'init' constructor
+		if ( l.peekSymbol() == Lexer::KEYWORD_INIT )
+		{
+			l.getSymbol(); // consume 'init'
+
+			if ( structDef->hasInit() )
+				COMPILE_ERROR( l, "Duplicate 'init' constructor for struct '" + structName + "'" );
+
+			SmartPtr<FunctionDefinition> initFunc = FunctionDefinition::ParseInit( l, implScope );
+			structDef->addMethod( initFunc );
+			structDef->setInitMethod( initFunc );
+			continue;
+		}
+
 		if ( l.peekSymbol() != Lexer::KEYWORD_FN )
 		{
-			COMPILE_ERROR( l, "Expected 'fn' for method in impl block" );
+			COMPILE_ERROR( l, "Expected 'fn', 'init', or 'static fn' in impl block" );
 		}
 
 		SmartPtr<FunctionDefinition> method = FunctionDefinition::Parse( l, implScope );
+		method->setStatic( isStatic );
+
+		// Validate: static methods must NOT have self parameter
+		if ( isStatic )
+		{
+			for ( int pi = 0; pi < method->getNumberParams(); pi++ )
+			{
+				VariableDefinition *param = method->getParam( pi );
+				if ( param->getVariableType() != nullptr &&
+					 param->getVariableType()->getName() == "self" )
+					COMPILE_ERROR( l, "Static methods cannot have 'self' parameter" );
+			}
+		}
+
 		structDef->addMethod( method );
 	}
 

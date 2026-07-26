@@ -1,0 +1,2 @@
+# string + int must be a located type error, not an ICE
+^[^:]+\.b:[0-9]+:[0-9]+: error: operator '\+' cannot be applied to 'string' and 'int'

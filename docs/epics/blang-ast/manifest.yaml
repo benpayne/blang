@@ -1,0 +1,157 @@
+# devbot epic manifest — blang-ast
+# Compiled into a run by /devbot-launch; the devbot: section is filled then.
+
+manifest_version: 1
+epic: blang-ast
+title: "True language enforcement via semantic analysis"
+archetype: evolve
+status: planning
+docs_root: docs/epics/blang-ast
+entry: overview.md
+constitution: .specify/memory/constitution.md
+
+description: >
+  Introduce a dedicated semantic-analysis pass over a location-bearing AST
+  that enforces BLang's type system, ownership rules, and concurrency rules
+  in all build modes, with clean file:line:col diagnostics, and migrate the
+  existing tests, stdlib, and demos to be correct under the new checker.
+
+run:
+  # Duplicated verbatim from overview.md "Done condition" — keep in sync.
+  done_condition: |
+    All of the following commands succeed on a clean checkout of the epic's
+    final state, run from the repo root:
+
+    1. LLVM build, full suites:
+       `cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm && cmake --build build -j"$(nproc)" && ./run_tests.sh && ./test_codegen.sh`
+       exits 0 (with expected-error assertion mode active for `fail/` and
+       `cgfail/`, which is part of `run_tests.sh` from U2 onward).
+    2. Parse-only build, parse+sema suite:
+       `cmake -S . -B build-parse -DBLANG_ENABLE_LLVM=OFF && cmake --build build-parse -j"$(nproc)" && BUILD_DIR=build-parse ./run_tests.sh`
+       exits 0.
+    3. `ls test_files/fail/sema/*.b | wc -l` reports ≥ 25, and the set includes
+       `audit_01.b` through `audit_10.b` per the numbered table in `design.md`
+       §"The 10 audit programs". For every file in `fail/sema/`, `run_tests.sh`
+       verifies: `build/qcc --parse-only <file>` exits non-zero AND stderr
+       matches the regex `^[^:]+\.b:[0-9]+:[0-9]+: error: ` AND matches the
+       test's own expected-message pattern.
+    4. `out=$(./build/qcc --parse-only test_files/pass/func_simple.b 2>&1); test -z "$out"`
+       succeeds (quiet by default; exit 0).
+    5. `./test_codegen.sh --leak-check test_files/codegen_spawn*.b test_files/codegen_sync*.b test_files/codegen_shared*.b`
+       exits 0 with 0 leaks reported.
+
+  guidance: |
+    Read .specify/memory/constitution.md first — it governs all work; the
+    quality gates and audit pattern are non-negotiable. Follow the five-phase
+    unit lifecycle in docs/epics/blang-ast/workplan.md for every unit: create
+    spec (speckit ceremony) → spec audit → implement → code audit → merge.
+    Use an implementer hire and an independent secondary-reviewer hire per
+    the manifest hires section; the reviewer must not implement what it
+    reviews and is the only actor that merges. All work happens on
+    epic/blang-ast/uN-<slug> branches; squash-merge only; never commit
+    directly to master. Every unit boundary leaves ./run_tests.sh and
+    ./test_codegen.sh green. When ambiguity or a blocker arises, raise a
+    question to the user via run status rather than guessing. Append to the
+    status log in docs/epics/blang-ast/overview.md as units complete.
+
+  # Limits sized ~2x honest estimates (8 units, focused PRs; U8 is a
+  # corpus-wide migration sweep and gets its own file cap + stacked PRs).
+  limits:
+    max_units: 8
+    max_open_prs: 3
+    max_iterations_per_unit: 6        # spec->implement->review cycles
+    max_review_rounds_per_pr: 4
+    max_files_changed_per_pr: 60      # honest estimate 5-25
+    max_files_changed_per_pr_u8: 300  # U8 sweeps a 251-file .b corpus
+    u8_stacked_prs: true              # U8 may land as multiple sequential PRs
+    wallclock_days: 14                # honest estimate ~1 week
+    escalation: pause_and_ask         # surface blockers via /devbot-status
+
+workplan: workplan.md
+units: [U1, U2, U3, U4, U5, U6, U7, U8]
+parallel_groups:
+  - [U5, U6, U7]   # independent after U4; merges serialized by the manager
+
+hires:
+  # The manager is devbot itself (directs phases, gates transitions,
+  # serializes merges) — not a hire.
+  - role: implementer
+    min_count: 1
+    max_count: 3                # >1 only during the U5/U6/U7 parallel window
+    assignment: one unit at a time, per the workplan dependency map
+    duties: >
+      Phase 1 (speckit ceremony: specify/clarify/plan/tasks) and Phase 3
+      (speckit implement) for their unit; run per-unit gates locally before
+      requesting review; address spec-audit and code-review findings.
+  - role: secondary-reviewer
+    min_count: 1
+    max_count: 1                # single reviewer for the whole epic
+    independence: must not implement any unit it reviews
+    duties: >
+      Phase 2 spec audits and Phase 4 code audits per evaluation.md rubrics;
+      independently re-run all gate commands; Phase 5 merge mechanics
+      (rebase, re-gate, squash-merge, branch deletion). Sole authority to
+      merge to master.
+
+execution:
+  # Five-phase lifecycle per unit; manager gates every transition.
+  # Full definition: workplan.md "Unit lifecycle"; rubrics: evaluation.md.
+  unit_lifecycle:
+    - phase: create_spec       # speckit: specify -> clarify? -> plan -> tasks
+      actor: implementer
+      output: "specs/<NNN>-<slug>/ committed on unit branch; draft PR opened"
+    - phase: audit_spec        # gate: no implementation until approved
+      actor: secondary-reviewer
+      rubric: "evaluation.md 'Spec audit rubric'"
+    - phase: implement         # speckit: implement, on the same branch
+      actor: implementer
+      exit: "per-unit gates pass locally; PR marked ready"
+    - phase: audit_code        # gate: reviewer re-runs gates independently
+      actor: secondary-reviewer
+      rubric: "evaluation.md 'Code review rubric'"
+    - phase: merge
+      actor: secondary-reviewer
+      action: "rebase onto master, re-run gates if changed, squash-merge, delete branch"
+  git:
+    base_branch: master
+    branch_pattern: "epic/blang-ast/u{N}-{slug}"
+    pr_title_pattern: "[blang-ast][U{N}] {title}"
+    draft_pr_from: create_spec        # PR exists from Phase 1 as draft
+    merge_method: squash              # one commit per unit on master
+    rebase_before_merge: true
+    delete_branch_on_merge: true
+    direct_commits_to_master: forbidden
+    parallel_units:
+      cut_from: "master after U4 merges"
+      merge_serialization: manager    # U6 before U7 on conflict; rebase + re-gate after each merge
+
+gates:
+  # Literal commands; expanded definitions in evaluation.md.
+  per_unit:
+    - 'cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm && cmake --build build -j"$(nproc)" && ./run_tests.sh && ./test_codegen.sh'
+    - 'cmake -S . -B build-parse -DBLANG_ENABLE_LLVM=OFF && cmake --build build-parse -j"$(nproc)" && BUILD_DIR=build-parse ./run_tests.sh'
+    - '# U6/U7/runtime-touching units only: ./test_codegen.sh --leak-check test_files/codegen_spawn*.b test_files/codegen_sync*.b test_files/codegen_shared*.b'
+    - '# From U2 onward: out=$(./build/qcc --parse-only test_files/pass/func_simple.b 2>&1); test -z "$out"'
+  epic:
+    - "evaluation.md 'Epic-level acceptance' block, executed literally"
+
+devbot:
+  endpoint: http://localhost:8000
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b
+  runs:
+    - run_id: 404b2b30-6c90-4218-be88-8f71143642ad
+      launched: 2026-07-13
+      outcome: halted   # no-progress halt at turn 4 (session/usage-limit terminations)
+    - run_id: 5c582362-7090-46ad-9fed-7fd4d86333b5
+      launched: 2026-07-14
+      outcome: completed  # verified all 5 epic done-conditions on clean master (U1-U8 merged)
+  # Note: the epic advanced past the initial halt via a series of resume runs
+  # (visible in `devbot runs`); all of U1-U8 are merged to master and the
+  # done condition was independently verified by run 5c582362. Only the
+  # original launch and the final verifying run are tracked here by id.
+  #
+  # Lesson for future launches: the initial run halted on a no_progress alert
+  # (threshold 3) triggered by Anthropic usage-window pauses terminating
+  # worker turns with no output — NOT by exhausting the devbot session budget.
+  # launch-payload.json now uses no_progress_threshold=10 and
+  # session_token_limit=50M so a transient usage pause doesn't halt the run.

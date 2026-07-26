@@ -1,0 +1,7 @@
+chain_x 1
+chain_y 2
+fnret 6
+gen_ax 10
+gen_bx 30
+gen_by 31
+PASS

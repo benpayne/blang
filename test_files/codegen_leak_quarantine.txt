@@ -1,0 +1,17 @@
+# Leak quarantine (test-validation) — INTENTIONALLY EMPTY as of U8.
+#
+# This file lists codegen tests with a KNOWN, tracked memory leak that
+# ./test_codegen.sh --leak-check reports as KNOWN-LEAK (non-fatal). A leak in
+# ANY test NOT listed here is fatal (teeth against new/regressed/injected leaks).
+#
+# U4 originally tracked four codegen ARC leaks here (codegen_method_chain,
+# codegen_file_io, codegen_fs_convenience, codegen_http — Open Question OQ-1).
+# U8 fixed the underlying codegen ARC gaps (refcounted rvalue temporaries — the
+# fn().method() struct temporary and Array<T> rvalues such as Buffer.get_bytes()
+# — are now released at statement end; the sys.args borrowed-global return was
+# made an owned return in the runtime). All four tests are now leak-free, so
+# this list is empty: NOTHING is quarantined and every test's leak is fatal.
+#
+# Widening this list is an epic-scope decision, never a hire's call.
+#
+# Blank lines and '#' comments ignored; entries with or without .b.

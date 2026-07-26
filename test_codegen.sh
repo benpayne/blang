@@ -4,50 +4,116 @@
 #
 # Usage:
 #   ./test_codegen.sh                   # Run ALL codegen_*.b tests
-#   ./test_codegen.sh [test_file]       # Run a single test file
+#   ./test_codegen.sh [test_file...]    # Run specific test file(s)
 #   ./test_codegen.sh --verbose         # Run all tests with IR output
+#   BUILD_DIR=path ./test_codegen.sh    # Use a different build directory
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-QCC="${SCRIPT_DIR}/build/qcc"
-RUNTIME_LIB="${SCRIPT_DIR}/build/libblang_runtime.a"
-STRING_LIB="${SCRIPT_DIR}/build/libblang_string.a"
-ARRAY_LIB="${SCRIPT_DIR}/build/libblang_array.a"
-BUFFER_LIB="${SCRIPT_DIR}/build/libblang_buffer.a"
-JSON_LIB="${SCRIPT_DIR}/build/libblang_json.a"
-NET_LIB="${SCRIPT_DIR}/build/libblang_net.a"
-SYS_LIB="${SCRIPT_DIR}/build/libblang_sys.a"
-DB_LIB="${SCRIPT_DIR}/build/libblang_db.a"
+BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/build}"
+QCC="${BUILD_DIR}/qcc"
+# U2 (optimization): OPT_LEVEL=<0..3|s|z> builds the whole suite at that -O level
+# (qcc in-process IR passes + llc backend -O) so correctness under optimization
+# is a hard gate. Empty = unoptimized (default, byte-identical to pre-U2).
+OPT_LEVEL="${OPT_LEVEL:-}"
+# llc accepts only numeric -O; the size levels run as IR passes in qcc, so map
+# s/z to backend -O2 for the llc step.
+LLC_OPT_LEVEL="${OPT_LEVEL}"
+if [ "${LLC_OPT_LEVEL}" = "s" ] || [ "${LLC_OPT_LEVEL}" = "z" ]; then
+	LLC_OPT_LEVEL="2"
+fi
+# U3 (debug info): DEBUG_INFO=1 builds the whole suite with -g (DWARF emission)
+# so correctness with debug info is a hard gate (done-condition #1). Empty =
+# no debug info (default, byte-identical to pre-U3).
+DEBUG_INFO="${DEBUG_INFO:-}"
+RUNTIME_LIB="${BUILD_DIR}/libblang_runtime.a"
+STRING_LIB="${BUILD_DIR}/libblang_string.a"
+ARRAY_LIB="${BUILD_DIR}/libblang_array.a"
+BUFFER_LIB="${BUILD_DIR}/libblang_buffer.a"
+JSON_LIB="${BUILD_DIR}/libblang_json.a"
+NET_LIB="${BUILD_DIR}/libblang_net.a"
+FS_LIB="${BUILD_DIR}/libblang_fs.a"
+SYS_LIB="${BUILD_DIR}/libblang_sys.a"
+DB_LIB="${BUILD_DIR}/libblang_db.a"
+MATH_LIB="${BUILD_DIR}/libblang_math.a"
+TIME_LIB="${BUILD_DIR}/libblang_time.a"
+RANDOM_LIB="${BUILD_DIR}/libblang_random.a"
+ENV_LIB="${BUILD_DIR}/libblang_env.a"
+HASH_LIB="${BUILD_DIR}/libblang_hash.a"
+STDLIB_IO="${SCRIPT_DIR}/stdlib/io.b"
 STDLIB_NET="${SCRIPT_DIR}/stdlib/net.b"
+STDLIB_FS="${SCRIPT_DIR}/stdlib/fs.b"
 STDLIB_SYS="${SCRIPT_DIR}/stdlib/sys.b"
+STDLIB_BUFFER="${SCRIPT_DIR}/stdlib/buffer.b"
 STDLIB_TIMER="${SCRIPT_DIR}/stdlib/timer.b"
+STDLIB_COLLECTIONS="${SCRIPT_DIR}/stdlib/collections.b"
+# Native stdlib modules (U4) — content-gated by `import <m>;` (see below).
+STDLIB_MATH="${SCRIPT_DIR}/stdlib/math.b"
+STDLIB_TIME="${SCRIPT_DIR}/stdlib/time.b"
+STDLIB_RANDOM="${SCRIPT_DIR}/stdlib/random.b"
+STDLIB_ENV="${SCRIPT_DIR}/stdlib/env.b"
+STDLIB_CLI="${SCRIPT_DIR}/stdlib/cli.b"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# Colors — emitted only to a terminal. When stdout is a pipe/file (CI, and the
+# epic-acceptance greps like `grep -Eq 'Leaks:[[:space:]]*0'`), ANSI codes are
+# suppressed so the summary text is plain and machine-greppable (an ESC[0m reset
+# between "Leaks:" and the count would otherwise defeat the grep).
+if [ -t 1 ]; then
+	RED='\033[0;31m'
+	GREEN='\033[0;32m'
+	YELLOW='\033[0;33m'
+	CYAN='\033[0;36m'
+	NC='\033[0m'
+else
+	RED='' GREEN='' YELLOW='' CYAN='' NC=''
+fi
 
 VERBOSE=0
-SINGLE_FILE=""
+FILE_ARGS=()
 LEAK_CHECK=0
+VALGRIND=0
+UPDATE_GOLDENS=0
+SELFCHECK=0
 
 for arg in "$@"; do
 	case "$arg" in
 		--verbose) VERBOSE=1 ;;
 		--leak-check) LEAK_CHECK=1 ;;
+		--valgrind) VALGRIND=1 ;;
+		--update-goldens) UPDATE_GOLDENS=1 ;;
+		--selfcheck) SELFCHECK=1 ;;
 		--help)
-			echo "Usage: $0 [--verbose] [--leak-check] [test_file]"
-			echo "  --verbose     Show IR output for each test"
-			echo "  --leak-check  Link with AddressSanitizer and report memory leaks"
-			echo "  test_file     Run only the specified test file"
+			echo "Usage: $0 [--verbose] [--leak-check] [--valgrind] [--update-goldens] [--selfcheck] [test_file...]"
+			echo "  --verbose         Show IR output for each test"
+			echo "  --leak-check      Link with AddressSanitizer and report memory leaks"
+			echo "  --valgrind        Run each binary under Valgrind to detect memory leaks"
+			echo "  --update-goldens  Regenerate stdout goldens (test_files/<name>.expected.out)"
+			echo "                    for deterministic (non-quarantined) tests; never touches"
+			echo "                    quarantined tests."
+			echo "  --selfcheck       Prove the golden comparator has teeth: corrupt a real"
+			echo "                    committed golden in a TEMP copy, assert the suite goes red,"
+			echo "                    print 'SELFCHECK: OK', and exit non-zero. Never mutates a"
+			echo "                    committed golden."
+			echo "  test_file...      Run only the specified test file(s)"
 			echo ""
-			echo "With no arguments, runs all test_files/codegen_*.b tests."
+			echo "By default each non-quarantined test's stdout is compared exactly (modulo a"
+			echo "single trailing newline) against its golden test_files/<name>.expected.out;"
+			echo "a mismatch fails the test with a diff. Quarantined tests"
+			echo "(test_files/codegen_quarantine.txt) run for exit code only."
+			echo ""
+			echo "With no test files, runs all test_files/codegen_*.b tests."
+			echo "Environment: BUILD_DIR overrides the build directory (default: ./build)."
 			exit 0
 			;;
-		*) SINGLE_FILE="$arg" ;;
+		*) FILE_ARGS+=("$arg") ;;
 	esac
 done
+
+if [ "$VALGRIND" -eq 1 ]; then
+	if ! command -v valgrind &>/dev/null; then
+		echo -e "${RED}Error: valgrind not found on PATH${NC}"
+		exit 1
+	fi
+fi
 
 if [ ! -x "$QCC" ]; then
 	echo -e "${RED}Error: qcc not found at $QCC${NC}"
@@ -55,11 +121,103 @@ if [ ! -x "$QCC" ]; then
 	exit 1
 fi
 
+QUARANTINE_FILE="${SCRIPT_DIR}/test_files/codegen_quarantine.txt"
+# When set, run_one_test compares against this golden path instead of the default
+# test_files/<name>.expected.out. Used only by --selfcheck (never in normal runs).
+GOLDEN_OVERRIDE=""
+
+# Strip exactly ONE trailing newline from a file's contents (the only permitted
+# normalization, per design.md D2) and write the result to stdout with no added
+# newline. Uses a sentinel so command substitution does not eat other newlines.
+strip_one_trailing_nl() {
+	local content
+	content=$(cat "$1"; printf x)
+	content=${content%x}
+	content=${content%$'\n'}
+	printf '%s' "$content"
+}
+
+# Exact-match compare (after single-trailing-newline strip) of an actual-stdout
+# file vs a golden file. Returns 0 on match, 1 on mismatch. No loose/substring/
+# regex/whitespace matching — cmp on the normalized bytes.
+golden_matches() {
+	local a="$1" g="$2" na ng rc
+	na="$(mktemp)"; ng="$(mktemp)"
+	strip_one_trailing_nl "$a" > "$na"
+	strip_one_trailing_nl "$g" > "$ng"
+	cmp -s "$na" "$ng"; rc=$?
+	rm -f "$na" "$ng"
+	return $rc
+}
+
+# Is a test (base name, e.g. codegen_http) quarantined from golden comparison?
+# Reads codegen_quarantine.txt; '#' comments and blank lines ignored; entries may
+# be listed with or without the .b extension.
+is_quarantined() {
+	local name="$1" entry
+	[ -f "$QUARANTINE_FILE" ] || return 1
+	while IFS= read -r entry || [ -n "$entry" ]; do
+		entry="${entry%%#*}"
+		entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
+		[ -z "$entry" ] && continue
+		if [ "$entry" = "$name" ] || [ "$entry" = "${name}.b" ]; then
+			return 0
+		fi
+	done < "$QUARANTINE_FILE"
+	return 1
+}
+
+# Leak quarantine (U4): a MINIMAL, review-gated list of tests with a KNOWN,
+# tracked leak (see codegen_leak_quarantine.txt + Open Question OQ-1). A leak in
+# a quarantined test is reported as KNOWN-LEAK and does NOT make --leak-check
+# fatal; a leak in ANY OTHER test is fatal (teeth against new/injected leaks).
+LEAK_QUARANTINE_FILE="${SCRIPT_DIR}/test_files/codegen_leak_quarantine.txt"
+is_leak_quarantined() {
+	local name="$1" entry
+	[ -f "$LEAK_QUARANTINE_FILE" ] || return 1
+	while IFS= read -r entry || [ -n "$entry" ]; do
+		entry="${entry%%#*}"
+		entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
+		[ -z "$entry" ] && continue
+		if [ "$entry" = "$name" ] || [ "$entry" = "${name}.b" ]; then
+			return 0
+		fi
+	done < "$LEAK_QUARANTINE_FILE"
+	return 1
+}
+
+# Parked tests (feature-integration epic): origin/master feature codegen tests
+# whose codegen has not yet been ported into local's CG*/Sema architecture.
+# Listed in codegen_parked.txt (annotated by owning unit U2-U6). A parked test
+# is SKIPPED entirely — reported as PARKED, excluded from pass/fail/TOTAL — so
+# the suite stays honestly green while the ports land one unit at a time. Each
+# unit removes its own entries; U8 requires the file empty. '#'/blank ignored;
+# entries may carry or omit the .b suffix.
+PARKED_FILE="${SCRIPT_DIR}/test_files/codegen_parked.txt"
+is_parked() {
+	local name="$1" entry
+	[ -f "$PARKED_FILE" ] || return 1
+	while IFS= read -r entry || [ -n "$entry" ]; do
+		entry="${entry%%#*}"
+		entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
+		[ -z "$entry" ] && continue
+		if [ "$entry" = "$name" ] || [ "$entry" = "${name}.b" ]; then
+			return 0
+		fi
+	done < "$PARKED_FILE"
+	return 1
+}
+
 PASS_COUNT=0
 FAIL_COUNT=0
 LEAK_TOTAL=0
+KNOWN_LEAK_TOTAL=0
 SKIP_COUNT=0
+PARKED_COUNT=0
 TOTAL=0
+GOLDEN_PASS_COUNT=0
+NOGOLDEN_COUNT=0
+QUARANTINE_COUNT=0
 
 # Run one test through the full pipeline: qcc -> llc -> cc -> run
 # Returns 0 on success, 1 on failure
@@ -96,9 +254,20 @@ run_one_test() {
 		stdlib_files+=("${STDLIB_SYS}")
 		need_combine=1
 	fi
+	# Buffer is a fundamental type used by fs.b and net.b — always include it
+	if [ -f "${STDLIB_BUFFER}" ]; then
+		stdlib_files+=("${STDLIB_BUFFER}")
+		need_combine=1
+	fi
 	if [[ "${base_name}" == *"tcp"* ]] || [[ "${base_name}" == *"selector"* ]] || [[ "${base_name}" == *"net"* ]] || [[ "${base_name}" == *"sys_args"* ]] || [[ "${base_name}" == *"http"* ]]; then
 		if [ -f "${STDLIB_NET}" ]; then
 			stdlib_files+=("${STDLIB_NET}")
+			need_combine=1
+		fi
+	fi
+	if [[ "${base_name}" == *"file"* ]] || [[ "${base_name}" == *"fs"* ]]; then
+		if [ -f "${STDLIB_FS}" ]; then
+			stdlib_files+=("${STDLIB_FS}")
 			need_combine=1
 		fi
 	fi
@@ -108,8 +277,45 @@ run_one_test() {
 			need_combine=1
 		fi
 	fi
+	# collections.b (Map) is import-gated by content, mirroring bcc's real
+	# stdlib resolution: only combined when the test does `import collections;`.
+	# Content-gated (not filename-substring) so the inline codegen_map.b — which
+	# defines Map itself and does NOT import collections — never gets a second,
+	# conflicting Map definition.
+	# collections is combined when the test imports collections OR cli (cli.b
+	# uses collections' Map). collections.b must precede cli.b (Map before use).
+	if grep -qE '^[[:space:]]*import[[:space:]]+(collections|cli)[[:space:]]*;' "${test_file}" 2>/dev/null; then
+		if [ -f "${STDLIB_COLLECTIONS}" ]; then
+			stdlib_files+=("${STDLIB_COLLECTIONS}")
+			need_combine=1
+		fi
+	fi
+	if grep -q '^[[:space:]]*import[[:space:]]\+cli[[:space:]]*;' "${test_file}" 2>/dev/null; then
+		if [ -f "${STDLIB_CLI}" ]; then
+			stdlib_files+=("${STDLIB_CLI}")
+			need_combine=1
+		fi
+	fi
+	# Native stdlib modules (U4): content-gated on `import <m>;`, mirroring bcc's
+	# kKnownOrder resolution — combined only when the test imports the module.
+	local _mod _modfile
+	for _mod in math time random env; do
+		eval "_modfile=\${STDLIB_${_mod^^}}"
+		if grep -q "^[[:space:]]*import[[:space:]]\+${_mod}[[:space:]]*;" "${test_file}" 2>/dev/null; then
+			if [ -f "${_modfile}" ]; then
+				stdlib_files+=("${_modfile}")
+				need_combine=1
+			fi
+		fi
+	done
 	if [ $need_combine -eq 1 ]; then
 		qcc_args+=("--combine" "${stdlib_files[@]}")
+	fi
+	if [ -n "${OPT_LEVEL}" ]; then
+		qcc_args+=("-O${OPT_LEVEL}")   # layer 1: in-process IR passes
+	fi
+	if [ -n "${DEBUG_INFO}" ]; then
+		qcc_args+=("-g")              # U3: emit DWARF debug info
 	fi
 	local qcc_output
 	qcc_output=$("${QCC}" "${qcc_args[@]}" "${test_file}" 2>&1)
@@ -146,8 +352,12 @@ run_one_test() {
 
 	# Step 2: Compile IR to object file
 	local llc_output
-	llc_output=$(llc-18 -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1) || \
-	llc_output=$(llc -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1)
+	local llc_opt_flag=()
+	if [ -n "${LLC_OPT_LEVEL}" ]; then
+		llc_opt_flag=("-O${LLC_OPT_LEVEL}")   # layer 2: backend codegen opt
+	fi
+	llc_output=$(llc-18 "${llc_opt_flag[@]}" -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1) || \
+	llc_output=$(llc "${llc_opt_flag[@]}" -filetype=obj -relocation-model=pic "${ir_file}" -o "${obj_file}" 2>&1)
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (llc failed)"
 		if [ "$VERBOSE" -eq 1 ]; then
@@ -189,10 +399,23 @@ run_one_test() {
 	if [ -f "${NET_LIB}" ]; then
 		net_link="${NET_LIB}"
 	fi
+	local fs_link=""
+	if [ -f "${FS_LIB}" ]; then
+		fs_link="${FS_LIB}"
+	fi
 	local sys_link=""
 	if [ -f "${SYS_LIB}" ]; then
 		sys_link="${SYS_LIB}"
 	fi
+	# Native stdlib modules (U4). Linked when present (before their string/array
+	# deps); the linker drops any that the test does not reference. -lm follows
+	# blang_math.a for GNU ld resolution of libm symbols.
+	local stdlib_native_link=""
+	[ -f "${MATH_LIB}" ]   && stdlib_native_link="${stdlib_native_link} ${MATH_LIB}"
+	[ -f "${TIME_LIB}" ]   && stdlib_native_link="${stdlib_native_link} ${TIME_LIB}"
+	[ -f "${RANDOM_LIB}" ] && stdlib_native_link="${stdlib_native_link} ${RANDOM_LIB}"
+	[ -f "${ENV_LIB}" ]    && stdlib_native_link="${stdlib_native_link} ${ENV_LIB}"
+	[ -f "${HASH_LIB}" ]   && stdlib_native_link="${stdlib_native_link} ${HASH_LIB}"
 	# Database tests link the DB runtime + its SQLite backend. By this point a
 	# db test is known to have a SQLite-enabled libblang_db (otherwise skipped
 	# above), so resolve the sqlite link flags, preferring pkg-config but
@@ -222,9 +445,9 @@ run_one_test() {
 		fi
 	fi
 	if [ -f "${RUNTIME_LIB}" ]; then
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread ${extra_libs} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" "${RUNTIME_LIB}" ${db_link} ${sys_link} ${stdlib_native_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lpthread -lm ${extra_libs} -o "${bin_file}" 2>&1)
 	else
-		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${db_link} ${sys_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -o "${bin_file}" 2>&1)
+		cc_output=$(cc ${sanitize_flags} "${obj_file}" ${db_link} ${sys_link} ${stdlib_native_link} ${fs_link} ${net_link} ${json_link} ${buffer_link} ${array_link} ${string_link} ${db_sys_flags} -lm -o "${bin_file}" 2>&1)
 	fi
 	if [ $? -ne 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  ${test_file}  (link failed)"
@@ -243,68 +466,262 @@ run_one_test() {
 		run_env="ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=exitcode=23"
 	fi
 	# Database tests use an in-memory SQLite DB unless the test ships a blang.toml.
+	# (The binary is actually run below — in the VALGRIND branch or, for the
+	# normal/leak path, in the else branch that splits stdout/stderr for the
+	# golden compare — so we only seed run_env here, not run the binary.)
 	if [[ "${base_name}" == *"db"* ]] || [[ "${base_name}" == *"query"* ]]; then
 		run_env="${run_env} BLANG_DATABASE_URL=:memory: BLANG_DATABASE_DRIVER=sqlite"
 	fi
-	run_output=$(timeout 10 env ${run_env} "${bin_file}" 2>&1)
-	local exit_code=$?
 
-	# With leak check, LSan returns exit code 23 (forced via LSAN_OPTIONS=exitcode=23)
-	local leak_count=0
-	if [ "$LEAK_CHECK" -eq 1 ]; then
-		leak_count=$(echo "$run_output" | grep -c 'SUMMARY: AddressSanitizer:' 2>/dev/null || true)
-		# If the program logic passed but leaks detected (exit 23)
-		if [ $exit_code -eq 23 ]; then
-			# Leaks detected but program logic passed
-			local leak_summary
-			leak_summary=$(echo "$run_output" | grep 'SUMMARY:' | head -1)
-			echo -e "  ${YELLOW}LEAK${NC}  ${test_file}  ($leak_summary)"
+	if [ "$VALGRIND" -eq 1 ]; then
+		run_output=$(timeout 30 valgrind --leak-check=full \
+			--error-exitcode=42 "${bin_file}" 2>&1)
+		local exit_code=$?
+
+		# Parse Valgrind summary
+		local definitely_lost
+		definitely_lost=$(echo "$run_output" | grep -oP 'definitely lost: \K[0-9,]+' | tr -d ',')
+		local indirectly_lost
+		indirectly_lost=$(echo "$run_output" | grep -oP 'indirectly lost: \K[0-9,]+' | tr -d ',')
+		local total_leaked=$(( ${definitely_lost:-0} + ${indirectly_lost:-0} ))
+
+		if [ $exit_code -eq 124 ]; then
+			echo -e "  ${RED}FAIL${NC}  ${test_file}  (timeout — binary hung)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}"
+			return 1
+		fi
+
+		# Valgrind exit code 42 = errors detected; other non-zero = program failure
+		if [ $exit_code -ne 0 ] && [ $exit_code -ne 42 ]; then
+			echo -e "  ${RED}FAIL${NC}  ${test_file}  (runtime exit $exit_code)"
 			if [ "$VERBOSE" -eq 1 ]; then
-				echo "$run_output" | grep -A1 'Direct leak\|Indirect leak' | sed 's/^/    /'
+				echo "$run_output" | tail -10 | sed 's/^/    /'
+			fi
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}"
+			return 1
+		fi
+
+		if [ "$total_leaked" -gt 0 ]; then
+			local leak_summary
+			leak_summary=$(echo "$run_output" | grep 'definitely lost:\|indirectly lost:' | head -2)
+			echo -e "  ${YELLOW}LEAK${NC}  ${test_file}  (${definitely_lost:-0} direct + ${indirectly_lost:-0} indirect bytes)"
+			if [ "$VERBOSE" -eq 1 ]; then
+				echo "$run_output" | sed 's/^/    /'
 			fi
 			PASS_COUNT=$((PASS_COUNT + 1))
 			LEAK_TOTAL=$((LEAK_TOTAL + 1))
 			rm -f "${ir_file}" "${obj_file}" "${bin_file}"
 			return 0
 		fi
-	fi
 
-	if [ $exit_code -eq 124 ]; then
-		echo -e "  ${RED}FAIL${NC}  ${test_file}  (timeout — binary hung)"
-		FAIL_COUNT=$((FAIL_COUNT + 1))
-		rm -f "${ir_file}" "${obj_file}" "${bin_file}"
-		return 1
-	elif [ $exit_code -ne 0 ]; then
-		echo -e "  ${RED}FAIL${NC}  ${test_file}  (runtime exit $exit_code)"
-		if [ "$VERBOSE" -eq 1 ]; then
-			echo "$run_output" | tail -5 | sed 's/^/    /'
-		fi
-		FAIL_COUNT=$((FAIL_COUNT + 1))
-		rm -f "${ir_file}" "${obj_file}" "${bin_file}"
-		return 1
-	fi
-
-	if [ "$LEAK_CHECK" -eq 1 ]; then
 		echo -e "  ${GREEN}CLEAN${NC} ${test_file}"
+		PASS_COUNT=$((PASS_COUNT + 1))
 	else
-		echo -e "  ${GREEN}PASS${NC}  ${test_file}"
-	fi
-	PASS_COUNT=$((PASS_COUNT + 1))
+		# Capture stdout and stderr separately: the golden compares against
+		# stdout only (per REQ-001 / design.md), while stderr is retained for
+		# leak-mode parsing and verbose display.
+		local stdout_cap="/tmp/${base_name}.stdout.$$"
+		local stderr_cap="/tmp/${base_name}.stderr.$$"
+		timeout 10 env ${run_env} "${bin_file}" >"${stdout_cap}" 2>"${stderr_cap}"
+		local exit_code=$?
+		run_output="$(cat "${stdout_cap}" "${stderr_cap}" 2>/dev/null)"
 
-	# Cleanup
+		# With leak check, LSan returns exit code 23 (forced via LSAN_OPTIONS=exitcode=23).
+		# U4: leaks are now FATAL. A leak in a leak-quarantined test (known, tracked
+		# ARC leak — see codegen_leak_quarantine.txt + OQ-1) is reported as
+		# KNOWN-LEAK and does NOT count toward the fatal LEAK_TOTAL; a leak in any
+		# other test increments LEAK_TOTAL, which forces a non-zero script exit.
+		if [ "$LEAK_CHECK" -eq 1 ] && [ $exit_code -eq 23 ]; then
+			local leak_summary
+			leak_summary=$(echo "$run_output" | grep 'SUMMARY:' | head -1)
+			if is_leak_quarantined "${base_name}"; then
+				echo -e "  ${CYAN}KNOWN-LEAK${NC} ${test_file}  ($leak_summary)"
+				KNOWN_LEAK_TOTAL=$((KNOWN_LEAK_TOTAL + 1))
+			else
+				echo -e "  ${YELLOW}LEAK${NC}  ${test_file}  ($leak_summary)"
+				LEAK_TOTAL=$((LEAK_TOTAL + 1))
+			fi
+			if [ "$VERBOSE" -eq 1 ]; then
+				echo "$run_output" | grep -A1 'Direct leak\|Indirect leak' | sed 's/^/    /'
+			fi
+			PASS_COUNT=$((PASS_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 0
+		fi
+
+		if [ $exit_code -eq 124 ]; then
+			echo -e "  ${RED}FAIL${NC}  ${test_file}  (timeout — binary hung)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 1
+		elif [ $exit_code -ne 0 ]; then
+			echo -e "  ${RED}FAIL${NC}  ${test_file}  (runtime exit $exit_code)"
+			if [ "$VERBOSE" -eq 1 ]; then
+				echo "$run_output" | tail -5 | sed 's/^/    /'
+			fi
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 1
+		fi
+
+		# --- Exit code 0. ---
+		# In leak-check mode we do NOT golden-compare: output carries sanitizer
+		# noise and leak correctness (not stdout correctness) is the concern.
+		if [ "$LEAK_CHECK" -eq 1 ]; then
+			echo -e "  ${GREEN}CLEAN${NC} ${test_file}"
+			PASS_COUNT=$((PASS_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 0
+		fi
+
+		# --- Golden-output verification (normal mode only) ---
+		# Quarantined tests: exit code already checked above; skip golden compare.
+		if is_quarantined "${base_name}"; then
+			echo -e "  ${GREEN}PASS${NC}  ${test_file}  ${CYAN}(quarantined: exit-code only)${NC}"
+			QUARANTINE_COUNT=$((QUARANTINE_COUNT + 1))
+			PASS_COUNT=$((PASS_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 0
+		fi
+
+		local golden="${GOLDEN_OVERRIDE:-${SCRIPT_DIR}/test_files/${base_name}.expected.out}"
+
+		# --update-goldens: (re)write the golden from current stdout; do not compare.
+		# Never writes a golden for a quarantined test (handled above).
+		if [ "$UPDATE_GOLDENS" -eq 1 ]; then
+			cp "${stdout_cap}" "${SCRIPT_DIR}/test_files/${base_name}.expected.out"
+			echo -e "  ${CYAN}WROTE${NC} ${test_file}  (golden updated)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 0
+		fi
+
+		# Missing golden: VISIBLE, non-fatal (still exit-code-checked). Never a
+		# silent golden pass — once a golden exists, wrong output is fatal below.
+		if [ ! -f "${golden}" ]; then
+			echo -e "  ${YELLOW}NO GOLDEN${NC}  ${test_file}  (exit-code only; run --update-goldens to create)"
+			NOGOLDEN_COUNT=$((NOGOLDEN_COUNT + 1))
+			PASS_COUNT=$((PASS_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 0
+		fi
+
+		# Exact-match comparison; ONLY normalization is stripping one trailing newline.
+		if golden_matches "${stdout_cap}" "${golden}"; then
+			echo -e "  ${GREEN}PASS${NC}  ${test_file}"
+			GOLDEN_PASS_COUNT=$((GOLDEN_PASS_COUNT + 1))
+			PASS_COUNT=$((PASS_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 0
+		else
+			echo -e "  ${RED}FAIL${NC}  ${test_file}  (stdout does not match golden)"
+			local na ng
+			na="$(mktemp)"; ng="$(mktemp)"
+			strip_one_trailing_nl "${golden}"     > "${ng}"
+			strip_one_trailing_nl "${stdout_cap}" > "${na}"
+			echo "    --- diff (- expected golden / + actual stdout) ---"
+			diff -u "${ng}" "${na}" 2>/dev/null | tail -n +3 | head -30 | sed 's/^/    /'
+			rm -f "${na}" "${ng}"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			rm -f "${ir_file}" "${obj_file}" "${bin_file}" "${stdout_cap}" "${stderr_cap}"
+			return 1
+		fi
+	fi
+
+	# Cleanup (only the valgrind branch falls through to here; the normal branch
+	# returns explicitly above).
 	rm -f "${ir_file}" "${obj_file}" "${bin_file}"
 	return 0
 }
+
+# --selfcheck: prove the golden comparator has TEETH. Corrupt a real committed
+# golden in a TEMP copy only, drive run_one_test with that corrupted golden, and
+# assert the suite went red. The committed golden is never mutated. On success
+# prints the literal line 'SELFCHECK: OK' and exits non-zero; if the comparator
+# fails to detect the corruption (or mutates the committed file), a DISTINCT
+# message is printed and 'SELFCHECK: OK' is NOT emitted.
+run_selfcheck() {
+	echo "==========================================="
+	echo " Golden-comparison self-check (teeth proof)"
+	echo "==========================================="
+	local golden_file="" tb tf gf
+	for gf in $(ls "${SCRIPT_DIR}"/test_files/codegen_*.expected.out 2>/dev/null | sort); do
+		tb="$(basename "$gf" .expected.out)"
+		is_quarantined "$tb" && continue
+		if [ -f "${SCRIPT_DIR}/test_files/${tb}.b" ]; then
+			golden_file="$gf"; break
+		fi
+	done
+	if [ -z "$golden_file" ]; then
+		echo "SELFCHECK: FAILED — no committed non-quarantined golden found to corrupt"
+		exit 3
+	fi
+	tb="$(basename "$golden_file" .expected.out)"
+	tf="${SCRIPT_DIR}/test_files/${tb}.b"
+	echo "  Using golden: test_files/${tb}.expected.out"
+
+	local before_sum after_sum
+	before_sum="$(sha256sum "$golden_file" | awk '{print $1}')"
+
+	# Phase A: the real golden must PASS (harness matches correct output).
+	PASS_COUNT=0; FAIL_COUNT=0; TOTAL=0; GOLDEN_OVERRIDE=""
+	run_one_test "$tf" 0 >/dev/null 2>&1
+	local real_ret=$?
+
+	# Phase B: corrupt a TEMP COPY; the comparison must go RED.
+	local tmp_golden
+	tmp_golden="$(mktemp)"
+	cat "$golden_file" > "$tmp_golden"
+	printf '\nSELFCHECK-CORRUPTION-%s\n' "$$" >> "$tmp_golden"
+	PASS_COUNT=0; FAIL_COUNT=0; TOTAL=0
+	GOLDEN_OVERRIDE="$tmp_golden"
+	run_one_test "$tf" 0 >/dev/null 2>&1
+	local corrupt_ret=$?
+	GOLDEN_OVERRIDE=""
+	rm -f "$tmp_golden"
+
+	after_sum="$(sha256sum "$golden_file" | awk '{print $1}')"
+
+	if [ "$before_sum" != "$after_sum" ]; then
+		echo "SELFCHECK: FAILED — committed golden was mutated during self-check"
+		exit 4
+	fi
+	if [ "$real_ret" -ne 0 ]; then
+		echo "SELFCHECK: FAILED — real golden did not match its own test (harness broken)"
+		exit 5
+	fi
+	if [ "$corrupt_ret" -eq 0 ]; then
+		echo "SELFCHECK: FAILED — comparator did NOT detect a corrupted golden (no teeth)"
+		exit 6
+	fi
+	echo "  real golden      -> PASS (matched)"
+	echo "  corrupted golden -> FAIL (mismatch detected, suite went red)"
+	echo "  committed golden -> unchanged (sha256 stable)"
+	echo "SELFCHECK: OK"
+	exit 1
+}
+
+if [ "$SELFCHECK" -eq 1 ]; then
+	run_selfcheck
+fi
 
 echo "==========================================="
 echo " BLang Codegen E2E Test Suite"
 echo "==========================================="
 echo ""
 
-if [ -n "$SINGLE_FILE" ]; then
+if [ ${#FILE_ARGS[@]} -eq 1 ]; then
 	# Single-file mode: show IR by default
-	echo -e "${CYAN}--- Single test: ${SINGLE_FILE} ---${NC}"
-	run_one_test "$SINGLE_FILE" 1
+	echo -e "${CYAN}--- Single test: ${FILE_ARGS[0]} ---${NC}"
+	run_one_test "${FILE_ARGS[0]}" 1
+elif [ ${#FILE_ARGS[@]} -gt 1 ]; then
+	# Explicit file list
+	echo -e "${CYAN}--- Selected tests (${#FILE_ARGS[@]} files) ---${NC}"
+	for f in "${FILE_ARGS[@]}"; do
+		run_one_test "$f" "$VERBOSE"
+	done
 else
 	# Multi-file mode: run all codegen_*.b tests
 	TEST_FILES=$(find "$SCRIPT_DIR/test_files" -maxdepth 1 -name 'codegen_*.b' 2>/dev/null | sort)
@@ -315,6 +732,16 @@ else
 
 	echo -e "${CYAN}--- E2E codegen tests (parse → IR → compile → link → run) ---${NC}"
 	while IFS= read -r f; do
+		# Parked (feature-integration): origin feature tests whose codegen is
+		# not yet ported. Skip in the full-suite run so the suite stays green;
+		# an explicitly-named test (FILE_ARGS) still runs, so it can never be
+		# falsely green once its owning unit removes it from the parked list.
+		pk_base="$(basename "$f" .b)"
+		if is_parked "$pk_base"; then
+			echo -e "  ${YELLOW}PARKED${NC} $f  (codegen not yet ported — see codegen_parked.txt)"
+			PARKED_COUNT=$((PARKED_COUNT + 1))
+			continue
+		fi
 		run_one_test "$f" "$VERBOSE"
 	done <<< "$TEST_FILES"
 fi
@@ -328,13 +755,24 @@ echo -e "  ${RED}Failed:${NC}  $FAIL_COUNT"
 if [ "$SKIP_COUNT" -gt 0 ]; then
 echo -e "  ${YELLOW}Skipped:${NC} $SKIP_COUNT"
 fi
+if [ "$PARKED_COUNT" -gt 0 ]; then
+echo -e "  ${YELLOW}Parked:${NC}  $PARKED_COUNT   ${CYAN}(feature-integration: origin tests pending port — see codegen_parked.txt)${NC}"
+fi
 if [ "$LEAK_CHECK" -eq 1 ]; then
 echo -e "  ${YELLOW}Leaks:${NC}   $LEAK_TOTAL"
+echo -e "  ${CYAN}Known-leaks (quarantined):${NC} $KNOWN_LEAK_TOTAL"
+fi
+if [ "$LEAK_CHECK" -eq 0 ] && [ "$VALGRIND" -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
+echo -e "  ${CYAN}Golden-checked:${NC} $GOLDEN_PASS_COUNT   ${YELLOW}No golden:${NC} $NOGOLDEN_COUNT   ${CYAN}Quarantined:${NC} $QUARANTINE_COUNT"
 fi
 echo "  Total:   $TOTAL"
 echo "==========================================="
 
 if [ $FAIL_COUNT -gt 0 ]; then
+	exit 1
+fi
+# U4: an UNEXPECTED leak (not leak-quarantined) is fatal to --leak-check's exit.
+if [ "$LEAK_CHECK" -eq 1 ] && [ "$LEAK_TOTAL" -gt 0 ]; then
 	exit 1
 fi
 exit 0

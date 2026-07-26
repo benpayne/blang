@@ -4,7 +4,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
-#include <setjmp.h>
 
 #ifdef BLANG_HAS_LIBUV
 #include <uv.h>
@@ -297,10 +296,29 @@ BlangSpawnTask *__blang_spawn( blang_spawn_fn fn, void *ctx )
 	return task;
 }
 
+/* Channel registry: channels are heap-allocated (struct + ring buffer) and are
+   shared across spawn boundaries, so they cannot be freed at a lexical scope
+   exit while a peer thread may still use them. Instead every channel is tracked
+   here and destroyed together at runtime shutdown — after all spawn threads have
+   been joined (see __blang_runtime_shutdown), so no thread can touch a freed
+   channel. Without this channels leak (and intermittently trip LSan when the
+   last stack reference is lost across a spawn). The registry has its own mutex
+   because channels may be created from spawned threads. */
+static BlangChan **g_channels = NULL;
+static int g_chan_count = 0;
+static int g_chan_capacity = 0;
+static pthread_mutex_t g_chan_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void __blang_chan_destroy_all( void );
+
 void __blang_runtime_shutdown( void )
 {
 	if ( !g_tracker.initialized )
+	{
+		/* No spawn tracker means no live spawned threads, so any channels are
+		   used single-threaded — safe to free them here. */
+		__blang_chan_destroy_all();
 		return;
+	}
 
 	/* Wait for all in-flight tasks to complete. */
 	pthread_mutex_lock( &g_tracker.mutex );
@@ -318,6 +336,10 @@ void __blang_runtime_shutdown( void )
 		}
 	}
 	free( g_tracker.handles );
+
+	/* All spawned threads are joined — no thread can touch a channel now, so it
+	   is safe to destroy every channel that was created during the run. */
+	__blang_chan_destroy_all();
 
 	pthread_mutex_destroy( &g_tracker.mutex );
 	pthread_cond_destroy( &g_tracker.all_done );
@@ -389,7 +411,6 @@ struct BlangChan
 	size_t tail;           /* write position */
 	size_t count;          /* current number of elements */
 	int closed;            /* 1 if channel is closed */
-	int refcount;          /* references held (creator + capturing spawns) */
 	pthread_mutex_t mutex;
 	pthread_cond_t not_empty;
 	pthread_cond_t not_full;
@@ -410,10 +431,28 @@ BlangChan *__blang_chan_create( size_t elem_size, size_t capacity )
 	ch->tail = 0;
 	ch->count = 0;
 	ch->closed = 0;
-	ch->refcount = 1;
 	pthread_mutex_init( &ch->mutex, NULL );
 	pthread_cond_init( &ch->not_empty, NULL );
 	pthread_cond_init( &ch->not_full, NULL );
+
+	/* Track the channel so it is freed at runtime shutdown (channels have no
+	   lexical owner — they cross spawn boundaries). */
+	pthread_mutex_lock( &g_chan_mutex );
+	if ( g_chan_count == g_chan_capacity )
+	{
+		int newcap = g_chan_capacity == 0 ? 16 : g_chan_capacity * 2;
+		BlangChan **grown =
+			(BlangChan **)realloc( g_channels, (size_t)newcap * sizeof( BlangChan * ) );
+		if ( grown != NULL )
+		{
+			g_channels = grown;
+			g_chan_capacity = newcap;
+		}
+	}
+	if ( g_chan_count < g_chan_capacity )
+		g_channels[g_chan_count++] = ch;
+	pthread_mutex_unlock( &g_chan_mutex );
+
 	return ch;
 }
 
@@ -487,19 +526,21 @@ void __blang_chan_destroy( BlangChan *ch )
 	free( ch );
 }
 
-void __blang_chan_retain( BlangChan *ch )
+/* Destroy every registered channel and reset the registry. Called once from
+   __blang_runtime_shutdown after all spawned threads have been joined. */
+static void __blang_chan_destroy_all( void )
 {
-	if ( ch == NULL )
-		return;
-	__atomic_add_fetch( &ch->refcount, 1, __ATOMIC_SEQ_CST );
-}
-
-void __blang_chan_release( BlangChan *ch )
-{
-	if ( ch == NULL )
-		return;
-	if ( __atomic_sub_fetch( &ch->refcount, 1, __ATOMIC_SEQ_CST ) == 0 )
-		__blang_chan_destroy( ch );
+	pthread_mutex_lock( &g_chan_mutex );
+	for ( int i = 0; i < g_chan_count; i++ )
+	{
+		__blang_chan_destroy( g_channels[i] );
+		g_channels[i] = NULL;
+	}
+	free( g_channels );
+	g_channels = NULL;
+	g_chan_count = 0;
+	g_chan_capacity = 0;
+	pthread_mutex_unlock( &g_chan_mutex );
 }
 
 /* ========================================================================
@@ -640,91 +681,3 @@ void __blang_task_destroy( BlangTask *task )
 }
 
 #endif /* BLANG_HAS_LIBUV */
-
-/* ========================================================================
-   Test Framework
-
-   BLang's built-in test runner. Each `test "name" { }` block compiles to a
-   void(void) function; the generated test `main` calls __blang_run_one_test
-   for each. A failed `assert` inside a test longjmps back to the runner so one
-   failing test reports and the suite continues (per-test isolation), instead of
-   the whole process exit(1)-ing. An assert outside any test still exits(1),
-   preserving behavior for asserts in normal code and requires/ensures clauses.
-   Single-threaded by design: state is plain globals, not thread-local.
-   ======================================================================== */
-
-static jmp_buf g_test_jmp;          /* landing pad for a failed assert */
-static int g_test_active = 0;       /* 1 while a test body is running */
-static int g_tests_passed = 0;
-static int g_tests_failed = 0;
-static char g_fail_msg[512];        /* stored failure message */
-static char g_fail_loc[256];        /* stored failure location (file:line) */
-
-int __blang_run_one_test( const char *name, blang_test_fn testfn )
-{
-	if ( name == NULL )
-		name = "(unnamed)";
-
-	g_fail_msg[0] = '\0';
-	g_fail_loc[0] = '\0';
-
-	if ( setjmp( g_test_jmp ) == 0 )
-	{
-		/* First return from setjmp: run the test. */
-		g_test_active = 1;
-		testfn();
-		g_test_active = 0;
-		g_tests_passed++;
-		printf( "  PASS: %s\n", name );
-		return 1;
-	}
-	else
-	{
-		/* Returned here via longjmp from __blang_assert_fail. */
-		g_test_active = 0;
-		g_tests_failed++;
-		if ( g_fail_loc[0] != '\0' )
-			printf( "  FAIL: %s\n    %s (%s)\n", name, g_fail_msg, g_fail_loc );
-		else
-			printf( "  FAIL: %s\n    %s\n", name, g_fail_msg );
-		return 0;
-	}
-}
-
-void __blang_assert_fail( const char *msg, const char *loc )
-{
-	if ( msg == NULL )
-		msg = "assertion failed";
-
-	if ( g_test_active )
-	{
-		/* Inside a test: stash the failure and unwind to the runner so the
-		   remaining tests still run. */
-		strncpy( g_fail_msg, msg, sizeof( g_fail_msg ) - 1 );
-		g_fail_msg[sizeof( g_fail_msg ) - 1] = '\0';
-		if ( loc != NULL )
-		{
-			strncpy( g_fail_loc, loc, sizeof( g_fail_loc ) - 1 );
-			g_fail_loc[sizeof( g_fail_loc ) - 1] = '\0';
-		}
-		else
-		{
-			g_fail_loc[0] = '\0';
-		}
-		longjmp( g_test_jmp, 1 );
-	}
-
-	/* Outside any test (normal code / requires / ensures): preserve the
-	   historical behavior of printing the message and exiting. */
-	if ( loc != NULL && loc[0] != '\0' )
-		fprintf( stderr, "%s (%s)\n", msg, loc );
-	else
-		fprintf( stderr, "%s\n", msg );
-	exit( 1 );
-}
-
-int __blang_test_report( void )
-{
-	printf( "\n%d passed, %d failed\n", g_tests_passed, g_tests_failed );
-	return g_tests_failed > 0 ? 1 : 0;
-}
