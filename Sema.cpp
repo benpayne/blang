@@ -80,6 +80,17 @@ bool Sema::typesCompatible( Type *from, Type *to )
 		return true;
 	if ( looksGenericParam( f ) || looksGenericParam( t ) )
 		return true;
+	// Container/enum kinds are mutually incompatible even though their generic
+	// type arguments keep them out of the "checkable" set below: e.g. assigning
+	// a `query T |> first` result (Option<T>) to an Array<T> is always wrong.
+	{
+		auto isContainerKind = []( const string &n ) {
+			return n == "Array" || n == "Option" || n == "Result" ||
+				n == "Buffer" || n == "Map" || n == "Set";
+		};
+		if ( isContainerKind( f ) && isContainerKind( t ) )
+			return false;   // both containers, different kinds (f != t here)
+	}
 	if ( !isCheckableType( from ) || !isCheckableType( to ) )
 		return true;
 	if ( isScalarTypeName( f ) && isScalarTypeName( t ) )
@@ -119,6 +130,29 @@ void Sema::visitStruct( StructDefinition *structDef )
 {
 	if ( structDef == nullptr )
 		return;
+
+	// Table structs map fields 1:1 to SQL columns, so every field must have a
+	// column representation (primitive or string). The row mapper would leave a
+	// nested struct/array field silently null — a guaranteed null-deref on
+	// first access — so reject it here, located, in all build modes.
+	if ( structDef->isTable() )
+	{
+		for ( const auto &f : structDef->getFields() )
+		{
+			const Type *ft = f->getVariableType();
+			string fn = ( ft != nullptr ) ? ft->getName() : string();
+			if ( !isScalarTypeName( fn ) && fn != "string" )
+			{
+				mDiag.error( structDef->getLocation(),
+					"table struct '" + structDef->getName() + "' field '" +
+					f->getName() + "' has type '" + fn +
+					"', which has no SQL column mapping (columns support "
+					"int/long/short/char/bool/float/double/string)" );
+				mReported = true;
+			}
+		}
+	}
+
 	for ( auto &method : structDef->mMethods )
 		visitFunction( method );
 	if ( structDef->mInitMethod != nullptr )
@@ -492,7 +526,25 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *q = dynamic_cast<QueryExpression *>( expr ) )
 	{
 		validateTableSteps( q->mTableName, q->mSteps, q );
-		return nullptr;
+
+		// Annotate the query's value type: Array<T> for a row set, Option<T>
+		// when the pipeline ends in |> first (single row or none). Codegen and
+		// match-exhaustiveness read this — e.g. a match over a query-first
+		// result must handle `none`, and the temp-subject payload release needs
+		// the concrete T.
+		bool hasFirst = false;
+		for ( const auto &step : q->mSteps )
+		{
+			if ( step.mType == QueryPipelineStep::FIRST )
+			{
+				hasFirst = true;
+				break;
+			}
+		}
+		Type *resultType = new Type( hasFirst ? "Option" : "Array" );
+		resultType->addTypeParam( new Type( q->mTableName ) );
+		q->setResolvedType( resultType );
+		return resultType;
 	}
 	if ( auto *u = dynamic_cast<UpdateExpression *>( expr ) )
 	{
