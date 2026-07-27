@@ -1,0 +1,5 @@
+# A table struct with a field type that has no SQL column mapping (a nested
+# struct here) is rejected by Sema in ALL build modes with a located error —
+# the row mapper would otherwise leave the field silently null (null-deref on
+# first access at runtime).
+^[^:]+\.b:[0-9]+:[0-9]+: error: table struct 'Customer' field 'address' has type 'Address', which has no SQL column mapping

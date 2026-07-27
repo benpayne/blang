@@ -35,7 +35,7 @@ std::ostream &QLang::operator<<(std::ostream &out, const FunctionDefinition &fun
 	return out;
 }
 
-FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern, bool isPublic )
+FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern, bool isPublic, bool deferBody )
 {
 	SourceLocation loc = l.getTokenLocation();
 	FunctionDefinition *func;
@@ -223,6 +223,28 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 		func->mFuncBody = nullptr;
 		cout << "Completed function declaration " << endl;
 	}
+	else if ( deferBody )
+	{
+		// Record the body's start position and skip the block; the body is
+		// parsed later (after all signatures are registered) so functions can
+		// reference each other regardless of definition order.
+		func->mBodyPos = l.getCurrentPos();
+
+		if ( l.getSymbol() != '{' )
+			COMPILE_ERROR( l, "Expected '{' to begin function body" );
+		int depth = 1;
+		while ( depth > 0 )
+		{
+			if ( l.isEOF() )
+				COMPILE_ERROR( l, "Unterminated function body" );
+			sym = l.getSymbol();
+			if ( sym == '{' )
+				depth++;
+			else if ( sym == '}' )
+				depth--;
+		}
+		cout << "Declared function " << endl;
+	}
 	else
 	{
 		func->mFuncBody = Block::Parse( l, func->mFuncScope );
@@ -230,6 +252,15 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 	}
 
 	return func;
+}
+
+void FunctionDefinition::ParseDeferredBody( Lexer &l )
+{
+	if ( mBodyPos < 0 )
+		return;
+	l.setCurrentPos( mBodyPos );
+	mFuncBody = Block::Parse( l, mFuncScope );
+	mBodyPos = -1;
 }
 
 

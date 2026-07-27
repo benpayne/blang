@@ -7,6 +7,9 @@ end-to-end and doubles as an integration test for these features:
 - **`table struct`** stored in SQLite (`Todo`)
 - **`insert` / `update` / `delete`** with bound parameters
 - **`query Todo |> order_by { .id }`** mapped back into an `Array<Todo>`
+- **`query Todo |> where { .id == id } |> first`** returning `Option<Todo>` —
+  the item routes look the todo up once and `match` on it, so an unknown id is
+  a real 404 (`none`) instead of a blind update/delete of zero rows
 - **`@json`** serialization (`to_json` / `Todo_from_json`) over the wire
 - **HTTP stdlib** (`import net;`) serving both the JSON API and static HTML
 - **`[database]`** configuration in `blang.toml` (the default connection is
@@ -47,8 +50,9 @@ All mutating endpoints return the full, updated todo list as JSON.
 ```
 
 Builds the app, starts the server, drives the full CRUD cycle with `curl`,
-checks a 404 and the served frontend, and verifies the data survives a restart
-(SQLite persistence).
+checks 404s (unknown route and unknown item ids on GET/PUT/DELETE, via the
+`|> first` lookup) and the served frontend, and verifies the data survives a
+restart (SQLite persistence).
 
 ## Notes
 

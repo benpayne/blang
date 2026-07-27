@@ -72,20 +72,49 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 			// "string"/"Array", so keying on the declared type would miss it.
 			if ( argType->isPointerTy() )
 			{
+				// The argument's source decides how the enum gets its reference,
+				// mirroring struct-literal field stores:
+				//   - a temporary (call result, literal): transfer ownership by
+				//     untracking it, so scope cleanup leaves it to the enum;
+				//   - an existing owner (variable / field access): RETAIN, because
+				//     the source's own scope release still runs — without the
+				//     retain, e.g. `return Result.ok(a)` for a local Array leaves
+				//     the enum pointing at freed memory (use-after-free at the
+				//     match/`?` unwrap site).
+				Expression *argExpr = (Expression *)expr->mArgs[i];
+				bool srcIsExistingOwner =
+					dynamic_cast<VariableExpression*>( argExpr ) != nullptr ||
+					dynamic_cast<FieldAccessExpression*>( argExpr ) != nullptr;
+
 				if ( isStringType( expr->mArgs[i] ) )
-					untrackTempString( argVal );
+				{
+					if ( srcIsExistingOwner )
+						mBuilder->CreateCall( getOrDeclareStringRetain(), { argVal } );
+					else
+						untrackTempString( argVal );
+				}
 				else if ( isArrayType( expr->mArgs[i] ) )
-					untrackTempArray( argVal );
+				{
+					if ( srcIsExistingOwner )
+						mBuilder->CreateCall( getOrDeclareArrayRetain(), { argVal } );
+					else
+						untrackTempArray( argVal );
+				}
 				else
 				{
 					std::string payloadTypeName;
-					if ( Type *rt = ( (Expression*)expr->mArgs[i] )->getResolvedType() )
+					if ( Type *rt = argExpr->getResolvedType() )
 						payloadTypeName = rt->getName();
 					if ( ( payloadTypeName.empty() || payloadTypeName == "var" ) &&
 						 i < variant.mAssociatedTypes.size() )
 						payloadTypeName = variant.mAssociatedTypes[i]->getName();
 					if ( isUserStructType( payloadTypeName ) )
-						untrackTempStruct( argVal );
+					{
+						if ( srcIsExistingOwner )
+							mBuilder->CreateCall( getOrDeclareRcRetain(), { argVal } );
+						else
+							untrackTempStruct( argVal );
+					}
 				}
 			}
 
@@ -97,6 +126,66 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 
 	// Load and return the enum value
 	return mBuilder->CreateLoad( enumType, alloca, "enum.val" );
+}
+
+void CodeGen::trackEnumArgTemp( Expression *argExpr, llvm::Value *argVal,
+	Type *declParamType )
+{
+	if ( argExpr == nullptr || argVal == nullptr )
+		return;
+	auto *st = llvm::dyn_cast<llvm::StructType>( argVal->getType() );
+	if ( st == nullptr || !st->hasName() )
+		return;
+	string stName = st->getName().str();
+	if ( stName.substr( 0, 5 ) != "enum." )
+		return;
+
+	// Only rvalue temps own an unreleased payload: a variable/field/index
+	// source's payload is already released where the variable was declared.
+	if ( dynamic_cast<VariableExpression*>( argExpr ) != nullptr ||
+		 dynamic_cast<FieldAccessExpression*>( argExpr ) != nullptr ||
+		 dynamic_cast<IndexExpression*>( argExpr ) != nullptr )
+		return;
+
+	auto it = mEnumDefMap.find( stName.substr( 5 ) );
+	if ( it == mEnumDefMap.end() )
+		return;
+	EnumDefinition *ed = it->second;
+
+	// Concrete instantiation: the callee's declared parameter type carries the
+	// type arguments (Option<string>); fall back to the argument's
+	// Sema-resolved type (a call result's function return type).
+	Type *concrete = declParamType;
+	if ( concrete == nullptr || concrete->getNumTypeParams() == 0 )
+	{
+		Type *rt = argExpr->getResolvedType();
+		if ( rt != nullptr )
+			concrete = rt;
+	}
+
+	bool hasRefPayload = false;
+	for ( auto &variant : ed->mVariants )
+	{
+		for ( auto &at : variant.mAssociatedTypes )
+		{
+			string atn = resolveVariantPayloadType(
+				(Type *)at, ed, concrete )->getName();
+			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+				 isUserStructType( atn ) )
+			{
+				hasRefPayload = true;
+				break;
+			}
+		}
+		if ( hasRefPayload )
+			break;
+	}
+	if ( !hasRefPayload || mEnumScopeStack.empty() )
+		return;
+
+	llvm::AllocaInst *tmp = mBuilder->CreateAlloca( st, nullptr, "enumarg.tmp" );
+	mBuilder->CreateStore( argVal, tmp );
+	mEnumScopeStack.back().push_back( { tmp, ed, concrete } );
 }
 
 // ---- Match codegen (Task 53) ----
@@ -326,10 +415,26 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 		mBuilder->CreateBr( defaultBB );
 	}
 
+	// Expression-mode result slot. The alloca (and its zero-init) go into the
+	// function's ENTRY block so they dominate every arm store and the merge
+	// load; the concrete LLVM type is taken from the first arm value produced.
+	llvm::AllocaInst *resultAlloca = nullptr;
+	llvm::Type *resultTy = nullptr;
+	bool resIsString = false, resIsArray = false, resIsStruct = false;
+	string resKindName;
+	if ( expr->mExprMode && expr->getResolvedType() != nullptr )
+		resKindName = resolvedTypeName( expr->getResolvedType() );
+
 	// Generate code for each arm body
 	for ( size_t i = 0; i < expr->mArms.size(); i++ )
 	{
 		mBuilder->SetInsertPoint( armBBs[i] );
+
+		// The binding lives in the arm's block scope (statement form) or in the
+		// arm's own scope (expression form).
+		Scope *armScope = ( expr->mArms[i].mBody != nullptr )
+			? (Scope *)expr->mArms[i].mBody->mScope
+			: (Scope *)expr->mArms[i].mScope;
 
 		// If the arm has a binding, extract the payload from the enum struct
 		if ( !expr->mArms[i].mBindingName.empty() )
@@ -354,11 +459,9 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				// the raw variant associated type ("T"/"E") does not carry. Fall back
 				// to the variant's declared associated type for non-generic enums.
 				Type *bindQType = nullptr;
-				if ( expr->mArms[i].mBody != nullptr &&
-					 expr->mArms[i].mBody->mScope != nullptr )
+				if ( armScope != nullptr )
 				{
-					Symbol *bs = expr->mArms[i].mBody->mScope->findSymbol(
-						expr->mArms[i].mBindingName );
+					Symbol *bs = armScope->findSymbol( expr->mArms[i].mBindingName );
 					if ( auto *bv = dynamic_cast<VariableDefinition*>( bs ) )
 						bindQType = bv->getVariableType();
 				}
@@ -393,11 +496,9 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				mBuilder->CreateStore( payloadVal, bindAlloca );
 
 				// Register in variable map
-				if ( expr->mArms[i].mBody != nullptr &&
-					 expr->mArms[i].mBody->mScope != nullptr )
+				if ( armScope != nullptr )
 				{
-					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
-						expr->mArms[i].mBindingName );
+					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
 						mVariableMap[bindVar] = bindAlloca;
 				}
@@ -411,18 +512,94 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				mBuilder->CreateStore( subject, bindAlloca );
 
 				// Register in variable map
-				if ( expr->mArms[i].mBody != nullptr &&
-					 expr->mArms[i].mBody->mScope != nullptr )
+				if ( armScope != nullptr )
 				{
-					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
-						expr->mArms[i].mBindingName );
+					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
 						mVariableMap[bindVar] = bindAlloca;
 				}
 			}
 		}
 
-		if ( expr->mArms[i].mBody != nullptr )
+		if ( expr->mExprMode )
+		{
+			// Expression-form arm: evaluate the single expression, hand the
+			// result slot an OWNED reference (mirroring the return-statement
+			// policy: retain borrowed sources — variable/field/index reads —
+			// and take over ownership of fresh temps by untracking them), then
+			// store and fall through to the merge.
+			size_t sMark = mTempStrings.size();
+			size_t aMark = mTempArrays.size();
+			size_t tMark = mTempStructs.size();
+
+			llvm::Value *armVal = ( expr->mArms[i].mValue != nullptr )
+				? genExpression( expr->mArms[i].mValue ) : nullptr;
+			if ( armVal != nullptr )
+			{
+				if ( resultTy == nullptr )
+				{
+					resultTy = armVal->getType();
+					llvm::IRBuilder<> eb( &func->getEntryBlock(),
+						func->getEntryBlock().begin() );
+					resultAlloca = eb.CreateAlloca( resultTy, nullptr, "match.result" );
+					eb.CreateStore( llvm::Constant::getNullValue( resultTy ), resultAlloca );
+				}
+
+				Expression *ve = (Expression *)expr->mArms[i].mValue;
+				bool borrowed =
+					dynamic_cast<VariableExpression*>( ve ) != nullptr ||
+					dynamic_cast<FieldAccessExpression*>( ve ) != nullptr ||
+					dynamic_cast<IndexExpression*>( ve ) != nullptr;
+				if ( resKindName == "string" || isStringType( ve ) )
+				{
+					resIsString = true;
+					if ( borrowed )
+						mBuilder->CreateCall( getOrDeclareStringRetain(), { armVal } );
+					else
+						untrackTempString( armVal );
+				}
+				else if ( resKindName == "Array" || isArrayType( ve ) )
+				{
+					resIsArray = true;
+					if ( borrowed )
+						mBuilder->CreateCall( getOrDeclareArrayRetain(), { armVal } );
+					else
+						untrackTempArray( armVal );
+				}
+				else if ( isUserStructType( resKindName ) )
+				{
+					resIsStruct = true;
+					if ( borrowed )
+						mBuilder->CreateCall( getOrDeclareRcRetain(), { armVal } );
+					else
+						untrackTempStruct( armVal );
+				}
+
+				if ( armVal->getType() != resultTy &&
+					 armVal->getType()->isIntegerTy() && resultTy->isIntegerTy() )
+					armVal = mBuilder->CreateIntCast( armVal, resultTy, true, "match.arm.cast" );
+				if ( armVal->getType() == resultTy )
+					mBuilder->CreateStore( armVal, resultAlloca );
+			}
+
+			// Release temps created while evaluating THIS arm, inside this
+			// arm's block — deferring to the statement end would emit release
+			// calls whose operands do not dominate them (defined only in this
+			// arm's basic block).
+			if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+			{
+				for ( size_t k = sMark; k < mTempStrings.size(); k++ )
+					mBuilder->CreateCall( getOrDeclareStringRelease(), { mTempStrings[k] } );
+				for ( size_t k = aMark; k < mTempArrays.size(); k++ )
+					mBuilder->CreateCall( getOrDeclareArrayRelease(), { mTempArrays[k] } );
+				for ( size_t k = tMark; k < mTempStructs.size(); k++ )
+					mBuilder->CreateCall( getOrDeclareRcRelease(), { mTempStructs[k] } );
+			}
+			if ( mTempStrings.size() > sMark ) mTempStrings.resize( sMark );
+			if ( mTempArrays.size() > aMark ) mTempArrays.resize( aMark );
+			if ( mTempStructs.size() > tMark ) mTempStructs.resize( tMark );
+		}
+		else if ( expr->mArms[i].mBody != nullptr )
 			genBlock( expr->mArms[i].mBody );
 
 		if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
@@ -440,6 +617,24 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 
 	// Continue at merge
 	mBuilder->SetInsertPoint( mergeBB );
+
+	// Expression mode: yield the selected arm's value. The loaded value is an
+	// OWNED reference (each arm retained/transferred into the slot), so hand it
+	// to the enclosing statement as a tracked temporary — a binding untracks
+	// and takes ownership; a discarding statement releases it at statement end.
+	if ( expr->mExprMode )
+	{
+		if ( resultAlloca == nullptr )
+			return nullptr;
+		llvm::Value *resVal = mBuilder->CreateLoad( resultTy, resultAlloca, "match.value" );
+		if ( resIsString )
+			trackTempString( resVal );
+		else if ( resIsArray )
+			trackTempArray( resVal );
+		else if ( resIsStruct )
+			trackTempStruct( resVal );
+		return resVal;
+	}
 	return nullptr;
 }
 
@@ -532,6 +727,51 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 
 	// ---- Error branch: propagate the error by returning early ----
 	mBuilder->SetInsertPoint( errBB );
+
+	// An early return via `?` must run the same scope cleanup a normal `return`
+	// runs, or every refcounted local live at the failing `?` leaks (e.g. a token
+	// Array built before the failing step). The operand's own enum is usually an
+	// untracked temporary (a call result), so cleanup leaves the forwarded error
+	// untouched. But if the operand is a tracked local enum VARIABLE, cleanup
+	// WOULD release its payload — retain the forwarded payload first so the
+	// caller's copy stays valid.
+	{
+		if ( dynamic_cast<VariableExpression*>( (Expression*)expr->mOperand ) != nullptr )
+		{
+			Type *errDeclared = enumDef->mVariants[errorIdx].mAssociatedTypes.empty()
+				? nullptr : (Type *)enumDef->mVariants[errorIdx].mAssociatedTypes[0];
+			Type *operandQ = ( (Expression *)expr->mOperand )->getResolvedType();
+			Type *errConcrete = ( errDeclared != nullptr )
+				? resolveVariantPayloadType( errDeclared, enumDef, operandQ )
+				: nullptr;
+			if ( errConcrete != nullptr )
+			{
+				std::string en = errConcrete->getName();
+				llvm::Function *retainFn = nullptr;
+				if ( en == "string" )      retainFn = getOrDeclareStringRetain();
+				else if ( en == "Array" )  retainFn = getOrDeclareArrayRetain();
+				else if ( en == "Buffer" ) retainFn = getOrDeclareBufferRetain();
+				else if ( isUserStructType( en ) ) retainFn = getOrDeclareRcRetain();
+				if ( retainFn != nullptr )
+				{
+					llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+					llvm::Type *payloadArrTy = enumType->getElementType( 1 );
+					llvm::Value *pPtr = mBuilder->CreateStructGEP(
+						enumType, enumAlloca, 1, "try.err.retain.payload" );
+					llvm::Value *pByte = mBuilder->CreateGEP( payloadArrTy, pPtr,
+						{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+						  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
+						"try.err.retain.byte" );
+					llvm::Value *pv = mBuilder->CreateLoad( ptrTy, pByte, "try.err.retain.val" );
+					mBuilder->CreateCall( retainFn, { pv } );
+				}
+			}
+		}
+
+		releaseTempStrings();
+		releaseTempArrays();
+		emitScopeStackReleases();
+	}
 
 	// Determine the current function's return type at the QLang level
 	// to construct a matching error enum value for early return.
@@ -647,7 +887,19 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 
 	llvm::Type *successPayloadType = llvm::Type::getInt32Ty( *mContext ); // default
 	if ( !enumDef->mVariants[successIdx].mAssociatedTypes.empty() )
-		successPayloadType = getLLVMType( enumDef->mVariants[successIdx].mAssociatedTypes[0] );
+	{
+		// Resolve the DECLARED associated type against the operand's concrete
+		// instantiation: for a generic enum (Result<Array<int>, string>) the
+		// declared type is the erased param "T", which getLLVMType would map to
+		// the i32 default — truncating a pointer payload (e.g. an unwrapped
+		// Array) to 4 bytes and producing a wild pointer at the use site.
+		Type *declared = enumDef->mVariants[successIdx].mAssociatedTypes[0];
+		Type *operandQType = ( (Expression *)expr->mOperand )->getResolvedType();
+		Type *concretePayload = resolveVariantPayloadType(
+			declared, enumDef, operandQType );
+		successPayloadType = getLLVMType(
+			concretePayload != nullptr ? concretePayload : declared );
+	}
 
 	// GEP to the payload area and load the success value
 	llvm::Type *payloadArrType = enumType->getElementType( 1 );

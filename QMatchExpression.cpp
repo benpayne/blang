@@ -15,7 +15,7 @@ SET_LOG_LEVEL( LOG_LVL_NOISE );
 using namespace QLang;
 using namespace std;
 
-MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope )
+MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope, bool exprMode )
 {
 	TRACE_BEGIN( LOG_LVL_INFO );
 
@@ -29,6 +29,7 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope )
 
 	MatchExpression *expr = new MatchExpression;
 	expr->setLocation( loc );
+	expr->mExprMode = exprMode;
 
 	// Parse the subject expression (a primary expression before '{')
 	expr->mSubject = Expression::ParsePrimary( l, scope );
@@ -112,10 +113,28 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope )
 			armScope->addSymbol( binding );
 		}
 
-		arm.mBody = Block::Parse( l, armScope );
-		if ( arm.mBody == nullptr )
+		if ( exprMode )
 		{
-			COMPILE_ERROR( l, "Expected block body for match arm" );
+			// Expression-form arm: `pattern { expression }` — exactly one
+			// expression, no semicolon; its value is the arm's result.
+			sym = l.getSymbol();
+			if ( sym != '{' )
+				COMPILE_ERROR( l, "Expected '{' after match arm pattern" );
+			arm.mValue = Expression::ParseExpr( l, armScope, 0 );
+			if ( arm.mValue == nullptr )
+				COMPILE_ERROR( l, "Expected expression in match arm (a value-producing match arm holds a single expression)" );
+			sym = l.getSymbol();
+			if ( sym != '}' )
+				COMPILE_ERROR( l, "Expected '}' after match arm expression (a value-producing match arm holds a single expression, no ';')" );
+			arm.mScope = armScope;
+		}
+		else
+		{
+			arm.mBody = Block::Parse( l, armScope );
+			if ( arm.mBody == nullptr )
+			{
+				COMPILE_ERROR( l, "Expected block body for match arm" );
+			}
 		}
 
 		expr->mArms.push_back( arm );

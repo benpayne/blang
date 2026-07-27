@@ -114,7 +114,29 @@ public:
 		NUM_SYMBOLS
 	};
 	
-	bool isEOF() { return mReader->isEOF(); }
+	// End-of-input from the PARSER's point of view: true only when no token
+	// remains at the current parse position. This must be cursor-aware, not
+	// just mReader->isEOF(): after setCurrentPos() rewinds into already-scanned
+	// tokens (deferred function-body parsing for forward references), the
+	// underlying reader is at file-EOF while unconsumed buffered tokens remain.
+	bool isEOF()
+	{
+		if ( mLastSym != -1 )
+			return false;                  // a peeked token is pending
+		if ( (size_t)mCurrentPos < mSymbolList.size() )
+			return mSymbolList[ mCurrentPos ].symbol == -1;
+		return mReader->isEOF();
+	}
+
+	// If the token at the current parse position is SHIFT spelled ">>", split
+	// it in place into two '>' tokens (adjacent columns). The type parser calls
+	// this when a nested generic type-argument list closes with ">>"
+	// (Array<Array<int>>), which the lexer otherwise tokenizes as right-shift.
+	// The split rewrites the symbol-replay list, so it persists across
+	// setCurrentPos backtracking — harmless, because the split only fires while
+	// parsing a type-argument list, where '>' '>' and '>>' are interchangeable
+	// spellings of the same close-brackets.
+	void splitShiftIntoCloseAngles();
 
 	// Line/column/location of the token at the current parse position — the
 	// token the parser is about to consume. Accurate after setCurrentPos

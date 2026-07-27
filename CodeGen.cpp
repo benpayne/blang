@@ -109,6 +109,12 @@ bool CodeGen::generate( Module *mod )
 		if ( func->isGeneric() )
 			continue;
 
+		// In test-runner mode the test driver main() replaces the user's main;
+		// don't even declare the user's (LLVM would rename the test main and
+		// leave `main` declared-but-undefined, breaking the link).
+		if ( mTestMode && func->getName() == "main" )
+			continue;
+
 		// Build LLVM function type — must expand fn-typed params into
 		// (fn_ptr, ctx_ptr) pairs, matching genFunction's ABI.
 		llvm::Type *retType = getLLVMType( func->mReturnType );
@@ -317,6 +323,12 @@ bool CodeGen::generate( Module *mod )
 	{
 		// Skip generic functions — they're templates, not concrete code
 		if ( func->isGeneric() )
+			continue;
+
+		// In test-runner mode the emitted test main() IS the program's main; a
+		// user main in the same file must be skipped or it wins the symbol and
+		// `bcc test` silently runs the program instead of the tests.
+		if ( mTestMode && func->getName() == "main" )
 			continue;
 
 		if ( genFunction( func ) == nullptr )
@@ -827,6 +839,15 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 	// Inject init calls into main's entry block (before the branch to body)
 	if ( isMain )
 	{
+		// Remember where the body actually left the insert point. This is NOT
+		// necessarily the function's last block: block-exit cleanup (e.g. the
+		// enum-payload release switch) creates its merge block before its case
+		// blocks, so &llvmFunc->back() can be an already-terminated case block
+		// while the real continuation (enum.cleanup.done) sits earlier in the
+		// list. Restoring to back() would leave that block unterminated -> IR
+		// verification failure.
+		llvm::BasicBlock *bodyEndBB = mBuilder->GetInsertBlock();
+
 		llvm::Instruction *brInst = initBB->getTerminator();
 		mBuilder->SetInsertPoint( brInst );
 
@@ -884,9 +905,8 @@ llvm::Function *CodeGen::genFunction( FunctionDefinition *func )
 				{ llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), 4 ) } );
 		}
 
-		// Restore insert point to after the body
-		llvm::BasicBlock *afterBody = &llvmFunc->back();
-		mBuilder->SetInsertPoint( afterBody );
+		// Restore insert point to where the body left it (see bodyEndBB above)
+		mBuilder->SetInsertPoint( bodyEndBB );
 	}
 
 	// If the function is void and the last block has no terminator, add ret void

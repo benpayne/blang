@@ -293,6 +293,28 @@ int Lexer::getSymbol()
 	return sym;
 }
 
+void Lexer::splitShiftIntoCloseAngles()
+{
+	// Make sure the token at the current position is scanned into the list.
+	peekSymbol();
+
+	if ( (size_t)mCurrentPos >= mSymbolList.size() )
+		return;
+
+	SymbolInfo &info = mSymbolList[ mCurrentPos ];
+	if ( info.symbol != SHIFT || info.symbolText != ">>" )
+		return;
+
+	std::string gt = ">";
+	SymbolInfo first( '>', gt, info.line, info.col );
+	SymbolInfo second( '>', gt, info.line, info.col + 1 );
+	mSymbolList[ mCurrentPos ] = first;
+	mSymbolList.insert( mSymbolList.begin() + mCurrentPos + 1, second );
+
+	// Drop the cached SHIFT peek so the next read sees the first '>'.
+	mLastSym = -1;
+}
+
 int Lexer::getCurrentPos()
 {
 	return mCurrentPos;

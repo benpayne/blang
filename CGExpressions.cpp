@@ -154,24 +154,48 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		}
 	}
 
-	// Handle generic function instantiation
+	// Handle generic function instantiation. When the caller wrote no explicit
+	// <...> list, infer the type arguments from the argument expressions
+	// (identity(w) with a string w == identity<string>(w)); a generic call whose
+	// arguments cannot bind every parameter is a LOUD error — previously it fell
+	// through to "undefined function" without setting mHasError, so the call was
+	// silently dropped and the target variable read uninitialized memory.
+	if ( funcDef->isGeneric() && call->mTypeArgs.empty() )
+	{
+		if ( !inferCallTypeArgs( call, funcDef ) )
+		{
+			cerr << "CodeGen error: cannot infer type arguments for generic function '"
+				<< funcDef->getName() << "' — call it with explicit type arguments, "
+				<< "e.g. " << funcDef->getName() << "<int>(...)" << endl;
+			mHasError = true;
+			return nullptr;
+		}
+	}
+
 	if ( !call->mTypeArgs.empty() && funcDef->isGeneric() )
 	{
 		llvm::Function *genFunc = instantiateGenericFunction( funcDef, call->mTypeArgs );
 		if ( genFunc == nullptr )
 		{
-			cerr << "CodeGen: failed to instantiate generic function '"
+			cerr << "CodeGen error: failed to instantiate generic function '"
 				<< funcDef->getName() << "'" << endl;
+			mHasError = true;
 			return nullptr;
 		}
 
 		// Generate argument values
 		std::vector<llvm::Value*> args;
-		for ( auto &paramExpr : call->mParams )
+		for ( size_t pi = 0; pi < call->mParams.size(); pi++ )
 		{
-			llvm::Value *argVal = genExpression( paramExpr );
+			llvm::Value *argVal = genExpression( call->mParams[pi] );
 			if ( argVal == nullptr )
 				return nullptr;
+			// A payload-carrying enum rvalue argument owns its payload with no
+			// releasing owner — register it for scope-exit release (ledger #7).
+			VariableDefinition *pd = ( pi < (size_t)funcDef->getNumberParams() )
+				? funcDef->getParam( pi ) : nullptr;
+			trackEnumArgTemp( call->mParams[pi], argVal,
+				pd != nullptr ? pd->getVariableType() : nullptr );
 			args.push_back( argVal );
 		}
 
@@ -182,17 +206,17 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		}
 
 		llvm::Value *callResult = mBuilder->CreateCall( genFunc, args, "calltmp" );
-		if ( funcDef->getReturnType() != nullptr &&
-			 funcDef->getReturnType()->getName() == "string" )
+		// Track refcounted returns as temporaries, keyed on the CONCRETE return
+		// type — the declared name is an erased param ("T") for calls like
+		// pick_first<string>, so callReturnTypeName maps it through the type
+		// arguments. (See the non-generic path below for the ownership model.)
+		string genRetName = callReturnTypeName( call );
+		if ( genRetName == "string" )
 			trackTempString( callResult );
-		// Track struct-returning generic calls as temporaries (see the non-generic
-		// path below for the ownership rationale).
-		if ( funcDef->getReturnType() != nullptr &&
-			 isUserStructType( funcDef->getReturnType()->getName() ) )
-			trackTempStruct( callResult );
-		if ( funcDef->getReturnType() != nullptr &&
-			 funcDef->getReturnType()->getName() == "Array" )
+		else if ( genRetName == "Array" )
 			trackTempArray( callResult );
+		else if ( isUserStructType( genRetName ) )
+			trackTempStruct( callResult );
 		return callResult;
 	}
 
@@ -220,9 +244,12 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 
 	if ( llvmFunc == nullptr )
 	{
-		cerr << "CodeGen: undefined function '" << funcDef->getName() << "'"
+		cerr << "CodeGen error: undefined function '" << funcDef->getName() << "'"
 			<< ( !call->mMangledName.empty() ? " (mangled: " + call->mMangledName + ")" : "" )
 			<< endl;
+		// Loud: without mHasError the compile exited 0 with the call silently
+		// dropped, leaving the consumer reading uninitialized memory.
+		mHasError = true;
 		return nullptr;
 	}
 
@@ -233,6 +260,15 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		llvm::Value *argVal = genExpression( call->mParams[argIdx] );
 		if ( argVal == nullptr )
 			return nullptr;
+
+		// A payload-carrying enum rvalue argument owns its payload with no
+		// releasing owner — register it for scope-exit release (ledger #7).
+		{
+			VariableDefinition *pd = ( argIdx < (size_t)funcDef->getNumberParams() )
+				? funcDef->getParam( argIdx ) : nullptr;
+			trackEnumArgTemp( call->mParams[argIdx], argVal,
+				pd != nullptr ? pd->getVariableType() : nullptr );
+		}
 
 		// FFI: if calling extern fn and param is cstring but arg is string,
 		// extract the .data field from BlangString*

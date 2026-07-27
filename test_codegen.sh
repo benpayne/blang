@@ -259,7 +259,10 @@ run_one_test() {
 		stdlib_files+=("${STDLIB_BUFFER}")
 		need_combine=1
 	fi
-	if [[ "${base_name}" == *"tcp"* ]] || [[ "${base_name}" == *"selector"* ]] || [[ "${base_name}" == *"net"* ]] || [[ "${base_name}" == *"sys_args"* ]] || [[ "${base_name}" == *"http"* ]]; then
+	# net.b: filename patterns (historical) OR an explicit `import net;` in the
+	# test (content-gated, mirroring bcc's real stdlib resolution).
+	if [[ "${base_name}" == *"tcp"* ]] || [[ "${base_name}" == *"selector"* ]] || [[ "${base_name}" == *"net"* ]] || [[ "${base_name}" == *"sys_args"* ]] || [[ "${base_name}" == *"http"* ]] \
+	   || grep -qE '^[[:space:]]*import[[:space:]]+net[[:space:]]*;' "${test_file}" 2>/dev/null; then
 		if [ -f "${STDLIB_NET}" ]; then
 			stdlib_files+=("${STDLIB_NET}")
 			need_combine=1

@@ -63,11 +63,25 @@ check "POST creates todo #1" '[{"id":1,"title":"buy milk","done":false}]' "$r"
 r=$(curl -s -X POST ${BASE}/todos -H 'Content-Type: application/json' -d '{"title":"walk dog"}')
 check "POST creates todo #2" '[{"id":1,"title":"buy milk","done":false},{"id":2,"title":"walk dog","done":false}]' "$r"
 
+r=$(curl -s ${BASE}/todos/2)
+check "GET single todo (query |> first)" '{"id":2,"title":"walk dog","done":false}' "$r"
+
 r=$(curl -s -X PUT ${BASE}/todos/1 -H 'Content-Type: application/json' -d '{"done":true}')
 check "PUT toggles #1 done" '[{"id":1,"title":"buy milk","done":true},{"id":2,"title":"walk dog","done":false}]' "$r"
 
 r=$(curl -s -X DELETE ${BASE}/todos/2)
 check "DELETE removes #2" '[{"id":1,"title":"buy milk","done":true}]' "$r"
+
+# Unknown ids are real 404s: the handler looks the item up with |> first and
+# matches none, instead of blindly updating/deleting zero rows.
+code=$(curl -s -o /dev/null -w "%{http_code}" ${BASE}/todos/99)
+check "GET unknown id -> 404" "404" "$code"
+
+code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT ${BASE}/todos/99 -H 'Content-Type: application/json' -d '{"done":true}')
+check "PUT unknown id -> 404" "404" "$code"
+
+code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE ${BASE}/todos/99)
+check "DELETE unknown id -> 404" "404" "$code"
 
 code=$(curl -s -o /dev/null -w "%{http_code}" ${BASE}/nope)
 check "unknown route -> 404" "404" "$code"

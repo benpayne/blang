@@ -148,6 +148,14 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 				COMPILE_ERROR( l, "Expected type argument" );
 			genericType->addTypeParam( param );
 
+			// A nested generic ends with ">>" (Array<Array<int>>), which the
+			// lexer tokenizes as right-shift. Split it into two '>' so this
+			// (innermost) list closes on the first and the enclosing list on
+			// the second. Every type-argument list recurses through Type::Parse,
+			// so this single site covers all nesting depths and call sites.
+			if ( l.peekSymbol() == Lexer::SHIFT )
+				l.splitShiftIntoCloseAngles();
+
 			int nextSym = l.getSymbol();
 			if ( nextSym == '>' )
 				break;

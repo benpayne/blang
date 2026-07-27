@@ -173,15 +173,19 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 				mStructScopeStack.back().push_back( alloca );
 			}
 
-			// Track string variables for release at scope exit
-			if ( varType != nullptr && varType->getName() == "string" &&
+			// Track string variables for release at scope exit. The declared name
+			// is resolved through the active generic substitution so a `T`-typed
+			// local inside a monomorphized generic (sort<string>'s `T tmp`)
+			// participates in refcounting like a directly-declared string.
+			if ( resolvedTypeName( varType ) == "string" &&
 				 !mStringScopeStack.empty() )
 			{
 				mStringScopeStack.back().push_back( { alloca, varDef } );
 			}
 
-			// Track array variables for release at scope exit
-			if ( varType != nullptr && varType->getName() == "Array" &&
+			// Track array variables for release at scope exit (substitution-aware,
+			// same rationale as strings above).
+			if ( resolvedTypeName( varType ) == "Array" &&
 				 !mArrayScopeStack.empty() )
 			{
 				mArrayScopeStack.back().push_back( { alloca, varDef } );
@@ -283,6 +287,67 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 						}
 					}
 
+					// Resolve the declared type through the active generic
+					// substitution so `T`-typed locals inside monomorphized
+					// generics get the same borrowed-source retains as directly
+					// declared string/Array locals. This moves together with the
+					// substitution-aware scope tracking above and the
+					// substitution-aware isStringType/isArrayType predicates —
+					// changing only one of those sites unbalances the counts.
+					string boundTypeName = resolvedTypeName( varType );
+
+					// Same borrowed-source rule for Array-typed locals: binding an
+					// element of a nested array (Array<int> row = grid[i]) — or a
+					// variable/field copy — creates a second tracked owner, so it
+					// must retain. Without this, the local's scope-exit release and
+					// the outer array's elem_dtor double-free the same array.
+					if ( boundTypeName == "Array" )
+					{
+						Expression *srcExpr = (Expression *)data.mInitialValue;
+						if ( dynamic_cast<VariableExpression*>( srcExpr ) != nullptr ||
+							 dynamic_cast<FieldAccessExpression*>( srcExpr ) != nullptr ||
+							 dynamic_cast<IndexExpression*>( srcExpr ) != nullptr )
+						{
+							mBuilder->CreateCall( getOrDeclareArrayRetain(), { initVal } );
+						}
+					}
+
+					// And for string locals bound from a borrowed source: a plain
+					// variable copy (string b = a;) or an array element
+					// (string s = args[i];) creates a second tracked owner, which
+					// must retain — genVariableExpression and genIndexExpression
+					// return borrows. FieldAccess is deliberately EXCLUDED: string
+					// field reads already retain + track as a statement temp
+					// (CGStruct genFieldAccess), and the untrackTempString below
+					// transfers that reference to the variable. Owned sources
+					// (literals, concat/interp temps, call results) also transfer
+					// via untrack. This was known-issue #1 ("array-element string
+					// ARC") — the earlier reverted attempt retained at the
+					// IndexExpression node, which double-counted the already-
+					// balanced flows; retaining only at this binding site is safe.
+					if ( boundTypeName == "string" )
+					{
+						Expression *srcExpr = (Expression *)data.mInitialValue;
+						auto *srcVar = dynamic_cast<VariableExpression*>( srcExpr );
+
+						// An own-from-own initialization is a MOVE: the single
+						// reference transfers (the source is marked moved and
+						// skipped at scope release below), so no retain.
+						bool isMove = false;
+						if ( ownership == OwnershipQualifier::kOwnership_Own &&
+							 srcVar != nullptr &&
+							 srcVar->getVariable()->getOwnership() ==
+								 OwnershipQualifier::kOwnership_Own )
+							isMove = true;
+
+						if ( !isMove &&
+							 ( srcVar != nullptr ||
+							   dynamic_cast<IndexExpression*>( srcExpr ) != nullptr ) )
+						{
+							mBuilder->CreateCall( getOrDeclareStringRetain(), { initVal } );
+						}
+					}
+
 					// Cast if types don't match (skip for struct ptrs which are already ptr)
 					if ( !isStructVar && initVal->getType() != llvmType )
 					{
@@ -304,8 +369,9 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 					{
 						mBuilder->CreateStore( initVal, alloca );
 
-						// If storing a string, untrack it from temps — the variable now owns it
-						if ( varType != nullptr && varType->getName() == "string" )
+						// If storing a string, untrack it from temps — the variable now
+						// owns it (substitution-aware: T-typed locals transfer too)
+						if ( resolvedTypeName( varType ) == "string" )
 							untrackTempString( initVal );
 
 						// If storing a struct, untrack it from temps — the variable now owns it
@@ -314,7 +380,7 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 
 						// If storing an array, untrack it from temps — the variable now
 						// owns it (released at scope exit via mArrayScopeStack).
-						if ( varType != nullptr && varType->getName() == "Array" )
+						if ( resolvedTypeName( varType ) == "Array" )
 							untrackTempArray( initVal );
 
 						// If storing a fn-typed value, untrack its lambda context from temps.
@@ -353,6 +419,98 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 	}
 }
 
+void CodeGen::emitScopeStackReleases()
+{
+	// Emit ARC releases for all in-scope shared/sync variables
+	for ( auto it = mArcScopeStack.rbegin(); it != mArcScopeStack.rend(); ++it )
+	{
+		for ( auto *alloca : *it )
+		{
+			llvm::Value *heapPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), alloca, "rc.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
+		}
+	}
+
+	// Release string variables (skip moved vars)
+	for ( auto it = mStringScopeStack.rbegin(); it != mStringScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *strPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "str.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareStringRelease(), { strPtr } );
+		}
+	}
+
+	// Release array variables (skip moved vars)
+	for ( auto it = mArrayScopeStack.rbegin(); it != mArrayScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *arrPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "arr.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrPtr } );
+		}
+	}
+
+	// Release buffer variables (skip moved vars)
+	for ( auto it = mBufferScopeStack.rbegin(); it != mBufferScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Value *bufPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), entry.first, "buf.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufPtr } );
+		}
+	}
+
+	// Release lambda/fn-typed variable contexts (skip moved vars)
+	for ( auto it = mLambdaScopeStack.rbegin(); it != mLambdaScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
+				continue;
+			llvm::Type *pairType = llvm::StructType::get( *mContext, {
+				llvm::PointerType::get( *mContext, 0 ),
+				llvm::PointerType::get( *mContext, 0 )
+			} );
+			llvm::Value *pairVal = mBuilder->CreateLoad(
+				pairType, entry.first, "fn.ret.pair" );
+			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
+				pairVal, 1, "fn.ret.ctx" );
+			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { ctxPtr } );
+		}
+	}
+
+	// Release heap-allocated struct variables
+	for ( auto it = mStructScopeStack.rbegin(); it != mStructScopeStack.rend(); ++it )
+	{
+		for ( auto *structAlloca : *it )
+		{
+			llvm::Value *structPtr = mBuilder->CreateLoad(
+				llvm::PointerType::get( *mContext, 0 ), structAlloca, "struct.ret.ptr" );
+			mBuilder->CreateCall( getOrDeclareRcRelease(), { structPtr } );
+		}
+	}
+
+	// Release enum variables with refcounted payloads
+	for ( auto it = mEnumScopeStack.rbegin(); it != mEnumScopeStack.rend(); ++it )
+	{
+		for ( auto &entry : *it )
+		{
+			emitEnumPayloadRelease( entry.alloca, entry.enumDef, entry.concreteType );
+		}
+	}
+}
+
 void CodeGen::genReturnStatement( ReturnStatement *ret )
 {
 	// Generate the return value FIRST, before releasing scope variables.
@@ -378,8 +536,13 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 		if ( retVal != nullptr && isArrayType( ret->mExpression ) )
 		{
 			Expression *retRawExpr = (Expression *)ret->mExpression;
+			// IndexExpression is a borrowed source too: __blang_array_get does
+			// not retain, so returning an element (a generic Map's
+			// `return self.values[idx]` with V=Array) must hand the caller its
+			// own reference or the caller's release corrupts the container.
 			if ( dynamic_cast<VariableExpression*>( retRawExpr ) != nullptr ||
-				 dynamic_cast<FieldAccessExpression*>( retRawExpr ) != nullptr )
+				 dynamic_cast<FieldAccessExpression*>( retRawExpr ) != nullptr ||
+				 dynamic_cast<IndexExpression*>( retRawExpr ) != nullptr )
 				mBuilder->CreateCall( getOrDeclareArrayRetain(), { retVal } );
 		}
 
@@ -396,21 +559,26 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 
 		// If returning a heap-allocated struct, retain the pointer so it
 		// survives the scope cleanup below (which will release the local reference).
-		// Only retain when the source expression is a variable or field access —
-		// those are tracked in scope stacks and will be released at scope exit.
-		// New allocations (struct literals, function call results) already have
-		// refcount=1 and transfer ownership directly to the caller.
+		// Only retain when the source expression is a borrowed read — a variable,
+		// a field access, or an array-element index (__blang_array_get does not
+		// retain, so a generic Map's `return self.values[idx]` with V = a struct
+		// must hand the caller its own reference, mirroring the Array policy
+		// above). New allocations (struct literals, function call results) already
+		// have refcount=1 and transfer ownership directly to the caller. The
+		// declared return type is resolved through the active monomorphization
+		// substitution so a generic `-> V` participates when V is a struct.
 		if ( retVal != nullptr && mCurrentFunction != nullptr &&
 			 mCurrentFunction->getReturnType() != nullptr )
 		{
-			string retTypeName = mCurrentFunction->getReturnType()->getName();
+			string retTypeName = resolvedTypeName( mCurrentFunction->getReturnType() );
 			if ( isUserStructType( retTypeName ) )
 			{
 				bool needsRetain = false;
 				Expression *retRawExpr = (Expression *)ret->mExpression;
 				auto *retExpr = dynamic_cast<VariableExpression*>( retRawExpr );
 				auto *retField = dynamic_cast<FieldAccessExpression*>( retRawExpr );
-				if ( retExpr != nullptr || retField != nullptr )
+				auto *retIndex = dynamic_cast<IndexExpression*>( retRawExpr );
+				if ( retExpr != nullptr || retField != nullptr || retIndex != nullptr )
 					needsRetain = true;
 				if ( needsRetain )
 					mBuilder->CreateCall( getOrDeclareRcRetain(), { retVal } );
@@ -451,94 +619,10 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 		mBuilder->CreateCall( getOrDeclareRuntimeShutdown(), {} );
 	}
 
-	// Emit ARC releases for all in-scope shared/sync variables before returning
-	for ( auto it = mArcScopeStack.rbegin(); it != mArcScopeStack.rend(); ++it )
-	{
-		for ( auto *alloca : *it )
-		{
-			llvm::Value *heapPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), alloca, "rc.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareRcRelease(), { heapPtr } );
-		}
-	}
-
-	// Release string variables before returning (skip moved vars)
-	for ( auto it = mStringScopeStack.rbegin(); it != mStringScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Value *strPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), entry.first, "str.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareStringRelease(), { strPtr } );
-		}
-	}
-
-	// Release array variables before returning (skip moved vars)
-	for ( auto it = mArrayScopeStack.rbegin(); it != mArrayScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Value *arrPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), entry.first, "arr.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrPtr } );
-		}
-	}
-
-	// Release buffer variables before returning (skip moved vars)
-	for ( auto it = mBufferScopeStack.rbegin(); it != mBufferScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Value *bufPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), entry.first, "buf.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufPtr } );
-		}
-	}
-
-	// Release lambda/fn-typed variable contexts before returning (skip moved vars)
-	for ( auto it = mLambdaScopeStack.rbegin(); it != mLambdaScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			if ( entry.second != nullptr && mMovedVariables.count( entry.second ) )
-				continue;
-			llvm::Type *pairType = llvm::StructType::get( *mContext, {
-				llvm::PointerType::get( *mContext, 0 ),
-				llvm::PointerType::get( *mContext, 0 )
-			} );
-			llvm::Value *pairVal = mBuilder->CreateLoad(
-				pairType, entry.first, "fn.ret.pair" );
-			llvm::Value *ctxPtr = mBuilder->CreateExtractValue(
-				pairVal, 1, "fn.ret.ctx" );
-			mBuilder->CreateCall( getOrDeclareLambdaCtxRelease(), { ctxPtr } );
-		}
-	}
-
-	// Release heap-allocated struct variables before returning
-	for ( auto it = mStructScopeStack.rbegin(); it != mStructScopeStack.rend(); ++it )
-	{
-		for ( auto *structAlloca : *it )
-		{
-			llvm::Value *structPtr = mBuilder->CreateLoad(
-				llvm::PointerType::get( *mContext, 0 ), structAlloca, "struct.ret.ptr" );
-			mBuilder->CreateCall( getOrDeclareRcRelease(), { structPtr } );
-		}
-	}
-
-	// Release enum variables with refcounted payloads before returning
-	for ( auto it = mEnumScopeStack.rbegin(); it != mEnumScopeStack.rend(); ++it )
-	{
-		for ( auto &entry : *it )
-		{
-			emitEnumPayloadRelease( entry.alloca, entry.enumDef, entry.concreteType );
-		}
-	}
+	// Release every in-scope local (shared/sync, string, array, buffer, lambda,
+	// struct, enum payload) before returning. Shared with the `?` operator's
+	// early-return error path (CGEnum.cpp) so both exits run identical cleanup.
+	emitScopeStackReleases();
 
 	// In an async wrapper, return statements store the value and branch to exit
 	if ( mAsyncExitBB != nullptr )
@@ -1002,13 +1086,26 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 
 		// Determine element type from the array's type annotation
 		llvm::Type *elemType = llvm::Type::getInt32Ty( *mContext ); // default
+		Type *elemQType = nullptr;
 		if ( auto *ve = dynamic_cast<VariableExpression*>(
 				 (Expression*)forInStmt->mIterableExpression ) )
 		{
 			Type *varType = ve->mVariable->getVariableType();
 			if ( varType != nullptr && varType->getNumTypeParams() > 0 )
-				elemType = getLLVMType( varType->getTypeParam( 0 ) );
+				elemQType = varType->getTypeParam( 0 );
 		}
+		else if ( auto *fa = dynamic_cast<FieldAccessExpression*>(
+				 (Expression*)forInStmt->mIterableExpression ) )
+		{
+			// Field iterable (for k in counts.keys): getFieldType is instance-
+			// aware, so a generic struct's Array<K> field resolves to the
+			// concrete element type (Array<string> for a Map<string,int>).
+			Type *fieldType = getFieldType( fa );
+			if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
+				elemQType = fieldType->getTypeParam( 0 );
+		}
+		if ( elemQType != nullptr )
+			elemType = getLLVMType( elemQType );
 
 		// Create the loop counter and element variable
 		llvm::Type *i64Type = llvm::Type::getInt64Ty( *mContext );
@@ -1032,13 +1129,9 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 
 					// Update the loop variable's AST type to the actual element type
 					// so that isStringType/isArrayType can resolve it correctly
-					if ( auto *arrVe = dynamic_cast<VariableExpression*>(
-							 (Expression*)forInStmt->mIterableExpression ) )
-					{
-						Type *arrType = arrVe->mVariable->getVariableType();
-						if ( arrType != nullptr && arrType->getNumTypeParams() > 0 )
-							iterVar->setType( arrType->getTypeParam( 0 ) );
-					}
+					// (elemQType covers variable AND field iterables, instance-mapped)
+					if ( elemQType != nullptr )
+						iterVar->setType( elemQType );
 				}
 			}
 		}

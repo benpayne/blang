@@ -23,6 +23,22 @@ static bool isGenericParamName( StructDefinition *structDef, const string &typeN
 	return false;
 }
 
+// True when `t` MENTIONS one of the struct's generic params anywhere — the
+// param itself (`V value`) or nested in type arguments (`Array<K> keys`). Such
+// a type is NOT concrete: recording it on the typed AST would make codegen read
+// "K"/"V" instead of performing the instance substitution.
+static bool mentionsGenericParam( StructDefinition *structDef, Type *t )
+{
+	if ( t == nullptr )
+		return false;
+	if ( isGenericParamName( structDef, t->getName() ) )
+		return true;
+	for ( int i = 0; i < t->getNumTypeParams(); i++ )
+		if ( mentionsGenericParam( structDef, t->getTypeParam( i ) ) )
+			return true;
+	return false;
+}
+
 // ---------------------------------------------------------------------------
 // U4: type compatibility (closed conversion set — design decision 6)
 // ---------------------------------------------------------------------------
@@ -80,6 +96,17 @@ bool Sema::typesCompatible( Type *from, Type *to )
 		return true;
 	if ( looksGenericParam( f ) || looksGenericParam( t ) )
 		return true;
+	// Container/enum kinds are mutually incompatible even though their generic
+	// type arguments keep them out of the "checkable" set below: e.g. assigning
+	// a `query T |> first` result (Option<T>) to an Array<T> is always wrong.
+	{
+		auto isContainerKind = []( const string &n ) {
+			return n == "Array" || n == "Option" || n == "Result" ||
+				n == "Buffer" || n == "Map" || n == "Set";
+		};
+		if ( isContainerKind( f ) && isContainerKind( t ) )
+			return false;   // both containers, different kinds (f != t here)
+	}
 	if ( !isCheckableType( from ) || !isCheckableType( to ) )
 		return true;
 	if ( isScalarTypeName( f ) && isScalarTypeName( t ) )
@@ -119,6 +146,29 @@ void Sema::visitStruct( StructDefinition *structDef )
 {
 	if ( structDef == nullptr )
 		return;
+
+	// Table structs map fields 1:1 to SQL columns, so every field must have a
+	// column representation (primitive or string). The row mapper would leave a
+	// nested struct/array field silently null — a guaranteed null-deref on
+	// first access — so reject it here, located, in all build modes.
+	if ( structDef->isTable() )
+	{
+		for ( const auto &f : structDef->getFields() )
+		{
+			const Type *ft = f->getVariableType();
+			string fn = ( ft != nullptr ) ? ft->getName() : string();
+			if ( !isScalarTypeName( fn ) && fn != "string" )
+			{
+				mDiag.error( structDef->getLocation(),
+					"table struct '" + structDef->getName() + "' field '" +
+					f->getName() + "' has type '" + fn +
+					"', which has no SQL column mapping (columns support "
+					"int/long/short/char/bool/float/double/string)" );
+				mReported = true;
+			}
+		}
+	}
+
 	for ( auto &method : structDef->mMethods )
 		visitFunction( method );
 	if ( structDef->mInitMethod != nullptr )
@@ -221,7 +271,46 @@ void Sema::visitStmt( Statement *stmt )
 	}
 	else if ( auto *s = dynamic_cast<ForInStatement *>( stmt ) )
 	{
-		visitExpr( s->mIterableExpression );
+		Type *iterType = visitExpr( s->mIterableExpression );
+
+		// Type the loop variable from the iterable — the parser declares it as
+		// the "var" placeholder. Array<T> iteration yields T; a range yields
+		// int. Without this, expressions over the loop variable that need its
+		// type (string concatenation, method calls) fail the operator checks
+		// with 'var'. Key/value iteration and infinite loops are left as-is.
+		if ( !s->mIsInfinite && s->mSecondVariableName.empty() )
+		{
+			Type *elemType = nullptr;
+			if ( iterType != nullptr && iterType->getName() == "Array" &&
+				 iterType->getNumTypeParams() > 0 )
+			{
+				elemType = iterType->getTypeParam( 0 );
+			}
+			else if ( dynamic_cast<RangeExpression *>(
+				(Expression *)s->mIterableExpression ) != nullptr )
+			{
+				mIntType = new Type( "int" );
+				elemType = mIntType;
+			}
+
+			if ( elemType != nullptr )
+			{
+				if ( auto *b = dynamic_cast<Block *>( (Statement *)s->mBody ) )
+				{
+					if ( b->mScope != nullptr )
+					{
+						Symbol *ls = b->mScope->findSymbol( s->mVariableName );
+						if ( auto *lv = dynamic_cast<VariableDefinition *>( ls ) )
+						{
+							Type *cur = lv->getVariableType();
+							if ( cur == nullptr || cur->getName() == "var" )
+								lv->setType( elemType );
+						}
+					}
+				}
+			}
+		}
+
 		mLoopDepth++;
 		visitStmt( s->mBody );
 		mLoopDepth--;
@@ -492,7 +581,25 @@ Type *Sema::visitExpr( Expression *expr )
 	if ( auto *q = dynamic_cast<QueryExpression *>( expr ) )
 	{
 		validateTableSteps( q->mTableName, q->mSteps, q );
-		return nullptr;
+
+		// Annotate the query's value type: Array<T> for a row set, Option<T>
+		// when the pipeline ends in |> first (single row or none). Codegen and
+		// match-exhaustiveness read this — e.g. a match over a query-first
+		// result must handle `none`, and the temp-subject payload release needs
+		// the concrete T.
+		bool hasFirst = false;
+		for ( const auto &step : q->mSteps )
+		{
+			if ( step.mType == QueryPipelineStep::FIRST )
+			{
+				hasFirst = true;
+				break;
+			}
+		}
+		Type *resultType = new Type( hasFirst ? "Option" : "Array" );
+		resultType->addTypeParam( new Type( q->mTableName ) );
+		q->setResolvedType( resultType );
+		return resultType;
 	}
 	if ( auto *u = dynamic_cast<UpdateExpression *>( expr ) )
 	{
@@ -717,14 +824,17 @@ Type *Sema::visitExpr( Expression *expr )
 		{
 			for ( auto &arm : mt->mArms )
 			{
-				if ( arm.mBindingName.empty() || arm.mBody == nullptr ||
-					 arm.mBody->mScope == nullptr )
+				// The binding lives in the arm's block scope (statement-form
+				// arms) or in the arm's own scope (expression-form arms).
+				Scope *armScope = ( arm.mBody != nullptr )
+					? (Scope *)arm.mBody->mScope : (Scope *)arm.mScope;
+				if ( arm.mBindingName.empty() || armScope == nullptr )
 					continue;
 				for ( auto &v : ed->getVariants() )
 				{
 					if ( v.mName == arm.mPattern && !v.mAssociatedTypes.empty() )
 					{
-						Symbol *s = arm.mBody->mScope->findSymbol( arm.mBindingName );
+						Symbol *s = armScope->findSymbol( arm.mBindingName );
 						if ( auto *vd = dynamic_cast<VariableDefinition *>( s ) )
 						{
 							SmartPtr<Type> atsp = v.mAssociatedTypes[0];
@@ -755,15 +865,37 @@ Type *Sema::visitExpr( Expression *expr )
 			}
 		}
 
+		// Walk arm bodies. Expression-form arms yield a value; their types
+		// must be mutually compatible and become the match's own type.
+		Type *unified = nullptr;
 		for ( auto &arm : mt->mArms )
-			visitStmt( arm.mBody );
+		{
+			if ( arm.mBody != nullptr )
+			{
+				visitStmt( arm.mBody );
+				continue;
+			}
+			Type *at = visitExpr( arm.mValue );
+			if ( at == nullptr )
+				continue;
+			if ( unified == nullptr )
+				unified = at;
+			else if ( !typesCompatible( at, unified ) )
+			{
+				mDiag.error( ( (Expression *)arm.mValue )->getLocation(),
+					"match arms have incompatible types: '" + at->getName() +
+					"' vs '" + unified->getName() + "'" );
+				mReported = true;
+			}
+		}
 
 		// Exhaustiveness (REQ-007): when the subject is a determinable enum and no
 		// wildcard `_` arm is present, every variant must be covered by an arm.
-		// Non-enum subjects (literals, `var`-inferred bindings) are left unchecked.
-		if ( ed != nullptr )
+		// Non-enum subjects (literals, `var`-inferred bindings) are left unchecked
+		// in statement form; a value-producing match on a non-enum subject MUST
+		// have a wildcard arm (otherwise some path yields no value).
+		bool hasWildcard = false;
 		{
-			bool hasWildcard = false;
 			std::set<string> covered;
 			for ( auto &arm : mt->mArms )
 			{
@@ -772,7 +904,7 @@ Type *Sema::visitExpr( Expression *expr )
 				else
 					covered.insert( arm.mPattern );
 			}
-			if ( !hasWildcard )
+			if ( ed != nullptr && !hasWildcard )
 			{
 				for ( auto &v : ed->getVariants() )
 				{
@@ -786,6 +918,23 @@ Type *Sema::visitExpr( Expression *expr )
 					}
 				}
 			}
+		}
+		if ( mt->mExprMode )
+		{
+			if ( ed == nullptr && !hasWildcard )
+			{
+				mDiag.error( mt->getLocation(),
+					"match used as an expression on a non-enum subject must have a wildcard '_' arm" );
+				mReported = true;
+			}
+			if ( mt->mArms.empty() )
+			{
+				mDiag.error( mt->getLocation(),
+					"match used as an expression must have at least one arm" );
+				mReported = true;
+			}
+			mt->setResolvedType( unified );
+			return unified;
 		}
 		return nullptr;
 	}
@@ -984,7 +1133,11 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 		if ( field->getName() == name )
 		{
 			Type *ft = field->getVariableType();
-			if ( !isGenericParamName( structDef, ft->getName() ) )
+			// Concrete-only contract, applied RECURSIVELY: Array<K> is not
+			// concrete either — annotating it would make codegen skip the
+			// instance substitution (Map<string,int>.keys must resolve to
+			// Array<string>, not Array<K>).
+			if ( !mentionsGenericParam( structDef, ft ) )
 				fa->setResolvedType( ft );
 			return;
 		}

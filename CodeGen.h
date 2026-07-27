@@ -99,6 +99,13 @@ private:
 	void genStatement( Statement *stmt );
 	void genVariableDeclaration( VariableDeclaration *decl );
 	void genReturnStatement( ReturnStatement *ret );
+
+	// Emit ARC releases for every in-scope local (shared/sync, string, array,
+	// buffer, lambda ctx, struct, enum payload) across all open scopes. Shared
+	// by genReturnStatement and the `?` operator's early-return error path so an
+	// error propagated by `?` runs the same cleanup a normal return does
+	// (otherwise locals live at the failing `?` leak).
+	void emitScopeStackReleases();
 	void genIfStatement( IfStatement *ifStmt );
 	void genWhileStatement( WhileStatement *whileStmt );
 	void genForStatement( ForStatement *forStmt );
@@ -327,6 +334,33 @@ private:
 
 	// String type helper
 	bool isStringType( Expression *expr );
+
+	// ---- Generic-context type resolution (generic ARC unit) ----
+	// Resolve a declared type name through the ACTIVE monomorphization
+	// substitution (mTypeSubstitution): inside sort<string>'s body, "T" -> string.
+	// Identity outside generic instantiation. Every ARC decision that keys on a
+	// declared type name (scope tracking, bind-retain, untrack, temp tracking)
+	// must go through this so a T-typed local participates in refcounting.
+	std::string resolvedTypeName( Type *t );
+	// Resolve a generic function CALL's declared return type name to the
+	// concrete name using the call's type arguments (explicit or inferred):
+	// identity<string> declared "T" -> "string". Identity for non-generic calls.
+	std::string callReturnTypeName( CallExpression *call );
+	// Resolve a METHOD's declared return type name for a call on a generic
+	// struct instance, mapping the struct's generic params through the object's
+	// type arguments: Map<string,int>.get declared "V" -> "int". Falls back to
+	// mTypeSubstitution, then the declared name.
+	std::string methodReturnTypeName( MethodCallExpression *mc );
+	// Infer a generic call's type arguments from its argument expressions'
+	// resolved/declared types when the caller wrote no explicit <...> list.
+	// Fills call->mTypeArgs; returns false (caller reports) if any generic
+	// param stays unbound.
+	bool inferCallTypeArgs( CallExpression *call, FunctionDefinition *funcDef );
+	// Map a type declared inside a generic struct to the concrete form for a
+	// given instance (Map<K,V>'s Array<K> -> Array<string> for Map<string,int>).
+	// nullptr when nothing needed mapping.
+	Type *mapTypeForInstance( Type *declared, StructDefinition *structDef,
+		Type *instanceType );
 
 	// Field type resolution helper (for FieldAccessExpression)
 	std::string getFieldTypeName( FieldAccessExpression *fa );
@@ -570,6 +604,17 @@ private:
 	// payloads resolve to their concrete refcounted types.
 	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef,
 		Type *concreteEnumType = nullptr );
+
+	// Register a payload-carrying enum RVALUE passed directly as a call argument
+	// (e.g. `pick(Option.some("hi"))`) for scope-exit payload release. The
+	// callee borrows its parameters, so without this no one owns the temp
+	// enum's refcounted payload and it leaks (ARC ledger #7). declParamType is
+	// the callee's declared parameter type — the best source of the concrete
+	// instantiation (Option<string>) since an EnumConstructExpression carries
+	// no Sema-resolved type. No-op for variables/fields/index reads (their
+	// declaration sites own the payload) and for payload-free enums.
+	void trackEnumArgTemp( Expression *argExpr, llvm::Value *argVal,
+		Type *declParamType );
 
 	// Resolve a variant's associated type to a concrete type: if it names one of
 	// the enum's generic parameters, substitute the matching argument from

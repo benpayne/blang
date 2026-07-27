@@ -163,18 +163,31 @@ fn handle(net.HttpRequest req) -> net.HttpResponse {
 		}
 	}
 
-	// Item: toggle (PUT) + remove (DELETE).
+	// Item: fetch (GET) + toggle (PUT) + remove (DELETE).
+	// The item is looked up once with `|> first`: an unknown id is a real 404
+	// instead of a blind update/delete that silently affects zero rows.
 	if p.starts_with("/todos/") {
 		int id = path_id(p);
-		if m == "PUT" {
-			Todo input = Todo_from_json(req.body);
-			bool nd = input.done;
-			update Todo |> where { .id == id } |> set { .done = nd };
-			return net.http_json(todos_json());
-		}
-		if m == "DELETE" {
-			delete Todo |> where { .id == id };
-			return net.http_json(todos_json());
+		Option<Todo> found = query Todo |> where { .id == id } |> first;
+		match found {
+			some(t) {
+				if m == "GET" {
+					return net.http_json(to_json(t));
+				}
+				if m == "PUT" {
+					Todo input = Todo_from_json(req.body);
+					bool nd = input.done;
+					update Todo |> where { .id == id } |> set { .done = nd };
+					return net.http_json(todos_json());
+				}
+				if m == "DELETE" {
+					delete Todo |> where { .id == id };
+					return net.http_json(todos_json());
+				}
+			}
+			none {
+				return net.http_not_found();
+			}
 		}
 	}
 

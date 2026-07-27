@@ -98,6 +98,11 @@ Module *Module::Parse( Lexer &l, Scope *s )
 	Module *mod = new Module();
 	mod->mScope = s;
 	SmartPtr<FunctionDefinition> def;
+	// Top-level functions are parsed signature-first with their bodies deferred,
+	// so every function is registered before any body is parsed (forward
+	// references / mutual recursion). Bodies are parsed after the declaration
+	// loop below.
+	std::vector<FunctionDefinition*> deferredFuncs;
 	while( !l.isEOF() )
 	{
 		// Peek past any trailing whitespace/comments to check for real EOF
@@ -352,8 +357,10 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			// functions automatically satisfy this requirement. No additional
 			// validation is required here.
 
-			def = FunctionDefinition::Parse( l, s, isExtern, isPublic );
+			def = FunctionDefinition::Parse( l, s, isExtern, isPublic, /*deferBody=*/true );
 			def->setAnnotations( annotations );
+			if ( def->hasDeferredBody() )
+				deferredFuncs.push_back( def );
 
 			// Validate @format annotation
 			for ( const auto &ann : annotations )
@@ -383,6 +390,30 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			if ( gDiag == nullptr )
 				fallback.finish();
 			resyncTopLevel( l );
+		}
+	}
+
+	// Second pass: parse the deferred function bodies now that every top-level
+	// function signature is registered in scope (forward references / mutual
+	// recursion). Each body gets its own try/catch so one bad body is reported
+	// through the diagnostic engine and the rest still parse.
+	//
+	// Bodies are parsed in REVERSE source order: parsing a body can rewrite the
+	// lexer's symbol-replay list (splitShiftIntoCloseAngles inserts a '>' when a
+	// nested generic closes with ">>"), which shifts every position AFTER the
+	// insert. Going last-to-first, any insertion lands in a region whose body is
+	// already parsed, so the remaining (earlier, smaller) recorded body
+	// positions stay valid.
+	for ( auto it = deferredFuncs.rbegin(); it != deferredFuncs.rend(); ++it )
+	{
+		try {
+			(*it)->ParseDeferredBody( l );
+		} catch( CompileError &err ) {
+			DiagnosticEngine fallback;
+			DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
+			eng.reportCompileError( err );
+			if ( gDiag == nullptr )
+				fallback.finish();
 		}
 	}
 

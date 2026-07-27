@@ -409,7 +409,31 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 		}
 
 		if ( fieldVal == nullptr )
+		{
+			// NON-empty array literal into an Array<T> field: pass the field's
+			// element type as the literal hint (resolving generic params via the
+			// active substitution), exactly like the var-decl site. Without it
+			// genArrayLiteral falls back to i32 elements — no push-retain and no
+			// element destructor — so refcounted elements of a literal nested in
+			// a struct literal (Box<string>{ items: ["a","b"] }) were freed by
+			// the statement-end temp release while the array still held them.
+			if ( arrLit != nullptr && !arrLit->mElements.empty() &&
+				 fieldIdx >= 0 && (size_t)fieldIdx < structDef->mFields.size() )
+			{
+				Type *declFieldType = structDef->mFields[fieldIdx]->getVariableType();
+				if ( declFieldType != nullptr && declFieldType->getName() == "Array" &&
+					 declFieldType->getNumTypeParams() > 0 )
+				{
+					Type *elemType = declFieldType->getTypeParam( 0 );
+					auto subIt = mTypeSubstitution.find( elemType->getName() );
+					if ( subIt != mTypeSubstitution.end() )
+						elemType = subIt->second;
+					mArrayElemTypeHint = getLLVMType( elemType );
+					mArrayElemTypeNameHint = elemType->getName();
+				}
+			}
 			fieldVal = genExpression( expr->mFieldValues[i] );
+		}
 		if ( fieldVal == nullptr )
 			continue;
 
@@ -1909,6 +1933,18 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		if ( argVal == nullptr )
 			return nullptr;
 
+		// A payload-carrying enum rvalue argument owns its payload with no
+		// releasing owner — register it for scope-exit release (ledger #7).
+		// The declared parameter list may lead with `self`; map accordingly.
+		{
+			int declIdx = ( methodDef->getNumberParams() ==
+				(int)expr->mArgs.size() + 1 ) ? (int)ai + 1 : (int)ai;
+			VariableDefinition *pd = ( declIdx < methodDef->getNumberParams() )
+				? methodDef->getParam( declIdx ) : nullptr;
+			trackEnumArgTemp( expr->mArgs[ai], argVal,
+				pd != nullptr ? pd->getVariableType() : nullptr );
+		}
+
 		// Integer width coercion to the parameter type (B2): mirror the
 		// free-call path so an `int` argument widens to a `long` parameter (and
 		// narrows the other way) instead of emitting a type-mismatched call that
@@ -1947,6 +1983,15 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		auto subIt = mTypeSubstitution.find( mRetName );
 		if ( subIt != mTypeSubstitution.end() )
 			mRetName = subIt->second->getName();
+		// Generic-struct instance at the CALLER (substitution inactive there):
+		// map the declared name (e.g. Map<K,V>.get's "V") through the object's
+		// type arguments so refcounted returns are tracked as temps.
+		if ( mRetName == methodDef->getReturnType()->getName() )
+		{
+			string mapped = methodReturnTypeName( expr );
+			if ( !mapped.empty() )
+				mRetName = mapped;
+		}
 		if ( isUserStructType( mRetName ) )
 			trackTempStruct( methodResult );
 		// Track an Array<T>-returning method result as a temporary (e.g.

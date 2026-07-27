@@ -194,6 +194,29 @@ match command {
 
 No fallthrough. No `break` needed. Each arm is a block.
 
+`match` can also be used as an expression. In expression position, each arm
+holds exactly one expression (no semicolon), all arms must have the same type,
+and the match yields the selected arm's value:
+
+```
+int area = match shape {
+	circle(r) { r * r * 3 }
+	square(w) { w * w }
+	empty     { 0 }
+};
+
+string label = match count {
+	0 { "none" }
+	1 { "one" }
+	_ { "many" }
+};
+```
+
+A value-producing match must be exhaustive: an enum subject must cover every
+variant (or provide `_`), and a non-enum subject must include a `_` arm.
+Statement-position match keeps block-bodied arms; the two forms are
+distinguished by position, so each position has exactly one syntax.
+
 ### Error Handling
 
 Functions that can fail return `Result<T, E>`. There are no exceptions.

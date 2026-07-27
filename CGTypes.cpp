@@ -563,6 +563,9 @@ bool CodeGen::isStringType( Expression *expr )
 		return true;
 	if ( dynamic_cast<StringInterpolation*>( expr ) )
 		return true;
+	if ( auto *mx = dynamic_cast<MatchExpression*>( expr ) )
+		return mx->getResolvedType() != nullptr &&
+			resolvedTypeName( mx->getResolvedType() ) == "string";
 	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
 	{
 		VariableDefinition *varDef = ve->mVariable;
@@ -579,9 +582,9 @@ bool CodeGen::isStringType( Expression *expr )
 	}
 	if ( auto *ce = dynamic_cast<CallExpression*>( expr ) )
 	{
-		FunctionDefinition *funcDef = ce->mFunction;
-		if ( funcDef != nullptr && funcDef->getReturnType() != nullptr &&
-			 funcDef->getReturnType()->getName() == "string" )
+		// callReturnTypeName maps a generic call's declared return (e.g. "T")
+		// through its (explicit or inferred) type arguments.
+		if ( callReturnTypeName( ce ) == "string" )
 			return true;
 	}
 	if ( auto *ops = dynamic_cast<OperationsExpression*>( expr ) )
@@ -619,6 +622,10 @@ bool CodeGen::isStringType( Expression *expr )
 			if ( rtName == "string" )
 				return true;
 		}
+		// Generic-struct instance method (Map<K,string>.get returning V):
+		// map the declared return through the object's type arguments.
+		if ( methodReturnTypeName( mc ) == "string" )
+			return true;
 	}
 	// Check IndexExpression — array element type might be string
 	if ( auto *ie = dynamic_cast<IndexExpression*>( expr ) )
@@ -674,6 +681,7 @@ Type *CodeGen::getFieldType( FieldAccessExpression *fa )
 	StructDefinition *structDef = nullptr;
 	string structName;
 
+	Type *instanceType = nullptr;   // object's declared type WITH type args
 	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)fa->mObject ) )
 	{
 		Type *varType = ve->mVariable->getVariableType();
@@ -703,6 +711,7 @@ Type *CodeGen::getFieldType( FieldAccessExpression *fa )
 				for ( int i = 0; i < varType->getNumTypeParams(); i++ )
 					typeArgs.push_back( varType->getTypeParam( i ) );
 				structName = mangleGenericName( varType->getName(), typeArgs );
+				instanceType = varType;
 			}
 
 			auto defIt = mStructDefMap.find( structName );
@@ -743,10 +752,70 @@ Type *CodeGen::getFieldType( FieldAccessExpression *fa )
 				auto subIt = mTypeSubstitution.find( typeName );
 				if ( subIt != mTypeSubstitution.end() )
 					return subIt->second;
+
+				// Instance mapping at the CALLER (no substitution active): a
+				// generic struct's field type mentions the struct's generic
+				// params (Map<K,V>'s `Array<K> keys`); map them through the
+				// object's declared type arguments so the caller sees the
+				// concrete type (Array<string> for a Map<string,int> object).
+				if ( instanceType != nullptr && structDef->isGeneric() )
+				{
+					Type *mapped = mapTypeForInstance(
+						fieldType, structDef, instanceType );
+					if ( mapped != nullptr )
+						return mapped;
+				}
 			}
 			return fieldType;
 		}
 	}
+	return nullptr;
+}
+
+// Map a declared type from inside `structDef` to its concrete form for an
+// instance typed `instanceType` — a generic param maps to the matching type
+// argument; a compound type (Array<K>) is re-synthesized with mapped params.
+// Returns nullptr when nothing needed mapping (caller keeps the declared type).
+// Synthesized types are owned by mSyntheticTypes.
+Type *CodeGen::mapTypeForInstance( Type *declared, StructDefinition *structDef,
+	Type *instanceType )
+{
+	if ( declared == nullptr || structDef == nullptr || instanceType == nullptr )
+		return nullptr;
+
+	const auto &gps = structDef->getGenericParams();
+
+	// Direct generic param: K -> instance arg.
+	for ( size_t i = 0; i < gps.size() &&
+		  (int)i < instanceType->getNumTypeParams(); i++ )
+	{
+		if ( gps[i].mName == declared->getName() )
+			return instanceType->getTypeParam( (int)i );
+	}
+
+	// Compound type whose params mention generic params: Array<K>.
+	if ( declared->getNumTypeParams() > 0 )
+	{
+		bool mappedAny = false;
+		std::vector<Type *> params;
+		for ( int p = 0; p < declared->getNumTypeParams(); p++ )
+		{
+			Type *sub = mapTypeForInstance(
+				declared->getTypeParam( p ), structDef, instanceType );
+			if ( sub != nullptr )
+				mappedAny = true;
+			params.push_back( sub != nullptr ? sub : declared->getTypeParam( p ) );
+		}
+		if ( mappedAny )
+		{
+			Type *synth = new Type( declared->getName() );
+			for ( Type *p : params )
+				synth->addTypeParam( p );
+			mSyntheticTypes.push_back( synth );
+			return synth;
+		}
+	}
+
 	return nullptr;
 }
 
@@ -762,6 +831,9 @@ string CodeGen::getFieldTypeName( FieldAccessExpression *fa )
 
 bool CodeGen::isArrayType( Expression *expr )
 {
+	if ( auto *mx = dynamic_cast<MatchExpression*>( expr ) )
+		return mx->getResolvedType() != nullptr &&
+			resolvedTypeName( mx->getResolvedType() ) == "Array";
 	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
 	{
 		Type *varType = ve->mVariable->getVariableType();
@@ -778,9 +850,8 @@ bool CodeGen::isArrayType( Expression *expr )
 		return true;
 	if ( auto *ce = dynamic_cast<CallExpression*>( expr ) )
 	{
-		FunctionDefinition *funcDef = ce->mFunction;
-		if ( funcDef != nullptr && funcDef->getReturnType() != nullptr &&
-			 funcDef->getReturnType()->getName() == "Array" )
+		// Maps a generic call's declared return ("T") through its type args.
+		if ( callReturnTypeName( ce ) == "Array" )
 			return true;
 	}
 	// Check FieldAccessExpression — field type might be Array
@@ -788,6 +859,40 @@ bool CodeGen::isArrayType( Expression *expr )
 	{
 		string typeName = getFieldTypeName( fa );
 		return typeName == "Array";
+	}
+	// Method call whose (resolved or instance-mapped) return type is Array —
+	// e.g. Map<string, Array<int>>.get returning V. Mirrors isStringType.
+	if ( auto *mc = dynamic_cast<MethodCallExpression*>( expr ) )
+	{
+		if ( Type *rt = mc->getResolvedType() )
+		{
+			auto subIt = mTypeSubstitution.find( rt->getName() );
+			string rtName = subIt != mTypeSubstitution.end()
+				? subIt->second->getName() : rt->getName();
+			if ( rtName == "Array" )
+				return true;
+		}
+		if ( methodReturnTypeName( mc ) == "Array" )
+			return true;
+	}
+	// Array element that is itself an Array — nested generics: grid[i], or a
+	// generic struct method returning self.values[idx] where V=Array<...>.
+	if ( auto *ie = dynamic_cast<IndexExpression*>( expr ) )
+	{
+		if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)ie->mObject ) )
+		{
+			Type *varType = ve->mVariable->getVariableType();
+			if ( varType != nullptr && varType->getNumTypeParams() > 0 &&
+				 resolvedTypeName( varType->getTypeParam( 0 ) ) == "Array" )
+				return true;
+		}
+		else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)ie->mObject ) )
+		{
+			Type *fieldType = getFieldType( fa );
+			if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 &&
+				 resolvedTypeName( fieldType->getTypeParam( 0 ) ) == "Array" )
+				return true;
+		}
 	}
 	return false;
 }
@@ -847,4 +952,190 @@ bool CodeGen::isBufferType( Expression *expr )
 			return true;
 	}
 	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Generic-context type resolution (generic ARC unit)
+//
+// ARC decisions (scope tracking, bind-retain, untrack, temp tracking, the
+// isStringType/isArrayType predicates) key on declared type NAMES. Inside a
+// monomorphized generic those names are the erased parameters (T/K/V), so the
+// values were invisible to refcounting — the root cause of the sort<string> /
+// refcounted-Map crashes and leaks. These helpers give every site one shared
+// way to recover the concrete name.
+// ---------------------------------------------------------------------------
+
+std::string CodeGen::resolvedTypeName( Type *t )
+{
+	if ( t == nullptr )
+		return "";
+	auto it = mTypeSubstitution.find( t->getName() );
+	return it != mTypeSubstitution.end() ? it->second->getName() : t->getName();
+}
+
+// The static type of an argument expression, for type-argument inference.
+// Prefers the Sema annotation; falls back to declared variable types and
+// literal kinds. May return null (unknown), never throws.
+static Type *staticArgType( CodeGen *cg, Expression *e,
+	std::vector<SmartPtr<Type>> &owned )
+{
+	(void)cg;
+	if ( e == nullptr )
+		return nullptr;
+	if ( Type *rt = e->getResolvedType() )
+		return rt;
+	if ( auto *ve = dynamic_cast<VariableExpression*>( e ) )
+	{
+		if ( ve->getVariable() != nullptr )
+			return ve->getVariable()->getVariableType();
+	}
+	if ( dynamic_cast<ConstString*>( e ) != nullptr ||
+		 dynamic_cast<StringInterpolation*>( e ) != nullptr )
+	{
+		owned.push_back( new Type( "string" ) );
+		return owned.back();
+	}
+	if ( dynamic_cast<ConstInteger*>( e ) != nullptr )
+	{
+		owned.push_back( new Type( "int" ) );
+		return owned.back();
+	}
+	if ( dynamic_cast<ConstFloat*>( e ) != nullptr )
+	{
+		owned.push_back( new Type( "double" ) );
+		return owned.back();
+	}
+	return nullptr;
+}
+
+// Bind `paramName` by structurally matching a declared parameter type against
+// the argument's actual type: declared "T" binds directly; declared Array<T>
+// against actual Array<string> binds T=string (recursing through matching
+// outer names).
+static void unifyTypeParam( const std::string &paramName, Type *declared,
+	Type *actual, SmartPtr<Type> &binding )
+{
+	if ( declared == nullptr || actual == nullptr || binding != nullptr )
+		return;
+	if ( declared->getName() == paramName )
+	{
+		binding = actual;
+		return;
+	}
+	if ( declared->getName() == actual->getName() )
+	{
+		int n = declared->getNumTypeParams() < actual->getNumTypeParams()
+			? declared->getNumTypeParams() : actual->getNumTypeParams();
+		for ( int i = 0; i < n; i++ )
+			unifyTypeParam( paramName, declared->getTypeParam( i ),
+				actual->getTypeParam( i ), binding );
+	}
+}
+
+bool CodeGen::inferCallTypeArgs( CallExpression *call, FunctionDefinition *funcDef )
+{
+	if ( call == nullptr || funcDef == nullptr || !funcDef->isGeneric() )
+		return false;
+	if ( !call->mTypeArgs.empty() )
+		return true;   // explicit args already present
+
+	const auto &gps = funcDef->getGenericParams();
+	std::vector<SmartPtr<Type>> bindings( gps.size() );
+
+	for ( size_t g = 0; g < gps.size(); g++ )
+	{
+		for ( size_t a = 0; a < call->mParams.size() &&
+			  a < (size_t)funcDef->getNumberParams(); a++ )
+		{
+			VariableDefinition *param = funcDef->getParam( (int)a );
+			if ( param == nullptr )
+				continue;
+			Type *actual = staticArgType( this, call->mParams[a], mSyntheticTypes );
+			unifyTypeParam( gps[g].mName, param->getVariableType(), actual,
+				bindings[g] );
+			if ( bindings[g] != nullptr )
+				break;
+		}
+		if ( bindings[g] == nullptr )
+			return false;   // this param could not be inferred
+	}
+
+	for ( auto &b : bindings )
+	{
+		mSyntheticTypes.push_back( b );
+		call->mTypeArgs.push_back( b );
+	}
+	return true;
+}
+
+std::string CodeGen::callReturnTypeName( CallExpression *call )
+{
+	if ( call == nullptr || call->mFunction == nullptr )
+		return "";
+	FunctionDefinition *fd = call->mFunction;
+	Type *rt = fd->getReturnType();
+	if ( rt == nullptr )
+		return "";
+	std::string name = rt->getName();
+
+	if ( fd->isGeneric() )
+	{
+		const auto &gps = fd->getGenericParams();
+		for ( size_t i = 0; i < gps.size() && i < call->mTypeArgs.size(); i++ )
+		{
+			if ( gps[i].mName == name )
+				return call->mTypeArgs[i]->getName();
+		}
+	}
+	return resolvedTypeName( rt );
+}
+
+std::string CodeGen::methodReturnTypeName( MethodCallExpression *mc )
+{
+	if ( mc == nullptr )
+		return "";
+
+	// The object's declared/resolved type carries the instance's type args
+	// (e.g. Map<string, Array<int>>).
+	Type *objType = nullptr;
+	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)mc->mObject ) )
+	{
+		if ( ve->getVariable() != nullptr )
+			objType = ve->getVariable()->getVariableType();
+	}
+	if ( objType == nullptr )
+		objType = ( (Expression*)mc->mObject )->getResolvedType();
+	if ( objType == nullptr )
+		return "";
+
+	// Find the GENERIC (base-name) struct definition and the method.
+	auto sIt = mStructDefMap.find( objType->getName() );
+	if ( sIt == mStructDefMap.end() || sIt->second == nullptr )
+		return "";
+	StructDefinition *sd = sIt->second;
+
+	FunctionDefinition *methodDef = nullptr;
+	for ( auto &m : sd->mMethods )
+	{
+		if ( m->getName() == mc->mMethodName )
+		{
+			methodDef = m;
+			break;
+		}
+	}
+	if ( methodDef == nullptr || methodDef->getReturnType() == nullptr )
+		return "";
+
+	std::string name = methodDef->getReturnType()->getName();
+
+	// Map the struct's generic params through the object's type arguments:
+	// Map<K,V>.get declared V, object Map<string,int> -> "int".
+	const auto &gps = sd->getGenericParams();
+	for ( size_t i = 0; i < gps.size() &&
+		  (int)i < objType->getNumTypeParams(); i++ )
+	{
+		if ( gps[i].mName == name )
+			return objType->getTypeParam( (int)i )->getName();
+	}
+	return resolvedTypeName( methodDef->getReturnType() );
 }
