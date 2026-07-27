@@ -88,7 +88,18 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 				{
 					llvm::Value *initVal = genExpression( data.mInitialValue );
 					if ( initVal != nullptr )
+					{
 						mBuilder->CreateStore( initVal, alloca );
+						// Ownership transfers from the initializer temp (struct
+						// literal / call result) to the variable — untrack it so
+						// the statement-end temp release doesn't free the object
+						// this variable (and any lambda capture of it) still
+						// holds. The value-type declaration branch already does
+						// this; missing it here freed a `sync Counter` at
+						// statement end (use-after-free at the capture retain,
+						// caught by the ASan-instrumented leak-check leg).
+						untrackTempStruct( initVal );
+					}
 				}
 			}
 			else

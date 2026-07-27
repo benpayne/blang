@@ -60,6 +60,7 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope, bool exprMode )
 		{
 			l.getSymbol();
 			arm.mPattern = l.getSymbolText();
+			arm.mPatternIsString = ( sym == Lexer::CONSTANT_STRING );
 		}
 		else if ( sym == Lexer::WILDCARD )
 		{

@@ -624,6 +624,7 @@ namespace QLang
 		SmartPtr<Expression> mValue; // expression-form arm: pattern { expression }
 		SmartPtr<Scope> mScope;   // expression-form arm scope (holds the binding)
 		bool mIsWildcard = false;
+		bool mPatternIsString = false; // pattern was a string literal ("start")
 	};
 
 	class MatchExpression : public Expression

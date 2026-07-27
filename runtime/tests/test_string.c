@@ -132,6 +132,20 @@ static void t_replace( void )
 	__blang_string_release( n ); __blang_string_release( r );
 }
 
+static void t_equals_cstr( void )
+{
+	BlangString *s = S( "start" );
+	CHECK( __blang_string_equals_cstr( s, "start", 5 ) );
+	CHECK( !__blang_string_equals_cstr( s, "stop", 4 ) );
+	CHECK( !__blang_string_equals_cstr( s, "star", 4 ) );   /* prefix, shorter len */
+	CHECK( !__blang_string_equals_cstr( s, "starts", 6 ) ); /* longer len */
+	CHECK( !__blang_string_equals_cstr( NULL, "start", 5 ) );
+	CHECK( !__blang_string_equals_cstr( s, NULL, 5 ) );
+	BlangString *e = S( "" );
+	CHECK( __blang_string_equals_cstr( e, "", 0 ) );
+	__blang_string_release( s ); __blang_string_release( e );
+}
+
 /* bounds guard probe */
 static void char_at_oob_child( void )
 {
@@ -158,6 +172,7 @@ static const blang_test_case cases[] = {
 	{ "compare",     t_compare },
 	{ "to_int",      t_to_int },
 	{ "replace",     t_replace },
+	{ "equals_cstr", t_equals_cstr },
 	{ "char_at_oob", t_char_at_oob },
 };
 TEST_MAIN( cases )

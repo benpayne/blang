@@ -616,6 +616,8 @@ private:
 	void trackEnumArgTemp( Expression *argExpr, llvm::Value *argVal,
 		Type *declParamType );
 
+	llvm::Function *getOrDeclareStringEqualsCstr();
+
 	// Resolve a variant's associated type to a concrete type: if it names one of
 	// the enum's generic parameters, substitute the matching argument from
 	// concreteEnumType; otherwise return it unchanged. Returns the input when no

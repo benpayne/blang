@@ -409,9 +409,43 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				armBBs[i] );
 		}
 	}
+	else if ( subject->getType()->isPointerTy() &&
+			  isStringType( (Expression *)expr->mSubject ) )
+	{
+		// String subject: chain __blang_string_equals_cstr checks against each
+		// string-literal pattern, in arm order; no match falls to the default.
+		// (Previously ANY non-integer subject silently branched to the default
+		// arm — the design spec's own `match command { "start" {...} ... }`
+		// example always took the wildcard.)
+		std::vector<size_t> strArms;
+		for ( size_t i = 0; i < expr->mArms.size(); i++ )
+		{
+			if ( !expr->mArms[i].mIsWildcard && expr->mArms[i].mPatternIsString )
+				strArms.push_back( i );
+		}
+		llvm::Function *eqFn = getOrDeclareStringEqualsCstr();
+		for ( size_t k = 0; k < strArms.size(); k++ )
+		{
+			size_t i = strArms[k];
+			const string &pat = expr->mArms[i].mPattern;
+			llvm::Value *litPtr = mBuilder->CreateGlobalStringPtr( pat, "match.pat" );
+			llvm::Value *litLen = llvm::ConstantInt::get(
+				llvm::Type::getInt64Ty( *mContext ), (int64_t)pat.size() );
+			llvm::Value *isEq = mBuilder->CreateCall(
+				eqFn, { subject, litPtr, litLen }, "match.streq" );
+			llvm::BasicBlock *noMatchBB = ( k + 1 < strArms.size() )
+				? llvm::BasicBlock::Create( *mContext, "match.strnext", func )
+				: defaultBB;
+			mBuilder->CreateCondBr( isEq, armBBs[i], noMatchBB );
+			if ( k + 1 < strArms.size() )
+				mBuilder->SetInsertPoint( noMatchBB );
+		}
+		if ( strArms.empty() )
+			mBuilder->CreateBr( defaultBB );
+	}
 	else
 	{
-		// Non-integer subject — just branch to default
+		// Non-integer, non-string subject — just branch to default
 		mBuilder->CreateBr( defaultBB );
 	}
 

@@ -50,6 +50,9 @@ BlangString *__blang_string_concat_many( BlangString **strings, int64_t count );
 
 /* Comparison */
 bool __blang_string_equals( BlangString *a, BlangString *b );
+/* Compare against a raw C literal without allocating a BlangString header —
+ * used by `match` string-pattern dispatch. */
+bool __blang_string_equals_cstr( BlangString *s, const char *lit, int64_t len );
 int32_t __blang_string_compare( BlangString *a, BlangString *b );
 
 /* Conversion */

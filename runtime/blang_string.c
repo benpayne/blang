@@ -404,6 +404,15 @@ bool __blang_string_equals( BlangString *a, BlangString *b )
 	return memcmp( a->data, b->data, a->length ) == 0;
 }
 
+bool __blang_string_equals_cstr( BlangString *s, const char *lit, int64_t len )
+{
+	if ( s == NULL || lit == NULL )
+		return false;
+	if ( s->length != len )
+		return false;
+	return memcmp( s->data, lit, (size_t)len ) == 0;
+}
+
 int32_t __blang_string_compare( BlangString *a, BlangString *b )
 {
 	if ( a == b )

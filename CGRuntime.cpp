@@ -316,6 +316,16 @@ llvm::Function *CodeGen::getOrDeclareStringEquals()
 		  llvm::PointerType::get( *mContext, 0 ) } );
 }
 
+llvm::Function *CodeGen::getOrDeclareStringEqualsCstr()
+{
+	// __blang_string_equals_cstr(s, lit, len) -> i1 — match string-pattern
+	// dispatch: compares against a global literal without allocating.
+	return declareExtern( "__blang_string_equals_cstr", llvm::Type::getInt1Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ),
+		  llvm::PointerType::get( *mContext, 0 ),
+		  llvm::Type::getInt64Ty( *mContext ) } );
+}
+
 llvm::Function *CodeGen::getOrDeclareStringCompare()
 {
 	// __blang_string_compare(a,b) -> i32 : <0, 0, >0 (lexicographic, like strcmp)
