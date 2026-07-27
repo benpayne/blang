@@ -355,10 +355,26 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 		mBuilder->CreateBr( defaultBB );
 	}
 
+	// Expression-mode result slot. The alloca (and its zero-init) go into the
+	// function's ENTRY block so they dominate every arm store and the merge
+	// load; the concrete LLVM type is taken from the first arm value produced.
+	llvm::AllocaInst *resultAlloca = nullptr;
+	llvm::Type *resultTy = nullptr;
+	bool resIsString = false, resIsArray = false, resIsStruct = false;
+	string resKindName;
+	if ( expr->mExprMode && expr->getResolvedType() != nullptr )
+		resKindName = resolvedTypeName( expr->getResolvedType() );
+
 	// Generate code for each arm body
 	for ( size_t i = 0; i < expr->mArms.size(); i++ )
 	{
 		mBuilder->SetInsertPoint( armBBs[i] );
+
+		// The binding lives in the arm's block scope (statement form) or in the
+		// arm's own scope (expression form).
+		Scope *armScope = ( expr->mArms[i].mBody != nullptr )
+			? (Scope *)expr->mArms[i].mBody->mScope
+			: (Scope *)expr->mArms[i].mScope;
 
 		// If the arm has a binding, extract the payload from the enum struct
 		if ( !expr->mArms[i].mBindingName.empty() )
@@ -383,11 +399,9 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				// the raw variant associated type ("T"/"E") does not carry. Fall back
 				// to the variant's declared associated type for non-generic enums.
 				Type *bindQType = nullptr;
-				if ( expr->mArms[i].mBody != nullptr &&
-					 expr->mArms[i].mBody->mScope != nullptr )
+				if ( armScope != nullptr )
 				{
-					Symbol *bs = expr->mArms[i].mBody->mScope->findSymbol(
-						expr->mArms[i].mBindingName );
+					Symbol *bs = armScope->findSymbol( expr->mArms[i].mBindingName );
 					if ( auto *bv = dynamic_cast<VariableDefinition*>( bs ) )
 						bindQType = bv->getVariableType();
 				}
@@ -422,11 +436,9 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				mBuilder->CreateStore( payloadVal, bindAlloca );
 
 				// Register in variable map
-				if ( expr->mArms[i].mBody != nullptr &&
-					 expr->mArms[i].mBody->mScope != nullptr )
+				if ( armScope != nullptr )
 				{
-					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
-						expr->mArms[i].mBindingName );
+					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
 						mVariableMap[bindVar] = bindAlloca;
 				}
@@ -440,18 +452,94 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				mBuilder->CreateStore( subject, bindAlloca );
 
 				// Register in variable map
-				if ( expr->mArms[i].mBody != nullptr &&
-					 expr->mArms[i].mBody->mScope != nullptr )
+				if ( armScope != nullptr )
 				{
-					Symbol *bindSym = expr->mArms[i].mBody->mScope->findSymbol(
-						expr->mArms[i].mBindingName );
+					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
 						mVariableMap[bindVar] = bindAlloca;
 				}
 			}
 		}
 
-		if ( expr->mArms[i].mBody != nullptr )
+		if ( expr->mExprMode )
+		{
+			// Expression-form arm: evaluate the single expression, hand the
+			// result slot an OWNED reference (mirroring the return-statement
+			// policy: retain borrowed sources — variable/field/index reads —
+			// and take over ownership of fresh temps by untracking them), then
+			// store and fall through to the merge.
+			size_t sMark = mTempStrings.size();
+			size_t aMark = mTempArrays.size();
+			size_t tMark = mTempStructs.size();
+
+			llvm::Value *armVal = ( expr->mArms[i].mValue != nullptr )
+				? genExpression( expr->mArms[i].mValue ) : nullptr;
+			if ( armVal != nullptr )
+			{
+				if ( resultTy == nullptr )
+				{
+					resultTy = armVal->getType();
+					llvm::IRBuilder<> eb( &func->getEntryBlock(),
+						func->getEntryBlock().begin() );
+					resultAlloca = eb.CreateAlloca( resultTy, nullptr, "match.result" );
+					eb.CreateStore( llvm::Constant::getNullValue( resultTy ), resultAlloca );
+				}
+
+				Expression *ve = (Expression *)expr->mArms[i].mValue;
+				bool borrowed =
+					dynamic_cast<VariableExpression*>( ve ) != nullptr ||
+					dynamic_cast<FieldAccessExpression*>( ve ) != nullptr ||
+					dynamic_cast<IndexExpression*>( ve ) != nullptr;
+				if ( resKindName == "string" || isStringType( ve ) )
+				{
+					resIsString = true;
+					if ( borrowed )
+						mBuilder->CreateCall( getOrDeclareStringRetain(), { armVal } );
+					else
+						untrackTempString( armVal );
+				}
+				else if ( resKindName == "Array" || isArrayType( ve ) )
+				{
+					resIsArray = true;
+					if ( borrowed )
+						mBuilder->CreateCall( getOrDeclareArrayRetain(), { armVal } );
+					else
+						untrackTempArray( armVal );
+				}
+				else if ( isUserStructType( resKindName ) )
+				{
+					resIsStruct = true;
+					if ( borrowed )
+						mBuilder->CreateCall( getOrDeclareRcRetain(), { armVal } );
+					else
+						untrackTempStruct( armVal );
+				}
+
+				if ( armVal->getType() != resultTy &&
+					 armVal->getType()->isIntegerTy() && resultTy->isIntegerTy() )
+					armVal = mBuilder->CreateIntCast( armVal, resultTy, true, "match.arm.cast" );
+				if ( armVal->getType() == resultTy )
+					mBuilder->CreateStore( armVal, resultAlloca );
+			}
+
+			// Release temps created while evaluating THIS arm, inside this
+			// arm's block — deferring to the statement end would emit release
+			// calls whose operands do not dominate them (defined only in this
+			// arm's basic block).
+			if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+			{
+				for ( size_t k = sMark; k < mTempStrings.size(); k++ )
+					mBuilder->CreateCall( getOrDeclareStringRelease(), { mTempStrings[k] } );
+				for ( size_t k = aMark; k < mTempArrays.size(); k++ )
+					mBuilder->CreateCall( getOrDeclareArrayRelease(), { mTempArrays[k] } );
+				for ( size_t k = tMark; k < mTempStructs.size(); k++ )
+					mBuilder->CreateCall( getOrDeclareRcRelease(), { mTempStructs[k] } );
+			}
+			if ( mTempStrings.size() > sMark ) mTempStrings.resize( sMark );
+			if ( mTempArrays.size() > aMark ) mTempArrays.resize( aMark );
+			if ( mTempStructs.size() > tMark ) mTempStructs.resize( tMark );
+		}
+		else if ( expr->mArms[i].mBody != nullptr )
 			genBlock( expr->mArms[i].mBody );
 
 		if ( mBuilder->GetInsertBlock()->getTerminator() == nullptr )
@@ -469,6 +557,24 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 
 	// Continue at merge
 	mBuilder->SetInsertPoint( mergeBB );
+
+	// Expression mode: yield the selected arm's value. The loaded value is an
+	// OWNED reference (each arm retained/transferred into the slot), so hand it
+	// to the enclosing statement as a tracked temporary — a binding untracks
+	// and takes ownership; a discarding statement releases it at statement end.
+	if ( expr->mExprMode )
+	{
+		if ( resultAlloca == nullptr )
+			return nullptr;
+		llvm::Value *resVal = mBuilder->CreateLoad( resultTy, resultAlloca, "match.value" );
+		if ( resIsString )
+			trackTempString( resVal );
+		else if ( resIsArray )
+			trackTempArray( resVal );
+		else if ( resIsStruct )
+			trackTempStruct( resVal );
+		return resVal;
+	}
 	return nullptr;
 }
 

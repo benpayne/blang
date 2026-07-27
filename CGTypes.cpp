@@ -563,6 +563,9 @@ bool CodeGen::isStringType( Expression *expr )
 		return true;
 	if ( dynamic_cast<StringInterpolation*>( expr ) )
 		return true;
+	if ( auto *mx = dynamic_cast<MatchExpression*>( expr ) )
+		return mx->getResolvedType() != nullptr &&
+			resolvedTypeName( mx->getResolvedType() ) == "string";
 	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
 	{
 		VariableDefinition *varDef = ve->mVariable;
@@ -828,6 +831,9 @@ string CodeGen::getFieldTypeName( FieldAccessExpression *fa )
 
 bool CodeGen::isArrayType( Expression *expr )
 {
+	if ( auto *mx = dynamic_cast<MatchExpression*>( expr ) )
+		return mx->getResolvedType() != nullptr &&
+			resolvedTypeName( mx->getResolvedType() ) == "Array";
 	if ( auto *ve = dynamic_cast<VariableExpression*>( expr ) )
 	{
 		Type *varType = ve->mVariable->getVariableType();

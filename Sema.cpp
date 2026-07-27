@@ -824,14 +824,17 @@ Type *Sema::visitExpr( Expression *expr )
 		{
 			for ( auto &arm : mt->mArms )
 			{
-				if ( arm.mBindingName.empty() || arm.mBody == nullptr ||
-					 arm.mBody->mScope == nullptr )
+				// The binding lives in the arm's block scope (statement-form
+				// arms) or in the arm's own scope (expression-form arms).
+				Scope *armScope = ( arm.mBody != nullptr )
+					? (Scope *)arm.mBody->mScope : (Scope *)arm.mScope;
+				if ( arm.mBindingName.empty() || armScope == nullptr )
 					continue;
 				for ( auto &v : ed->getVariants() )
 				{
 					if ( v.mName == arm.mPattern && !v.mAssociatedTypes.empty() )
 					{
-						Symbol *s = arm.mBody->mScope->findSymbol( arm.mBindingName );
+						Symbol *s = armScope->findSymbol( arm.mBindingName );
 						if ( auto *vd = dynamic_cast<VariableDefinition *>( s ) )
 						{
 							SmartPtr<Type> atsp = v.mAssociatedTypes[0];
@@ -862,15 +865,37 @@ Type *Sema::visitExpr( Expression *expr )
 			}
 		}
 
+		// Walk arm bodies. Expression-form arms yield a value; their types
+		// must be mutually compatible and become the match's own type.
+		Type *unified = nullptr;
 		for ( auto &arm : mt->mArms )
-			visitStmt( arm.mBody );
+		{
+			if ( arm.mBody != nullptr )
+			{
+				visitStmt( arm.mBody );
+				continue;
+			}
+			Type *at = visitExpr( arm.mValue );
+			if ( at == nullptr )
+				continue;
+			if ( unified == nullptr )
+				unified = at;
+			else if ( !typesCompatible( at, unified ) )
+			{
+				mDiag.error( ( (Expression *)arm.mValue )->getLocation(),
+					"match arms have incompatible types: '" + at->getName() +
+					"' vs '" + unified->getName() + "'" );
+				mReported = true;
+			}
+		}
 
 		// Exhaustiveness (REQ-007): when the subject is a determinable enum and no
 		// wildcard `_` arm is present, every variant must be covered by an arm.
-		// Non-enum subjects (literals, `var`-inferred bindings) are left unchecked.
-		if ( ed != nullptr )
+		// Non-enum subjects (literals, `var`-inferred bindings) are left unchecked
+		// in statement form; a value-producing match on a non-enum subject MUST
+		// have a wildcard arm (otherwise some path yields no value).
+		bool hasWildcard = false;
 		{
-			bool hasWildcard = false;
 			std::set<string> covered;
 			for ( auto &arm : mt->mArms )
 			{
@@ -879,7 +904,7 @@ Type *Sema::visitExpr( Expression *expr )
 				else
 					covered.insert( arm.mPattern );
 			}
-			if ( !hasWildcard )
+			if ( ed != nullptr && !hasWildcard )
 			{
 				for ( auto &v : ed->getVariants() )
 				{
@@ -893,6 +918,23 @@ Type *Sema::visitExpr( Expression *expr )
 					}
 				}
 			}
+		}
+		if ( mt->mExprMode )
+		{
+			if ( ed == nullptr && !hasWildcard )
+			{
+				mDiag.error( mt->getLocation(),
+					"match used as an expression on a non-enum subject must have a wildcard '_' arm" );
+				mReported = true;
+			}
+			if ( mt->mArms.empty() )
+			{
+				mDiag.error( mt->getLocation(),
+					"match used as an expression must have at least one arm" );
+				mReported = true;
+			}
+			mt->setResolvedType( unified );
+			return unified;
 		}
 		return nullptr;
 	}

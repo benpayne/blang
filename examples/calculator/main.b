@@ -226,31 +226,22 @@ fn parse_factor(Parser p) -> Result<int, string> {
 
 // --- Tests (run with `bcc test`) -------------------------------------------
 
-// Test helpers: unwrap a Result so assertions stay simple. (BLang's `match` is
-// statement-form, so these encapsulate the match once instead of repeating it
-// in every test.)
+// Test helpers: unwrap a Result so assertions stay simple, using
+// match-as-expression (each arm yields a single value).
 fn eval_equals(string src, int expected) -> bool {
 	Result<int, string> r = eval(src);
-	match r {
-		ok(v) {
-			return v == expected;
-		}
-		err(e) {
-			return false;
-		}
-	}
+	return match r {
+		ok(v) { v == expected }
+		err(e) { false }
+	};
 }
 
 fn eval_is_error(string src) -> bool {
 	Result<int, string> r = eval(src);
-	match r {
-		ok(v) {
-			return false;
-		}
-		err(e) {
-			return true;
-		}
-	}
+	return match r {
+		ok(v) { false }
+		err(e) { true }
+	};
 }
 
 test "single number" {

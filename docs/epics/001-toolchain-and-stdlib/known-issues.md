@@ -19,6 +19,23 @@ these are the edges it revealed.
   content → now lexicographic via `__blang_string_compare` (U5,
   `CGExpressions.cpp`). Locked in by `test_files/codegen_string_compare.b`.
 
+## New finding (post-ledger, filed 2026-07-27) — enum rvalue argument payload
+
+7. **A payload-carrying enum rvalue passed DIRECTLY as a call argument leaks
+   its refcounted payload.** `pick(Option.some("hi"))` — the literal's
+   ownership transfers into the enum temp, the enum is passed by value, and no
+   one releases the payload (the callee's parameter is a variable subject, so
+   the match-site temp-subject release does not apply; the caller registers
+   payload release only for enum *variables* and *temp match subjects*).
+   Repro leaks 32 bytes under valgrind in BOTH statement-form and
+   expression-form match — pre-existing, unrelated to match-as-expression
+   (verified against statement form on the same build). Workaround: bind the
+   enum to a local first (`Option<string> o = Option.some("hi"); pick(o);`) —
+   the declaration registers the payload for scope-exit release and is clean.
+   Fix belongs with the enum-payload ARC sites in CGEnum.cpp/CGExpressions.cpp
+   (release the argument enum's payload at the call statement's end, mirroring
+   the temp-subject registration).
+
 ## Deferred (filed, worked around) — array/aggregate refcount ARC
 
 > **STATUS UPDATE 2 — ledger CLOSED: #2 and #5 verified fixed as well (their

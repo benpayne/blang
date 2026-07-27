@@ -98,6 +98,14 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		return S( new AwaitExpression( operand ) );
 	}
 
+	// Value-producing match: match SUBJECT { pattern { expr } ... }
+	// (statement-position match is routed by Statement::Parse and keeps
+	// block-bodied arms; here each arm holds a single expression)
+	if ( sym == Lexer::KEYWORD_MATCH )
+	{
+		return S( MatchExpression::Parse( l, scope, /*exprMode=*/true ) );
+	}
+
 	// Lambda expression: fn(params) -> RetType { body }
 	if ( sym == Lexer::KEYWORD_FN )
 	{

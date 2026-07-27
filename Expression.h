@@ -620,7 +620,9 @@ namespace QLang
 	{
 		std::string mPattern;
 		std::string mBindingName; // variable bound by destructuring (e.g., ok(value) binds "value")
-		SmartPtr<Block> mBody;
+		SmartPtr<Block> mBody;    // statement-form arm: pattern { statements... }
+		SmartPtr<Expression> mValue; // expression-form arm: pattern { expression }
+		SmartPtr<Scope> mScope;   // expression-form arm scope (holds the binding)
 		bool mIsWildcard = false;
 	};
 
@@ -628,7 +630,10 @@ namespace QLang
 	{
 	public:
 
-		static MatchExpression *Parse( Lexer &l, Scope *scope );
+		// exprMode: value-producing match (parsed from expression position) —
+		// each arm body is a single expression, and the match yields the
+		// selected arm's value. Statement position keeps block-bodied arms.
+		static MatchExpression *Parse( Lexer &l, Scope *scope, bool exprMode = false );
 
 	protected:
 		MatchExpression() {}
@@ -636,6 +641,7 @@ namespace QLang
 	private:
 		SmartPtr<Expression> mSubject;
 		std::vector<MatchArm> mArms;
+		bool mExprMode = false;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class Sema;

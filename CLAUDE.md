@@ -493,6 +493,7 @@ The runtime C libraries have dependency-free unit tests registered with CTest (t
   - Literal patterns: `match x { 1 { ... } 2 { ... } }`
   - Wildcard pattern: `_ { ... }` (default/catch-all)
   - Destructuring with bindings: `ok(value) { ... }`, `some(x) { ... }`
+  - **Match as expression**: in expression position each arm holds a single expression (`int a = match s { circle(r) { r * 3 } _ { 0 } };`) — arm types must agree (Sema-unified, located error on mismatch), the match is annotated with the unified type, and exhaustiveness is required (enum: all variants or `_`; non-enum subject: `_` mandatory). Codegen stores each arm's value into an entry-block result slot with the return-statement ARC policy (retain borrowed variable/field/index sources, take ownership of fresh temps) and yields the loaded value as a tracked temporary
 - Expressions: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
 - **Built-in `Option<T>` / `Result<T,E>`**: available without any user definition — `Option.some(x)`/`Option.none`, `Result.ok(x)`/`Result.err(e)`, consumed via `match` and `?`. A user-defined `Option`/`Result` shadows the built-in.
 - **`?` try operator**: `expr?` postfix operator for error propagation (unwraps Result/Option, returns early on error)

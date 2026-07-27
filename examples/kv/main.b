@@ -226,29 +226,21 @@ fn del_entry(string content, string key) -> string {
 
 // --- Tests (run with `bcc test`) ------------------------------------------
 
-// Unwrap helpers: match is statement-form, so these keep the asserts flat.
+// Unwrap helpers, via match-as-expression (each arm yields a single value).
 fn lookup_equals(string content, string key, string expected) -> bool {
 	Option<string> v = lookup(content, key);
-	match v {
-		some(s) {
-			return s == expected;
-		}
-		none {
-			return false;
-		}
-	}
+	return match v {
+		some(s) { s == expected }
+		none { false }
+	};
 }
 
 fn lookup_is_none(string content, string key) -> bool {
 	Option<string> v = lookup(content, key);
-	match v {
-		some(s) {
-			return false;
-		}
-		none {
-			return true;
-		}
-	}
+	return match v {
+		some(s) { false }
+		none { true }
+	};
 }
 
 test "set then lookup" {
