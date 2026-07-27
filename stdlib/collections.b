@@ -253,12 +253,11 @@ impl Set {
 // convenience, not a perf primitive) over `items`, ordering by `less(a,b)`
 // (true when a should come before b). The sorted array is returned as well.
 //
-// Works for VALUE-type elements (int, double, bool, char, ...). Sorting
-// REFCOUNTED elements (string/Array/struct) is NOT yet supported: the element
-// swap binds `T tmp = items[j]` to a borrowed array element, and the codegen for
-// that (array-element string/refcount ARC) currently mishandles the reference
-// count — see known-issues "array-element refcount ARC". Comparators may be
-// named functions or lambdas.
+// Works for value-type elements (int, double, bool, char, ...) AND refcounted
+// elements (string): the generic-ARC unit made monomorphized `T`-typed locals
+// participate in refcounting, so the swap's `T tmp = items[j]` retains/releases
+// correctly (locked in by codegen_generic_arc_sort.b and the wordfreq example).
+// Comparators may be named functions or lambdas.
 pub fn sort<T>(Array<T> items, fn(T, T) -> bool less) -> Array<T> {
     int n = items.length;
     for i in 1..n {

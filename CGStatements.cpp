@@ -1081,13 +1081,26 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 
 		// Determine element type from the array's type annotation
 		llvm::Type *elemType = llvm::Type::getInt32Ty( *mContext ); // default
+		Type *elemQType = nullptr;
 		if ( auto *ve = dynamic_cast<VariableExpression*>(
 				 (Expression*)forInStmt->mIterableExpression ) )
 		{
 			Type *varType = ve->mVariable->getVariableType();
 			if ( varType != nullptr && varType->getNumTypeParams() > 0 )
-				elemType = getLLVMType( varType->getTypeParam( 0 ) );
+				elemQType = varType->getTypeParam( 0 );
 		}
+		else if ( auto *fa = dynamic_cast<FieldAccessExpression*>(
+				 (Expression*)forInStmt->mIterableExpression ) )
+		{
+			// Field iterable (for k in counts.keys): getFieldType is instance-
+			// aware, so a generic struct's Array<K> field resolves to the
+			// concrete element type (Array<string> for a Map<string,int>).
+			Type *fieldType = getFieldType( fa );
+			if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
+				elemQType = fieldType->getTypeParam( 0 );
+		}
+		if ( elemQType != nullptr )
+			elemType = getLLVMType( elemQType );
 
 		// Create the loop counter and element variable
 		llvm::Type *i64Type = llvm::Type::getInt64Ty( *mContext );
@@ -1111,13 +1124,9 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 
 					// Update the loop variable's AST type to the actual element type
 					// so that isStringType/isArrayType can resolve it correctly
-					if ( auto *arrVe = dynamic_cast<VariableExpression*>(
-							 (Expression*)forInStmt->mIterableExpression ) )
-					{
-						Type *arrType = arrVe->mVariable->getVariableType();
-						if ( arrType != nullptr && arrType->getNumTypeParams() > 0 )
-							iterVar->setType( arrType->getTypeParam( 0 ) );
-					}
+					// (elemQType covers variable AND field iterables, instance-mapped)
+					if ( elemQType != nullptr )
+						iterVar->setType( elemQType );
 				}
 			}
 		}

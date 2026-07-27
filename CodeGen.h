@@ -356,6 +356,11 @@ private:
 	// Fills call->mTypeArgs; returns false (caller reports) if any generic
 	// param stays unbound.
 	bool inferCallTypeArgs( CallExpression *call, FunctionDefinition *funcDef );
+	// Map a type declared inside a generic struct to the concrete form for a
+	// given instance (Map<K,V>'s Array<K> -> Array<string> for Map<string,int>).
+	// nullptr when nothing needed mapping.
+	Type *mapTypeForInstance( Type *declared, StructDefinition *structDef,
+		Type *instanceType );
 
 	// Field type resolution helper (for FieldAccessExpression)
 	std::string getFieldTypeName( FieldAccessExpression *fa );

@@ -678,6 +678,7 @@ Type *CodeGen::getFieldType( FieldAccessExpression *fa )
 	StructDefinition *structDef = nullptr;
 	string structName;
 
+	Type *instanceType = nullptr;   // object's declared type WITH type args
 	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)fa->mObject ) )
 	{
 		Type *varType = ve->mVariable->getVariableType();
@@ -707,6 +708,7 @@ Type *CodeGen::getFieldType( FieldAccessExpression *fa )
 				for ( int i = 0; i < varType->getNumTypeParams(); i++ )
 					typeArgs.push_back( varType->getTypeParam( i ) );
 				structName = mangleGenericName( varType->getName(), typeArgs );
+				instanceType = varType;
 			}
 
 			auto defIt = mStructDefMap.find( structName );
@@ -747,10 +749,70 @@ Type *CodeGen::getFieldType( FieldAccessExpression *fa )
 				auto subIt = mTypeSubstitution.find( typeName );
 				if ( subIt != mTypeSubstitution.end() )
 					return subIt->second;
+
+				// Instance mapping at the CALLER (no substitution active): a
+				// generic struct's field type mentions the struct's generic
+				// params (Map<K,V>'s `Array<K> keys`); map them through the
+				// object's declared type arguments so the caller sees the
+				// concrete type (Array<string> for a Map<string,int> object).
+				if ( instanceType != nullptr && structDef->isGeneric() )
+				{
+					Type *mapped = mapTypeForInstance(
+						fieldType, structDef, instanceType );
+					if ( mapped != nullptr )
+						return mapped;
+				}
 			}
 			return fieldType;
 		}
 	}
+	return nullptr;
+}
+
+// Map a declared type from inside `structDef` to its concrete form for an
+// instance typed `instanceType` — a generic param maps to the matching type
+// argument; a compound type (Array<K>) is re-synthesized with mapped params.
+// Returns nullptr when nothing needed mapping (caller keeps the declared type).
+// Synthesized types are owned by mSyntheticTypes.
+Type *CodeGen::mapTypeForInstance( Type *declared, StructDefinition *structDef,
+	Type *instanceType )
+{
+	if ( declared == nullptr || structDef == nullptr || instanceType == nullptr )
+		return nullptr;
+
+	const auto &gps = structDef->getGenericParams();
+
+	// Direct generic param: K -> instance arg.
+	for ( size_t i = 0; i < gps.size() &&
+		  (int)i < instanceType->getNumTypeParams(); i++ )
+	{
+		if ( gps[i].mName == declared->getName() )
+			return instanceType->getTypeParam( (int)i );
+	}
+
+	// Compound type whose params mention generic params: Array<K>.
+	if ( declared->getNumTypeParams() > 0 )
+	{
+		bool mappedAny = false;
+		std::vector<Type *> params;
+		for ( int p = 0; p < declared->getNumTypeParams(); p++ )
+		{
+			Type *sub = mapTypeForInstance(
+				declared->getTypeParam( p ), structDef, instanceType );
+			if ( sub != nullptr )
+				mappedAny = true;
+			params.push_back( sub != nullptr ? sub : declared->getTypeParam( p ) );
+		}
+		if ( mappedAny )
+		{
+			Type *synth = new Type( declared->getName() );
+			for ( Type *p : params )
+				synth->addTypeParam( p );
+			mSyntheticTypes.push_back( synth );
+			return synth;
+		}
+	}
+
 	return nullptr;
 }
 

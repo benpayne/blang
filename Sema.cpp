@@ -23,6 +23,22 @@ static bool isGenericParamName( StructDefinition *structDef, const string &typeN
 	return false;
 }
 
+// True when `t` MENTIONS one of the struct's generic params anywhere — the
+// param itself (`V value`) or nested in type arguments (`Array<K> keys`). Such
+// a type is NOT concrete: recording it on the typed AST would make codegen read
+// "K"/"V" instead of performing the instance substitution.
+static bool mentionsGenericParam( StructDefinition *structDef, Type *t )
+{
+	if ( t == nullptr )
+		return false;
+	if ( isGenericParamName( structDef, t->getName() ) )
+		return true;
+	for ( int i = 0; i < t->getNumTypeParams(); i++ )
+		if ( mentionsGenericParam( structDef, t->getTypeParam( i ) ) )
+			return true;
+	return false;
+}
+
 // ---------------------------------------------------------------------------
 // U4: type compatibility (closed conversion set — design decision 6)
 // ---------------------------------------------------------------------------
@@ -1075,7 +1091,11 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 		if ( field->getName() == name )
 		{
 			Type *ft = field->getVariableType();
-			if ( !isGenericParamName( structDef, ft->getName() ) )
+			// Concrete-only contract, applied RECURSIVELY: Array<K> is not
+			// concrete either — annotating it would make codegen skip the
+			// instance substitution (Map<string,int>.keys must resolve to
+			// Array<string>, not Array<K>).
+			if ( !mentionsGenericParam( structDef, ft ) )
 				fa->setResolvedType( ft );
 			return;
 		}

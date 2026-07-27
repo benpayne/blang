@@ -1,0 +1,4 @@
+[project]
+name = "wordfreq"
+version = "0.1.0"
+type = "bin"

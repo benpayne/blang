@@ -409,7 +409,31 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 		}
 
 		if ( fieldVal == nullptr )
+		{
+			// NON-empty array literal into an Array<T> field: pass the field's
+			// element type as the literal hint (resolving generic params via the
+			// active substitution), exactly like the var-decl site. Without it
+			// genArrayLiteral falls back to i32 elements — no push-retain and no
+			// element destructor — so refcounted elements of a literal nested in
+			// a struct literal (Box<string>{ items: ["a","b"] }) were freed by
+			// the statement-end temp release while the array still held them.
+			if ( arrLit != nullptr && !arrLit->mElements.empty() &&
+				 fieldIdx >= 0 && (size_t)fieldIdx < structDef->mFields.size() )
+			{
+				Type *declFieldType = structDef->mFields[fieldIdx]->getVariableType();
+				if ( declFieldType != nullptr && declFieldType->getName() == "Array" &&
+					 declFieldType->getNumTypeParams() > 0 )
+				{
+					Type *elemType = declFieldType->getTypeParam( 0 );
+					auto subIt = mTypeSubstitution.find( elemType->getName() );
+					if ( subIt != mTypeSubstitution.end() )
+						elemType = subIt->second;
+					mArrayElemTypeHint = getLLVMType( elemType );
+					mArrayElemTypeNameHint = elemType->getName();
+				}
+			}
 			fieldVal = genExpression( expr->mFieldValues[i] );
+		}
 		if ( fieldVal == nullptr )
 			continue;
 
