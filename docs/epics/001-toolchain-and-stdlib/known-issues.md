@@ -21,6 +21,16 @@ these are the edges it revealed.
 
 ## Deferred (filed, worked around) — array/aggregate refcount ARC
 
+> **STATUS UPDATE 2 — ledger CLOSED: #2 and #5 verified fixed as well (their
+> repros pass ASan/LSan-clean; the string bind-retain + temp-string/return
+> ownership work resolved both). Locked in by
+> `codegen_arc_aggregate_return.b` (#2: multi-field struct with Array fields
+> built in-function, two live aggregates, mutation through the return) and
+> `codegen_arc_namespaced_strings.b` (#5: net's namespaced internal
+> string-returning chain build_http_response -> http_status_text, looped).
+> Zero open ARC issues. The `cli`/`collections` global-scope placement is now
+> a compatibility/API choice, not a correctness workaround.**
+>
 > **STATUS UPDATE — generic ARC unit (post-epic): #1, #3, #4, and #6 are
 > FIXED.** The dedicated ARC unit this section called for landed: all ARC
 > decision sites (scope tracking, bind-retain, untrack-on-store, temp tracking,
