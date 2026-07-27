@@ -619,7 +619,9 @@ namespace QLang
 	struct MatchArm
 	{
 		std::string mPattern;
-		std::string mBindingName; // variable bound by destructuring (e.g., ok(value) binds "value")
+		// Variables bound by destructuring, in payload order: ok(value) binds
+		// one, pair(a, b) binds two — one per variant associated type.
+		std::vector<std::string> mBindingNames;
 		SmartPtr<Block> mBody;    // statement-form arm: pattern { statements... }
 		SmartPtr<Expression> mValue; // expression-form arm: pattern { expression }
 		SmartPtr<Scope> mScope;   // expression-form arm scope (holds the binding)

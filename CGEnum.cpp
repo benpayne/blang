@@ -470,8 +470,11 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 			? (Scope *)expr->mArms[i].mBody->mScope
 			: (Scope *)expr->mArms[i].mScope;
 
-		// If the arm has a binding, extract the payload from the enum struct
-		if ( !expr->mArms[i].mBindingName.empty() )
+		// If the arm has bindings, extract the payload value(s) from the enum
+		// struct. Payloads are laid out sequentially in the payload byte array
+		// (construction advances by DataLayout alloc size per argument), so
+		// binding j loads at the sum of the preceding bindings' sizes.
+		if ( !expr->mArms[i].mBindingNames.empty() )
 		{
 			if ( isEnumStruct && matchedEnum != nullptr && subjectAlloca != nullptr )
 			{
@@ -486,69 +489,86 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 					}
 				}
 
-				llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
-				// Prefer the binding variable's Sema-resolved type: for a generic
-				// enum (built-in Option<T>/Result<T,E>) Sema substitutes the concrete
-				// type argument from the subject (e.g. err payload -> string), which
-				// the raw variant associated type ("T"/"E") does not carry. Fall back
-				// to the variant's declared associated type for non-generic enums.
-				Type *bindQType = nullptr;
-				if ( armScope != nullptr )
-				{
-					Symbol *bs = armScope->findSymbol( expr->mArms[i].mBindingName );
-					if ( auto *bv = dynamic_cast<VariableDefinition*>( bs ) )
-						bindQType = bv->getVariableType();
-				}
-				if ( bindQType != nullptr && bindQType->getName() != "var" )
-				{
-					bindType = getLLVMType( bindQType );
-				}
-				else if ( variantIdx >= 0 &&
-					 !matchedEnum->mVariants[variantIdx].mAssociatedTypes.empty() )
-				{
-					bindType = getLLVMType( matchedEnum->mVariants[variantIdx].mAssociatedTypes[0] );
-				}
-
-				// GEP to the payload area (field 1) and load the value
+				// GEP to the payload area (field 1)
 				llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
 					enumStructType, subjectAlloca, 1, "match.payload.ptr" );
-
-				// The payload is [N x i8]; GEP to byte 0 and load as the expected type
 				llvm::Type *payloadArrType = enumStructType->getElementType( 1 );
-				llvm::Value *bytePtr = mBuilder->CreateGEP(
-					payloadArrType, payloadPtr,
-					{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
-					  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
-					"match.payload.byte" );
+				llvm::DataLayout dl( mModule.get() );
+				uint64_t payloadOffset = 0;
 
-				llvm::Value *payloadVal = mBuilder->CreateLoad(
-					bindType, bytePtr, "match.payload.val" );
-
-				// Create alloca for the binding variable
-				llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
-					bindType, nullptr, expr->mArms[i].mBindingName );
-				mBuilder->CreateStore( payloadVal, bindAlloca );
-
-				// Register in variable map
-				if ( armScope != nullptr )
+				for ( size_t bi = 0; bi < expr->mArms[i].mBindingNames.size(); bi++ )
 				{
-					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
-					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
-						mVariableMap[bindVar] = bindAlloca;
+					const string &bname = expr->mArms[i].mBindingNames[bi];
+
+					llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
+					// Prefer the binding variable's Sema-resolved type: for a generic
+					// enum (built-in Option<T>/Result<T,E>) Sema substitutes the concrete
+					// type argument from the subject (e.g. err payload -> string), which
+					// the raw variant associated type ("T"/"E") does not carry. Fall back
+					// to the variant's declared associated type for non-generic enums.
+					Type *bindQType = nullptr;
+					if ( armScope != nullptr )
+					{
+						Symbol *bs = armScope->findSymbol( bname );
+						if ( auto *bv = dynamic_cast<VariableDefinition*>( bs ) )
+							bindQType = bv->getVariableType();
+					}
+					if ( bindQType != nullptr && bindQType->getName() != "var" )
+					{
+						bindType = getLLVMType( bindQType );
+					}
+					else if ( variantIdx >= 0 &&
+						 bi < matchedEnum->mVariants[variantIdx].mAssociatedTypes.size() )
+					{
+						bindType = getLLVMType(
+							matchedEnum->mVariants[variantIdx].mAssociatedTypes[bi] );
+					}
+
+					// GEP to this payload's byte offset and load as the expected type
+					llvm::Value *bytePtr = mBuilder->CreateGEP(
+						payloadArrType, payloadPtr,
+						{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+						  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ),
+							(int64_t)payloadOffset ) },
+						"match.payload.byte" );
+
+					llvm::Value *payloadVal = mBuilder->CreateLoad(
+						bindType, bytePtr, "match.payload.val" );
+
+					// Create alloca for the binding variable
+					llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
+						bindType, nullptr, bname );
+					mBuilder->CreateStore( payloadVal, bindAlloca );
+
+					// Register in variable map
+					if ( armScope != nullptr )
+					{
+						Symbol *bindSym = armScope->findSymbol( bname );
+						if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
+							mVariableMap[bindVar] = bindAlloca;
+					}
+
+					// Advance by this payload's size — must mirror the
+					// `offset += dl.getTypeAllocSize(argType)` walk at
+					// construction (genEnumConstruct).
+					uint64_t sz = dl.getTypeAllocSize( bindType );
+					if ( sz == 0 ) sz = 4;
+					payloadOffset += sz;
 				}
 			}
 			else
 			{
 				// Non-enum binding: store the subject value directly
+				const string &bname = expr->mArms[i].mBindingNames[0];
 				llvm::Type *bindType = subject->getType();
 				llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
-					bindType, nullptr, expr->mArms[i].mBindingName );
+					bindType, nullptr, bname );
 				mBuilder->CreateStore( subject, bindAlloca );
 
 				// Register in variable map
 				if ( armScope != nullptr )
 				{
-					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
+					Symbol *bindSym = armScope->findSymbol( bname );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
 						mVariableMap[bindVar] = bindAlloca;
 				}
