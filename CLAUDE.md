@@ -476,6 +476,8 @@ The runtime C libraries have dependency-free unit tests registered with CTest (t
 - Variable declarations with optional initialization
 - **Struct definitions** with optional generic parameters: `struct Box<T> { T value; }`
 - **Enum/sum type definitions** with variants and associated types: `enum Option<T> { some(T), none }`
+  - **Recursive enums**: a variant payload may name an enum — including the enclosing one (`enum Expr { num(int), add(Expr, Expr) }`). Enum-typed payloads are **boxed** (stored as a pointer to a heap child allocated via `__blang_rc_alloc_dtor` with a generated `__enum_<Name>_box_dtor`), so recursive sum types have finite layout and real ASTs are expressible. Construction from an existing owner (variable/field source) retains the copied value's payloads via a generated `__enum_<Name>_payload_retain`; fresh temps transfer ownership. Match bindings unbox to a by-value borrow. Enum variable reassignment releases the old value's payloads; returning an enum variable retains its payloads for the copy (non-generic enums). Leak-clean under valgrind and `--leak-check` (`codegen_enum_recursive.b`)
+  - **Multi-binding destructuring**: `pattern(a, b, ...)` binds one variable per variant associated type at sequential payload offsets (`move(x, y)`, `color(r, g, b)`); binding more values than the variant carries is a located Sema error
 - **Protocol definitions** with optional generic parameters: `protocol Container<T> { ... }`
 - **Protocol conformance checking**: `impl Protocol for Struct` verifies all required methods are implemented
 - **Method calls**: `obj.method(args)` syntax

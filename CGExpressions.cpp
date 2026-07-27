@@ -723,6 +723,22 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 			untrackTempArray( rhs );
 		}
 
+		// If reassigning an enum variable whose payloads are refcounted (boxed
+		// children, strings), release the OLD value's payloads before the
+		// store — otherwise `d = Expr.add(d, ...)` leaks the previous tree.
+		// The RHS was evaluated above, so a self-referencing RHS already
+		// retained anything it copied from the old value.
+		if ( varDef->getVariableType() != nullptr )
+		{
+			auto edIt = mEnumDefMap.find( varDef->getVariableType()->getName() );
+			if ( edIt != mEnumDefMap.end() &&
+				 enumHasRefcountedPayload( edIt->second, varDef->getVariableType() ) )
+			{
+				emitEnumPayloadRelease( alloca, edIt->second,
+					varDef->getVariableType() );
+			}
+		}
+
 		// Coerce integer RHS to the destination width before storing. Without this,
 		// assigning a bool literal (`true`/`false` — codegen'd as i32) to an i1 bool
 		// variable emits `store i32 into i1*`, a 4-byte write into a 1-byte stack slot

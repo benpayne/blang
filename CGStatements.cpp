@@ -231,23 +231,10 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 					// own type (e.g. Option<string>), so string/Array payloads are
 					// released at scope exit rather than leaked.
 					EnumDefinition *ed = enumIt->second;
-					bool hasRefPayload = false;
-					for ( auto &variant : ed->mVariants )
-					{
-						for ( auto &assocType : variant.mAssociatedTypes )
-						{
-							string atn = resolveVariantPayloadType(
-								(Type *)assocType, ed, varType )->getName();
-							if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
-								 isUserStructType( atn ) )
-							{
-								hasRefPayload = true;
-								break;
-							}
-						}
-						if ( hasRefPayload ) break;
-					}
-					if ( hasRefPayload )
+					// Refcounted payloads include boxed enum children (recursive
+					// enums) — the shared predicate covers string/Array/Buffer/
+					// struct/boxed-enum.
+					if ( enumHasRefcountedPayload( ed, varType ) )
 						mEnumScopeStack.back().push_back( { alloca, ed, varType } );
 				}
 			}
@@ -593,6 +580,37 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 					needsRetain = true;
 				if ( needsRetain )
 					mBuilder->CreateCall( getOrDeclareRcRetain(), { retVal } );
+			}
+		}
+
+		// Returning an enum VARIABLE/field whose payloads are refcounted
+		// (boxed children, strings): the local's scope-exit release below
+		// still runs and would strip the references the returned copy
+		// carries — give the copy its own. Non-generic enums only (the
+		// retain helper needs concrete payload types); built-in
+		// Option/Result keep the existing transfer-by-temp behavior.
+		if ( retVal != nullptr && mCurrentFunction != nullptr &&
+			 mCurrentFunction->getReturnType() != nullptr &&
+			 retVal->getType()->isStructTy() )
+		{
+			Expression *retRawExpr = (Expression *)ret->mExpression;
+			bool borrowedSrc =
+				dynamic_cast<VariableExpression*>( retRawExpr ) != nullptr ||
+				dynamic_cast<FieldAccessExpression*>( retRawExpr ) != nullptr ||
+				dynamic_cast<IndexExpression*>( retRawExpr ) != nullptr;
+			auto edIt = mEnumDefMap.find(
+				mCurrentFunction->getReturnType()->getName() );
+			if ( borrowedSrc && edIt != mEnumDefMap.end() &&
+				 edIt->second->getGenericParams().empty() )
+			{
+				llvm::Function *pr = getOrGenEnumPayloadRetain( edIt->second );
+				if ( pr != nullptr )
+				{
+					llvm::AllocaInst *spill = mBuilder->CreateAlloca(
+						retVal->getType(), nullptr, "ret.enum.spill" );
+					mBuilder->CreateStore( retVal, spill );
+					mBuilder->CreateCall( pr, { spill } );
+				}
 			}
 		}
 	}

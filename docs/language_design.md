@@ -276,6 +276,32 @@ The compiler enforces that all variants are covered in a `match` expression. For
 
 A `match` on an enum that omits a variant without providing a wildcard arm is a compile error that names the missing variant(s). Exhaustiveness is checked during code generation (when built with LLVM); `match` on non-enum subjects (e.g. integers) is unaffected.
 
+#### Recursive Enums
+
+A variant payload may name an enum — including the enclosing one — so
+recursive sum types (trees, expression ASTs) are expressible directly:
+
+```
+enum Expr {
+	num(int),
+	add(Expr, Expr),
+	mul(Expr, Expr)
+}
+
+fn eval(Expr e) -> int {
+	return match e {
+		num(n)    { n }
+		add(l, r) { eval(l) + eval(r) }
+		mul(l, r) { eval(l) * eval(r) }
+	};
+}
+```
+
+Enum-typed payloads are stored boxed (as a reference to a heap-allocated
+child), managed by ARC like every other heap value — no manual `Box` type is
+needed. Destructuring binds one variable per associated type:
+`add(l, r)` binds both children.
+
 ### Null Safety
 
 There is no `null`. Optional values use `Option<T>`.

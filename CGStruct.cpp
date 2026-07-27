@@ -30,15 +30,47 @@ void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *
 		return;
 
 	llvm::StructType *enumType = getOrCreateEnumType( enumDef );
-	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
 
-	// Load the enum value from the alloca
+	// Load the enum value from the alloca into a scratch slot, then release
+	// its payloads through the shared walk.
 	llvm::Value *enumVal = mBuilder->CreateLoad( enumType, alloca, "enum.cleanup" );
 	llvm::AllocaInst *enumTmp = mBuilder->CreateAlloca( enumType, nullptr, "enum.cleanup.tmp" );
 	mBuilder->CreateStore( enumVal, enumTmp );
 
+	emitEnumPayloadReleaseFromPtr( enumTmp, enumDef, concreteEnumType );
+}
+
+bool CodeGen::enumHasRefcountedPayload( EnumDefinition *enumDef, Type *concreteEnumType )
+{
+	if ( enumDef == nullptr )
+		return false;
+	for ( auto &variant : enumDef->mVariants )
+	{
+		for ( auto &at : variant.mAssociatedTypes )
+		{
+			string atn = resolveVariantPayloadType(
+				(Type *)at, enumDef, concreteEnumType )->getName();
+			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+				 isUserStructType( atn ) || mEnumDefMap.count( atn ) != 0 )
+				return true;
+		}
+	}
+	return false;
+}
+
+void CodeGen::emitEnumPayloadReleaseFromPtr( llvm::Value *enumPtr,
+	EnumDefinition *enumDef, Type *concreteEnumType )
+{
+	if ( enumDef == nullptr )
+		return;
+
+	llvm::StructType *enumType = getOrCreateEnumType( enumDef );
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+	llvm::DataLayout dl( mModule.get() );
+	llvm::Type *payloadArrType = enumType->getElementType( 1 );
+
 	// Load the tag
-	llvm::Value *tagPtr = mBuilder->CreateStructGEP( enumType, enumTmp, 0, "enum.cleanup.tag.ptr" );
+	llvm::Value *tagPtr = mBuilder->CreateStructGEP( enumType, enumPtr, 0, "enum.cleanup.tag.ptr" );
 	llvm::Value *tag = mBuilder->CreateLoad(
 		llvm::Type::getInt32Ty( *mContext ), tagPtr, "enum.cleanup.tag" );
 
@@ -58,7 +90,7 @@ void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *
 			string atn = resolveVariantPayloadType(
 				(Type *)at, enumDef, concreteEnumType )->getName();
 			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
-				 isUserStructType( atn ) )
+				 isUserStructType( atn ) || mEnumDefMap.count( atn ) != 0 )
 			{
 				hasRef = true;
 				break;
@@ -75,43 +107,75 @@ void CodeGen::emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *
 
 		mBuilder->SetInsertPoint( variantBB );
 
-		// Get payload pointer
 		llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
-			enumType, enumTmp, 1, "enum.cleanup.payload" );
-		llvm::Value *payloadBytePtr = mBuilder->CreateConstInBoundsGEP2_32(
-			llvm::ArrayType::get( llvm::Type::getInt8Ty( *mContext ),
-				enumType->getElementType( 1 )->getArrayNumElements() ),
-			payloadPtr, 0, 0, "enum.cleanup.payload.byte" );
+			enumType, enumPtr, 1, "enum.cleanup.payload" );
 
-		// Release each refcounted payload field
+		// Release each refcounted payload at ITS byte offset. The walk must
+		// mirror construction: erased generic-param slots and boxed enums are
+		// pointer-sized; everything else advances by its LLVM alloc size.
+		// (Previously every release read byte 0 — wrong for any variant whose
+		// refcounted payload is not first, e.g. tag(int, string).)
+		uint64_t off = 0;
 		for ( auto &at : variant.mAssociatedTypes )
 		{
-			string atn = resolveVariantPayloadType(
-				(Type *)at, enumDef, concreteEnumType )->getName();
+			Type *resolved = resolveVariantPayloadType(
+				(Type *)at, enumDef, concreteEnumType );
+			string atn = resolved->getName();
+
+			bool isGenericSlot = false;
+			for ( auto &gp : enumDef->mGenericParams )
+			{
+				if ( gp.mName == ( (Type *)at )->getName() )
+				{
+					isGenericSlot = true;
+					break;
+				}
+			}
+
+			uint64_t slot;
+			if ( isGenericSlot || mEnumDefMap.count( atn ) != 0 )
+				slot = 8;
+			else
+			{
+				slot = dl.getTypeAllocSize( getLLVMType( resolved ) );
+				if ( slot == 0 ) slot = 4;
+			}
+
+			llvm::Value *bytePtr = mBuilder->CreateGEP(
+				payloadArrType, payloadPtr,
+				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+				  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), (int64_t)off ) },
+				"enum.cleanup.payload.byte" );
+
 			if ( atn == "string" )
 			{
 				llvm::Value *strVal = mBuilder->CreateLoad(
-					ptrType, payloadBytePtr, "enum.cleanup.str" );
+					ptrType, bytePtr, "enum.cleanup.str" );
 				mBuilder->CreateCall( getOrDeclareStringRelease(), { strVal } );
 			}
 			else if ( atn == "Array" )
 			{
 				llvm::Value *arrVal = mBuilder->CreateLoad(
-					ptrType, payloadBytePtr, "enum.cleanup.arr" );
+					ptrType, bytePtr, "enum.cleanup.arr" );
 				mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrVal } );
 			}
 			else if ( atn == "Buffer" )
 			{
 				llvm::Value *bufVal = mBuilder->CreateLoad(
-					ptrType, payloadBytePtr, "enum.cleanup.buf" );
+					ptrType, bytePtr, "enum.cleanup.buf" );
 				mBuilder->CreateCall( getOrDeclareBufferRelease(), { bufVal } );
 			}
-			else if ( isUserStructType( atn ) )
+			else if ( isUserStructType( atn ) || mEnumDefMap.count( atn ) != 0 )
 			{
-				llvm::Value *structVal = mBuilder->CreateLoad(
-					ptrType, payloadBytePtr, "enum.cleanup.struct" );
-				mBuilder->CreateCall( getOrDeclareRcRelease(), { structVal } );
+				// Struct payload or boxed enum payload: both are rc pointers.
+				// Releasing a box runs its generated dtor, which recursively
+				// releases the boxed value's own payloads.
+				llvm::Value *rcVal = mBuilder->CreateLoad(
+					ptrType, bytePtr, "enum.cleanup.rc" );
+				mBuilder->CreateCall( getOrDeclareRcRelease(), { rcVal } );
 			}
+
+			off += slot;
 		}
 
 		mBuilder->CreateBr( mergeBB );

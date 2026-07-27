@@ -76,6 +76,12 @@ EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 			COMPILE_ERROR( l, "Expected '>' after generic parameters" );
 	}
 
+	// Register the enum's TYPE name before parsing the variants so a variant
+	// payload can reference the enum itself (recursive enums:
+	// `enum Expr { num(int), add(Expr, Expr) }`). The definition symbol is
+	// still registered after the body parses.
+	s->addType( new Type( enumName ) );
+
 	// Expect '{'
 	sym = l.getSymbol();
 	if ( sym != '{' )
@@ -132,8 +138,8 @@ EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 	sym = l.getSymbol();
 	assert( sym == '}' );
 
-	// Register enum as a type and symbol in scope
-	s->addType( new Type( enumName ) );
+	// Register the enum definition symbol (the type name was registered before
+	// the variant loop, for recursive self-references)
 	s->addSymbol( enumDef );
 
 	LOG( "Parsed enum: %s with %d variants", enumName.c_str(), (int)enumDef->mVariants.size() );
