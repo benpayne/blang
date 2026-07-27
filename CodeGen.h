@@ -335,6 +335,28 @@ private:
 	// String type helper
 	bool isStringType( Expression *expr );
 
+	// ---- Generic-context type resolution (generic ARC unit) ----
+	// Resolve a declared type name through the ACTIVE monomorphization
+	// substitution (mTypeSubstitution): inside sort<string>'s body, "T" -> string.
+	// Identity outside generic instantiation. Every ARC decision that keys on a
+	// declared type name (scope tracking, bind-retain, untrack, temp tracking)
+	// must go through this so a T-typed local participates in refcounting.
+	std::string resolvedTypeName( Type *t );
+	// Resolve a generic function CALL's declared return type name to the
+	// concrete name using the call's type arguments (explicit or inferred):
+	// identity<string> declared "T" -> "string". Identity for non-generic calls.
+	std::string callReturnTypeName( CallExpression *call );
+	// Resolve a METHOD's declared return type name for a call on a generic
+	// struct instance, mapping the struct's generic params through the object's
+	// type arguments: Map<string,int>.get declared "V" -> "int". Falls back to
+	// mTypeSubstitution, then the declared name.
+	std::string methodReturnTypeName( MethodCallExpression *mc );
+	// Infer a generic call's type arguments from its argument expressions'
+	// resolved/declared types when the caller wrote no explicit <...> list.
+	// Fills call->mTypeArgs; returns false (caller reports) if any generic
+	// param stays unbound.
+	bool inferCallTypeArgs( CallExpression *call, FunctionDefinition *funcDef );
+
 	// Field type resolution helper (for FieldAccessExpression)
 	std::string getFieldTypeName( FieldAccessExpression *fa );
 	Type *getFieldType( FieldAccessExpression *fa );

@@ -21,6 +21,22 @@ these are the edges it revealed.
 
 ## Deferred (filed, worked around) — array/aggregate refcount ARC
 
+> **STATUS UPDATE — generic ARC unit (post-epic): #1, #3, #4, and #6 are
+> FIXED.** The dedicated ARC unit this section called for landed: all ARC
+> decision sites (scope tracking, bind-retain, untrack-on-store, temp tracking,
+> the isStringType/isArrayType predicates, and the return-retain borrow rule)
+> now resolve declared type names through the active monomorphization
+> substitution via one shared helper (`resolvedTypeName` /
+> `callReturnTypeName` / `methodReturnTypeName`, CGTypes.cpp), so `T`-typed
+> values inside monomorphized generics participate in refcounting. Generic
+> calls also infer their type arguments from the argument types
+> (`sort_items(names)` == `sort_items<string>(names)`), and a generic call
+> that can neither infer nor was given explicit arguments is a loud compile
+> error (previously silently dropped with exit 0). Locked in by
+> `codegen_generic_arc_{sort,return,map}.b` (goldens, leak-clean) and
+> `cgfail/generic_infer_fail.b`. Entries below are kept for history; #2 and #5
+> remain open.
+
 These share a root theme: **refcount accounting for a heap value read out of an
 array element or returned inside an aggregate is incomplete.** A general fix
 belongs in a dedicated codegen/ARC unit (high blast radius across the string and

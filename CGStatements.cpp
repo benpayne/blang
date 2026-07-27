@@ -173,15 +173,19 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 				mStructScopeStack.back().push_back( alloca );
 			}
 
-			// Track string variables for release at scope exit
-			if ( varType != nullptr && varType->getName() == "string" &&
+			// Track string variables for release at scope exit. The declared name
+			// is resolved through the active generic substitution so a `T`-typed
+			// local inside a monomorphized generic (sort<string>'s `T tmp`)
+			// participates in refcounting like a directly-declared string.
+			if ( resolvedTypeName( varType ) == "string" &&
 				 !mStringScopeStack.empty() )
 			{
 				mStringScopeStack.back().push_back( { alloca, varDef } );
 			}
 
-			// Track array variables for release at scope exit
-			if ( varType != nullptr && varType->getName() == "Array" &&
+			// Track array variables for release at scope exit (substitution-aware,
+			// same rationale as strings above).
+			if ( resolvedTypeName( varType ) == "Array" &&
 				 !mArrayScopeStack.empty() )
 			{
 				mArrayScopeStack.back().push_back( { alloca, varDef } );
@@ -283,14 +287,14 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 						}
 					}
 
-					// NOTE: both the retains below and the scope-exit tracking above
-					// key on the RAW declared type name — a `T`-typed local inside a
-					// monomorphized generic (sort<string>'s `T tmp = items[j];`) is
-					// neither tracked nor retained. That whole family (known-issue
-					// #4, refcounted-element generics) needs the tracking, retain,
-					// release, and isStringType sites to resolve substitutions
-					// together; changing only one site here would unbalance them.
-					string boundTypeName = ( varType != nullptr ) ? varType->getName() : string();
+					// Resolve the declared type through the active generic
+					// substitution so `T`-typed locals inside monomorphized
+					// generics get the same borrowed-source retains as directly
+					// declared string/Array locals. This moves together with the
+					// substitution-aware scope tracking above and the
+					// substitution-aware isStringType/isArrayType predicates —
+					// changing only one of those sites unbalances the counts.
+					string boundTypeName = resolvedTypeName( varType );
 
 					// Same borrowed-source rule for Array-typed locals: binding an
 					// element of a nested array (Array<int> row = grid[i]) — or a
@@ -365,8 +369,9 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 					{
 						mBuilder->CreateStore( initVal, alloca );
 
-						// If storing a string, untrack it from temps — the variable now owns it
-						if ( varType != nullptr && varType->getName() == "string" )
+						// If storing a string, untrack it from temps — the variable now
+						// owns it (substitution-aware: T-typed locals transfer too)
+						if ( resolvedTypeName( varType ) == "string" )
 							untrackTempString( initVal );
 
 						// If storing a struct, untrack it from temps — the variable now owns it
@@ -375,7 +380,7 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 
 						// If storing an array, untrack it from temps — the variable now
 						// owns it (released at scope exit via mArrayScopeStack).
-						if ( varType != nullptr && varType->getName() == "Array" )
+						if ( resolvedTypeName( varType ) == "Array" )
 							untrackTempArray( initVal );
 
 						// If storing a fn-typed value, untrack its lambda context from temps.
@@ -531,8 +536,13 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 		if ( retVal != nullptr && isArrayType( ret->mExpression ) )
 		{
 			Expression *retRawExpr = (Expression *)ret->mExpression;
+			// IndexExpression is a borrowed source too: __blang_array_get does
+			// not retain, so returning an element (a generic Map's
+			// `return self.values[idx]` with V=Array) must hand the caller its
+			// own reference or the caller's release corrupts the container.
 			if ( dynamic_cast<VariableExpression*>( retRawExpr ) != nullptr ||
-				 dynamic_cast<FieldAccessExpression*>( retRawExpr ) != nullptr )
+				 dynamic_cast<FieldAccessExpression*>( retRawExpr ) != nullptr ||
+				 dynamic_cast<IndexExpression*>( retRawExpr ) != nullptr )
 				mBuilder->CreateCall( getOrDeclareArrayRetain(), { retVal } );
 		}
 

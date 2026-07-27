@@ -1947,6 +1947,15 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		auto subIt = mTypeSubstitution.find( mRetName );
 		if ( subIt != mTypeSubstitution.end() )
 			mRetName = subIt->second->getName();
+		// Generic-struct instance at the CALLER (substitution inactive there):
+		// map the declared name (e.g. Map<K,V>.get's "V") through the object's
+		// type arguments so refcounted returns are tracked as temps.
+		if ( mRetName == methodDef->getReturnType()->getName() )
+		{
+			string mapped = methodReturnTypeName( expr );
+			if ( !mapped.empty() )
+				mRetName = mapped;
+		}
 		if ( isUserStructType( mRetName ) )
 			trackTempStruct( methodResult );
 		// Track an Array<T>-returning method result as a temporary (e.g.
