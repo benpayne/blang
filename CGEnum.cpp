@@ -51,6 +51,62 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 
 			llvm::Type *argType = argVal->getType();
 
+			// Boxed enum payload: a payload whose declared type names an enum is
+			// stored as a POINTER to a heap-allocated copy, so recursive enums
+			// (enum Expr { add(Expr, Expr), ... }) have finite layout. The box
+			// carries a generated dtor that releases the boxed value's own
+			// refcounted payloads when the box's refcount hits zero.
+			{
+				string assocName = variant.mAssociatedTypes[i]->getName();
+				auto boxIt = mEnumDefMap.find( assocName );
+				if ( boxIt != mEnumDefMap.end() && argType->isStructTy() )
+				{
+					EnumDefinition *childEd = boxIt->second;
+					llvm::StructType *childTy = getOrCreateEnumType( childEd );
+					llvm::Value *sizeVal = llvm::ConstantInt::get(
+						llvm::Type::getInt64Ty( *mContext ),
+						dl.getTypeAllocSize( childTy ) );
+					llvm::Function *boxDtor = getOrGenEnumBoxDtor( childEd );
+					llvm::Value *box;
+					if ( boxDtor != nullptr )
+						box = mBuilder->CreateCall( getOrDeclareRcAllocDtor(),
+							{ sizeVal, boxDtor }, "enum.box" );
+					else
+						box = mBuilder->CreateCall( getOrDeclareRcAlloc(),
+							{ sizeVal }, "enum.box" );
+					mBuilder->CreateStore( argVal, box );
+
+					// Copying from an existing owner (variable/field/index
+					// source) shares the inner refcounted payloads with the
+					// source, whose own release still runs — give the box its
+					// own references. A fresh temp (nested construct, call
+					// result) transfers ownership outright.
+					Expression *srcExpr = (Expression *)expr->mArgs[i];
+					bool srcOwner =
+						dynamic_cast<VariableExpression*>( srcExpr ) != nullptr ||
+						dynamic_cast<FieldAccessExpression*>( srcExpr ) != nullptr ||
+						dynamic_cast<IndexExpression*>( srcExpr ) != nullptr;
+					if ( srcOwner )
+					{
+						llvm::Function *pr = getOrGenEnumPayloadRetain( childEd );
+						if ( pr != nullptr )
+							mBuilder->CreateCall( pr, { box } );
+					}
+
+					llvm::Value *boxOffVal = llvm::ConstantInt::get(
+						llvm::Type::getInt64Ty( *mContext ), offset );
+					llvm::Type *payloadArrTy = enumType->getElementType( 1 );
+					llvm::Value *boxSlot = mBuilder->CreateGEP(
+						payloadArrTy, payloadPtr,
+						{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+						  boxOffVal },
+						"enum.payload.box" );
+					mBuilder->CreateStore( box, boxSlot );
+					offset += 8;
+					continue;
+				}
+			}
+
 			// GEP into the payload byte array at the current offset
 			llvm::Value *offsetVal = llvm::ConstantInt::get(
 				llvm::Type::getInt64Ty( *mContext ), offset );
@@ -163,29 +219,176 @@ void CodeGen::trackEnumArgTemp( Expression *argExpr, llvm::Value *argVal,
 			concrete = rt;
 	}
 
-	bool hasRefPayload = false;
-	for ( auto &variant : ed->mVariants )
-	{
-		for ( auto &at : variant.mAssociatedTypes )
-		{
-			string atn = resolveVariantPayloadType(
-				(Type *)at, ed, concrete )->getName();
-			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
-				 isUserStructType( atn ) )
-			{
-				hasRefPayload = true;
-				break;
-			}
-		}
-		if ( hasRefPayload )
-			break;
-	}
-	if ( !hasRefPayload || mEnumScopeStack.empty() )
+	if ( !enumHasRefcountedPayload( ed, concrete ) || mEnumScopeStack.empty() )
 		return;
 
 	llvm::AllocaInst *tmp = mBuilder->CreateAlloca( st, nullptr, "enumarg.tmp" );
 	mBuilder->CreateStore( argVal, tmp );
 	mEnumScopeStack.back().push_back( { tmp, ed, concrete } );
+}
+
+llvm::Function *CodeGen::getOrGenEnumBoxDtor( EnumDefinition *enumDef )
+{
+	if ( enumDef == nullptr || !enumHasRefcountedPayload( enumDef, nullptr ) )
+		return nullptr;
+
+	string dtorName = "__enum_" + enumDef->getName() + "_box_dtor";
+	llvm::Function *fn = mModule->getFunction( dtorName );
+	if ( fn != nullptr && !fn->empty() )
+		return fn;
+
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+	if ( fn == nullptr )
+	{
+		llvm::FunctionType *ft = llvm::FunctionType::get(
+			llvm::Type::getVoidTy( *mContext ), { ptrType }, false );
+		fn = llvm::Function::Create(
+			ft, llvm::Function::InternalLinkage, dtorName, mModule.get() );
+	}
+
+	// Save/restore builder state while generating the dtor body
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	llvm::BasicBlock::iterator savedPt;
+	bool hadInsertPoint = ( savedBB != nullptr );
+	if ( hadInsertPoint )
+		savedPt = mBuilder->GetInsertPoint();
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", fn );
+	mBuilder->SetInsertPoint( entryBB );
+	emitEnumPayloadReleaseFromPtr( fn->getArg( 0 ), enumDef, nullptr );
+	mBuilder->CreateRetVoid();
+
+	if ( hadInsertPoint )
+		mBuilder->SetInsertPoint( savedBB, savedPt );
+
+	return fn;
+}
+
+llvm::Function *CodeGen::getOrGenEnumPayloadRetain( EnumDefinition *enumDef )
+{
+	if ( enumDef == nullptr || !enumHasRefcountedPayload( enumDef, nullptr ) )
+		return nullptr;
+
+	string fnName = "__enum_" + enumDef->getName() + "_payload_retain";
+	llvm::Function *fn = mModule->getFunction( fnName );
+	if ( fn != nullptr && !fn->empty() )
+		return fn;
+
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+	if ( fn == nullptr )
+	{
+		llvm::FunctionType *ft = llvm::FunctionType::get(
+			llvm::Type::getVoidTy( *mContext ), { ptrType }, false );
+		fn = llvm::Function::Create(
+			ft, llvm::Function::InternalLinkage, fnName, mModule.get() );
+	}
+
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	llvm::BasicBlock::iterator savedPt;
+	bool hadInsertPoint = ( savedBB != nullptr );
+	if ( hadInsertPoint )
+		savedPt = mBuilder->GetInsertPoint();
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", fn );
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::StructType *enumType = getOrCreateEnumType( enumDef );
+	llvm::Type *payloadArrType = enumType->getElementType( 1 );
+	llvm::DataLayout dl( mModule.get() );
+	llvm::Value *selfPtr = fn->getArg( 0 );
+
+	llvm::Value *tagPtr = mBuilder->CreateStructGEP( enumType, selfPtr, 0, "eret.tag.ptr" );
+	llvm::Value *tag = mBuilder->CreateLoad(
+		llvm::Type::getInt32Ty( *mContext ), tagPtr, "eret.tag" );
+
+	llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create( *mContext, "eret.done", fn );
+	llvm::SwitchInst *sw = mBuilder->CreateSwitch( tag, mergeBB, enumDef->mVariants.size() );
+
+	for ( size_t vi = 0; vi < enumDef->mVariants.size(); vi++ )
+	{
+		auto &variant = enumDef->mVariants[vi];
+		bool hasRef = false;
+		for ( auto &at : variant.mAssociatedTypes )
+		{
+			string atn = resolveVariantPayloadType( (Type *)at, enumDef, nullptr )->getName();
+			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+				 isUserStructType( atn ) || mEnumDefMap.count( atn ) != 0 )
+			{
+				hasRef = true;
+				break;
+			}
+		}
+		if ( !hasRef )
+			continue;
+
+		llvm::BasicBlock *variantBB = llvm::BasicBlock::Create(
+			*mContext, "eret." + variant.mName, fn );
+		sw->addCase(
+			llvm::ConstantInt::get( llvm::Type::getInt32Ty( *mContext ), vi ),
+			variantBB );
+		mBuilder->SetInsertPoint( variantBB );
+
+		llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
+			enumType, selfPtr, 1, "eret.payload" );
+
+		// Same offset walk as the release path.
+		uint64_t off = 0;
+		for ( auto &at : variant.mAssociatedTypes )
+		{
+			Type *resolved = resolveVariantPayloadType( (Type *)at, enumDef, nullptr );
+			string atn = resolved->getName();
+			bool isGenericSlot = false;
+			for ( auto &gp : enumDef->mGenericParams )
+			{
+				if ( gp.mName == ( (Type *)at )->getName() )
+				{
+					isGenericSlot = true;
+					break;
+				}
+			}
+			uint64_t slot;
+			if ( isGenericSlot || mEnumDefMap.count( atn ) != 0 )
+				slot = 8;
+			else
+			{
+				slot = dl.getTypeAllocSize( getLLVMType( resolved ) );
+				if ( slot == 0 ) slot = 4;
+			}
+
+			llvm::Value *bytePtr = mBuilder->CreateGEP(
+				payloadArrType, payloadPtr,
+				{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+				  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), (int64_t)off ) },
+				"eret.payload.byte" );
+
+			llvm::Function *retainFn = nullptr;
+			if ( atn == "string" )
+				retainFn = getOrDeclareStringRetain();
+			else if ( atn == "Array" )
+				retainFn = getOrDeclareArrayRetain();
+			else if ( atn == "Buffer" )
+				retainFn = getOrDeclareBufferRetain();
+			else if ( isUserStructType( atn ) || mEnumDefMap.count( atn ) != 0 )
+				retainFn = getOrDeclareRcRetain();
+			if ( retainFn != nullptr )
+			{
+				llvm::Value *val = mBuilder->CreateLoad(
+					llvm::PointerType::get( *mContext, 0 ), bytePtr, "eret.val" );
+				mBuilder->CreateCall( retainFn, { val } );
+			}
+			off += slot;
+		}
+
+		mBuilder->CreateBr( mergeBB );
+	}
+
+	mBuilder->SetInsertPoint( mergeBB );
+	mBuilder->CreateRetVoid();
+
+	if ( hadInsertPoint )
+		mBuilder->SetInsertPoint( savedBB, savedPt );
+
+	return fn;
 }
 
 // ---- Match codegen (Task 53) ----
@@ -250,23 +453,7 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 					// so a generic-param payload (built-in Option/Result) resolves to
 					// its concrete refcounted type for release.
 					Type *subjConcrete = ( (Expression*)expr->mSubject )->getResolvedType();
-					bool hasRefPayload = false;
-					for ( auto &variant : matchedEnum->mVariants )
-					{
-						for ( auto &at : variant.mAssociatedTypes )
-						{
-							string atn = resolveVariantPayloadType(
-								(Type *)at, matchedEnum, subjConcrete )->getName();
-							if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
-								 isUserStructType( atn ) )
-							{
-								hasRefPayload = true;
-								break;
-							}
-						}
-						if ( hasRefPayload ) break;
-					}
-					if ( hasRefPayload )
+					if ( enumHasRefcountedPayload( matchedEnum, subjConcrete ) )
 						mEnumScopeStack.back().push_back(
 							{ subjectAlloca, matchedEnum, subjConcrete } );
 				}
@@ -409,9 +596,43 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 				armBBs[i] );
 		}
 	}
+	else if ( subject->getType()->isPointerTy() &&
+			  isStringType( (Expression *)expr->mSubject ) )
+	{
+		// String subject: chain __blang_string_equals_cstr checks against each
+		// string-literal pattern, in arm order; no match falls to the default.
+		// (Previously ANY non-integer subject silently branched to the default
+		// arm — the design spec's own `match command { "start" {...} ... }`
+		// example always took the wildcard.)
+		std::vector<size_t> strArms;
+		for ( size_t i = 0; i < expr->mArms.size(); i++ )
+		{
+			if ( !expr->mArms[i].mIsWildcard && expr->mArms[i].mPatternIsString )
+				strArms.push_back( i );
+		}
+		llvm::Function *eqFn = getOrDeclareStringEqualsCstr();
+		for ( size_t k = 0; k < strArms.size(); k++ )
+		{
+			size_t i = strArms[k];
+			const string &pat = expr->mArms[i].mPattern;
+			llvm::Value *litPtr = mBuilder->CreateGlobalStringPtr( pat, "match.pat" );
+			llvm::Value *litLen = llvm::ConstantInt::get(
+				llvm::Type::getInt64Ty( *mContext ), (int64_t)pat.size() );
+			llvm::Value *isEq = mBuilder->CreateCall(
+				eqFn, { subject, litPtr, litLen }, "match.streq" );
+			llvm::BasicBlock *noMatchBB = ( k + 1 < strArms.size() )
+				? llvm::BasicBlock::Create( *mContext, "match.strnext", func )
+				: defaultBB;
+			mBuilder->CreateCondBr( isEq, armBBs[i], noMatchBB );
+			if ( k + 1 < strArms.size() )
+				mBuilder->SetInsertPoint( noMatchBB );
+		}
+		if ( strArms.empty() )
+			mBuilder->CreateBr( defaultBB );
+	}
 	else
 	{
-		// Non-integer subject — just branch to default
+		// Non-integer, non-string subject — just branch to default
 		mBuilder->CreateBr( defaultBB );
 	}
 
@@ -436,8 +657,11 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 			? (Scope *)expr->mArms[i].mBody->mScope
 			: (Scope *)expr->mArms[i].mScope;
 
-		// If the arm has a binding, extract the payload from the enum struct
-		if ( !expr->mArms[i].mBindingName.empty() )
+		// If the arm has bindings, extract the payload value(s) from the enum
+		// struct. Payloads are laid out sequentially in the payload byte array
+		// (construction advances by DataLayout alloc size per argument), so
+		// binding j loads at the sum of the preceding bindings' sizes.
+		if ( !expr->mArms[i].mBindingNames.empty() )
 		{
 			if ( isEnumStruct && matchedEnum != nullptr && subjectAlloca != nullptr )
 			{
@@ -452,69 +676,120 @@ llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )
 					}
 				}
 
-				llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
-				// Prefer the binding variable's Sema-resolved type: for a generic
-				// enum (built-in Option<T>/Result<T,E>) Sema substitutes the concrete
-				// type argument from the subject (e.g. err payload -> string), which
-				// the raw variant associated type ("T"/"E") does not carry. Fall back
-				// to the variant's declared associated type for non-generic enums.
-				Type *bindQType = nullptr;
-				if ( armScope != nullptr )
-				{
-					Symbol *bs = armScope->findSymbol( expr->mArms[i].mBindingName );
-					if ( auto *bv = dynamic_cast<VariableDefinition*>( bs ) )
-						bindQType = bv->getVariableType();
-				}
-				if ( bindQType != nullptr && bindQType->getName() != "var" )
-				{
-					bindType = getLLVMType( bindQType );
-				}
-				else if ( variantIdx >= 0 &&
-					 !matchedEnum->mVariants[variantIdx].mAssociatedTypes.empty() )
-				{
-					bindType = getLLVMType( matchedEnum->mVariants[variantIdx].mAssociatedTypes[0] );
-				}
-
-				// GEP to the payload area (field 1) and load the value
+				// GEP to the payload area (field 1)
 				llvm::Value *payloadPtr = mBuilder->CreateStructGEP(
 					enumStructType, subjectAlloca, 1, "match.payload.ptr" );
-
-				// The payload is [N x i8]; GEP to byte 0 and load as the expected type
 				llvm::Type *payloadArrType = enumStructType->getElementType( 1 );
-				llvm::Value *bytePtr = mBuilder->CreateGEP(
-					payloadArrType, payloadPtr,
-					{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
-					  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
-					"match.payload.byte" );
+				llvm::DataLayout dl( mModule.get() );
+				uint64_t payloadOffset = 0;
 
-				llvm::Value *payloadVal = mBuilder->CreateLoad(
-					bindType, bytePtr, "match.payload.val" );
-
-				// Create alloca for the binding variable
-				llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
-					bindType, nullptr, expr->mArms[i].mBindingName );
-				mBuilder->CreateStore( payloadVal, bindAlloca );
-
-				// Register in variable map
-				if ( armScope != nullptr )
+				for ( size_t bi = 0; bi < expr->mArms[i].mBindingNames.size(); bi++ )
 				{
-					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
-					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
-						mVariableMap[bindVar] = bindAlloca;
+					const string &bname = expr->mArms[i].mBindingNames[bi];
+
+					llvm::Type *bindType = llvm::Type::getInt32Ty( *mContext ); // default
+					// Prefer the binding variable's Sema-resolved type: for a generic
+					// enum (built-in Option<T>/Result<T,E>) Sema substitutes the concrete
+					// type argument from the subject (e.g. err payload -> string), which
+					// the raw variant associated type ("T"/"E") does not carry. Fall back
+					// to the variant's declared associated type for non-generic enums.
+					Type *bindQType = nullptr;
+					if ( armScope != nullptr )
+					{
+						Symbol *bs = armScope->findSymbol( bname );
+						if ( auto *bv = dynamic_cast<VariableDefinition*>( bs ) )
+							bindQType = bv->getVariableType();
+					}
+					// Boxed enum payload: the declared associated type names an
+					// enum, so the slot holds a POINTER to the child value.
+					string bindQName;
+					if ( bindQType != nullptr && bindQType->getName() != "var" )
+						bindQName = bindQType->getName();
+					else if ( variantIdx >= 0 &&
+						 bi < matchedEnum->mVariants[variantIdx].mAssociatedTypes.size() )
+						bindQName = matchedEnum->mVariants[variantIdx]
+							.mAssociatedTypes[bi]->getName();
+					bool isBoxedEnum = ( mEnumDefMap.count( bindQName ) != 0 );
+
+					if ( isBoxedEnum )
+					{
+						bindType = getOrCreateEnumType( mEnumDefMap[bindQName] );
+					}
+					else if ( bindQType != nullptr && bindQType->getName() != "var" )
+					{
+						bindType = getLLVMType( bindQType );
+					}
+					else if ( variantIdx >= 0 &&
+						 bi < matchedEnum->mVariants[variantIdx].mAssociatedTypes.size() )
+					{
+						bindType = getLLVMType(
+							matchedEnum->mVariants[variantIdx].mAssociatedTypes[bi] );
+					}
+
+					// GEP to this payload's byte offset and load as the expected type
+					llvm::Value *bytePtr = mBuilder->CreateGEP(
+						payloadArrType, payloadPtr,
+						{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
+						  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ),
+							(int64_t)payloadOffset ) },
+						"match.payload.byte" );
+
+					llvm::Value *payloadVal;
+					if ( isBoxedEnum )
+					{
+						// Load the box pointer, then copy the boxed enum value
+						// out — the binding is a by-value BORROW of the box's
+						// contents (the box stays owned by the subject).
+						llvm::Value *boxPtr = mBuilder->CreateLoad(
+							llvm::PointerType::get( *mContext, 0 ), bytePtr,
+							"match.payload.boxptr" );
+						payloadVal = mBuilder->CreateLoad(
+							bindType, boxPtr, "match.payload.boxed" );
+					}
+					else
+					{
+						payloadVal = mBuilder->CreateLoad(
+							bindType, bytePtr, "match.payload.val" );
+					}
+
+					// Create alloca for the binding variable
+					llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
+						bindType, nullptr, bname );
+					mBuilder->CreateStore( payloadVal, bindAlloca );
+
+					// Register in variable map
+					if ( armScope != nullptr )
+					{
+						Symbol *bindSym = armScope->findSymbol( bname );
+						if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
+							mVariableMap[bindVar] = bindAlloca;
+					}
+
+					// Advance by this payload's size — must mirror the
+					// construction walk (boxed enum slots are pointer-sized).
+					if ( isBoxedEnum )
+						payloadOffset += 8;
+					else
+					{
+						uint64_t sz = dl.getTypeAllocSize( bindType );
+						if ( sz == 0 ) sz = 4;
+						payloadOffset += sz;
+					}
 				}
 			}
 			else
 			{
 				// Non-enum binding: store the subject value directly
+				const string &bname = expr->mArms[i].mBindingNames[0];
 				llvm::Type *bindType = subject->getType();
 				llvm::AllocaInst *bindAlloca = mBuilder->CreateAlloca(
-					bindType, nullptr, expr->mArms[i].mBindingName );
+					bindType, nullptr, bname );
 				mBuilder->CreateStore( subject, bindAlloca );
 
 				// Register in variable map
 				if ( armScope != nullptr )
 				{
-					Symbol *bindSym = armScope->findSymbol( expr->mArms[i].mBindingName );
+					Symbol *bindSym = armScope->findSymbol( bname );
 					if ( auto *bindVar = dynamic_cast<VariableDefinition*>( bindSym ) )
 						mVariableMap[bindVar] = bindAlloca;
 				}

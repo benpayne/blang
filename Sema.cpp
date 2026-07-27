@@ -789,7 +789,17 @@ Type *Sema::visitExpr( Expression *expr )
 	{
 		for ( auto &a : ec->mArgs )
 			visitExpr( a );
-		return nullptr;
+		// Annotate with the enum's type so a construct used directly as a match
+		// subject types its bindings (without this, `match Entry.kv("n",5) {
+		// kv(k,v) { k.length } ... }` left k as `var` and the arm value silently
+		// failed to generate). For a GENERIC enum the construct alone does not
+		// carry the type arguments; the name-only type is annotated and the
+		// generic-param substitution downstream simply finds no arguments.
+		Type *t = nullptr;
+		if ( ec->mEnumDef != nullptr )
+			t = mScope->findType( ec->mEnumDef->getName() );
+		expr->setResolvedType( t );
+		return t;
 	}
 	if ( auto *tr = dynamic_cast<TryExpression *>( expr ) )
 	{
@@ -828,16 +838,33 @@ Type *Sema::visitExpr( Expression *expr )
 				// arms) or in the arm's own scope (expression-form arms).
 				Scope *armScope = ( arm.mBody != nullptr )
 					? (Scope *)arm.mBody->mScope : (Scope *)arm.mScope;
-				if ( arm.mBindingName.empty() || armScope == nullptr )
+				if ( arm.mBindingNames.empty() || armScope == nullptr )
 					continue;
 				for ( auto &v : ed->getVariants() )
 				{
 					if ( v.mName == arm.mPattern && !v.mAssociatedTypes.empty() )
 					{
-						Symbol *s = armScope->findSymbol( arm.mBindingName );
-						if ( auto *vd = dynamic_cast<VariableDefinition *>( s ) )
+						// Arity check: one binding per associated type. Fewer
+						// bindings than payloads is allowed only implicitly for
+						// the legacy single-binding form; more is always wrong.
+						if ( arm.mBindingNames.size() > v.mAssociatedTypes.size() )
 						{
-							SmartPtr<Type> atsp = v.mAssociatedTypes[0];
+							mDiag.error( mt->getLocation(),
+								"match pattern '" + arm.mPattern + "' binds " +
+								std::to_string( arm.mBindingNames.size() ) +
+								" values but variant has " +
+								std::to_string( v.mAssociatedTypes.size() ) +
+								" associated type(s)" );
+							mReported = true;
+						}
+						for ( size_t bi = 0; bi < arm.mBindingNames.size() &&
+							  bi < v.mAssociatedTypes.size(); bi++ )
+						{
+							Symbol *s = armScope->findSymbol( arm.mBindingNames[bi] );
+							auto *vd = dynamic_cast<VariableDefinition *>( s );
+							if ( vd == nullptr )
+								continue;
+							SmartPtr<Type> atsp = v.mAssociatedTypes[bi];
 							Type *at = (Type *)atsp;
 							// For a generic enum (e.g. built-in Option<T>/Result<T,E>),
 							// the variant's associated type is a generic param (T/E).

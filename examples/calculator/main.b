@@ -1,14 +1,16 @@
 // Example #2 — an arithmetic expression interpreter (calculator).
 //
-// Demonstrates a classic recursive-descent evaluator written in BLang:
+// A classic three-stage interpreter written in BLang:
 //   tokenize  -> Array<Token>
-//   parse/eval (mutually recursive expr -> term -> factor)
+//   parse     -> Ast            (a real recursive expression tree)
+//   eval_ast  -> Result<int, string>
 //
-// It exercises a broad slice of the language: enums with payloads, arrays,
-// pattern matching, the `?` try operator over Result, a small mutable Parser
-// struct threaded by reference, string/char scanning, and forward references
-// (main and the mutually-recursive parse functions appear before their
-// callees). The `test` blocks at the bottom run under `bcc test`.
+// The Ast is a RECURSIVE enum — variants carry Ast children directly
+// (`add(Ast, Ast)`), and match destructuring binds both children
+// (`add(l, r)`). It exercises a broad slice of the language: recursive enums
+// with multi-binding destructuring, the `?` try operator over Result, a small
+// mutable Parser struct threaded by reference, string/char scanning, and
+// forward references. The `test` blocks at the bottom run under `bcc test`.
 //
 // Grammar (standard precedence, left-associative):
 //   expr   = term (("+" | "-") term)*
@@ -26,12 +28,27 @@ enum Token {
 	end
 }
 
+// The expression tree. Enum-typed payloads are heap-boxed by the compiler,
+// so the recursion has finite layout and is managed by ARC.
+enum Ast {
+	num(int),
+	add(Ast, Ast),
+	sub(Ast, Ast),
+	mul(Ast, Ast),
+	div(Ast, Ast),
+	neg(Ast)
+}
+
 // A mutable cursor over the token stream. Structs are heap references, so
-// field writes made through a passed-in Parser persist for the caller — this is
-// how `pos` advances across the recursive parse functions.
+// field writes made through a passed-in Parser persist for the caller — this
+// is how `pos` advances (and parse errors propagate) across the recursive
+// parse functions. Parse errors live here because the parser returns Ast
+// values; the first failure wins.
 struct Parser {
 	Array<Token> toks;
 	int pos;
+	bool failed;
+	string error;
 }
 
 fn main() -> int {
@@ -60,17 +77,20 @@ fn demo(string expr) {
 	}
 }
 
-// Tie tokenize + parse + a trailing-token check together.
+// Tie the stages together: tokenize -> parse to an Ast -> evaluate the tree.
 fn eval(string src) -> Result<int, string> {
 	Array<Token> toks = tokenize(src)?;
-	Parser p = Parser { toks: toks, pos: 0 };
-	int value = parse_expr(p)?;
+	Parser p = Parser { toks: toks, pos: 0, failed: false, error: "" };
+	Ast tree = parse_expr(p);
+	if p.failed {
+		return Result.err(p.error);
+	}
 
 	// After a full expression the only token left should be `end`.
 	Token rest = peek(p);
 	match rest {
 		end {
-			return Result.ok(value);
+			return eval_ast(tree);
 		}
 		_ {
 			return Result.err("trailing tokens after expression");
@@ -143,85 +163,155 @@ fn advance(Parser p) -> Token {
 	return t;
 }
 
-// --- Recursive-descent parser/evaluator ------------------------------------
+// Record a parse error on the parser and return a placeholder node. The
+// caller chain checks p.failed and unwinds; eval() reports p.error.
+fn fail(Parser p, string msg) -> Ast {
+	p.failed = true;
+	p.error = msg;
+	return Ast.num(0);
+}
 
-fn parse_expr(Parser p) -> Result<int, string> {
-	int left = parse_term(p)?;
+// --- Recursive-descent parser (builds the Ast) -----------------------------
+
+fn parse_expr(Parser p) -> Ast {
+	Ast left = parse_term(p);
+	if p.failed {
+		return left;
+	}
 	for {
 		Token t = peek(p);
 		match t {
 			plus {
 				advance(p);
-				int right = parse_term(p)?;
-				left = left + right;
+				Ast right = parse_term(p);
+				if p.failed {
+					return left;
+				}
+				left = Ast.add(left, right);
 			}
 			minus {
 				advance(p);
-				int right = parse_term(p)?;
-				left = left - right;
+				Ast right = parse_term(p);
+				if p.failed {
+					return left;
+				}
+				left = Ast.sub(left, right);
 			}
 			_ {
-				return Result.ok(left);
+				return left;
 			}
 		}
 	}
 }
 
-fn parse_term(Parser p) -> Result<int, string> {
-	int left = parse_factor(p)?;
+fn parse_term(Parser p) -> Ast {
+	Ast left = parse_factor(p);
+	if p.failed {
+		return left;
+	}
 	for {
 		Token t = peek(p);
 		match t {
 			star {
 				advance(p);
-				int right = parse_factor(p)?;
-				left = left * right;
+				Ast right = parse_factor(p);
+				if p.failed {
+					return left;
+				}
+				left = Ast.mul(left, right);
 			}
 			slash {
 				advance(p);
-				int right = parse_factor(p)?;
-				if right == 0 {
-					return Result.err("division by zero");
+				Ast right = parse_factor(p);
+				if p.failed {
+					return left;
 				}
-				left = left / right;
+				left = Ast.div(left, right);
 			}
 			_ {
-				return Result.ok(left);
+				return left;
 			}
 		}
 	}
 }
 
-fn parse_factor(Parser p) -> Result<int, string> {
+fn parse_factor(Parser p) -> Ast {
 	Token t = peek(p);
 	match t {
 		num(value) {
 			advance(p);
-			return Result.ok(value);
+			return Ast.num(value);
 		}
 		minus {
 			advance(p);
-			int inner = parse_factor(p)?;
-			return Result.ok(-inner);
+			Ast inner = parse_factor(p);
+			if p.failed {
+				return inner;
+			}
+			return Ast.neg(inner);
 		}
 		lparen {
 			advance(p);
-			int inner = parse_expr(p)?;
+			Ast inner = parse_expr(p);
+			if p.failed {
+				return inner;
+			}
 			Token close = peek(p);
 			match close {
 				rparen {
 					advance(p);
-					return Result.ok(inner);
+					return inner;
 				}
 				_ {
-					return Result.err("expected closing paren");
+					return fail(p, "expected closing paren");
 				}
 			}
 		}
 		_ {
-			return Result.err("expected number, unary minus, or paren");
+			return fail(p, "expected number, unary minus, or paren");
 		}
 	}
+	return fail(p, "unreachable");
+}
+
+// --- Tree evaluator --------------------------------------------------------
+
+// Walk the Ast. Runtime errors (division by zero) surface as Result.err and
+// propagate out of the recursion with `?`.
+fn eval_ast(Ast a) -> Result<int, string> {
+	match a {
+		num(n) {
+			return Result.ok(n);
+		}
+		add(l, r) {
+			int lv = eval_ast(l)?;
+			int rv = eval_ast(r)?;
+			return Result.ok(lv + rv);
+		}
+		sub(l, r) {
+			int lv = eval_ast(l)?;
+			int rv = eval_ast(r)?;
+			return Result.ok(lv - rv);
+		}
+		mul(l, r) {
+			int lv = eval_ast(l)?;
+			int rv = eval_ast(r)?;
+			return Result.ok(lv * rv);
+		}
+		div(l, r) {
+			int lv = eval_ast(l)?;
+			int rv = eval_ast(r)?;
+			if rv == 0 {
+				return Result.err("division by zero");
+			}
+			return Result.ok(lv / rv);
+		}
+		neg(x) {
+			int v = eval_ast(x)?;
+			return Result.ok(0 - v);
+		}
+	}
+	return Result.err("unreachable");
 }
 
 // --- Tests (run with `bcc test`) -------------------------------------------
@@ -290,4 +380,10 @@ test "trailing operator is an error" {
 
 test "empty input is an error" {
 	assert eval_is_error("");
+}
+
+test "ast built by hand evaluates directly" {
+	Ast t = Ast.mul(Ast.add(Ast.num(1), Ast.num(2)), Ast.num(3));
+	Result<int, string> r = eval_ast(t);
+	assert match r { ok(v) { v == 9 } err(e) { false } };
 }

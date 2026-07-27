@@ -616,6 +616,34 @@ private:
 	void trackEnumArgTemp( Expression *argExpr, llvm::Value *argVal,
 		Type *declParamType );
 
+	llvm::Function *getOrDeclareStringEqualsCstr();
+
+	// --- Recursive enums (boxed enum payloads) ---
+	// A variant payload whose type names a registered enum is stored as a
+	// POINTER to a heap-allocated copy (a "box", __blang_rc_alloc_dtor'd), so
+	// self-/mutually-recursive enums (enum Expr { add(Expr, Expr) ... }) have
+	// finite layout. Non-generic enums only: a generic enum's payload slots
+	// stay type-erased.
+	//
+	// Emit release calls for one enum value's refcounted payloads, reading
+	// through enumPtr (a pointer to the enum struct). Shared by the scope-exit
+	// release (emitEnumPayloadRelease) and the generated box destructor.
+	void emitEnumPayloadReleaseFromPtr( llvm::Value *enumPtr,
+		EnumDefinition *enumDef, Type *concreteEnumType );
+	// __enum_<Name>_box_dtor(void*): releases the boxed value's refcounted
+	// payloads when the box's refcount hits zero (recursion happens at runtime
+	// through child boxes' own dtors). Returns nullptr when the enum has no
+	// refcounted payloads (plain __blang_rc_alloc suffices).
+	llvm::Function *getOrGenEnumBoxDtor( EnumDefinition *enumDef );
+	// __enum_<Name>_payload_retain(void*): retains the refcounted payloads of
+	// the enum value at the pointer — used when a box is filled by COPYING
+	// from an existing owner (variable/field source), whose own release still
+	// runs. Returns nullptr when the enum has no refcounted payloads.
+	llvm::Function *getOrGenEnumPayloadRetain( EnumDefinition *enumDef );
+	// True if any variant payload (resolved for concreteEnumType) is
+	// refcounted: string/Array/Buffer/user struct/boxed enum.
+	bool enumHasRefcountedPayload( EnumDefinition *enumDef, Type *concreteEnumType );
+
 	// Resolve a variant's associated type to a concrete type: if it names one of
 	// the enum's generic parameters, substitute the matching argument from
 	// concreteEnumType; otherwise return it unchanged. Returns the input when no

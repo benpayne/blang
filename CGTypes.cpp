@@ -187,6 +187,16 @@ uint64_t CodeGen::getEnumMaxPayloadSize( EnumDefinition *enumDef )
 				continue;
 			}
 
+			// A payload that names an enum is BOXED (stored as a pointer to a
+			// heap-allocated child), so recursive enums have finite layout.
+			// Must be checked before getLLVMType: sizing the enclosing enum's
+			// own struct here would recurse forever.
+			if ( mEnumDefMap.count( assocType->getName() ) != 0 )
+			{
+				variantSize += 8;
+				continue;
+			}
+
 			llvm::Type *llvmType = getLLVMType( assocType );
 			uint64_t typeSize = dl.getTypeAllocSize( llvmType );
 			// Fallback for zero-sized types

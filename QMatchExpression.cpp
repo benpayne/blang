@@ -60,6 +60,7 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope, bool exprMode )
 		{
 			l.getSymbol();
 			arm.mPattern = l.getSymbolText();
+			arm.mPatternIsString = ( sym == Lexer::CONSTANT_STRING );
 		}
 		else if ( sym == Lexer::WILDCARD )
 		{
@@ -72,28 +73,24 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope, bool exprMode )
 			l.getSymbol();
 			arm.mPattern = l.getSymbolText();
 
-			// Check for destructuring: pattern(binding)
-			// e.g., ok(value), err(e), some(x)
+			// Check for destructuring: pattern(binding, ...) — one binding per
+			// variant associated type: ok(value), some(x), pair(a, b)
 			if ( l.peekSymbol() == '(' )
 			{
 				l.getSymbol(); // consume '('
 
 				sym = l.getSymbol();
-				if ( sym == Lexer::SYMBOL )
+				while ( sym == Lexer::SYMBOL )
 				{
-					arm.mBindingName = l.getSymbolText();
-				}
-				else if ( sym != ')' )
-				{
-					COMPILE_ERROR( l, "Expected variable name or ')' in match pattern" );
-				}
-
-				if ( sym != ')' )
-				{
+					arm.mBindingNames.push_back( l.getSymbolText() );
 					sym = l.getSymbol();
-					if ( sym != ')' )
-						COMPILE_ERROR( l, "Expected ')' after binding name in match pattern" );
+					if ( sym == ',' )
+						sym = l.getSymbol();
+					else
+						break;
 				}
+				if ( sym != ')' )
+					COMPILE_ERROR( l, "Expected ')' after binding name(s) in match pattern" );
 			}
 		}
 		else
@@ -105,11 +102,11 @@ MatchExpression *MatchExpression::Parse( Lexer &l, Scope *scope, bool exprMode )
 		Scope *armScope = new Scope( Scope::kScope_Anonymous );
 		armScope->setParent( scope );
 
-		// If there's a binding, add it to the arm scope
-		if ( !arm.mBindingName.empty() )
+		// Add each binding to the arm scope
+		for ( auto &bname : arm.mBindingNames )
 		{
 			Type *varType = new Type( "var" );
-			VariableDefinition *binding = new VariableDefinition( varType, arm.mBindingName );
+			VariableDefinition *binding = new VariableDefinition( varType, bname );
 			armScope->addSymbol( binding );
 		}
 

@@ -108,6 +108,27 @@ for arg in "$@"; do
 	esac
 done
 
+# --leak-check: prefer ASan-INSTRUMENTED runtime archives (build-asan) when
+# present. Linking the plain archives with -fsanitize only intercepts
+# malloc/free — a read of freed memory inside uninstrumented runtime code
+# (e.g. __blang_rc_release) goes undetected; that blind spot hid a real
+# use-after-free that only surfaced on CI's allocator. With instrumented
+# archives ASan traps the UAF itself, not just the leak. The archives are
+# compiled with address,undefined, so the link flags must match.
+ASAN_BUILD_DIR="${ASAN_BUILD_DIR:-${SCRIPT_DIR}/build-asan}"
+LEAK_SANITIZE_FLAGS="-fsanitize=address,leak"
+if [ "$LEAK_CHECK" -eq 1 ] && [ -f "${ASAN_BUILD_DIR}/libblang_runtime.a" ]; then
+	LEAK_SANITIZE_FLAGS="-fsanitize=address,undefined,leak"
+	for _mod in runtime string array buffer json net fs sys db math time random env hash; do
+		_asan_lib="${ASAN_BUILD_DIR}/libblang_${_mod}.a"
+		if [ -f "${_asan_lib}" ]; then
+			_var="$(echo "${_mod}" | tr 'a-z' 'A-Z')_LIB"
+			eval "${_var}=\"${_asan_lib}\""
+		fi
+	done
+	echo "--leak-check: using ASan-instrumented runtime archives from ${ASAN_BUILD_DIR}"
+fi
+
 if [ "$VALGRIND" -eq 1 ]; then
 	if ! command -v valgrind &>/dev/null; then
 		echo -e "${RED}Error: valgrind not found on PATH${NC}"
@@ -380,7 +401,7 @@ run_one_test() {
 		extra_libs="-luv"
 	fi
 	if [ "$LEAK_CHECK" -eq 1 ]; then
-		sanitize_flags="-fsanitize=address,leak"
+		sanitize_flags="${LEAK_SANITIZE_FLAGS}"
 	fi
 	local json_link=""
 	if [ -f "${JSON_LIB}" ]; then
@@ -467,6 +488,12 @@ run_one_test() {
 	local run_env=""
 	if [ "$LEAK_CHECK" -eq 1 ]; then
 		run_env="ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=exitcode=23"
+	else
+		# Poison freed memory in the plain build: glibc often leaves freed data
+		# intact, so a use-after-free read passes locally and crashes only on
+		# other allocators (how the Map UAF slipped through). PERTURB fills
+		# freed blocks; CHECK_=3 aborts on heap inconsistencies.
+		run_env="MALLOC_PERTURB_=42 MALLOC_CHECK_=3"
 	fi
 	# Database tests use an in-memory SQLite DB unless the test ships a blang.toml.
 	# (The binary is actually run below — in the VALGRIND branch or, for the
