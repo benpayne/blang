@@ -104,6 +104,10 @@ namespace QLang
 		std::map<VariableDefinition*, int> mDeclSpawnDepth;
 		int mLoopDepth = 0;
 		int mSpawnDepth = 0;
+
+		// Owns the synthesized `int` type assigned to range-loop variables
+		// (setVariableType stores a SmartPtr, but keep an owner for clarity).
+		SmartPtr<Type> mIntType;
 	};
 
 } // namespace QLang

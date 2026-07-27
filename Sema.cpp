@@ -255,7 +255,46 @@ void Sema::visitStmt( Statement *stmt )
 	}
 	else if ( auto *s = dynamic_cast<ForInStatement *>( stmt ) )
 	{
-		visitExpr( s->mIterableExpression );
+		Type *iterType = visitExpr( s->mIterableExpression );
+
+		// Type the loop variable from the iterable — the parser declares it as
+		// the "var" placeholder. Array<T> iteration yields T; a range yields
+		// int. Without this, expressions over the loop variable that need its
+		// type (string concatenation, method calls) fail the operator checks
+		// with 'var'. Key/value iteration and infinite loops are left as-is.
+		if ( !s->mIsInfinite && s->mSecondVariableName.empty() )
+		{
+			Type *elemType = nullptr;
+			if ( iterType != nullptr && iterType->getName() == "Array" &&
+				 iterType->getNumTypeParams() > 0 )
+			{
+				elemType = iterType->getTypeParam( 0 );
+			}
+			else if ( dynamic_cast<RangeExpression *>(
+				(Expression *)s->mIterableExpression ) != nullptr )
+			{
+				mIntType = new Type( "int" );
+				elemType = mIntType;
+			}
+
+			if ( elemType != nullptr )
+			{
+				if ( auto *b = dynamic_cast<Block *>( (Statement *)s->mBody ) )
+				{
+					if ( b->mScope != nullptr )
+					{
+						Symbol *ls = b->mScope->findSymbol( s->mVariableName );
+						if ( auto *lv = dynamic_cast<VariableDefinition *>( ls ) )
+						{
+							Type *cur = lv->getVariableType();
+							if ( cur == nullptr || cur->getName() == "var" )
+								lv->setType( elemType );
+						}
+					}
+				}
+			}
+		}
+
 		mLoopDepth++;
 		visitStmt( s->mBody );
 		mLoopDepth--;

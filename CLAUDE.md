@@ -77,6 +77,11 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   ├── mathlib/               # Test library project (blang.toml type=lib, pub fn add/multiply)
 │   ├── myapp/                 # Test binary project (blang.toml type=bin, depends on mathlib)
 │   └── timerapp/              # Test binary project (blang.toml type=bin, imports stdlib timer)
+├── examples/                  # Real example programs (each with a README + integration test script; written to shake out compiler/stdlib bugs)
+│   ├── todo_app/              # REST API + SQLite todo app (table struct, query/first, @json, HTTP stdlib, bcc migrate)
+│   ├── worker_pool/           # Concurrency example (spawn + channels): parallel prime counting
+│   ├── calculator/            # Expression interpreter (enums, match, ?, Result) with colocated `bcc test` suite
+│   └── kv/                    # File-backed key-value CLI (sys.args, cli flags, env, fs, Option) with colocated `bcc test` suite
 ├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/cgfail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> link -> run)
 ├── docs/

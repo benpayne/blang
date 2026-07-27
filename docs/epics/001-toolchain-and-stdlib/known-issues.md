@@ -26,16 +26,19 @@ array element or returned inside an aggregate is incomplete.** A general fix
 belongs in a dedicated codegen/ARC unit (high blast radius across the string and
 array runtime); U5 works around each and does not regress the green suite.
 
-1. **Array-element string local binding double-frees.**
-   `string a = args[i];` (binding a local string variable to a borrowed array
-   element) does not retain, and the local's scope-exit release double-frees the
-   element the array still owns.
-   Repro: `fn f(Array<string> a){ for i in 0..a.length { string s = a[i]; ... } }`.
-   A narrow "retain on IndexExpression init" attempt fixed this but aggravated
-   issue #3 (it over-retained a struct's string field flowing through a Map
-   value), so it was reverted. Workaround: iterate with `for x in args` (for-in,
-   which handles element refcounts) or index inline (`args[i].method()`); the
-   `cli` module uses for-in.
+1. **Array-element string local binding double-frees — FIXED (kv example).**
+   `string a = args[i];` and even a plain copy `string b = a;` created a second
+   tracked owner without retaining; scope exit double-freed the shared string.
+   Fixed by retaining at the BINDING site when the initializer is a borrowed
+   source (VariableExpression / IndexExpression) — not at the IndexExpression
+   node like the earlier reverted attempt, which double-counted flows that are
+   already balanced (field access retains+tracks as a temp; call results and
+   literals transfer via untrack; own-from-own moves transfer and are excluded).
+   Locked in by `test_files/codegen_string_bind.b` (+ golden, leak-clean).
+   REMAINING generic-context gap: a `T`-declared local inside a monomorphized
+   generic (see #4) is still neither tracked nor retained — the raw-name keying
+   across tracking/retain/release sites must move together in the dedicated ARC
+   unit.
 
 2. **Aggregate (multi-field struct) return with array fields double-frees.**
    Returning a struct whose `Array<...>` fields were populated inside the

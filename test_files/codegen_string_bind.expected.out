@@ -1,0 +1,6 @@
+hello heap string / hello heap string
+cmd=set key=name
+arg0=set
+arg1=name
+arg2=ada
+set,name,ada,

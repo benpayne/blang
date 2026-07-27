@@ -283,12 +283,21 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 						}
 					}
 
+					// NOTE: both the retains below and the scope-exit tracking above
+					// key on the RAW declared type name — a `T`-typed local inside a
+					// monomorphized generic (sort<string>'s `T tmp = items[j];`) is
+					// neither tracked nor retained. That whole family (known-issue
+					// #4, refcounted-element generics) needs the tracking, retain,
+					// release, and isStringType sites to resolve substitutions
+					// together; changing only one site here would unbalance them.
+					string boundTypeName = ( varType != nullptr ) ? varType->getName() : string();
+
 					// Same borrowed-source rule for Array-typed locals: binding an
 					// element of a nested array (Array<int> row = grid[i]) — or a
 					// variable/field copy — creates a second tracked owner, so it
 					// must retain. Without this, the local's scope-exit release and
 					// the outer array's elem_dtor double-free the same array.
-					if ( varType != nullptr && varType->getName() == "Array" )
+					if ( boundTypeName == "Array" )
 					{
 						Expression *srcExpr = (Expression *)data.mInitialValue;
 						if ( dynamic_cast<VariableExpression*>( srcExpr ) != nullptr ||
@@ -296,6 +305,42 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 							 dynamic_cast<IndexExpression*>( srcExpr ) != nullptr )
 						{
 							mBuilder->CreateCall( getOrDeclareArrayRetain(), { initVal } );
+						}
+					}
+
+					// And for string locals bound from a borrowed source: a plain
+					// variable copy (string b = a;) or an array element
+					// (string s = args[i];) creates a second tracked owner, which
+					// must retain — genVariableExpression and genIndexExpression
+					// return borrows. FieldAccess is deliberately EXCLUDED: string
+					// field reads already retain + track as a statement temp
+					// (CGStruct genFieldAccess), and the untrackTempString below
+					// transfers that reference to the variable. Owned sources
+					// (literals, concat/interp temps, call results) also transfer
+					// via untrack. This was known-issue #1 ("array-element string
+					// ARC") — the earlier reverted attempt retained at the
+					// IndexExpression node, which double-counted the already-
+					// balanced flows; retaining only at this binding site is safe.
+					if ( boundTypeName == "string" )
+					{
+						Expression *srcExpr = (Expression *)data.mInitialValue;
+						auto *srcVar = dynamic_cast<VariableExpression*>( srcExpr );
+
+						// An own-from-own initialization is a MOVE: the single
+						// reference transfers (the source is marked moved and
+						// skipped at scope release below), so no retain.
+						bool isMove = false;
+						if ( ownership == OwnershipQualifier::kOwnership_Own &&
+							 srcVar != nullptr &&
+							 srcVar->getVariable()->getOwnership() ==
+								 OwnershipQualifier::kOwnership_Own )
+							isMove = true;
+
+						if ( !isMove &&
+							 ( srcVar != nullptr ||
+							   dynamic_cast<IndexExpression*>( srcExpr ) != nullptr ) )
+						{
+							mBuilder->CreateCall( getOrDeclareStringRetain(), { initVal } );
 						}
 					}
 

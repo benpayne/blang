@@ -511,6 +511,8 @@ static vector<string> collectTestFiles( const string &searchRoot )
 // Returns the test binary's exit code (non-zero iff a test failed), or a
 // non-zero sentinel on a compile/link failure.
 static set<string> parseImports( const string &path );
+static vector<string> resolveStdlibFiles( const string &exeDir,
+	const set<string> &imports );
 
 static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 	const string &file, const string &filter, bool verbose )
@@ -518,29 +520,13 @@ static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 	string baseName = getBaseName( file );
 	string srcDir = getDirName( file );
 
-	// Collect stdlib .b files for --combine (same order as normal bcc).
-	vector<string> stdlibFiles;
-	for ( const char *name : { "sys.b", "buffer.b", "fs.b", "net.b" } )
-	{
-		string candidate = exeDir + "/stdlib/" + name;
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			stdlibFiles.push_back( candidate );
-	}
-	// Import-gated extra modules (mirrors the main compile path): only pulled in
-	// when the test file imports them, so an unused module never pollutes the
-	// namespace. `collections` supplies Map (S2) and must be combined for a
-	// `bcc test` file that `import collections;`.
-	{
-		set<string> imports = parseImports( file );
-		for ( const char *name : { "collections", "timer" } )
-		{
-			if ( imports.count( name ) == 0 )
-				continue;
-			string candidate = exeDir + "/stdlib/" + name + ".b";
-			if ( access( candidate.c_str(), F_OK ) == 0 )
-				stdlibFiles.push_back( candidate );
-		}
-	}
+	// Collect stdlib .b files for --combine — the SAME resolution as the normal
+	// compile path (base modules always; env/cli/math/... gated on the file's
+	// imports), so a test file can exercise exactly what its program uses. The
+	// previous hand-rolled subset here (base + collections/timer only) made
+	// `bcc test` fail on files importing env/cli/etc. that `bcc build` accepts.
+	vector<string> stdlibFiles =
+		resolveStdlibFiles( exeDir, parseImports( file ) );
 
 	// Step 1: qcc --combine <stdlib...> <file> --emit-test-main
 	{
