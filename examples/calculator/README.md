@@ -1,10 +1,17 @@
 # Calculator — expression interpreter example
 
-A small arithmetic expression interpreter written in BLang. It reads an
-expression string, tokenizes it, and evaluates it with a classic
-recursive-descent parser, returning a `Result<int, string>` so errors
-(division by zero, unbalanced parentheses, unexpected input) are reported
-rather than crashing.
+A small arithmetic expression interpreter written in BLang, in three classic
+stages: tokenize into an `Array<Token>`, parse with recursive descent into a
+real **recursive `Ast` enum** (`add(Ast, Ast)`, `neg(Ast)`, …), and walk the
+tree with `eval_ast`, returning a `Result<int, string>` so errors (division by
+zero, unbalanced parentheses, unexpected input) are reported rather than
+crashing.
+
+The `Ast` is the language's recursive-enum feature in action: enum-typed
+variant payloads are heap-boxed by the compiler and managed by ARC, and match
+destructuring binds every child (`add(l, r)`). An earlier version of this
+example had to fold evaluation into the parser because recursive enums did
+not exist yet — building the AST version is what validated the feature.
 
 ```
 expr   = term (("+" | "-") term)*
