@@ -559,21 +559,26 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 
 		// If returning a heap-allocated struct, retain the pointer so it
 		// survives the scope cleanup below (which will release the local reference).
-		// Only retain when the source expression is a variable or field access —
-		// those are tracked in scope stacks and will be released at scope exit.
-		// New allocations (struct literals, function call results) already have
-		// refcount=1 and transfer ownership directly to the caller.
+		// Only retain when the source expression is a borrowed read — a variable,
+		// a field access, or an array-element index (__blang_array_get does not
+		// retain, so a generic Map's `return self.values[idx]` with V = a struct
+		// must hand the caller its own reference, mirroring the Array policy
+		// above). New allocations (struct literals, function call results) already
+		// have refcount=1 and transfer ownership directly to the caller. The
+		// declared return type is resolved through the active monomorphization
+		// substitution so a generic `-> V` participates when V is a struct.
 		if ( retVal != nullptr && mCurrentFunction != nullptr &&
 			 mCurrentFunction->getReturnType() != nullptr )
 		{
-			string retTypeName = mCurrentFunction->getReturnType()->getName();
+			string retTypeName = resolvedTypeName( mCurrentFunction->getReturnType() );
 			if ( isUserStructType( retTypeName ) )
 			{
 				bool needsRetain = false;
 				Expression *retRawExpr = (Expression *)ret->mExpression;
 				auto *retExpr = dynamic_cast<VariableExpression*>( retRawExpr );
 				auto *retField = dynamic_cast<FieldAccessExpression*>( retRawExpr );
-				if ( retExpr != nullptr || retField != nullptr )
+				auto *retIndex = dynamic_cast<IndexExpression*>( retRawExpr );
+				if ( retExpr != nullptr || retField != nullptr || retIndex != nullptr )
 					needsRetain = true;
 				if ( needsRetain )
 					mBuilder->CreateCall( getOrDeclareRcRetain(), { retVal } );
