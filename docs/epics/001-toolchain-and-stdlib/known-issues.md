@@ -21,20 +21,20 @@ these are the edges it revealed.
 
 ## New finding (post-ledger, filed 2026-07-27) — enum rvalue argument payload
 
-7. **A payload-carrying enum rvalue passed DIRECTLY as a call argument leaks
-   its refcounted payload.** `pick(Option.some("hi"))` — the literal's
-   ownership transfers into the enum temp, the enum is passed by value, and no
-   one releases the payload (the callee's parameter is a variable subject, so
-   the match-site temp-subject release does not apply; the caller registers
-   payload release only for enum *variables* and *temp match subjects*).
-   Repro leaks 32 bytes under valgrind in BOTH statement-form and
-   expression-form match — pre-existing, unrelated to match-as-expression
-   (verified against statement form on the same build). Workaround: bind the
-   enum to a local first (`Option<string> o = Option.some("hi"); pick(o);`) —
-   the declaration registers the payload for scope-exit release and is clean.
-   Fix belongs with the enum-payload ARC sites in CGEnum.cpp/CGExpressions.cpp
-   (release the argument enum's payload at the call statement's end, mirroring
-   the temp-subject registration).
+7. **A payload-carrying enum rvalue passed DIRECTLY as a call argument leaked
+   its refcounted payload — FIXED (same day).** `pick(Option.some("hi"))` —
+   the literal's ownership transfers into the enum temp, the enum is passed by
+   value, and no one released the payload (the caller registered payload
+   release only for enum *variables* and *temp match subjects*). Pre-existing
+   in statement-form match too, unrelated to match-as-expression. Fixed by
+   `trackEnumArgTemp` (CGEnum.cpp): both genCallExpression paths and
+   genMethodCall register a payload-carrying enum rvalue argument (construct
+   or call result) on the enum scope stack for scope-exit payload release —
+   the callee borrows, the caller owns, mirroring the match temp-subject
+   registration. The concrete instantiation (Option<string>) comes from the
+   callee's declared parameter type. Locked in by
+   `codegen_arc_enum_arg.b` (construct/call-result/Result-err/method-arg/
+   loop shapes; golden + valgrind-clean + `--leak-check` clean).
 
 ## Deferred (filed, worked around) — array/aggregate refcount ARC
 

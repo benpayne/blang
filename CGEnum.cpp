@@ -128,6 +128,66 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 	return mBuilder->CreateLoad( enumType, alloca, "enum.val" );
 }
 
+void CodeGen::trackEnumArgTemp( Expression *argExpr, llvm::Value *argVal,
+	Type *declParamType )
+{
+	if ( argExpr == nullptr || argVal == nullptr )
+		return;
+	auto *st = llvm::dyn_cast<llvm::StructType>( argVal->getType() );
+	if ( st == nullptr || !st->hasName() )
+		return;
+	string stName = st->getName().str();
+	if ( stName.substr( 0, 5 ) != "enum." )
+		return;
+
+	// Only rvalue temps own an unreleased payload: a variable/field/index
+	// source's payload is already released where the variable was declared.
+	if ( dynamic_cast<VariableExpression*>( argExpr ) != nullptr ||
+		 dynamic_cast<FieldAccessExpression*>( argExpr ) != nullptr ||
+		 dynamic_cast<IndexExpression*>( argExpr ) != nullptr )
+		return;
+
+	auto it = mEnumDefMap.find( stName.substr( 5 ) );
+	if ( it == mEnumDefMap.end() )
+		return;
+	EnumDefinition *ed = it->second;
+
+	// Concrete instantiation: the callee's declared parameter type carries the
+	// type arguments (Option<string>); fall back to the argument's
+	// Sema-resolved type (a call result's function return type).
+	Type *concrete = declParamType;
+	if ( concrete == nullptr || concrete->getNumTypeParams() == 0 )
+	{
+		Type *rt = argExpr->getResolvedType();
+		if ( rt != nullptr )
+			concrete = rt;
+	}
+
+	bool hasRefPayload = false;
+	for ( auto &variant : ed->mVariants )
+	{
+		for ( auto &at : variant.mAssociatedTypes )
+		{
+			string atn = resolveVariantPayloadType(
+				(Type *)at, ed, concrete )->getName();
+			if ( atn == "string" || atn == "Array" || atn == "Buffer" ||
+				 isUserStructType( atn ) )
+			{
+				hasRefPayload = true;
+				break;
+			}
+		}
+		if ( hasRefPayload )
+			break;
+	}
+	if ( !hasRefPayload || mEnumScopeStack.empty() )
+		return;
+
+	llvm::AllocaInst *tmp = mBuilder->CreateAlloca( st, nullptr, "enumarg.tmp" );
+	mBuilder->CreateStore( argVal, tmp );
+	mEnumScopeStack.back().push_back( { tmp, ed, concrete } );
+}
+
 // ---- Match codegen (Task 53) ----
 
 llvm::Value *CodeGen::genMatchExpression( MatchExpression *expr )

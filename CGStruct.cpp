@@ -1933,6 +1933,18 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		if ( argVal == nullptr )
 			return nullptr;
 
+		// A payload-carrying enum rvalue argument owns its payload with no
+		// releasing owner — register it for scope-exit release (ledger #7).
+		// The declared parameter list may lead with `self`; map accordingly.
+		{
+			int declIdx = ( methodDef->getNumberParams() ==
+				(int)expr->mArgs.size() + 1 ) ? (int)ai + 1 : (int)ai;
+			VariableDefinition *pd = ( declIdx < methodDef->getNumberParams() )
+				? methodDef->getParam( declIdx ) : nullptr;
+			trackEnumArgTemp( expr->mArgs[ai], argVal,
+				pd != nullptr ? pd->getVariableType() : nullptr );
+		}
+
 		// Integer width coercion to the parameter type (B2): mirror the
 		// free-call path so an `int` argument widens to a `long` parameter (and
 		// narrows the other way) instead of emitting a type-mismatched call that

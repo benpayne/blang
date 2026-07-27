@@ -185,11 +185,17 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 
 		// Generate argument values
 		std::vector<llvm::Value*> args;
-		for ( auto &paramExpr : call->mParams )
+		for ( size_t pi = 0; pi < call->mParams.size(); pi++ )
 		{
-			llvm::Value *argVal = genExpression( paramExpr );
+			llvm::Value *argVal = genExpression( call->mParams[pi] );
 			if ( argVal == nullptr )
 				return nullptr;
+			// A payload-carrying enum rvalue argument owns its payload with no
+			// releasing owner — register it for scope-exit release (ledger #7).
+			VariableDefinition *pd = ( pi < (size_t)funcDef->getNumberParams() )
+				? funcDef->getParam( pi ) : nullptr;
+			trackEnumArgTemp( call->mParams[pi], argVal,
+				pd != nullptr ? pd->getVariableType() : nullptr );
 			args.push_back( argVal );
 		}
 
@@ -254,6 +260,15 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		llvm::Value *argVal = genExpression( call->mParams[argIdx] );
 		if ( argVal == nullptr )
 			return nullptr;
+
+		// A payload-carrying enum rvalue argument owns its payload with no
+		// releasing owner — register it for scope-exit release (ledger #7).
+		{
+			VariableDefinition *pd = ( argIdx < (size_t)funcDef->getNumberParams() )
+				? funcDef->getParam( argIdx ) : nullptr;
+			trackEnumArgTemp( call->mParams[argIdx], argVal,
+				pd != nullptr ? pd->getVariableType() : nullptr );
+		}
 
 		// FFI: if calling extern fn and param is cstring but arg is string,
 		// extract the .data field from BlangString*

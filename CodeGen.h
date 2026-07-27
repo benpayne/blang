@@ -605,6 +605,17 @@ private:
 	void emitEnumPayloadRelease( llvm::AllocaInst *alloca, EnumDefinition *enumDef,
 		Type *concreteEnumType = nullptr );
 
+	// Register a payload-carrying enum RVALUE passed directly as a call argument
+	// (e.g. `pick(Option.some("hi"))`) for scope-exit payload release. The
+	// callee borrows its parameters, so without this no one owns the temp
+	// enum's refcounted payload and it leaks (ARC ledger #7). declParamType is
+	// the callee's declared parameter type — the best source of the concrete
+	// instantiation (Option<string>) since an EnumConstructExpression carries
+	// no Sema-resolved type. No-op for variables/fields/index reads (their
+	// declaration sites own the payload) and for payload-free enums.
+	void trackEnumArgTemp( Expression *argExpr, llvm::Value *argVal,
+		Type *declParamType );
+
 	// Resolve a variant's associated type to a concrete type: if it names one of
 	// the enum's generic parameters, substitute the matching argument from
 	// concreteEnumType; otherwise return it unchanged. Returns the input when no
