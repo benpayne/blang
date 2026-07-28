@@ -155,21 +155,83 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 		const std::vector<SmartPtr<FunctionDefinition> > &required = protoDef->getRequiredMethods();
 		const std::vector<SmartPtr<FunctionDefinition> > &implemented = structDef->getMethods();
 
+		// A protocol GENERIC param (protocol Container<T> { fn get(self, int)
+		// -> T; }) acts as a wildcard: the implementing method may use any
+		// concrete type in that position. Concrete protocol types must match
+		// exactly, and arity must agree — name-only conformance accepted
+		// impls with the wrong shape and deferred the failure to a confusing
+		// call-site/link error.
+		auto isProtoWildcard = [&]( Type *t ) -> bool
+		{
+			if ( t == nullptr )
+				return false;
+			for ( const auto &gp : protoDef->getGenericParams() )
+				if ( gp.mName == t->getName() )
+					return true;
+			return false;
+		};
+		auto typeText = []( Type *t ) -> std::string
+		{
+			return ( t == nullptr ) ? "void" : t->getName();
+		};
+
 		for ( const SmartPtr<FunctionDefinition> &req : required )
 		{
-			bool found = false;
+			FunctionDefinition *match = nullptr;
 			for ( const SmartPtr<FunctionDefinition> &impl : implemented )
 			{
 				if ( impl->getName() == req->getName() )
 				{
-					found = true;
+					match = (FunctionDefinition *)(const FunctionDefinition *)impl;
 					break;
 				}
 			}
 
-			if ( !found )
+			if ( match == nullptr )
 			{
 				COMPILE_ERROR( l, "Struct '" + structName + "' does not implement method '" + req->getName() + "' required by protocol '" + protocolName + "'" );
+			}
+
+			FunctionDefinition *reqFn = (FunctionDefinition *)(const FunctionDefinition *)req;
+			if ( match->getNumberParams() != reqFn->getNumberParams() )
+			{
+				COMPILE_ERROR( l, "method '" + req->getName() + "' of struct '" + structName +
+					"' takes " + std::to_string( match->getNumberParams() ) +
+					" parameter(s) but protocol '" + protocolName + "' requires " +
+					std::to_string( reqFn->getNumberParams() ) );
+			}
+
+			for ( int pi = 0; pi < reqFn->getNumberParams(); pi++ )
+			{
+				VariableDefinition *rp = reqFn->getParam( pi );
+				VariableDefinition *ip = match->getParam( pi );
+				if ( rp == nullptr || ip == nullptr )
+					continue;
+				if ( rp->getName() == "self" || ip->getName() == "self" )
+					continue;
+				Type *rt = rp->getVariableType();
+				Type *it = ip->getVariableType();
+				if ( isProtoWildcard( rt ) )
+					continue;
+				if ( rt != nullptr && it != nullptr && rt->getName() != it->getName() )
+				{
+					COMPILE_ERROR( l, "method '" + req->getName() + "' of struct '" + structName +
+						"': parameter " + std::to_string( pi ) + " is '" + typeText( it ) +
+						"' but protocol '" + protocolName + "' requires '" + typeText( rt ) + "'" );
+				}
+			}
+
+			Type *reqRet = reqFn->getReturnType();
+			Type *implRet = match->getReturnType();
+			if ( !isProtoWildcard( reqRet ) )
+			{
+				std::string rn = typeText( reqRet ), in = typeText( implRet );
+				if ( rn != in )
+				{
+					COMPILE_ERROR( l, "method '" + req->getName() + "' of struct '" + structName +
+						"' returns '" + in + "' but protocol '" + protocolName +
+						"' requires '" + rn + "'" );
+				}
 			}
 		}
 

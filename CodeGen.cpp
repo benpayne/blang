@@ -82,6 +82,14 @@ bool CodeGen::generate( Module *mod )
 		mEnumDefMap[enumDef->getName()] = enumDef;
 	}
 
+	// Register protocol definitions (for generic-constraint checking on
+	// INFERRED calls — explicit-type-arg calls are checked in Sema, but the
+	// inferred type arguments only exist after codegen-time inference)
+	for ( auto &protoDef : mod->mProtocolList )
+	{
+		mProtocolDefMap[protoDef->getName()] = protoDef;
+	}
+
 	// Register built-in Option<T>/Result<T,E> for codegen resolution (match,
 	// getLLVMType, EnumConstruct, chan recv, the `?` operator) unless the
 	// program defines its own — a user definition (already in mEnumDefMap from

@@ -519,6 +519,9 @@ private:
 	// Maps self parameters to the mangled struct name (for generic struct methods)
 	std::map<VariableDefinition*, std::string> mSelfStructMangledName;
 	std::map<std::string, EnumDefinition*> mEnumDefMap;
+	// Protocols, for generic-constraint checks on inferred calls (the
+	// explicit-type-arg path is checked in Sema)
+	std::map<std::string, ProtocolDefinition*> mProtocolDefMap;
 	// Owns enums synthesized at codegen time (e.g. built-in Option/Result).
 	std::vector<SmartPtr<EnumDefinition>> mSyntheticEnums;
 	// Owns QLang types synthesized at codegen time (e.g. Option<T> for chan recv).

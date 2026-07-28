@@ -1275,25 +1275,39 @@ void Sema::checkConstraint( Type *arg, const string &constraint,
 	ProtocolDefinition *pd = dynamic_cast<ProtocolDefinition *>( mScope->findSymbol( constraint ) );
 	if ( pd == nullptr )
 		return;  // unknown protocol — not judged
-	// Structural conformance: the struct must implement every required method by
-	// name (conformance is not otherwise recorded on StructDefinition).
+	// Structural conformance: the struct must implement every required method,
+	// with matching arity (conformance is not otherwise recorded on
+	// StructDefinition). A generic protocol's own params act as wildcards in
+	// signatures, so arity is the judgeable part here.
 	for ( auto &req : pd->getRequiredMethods() )
 	{
 		if ( req == nullptr )
 			continue;
-		bool found = false;
+		FunctionDefinition *match = nullptr;
 		for ( auto &m : sd->getMethods() )
 			if ( m != nullptr && m->getName() == req->getName() )
 			{
-				found = true;
+				match = (FunctionDefinition *)(const FunctionDefinition *)m;
 				break;
 			}
-		if ( !found )
+		if ( match == nullptr )
 		{
 			mDiag.error( loc,
 				"type '" + arg->getName() + "' does not satisfy constraint '" + constraint +
 				"' on generic parameter '" + paramName + "': missing method '" +
 				req->getName() + "'" );
+			mReported = true;
+			return;
+		}
+		FunctionDefinition *reqFn = (FunctionDefinition *)(const FunctionDefinition *)req;
+		if ( match->getNumberParams() != reqFn->getNumberParams() )
+		{
+			mDiag.error( loc,
+				"type '" + arg->getName() + "' does not satisfy constraint '" + constraint +
+				"' on generic parameter '" + paramName + "': method '" + req->getName() +
+				"' takes " + std::to_string( match->getNumberParams() ) +
+				" parameter(s) but the protocol requires " +
+				std::to_string( reqFn->getNumberParams() ) );
 			mReported = true;
 			return;
 		}

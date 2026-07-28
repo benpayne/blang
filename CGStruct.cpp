@@ -1794,6 +1794,18 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
 	{
 		Type *varType = ve->mVariable->getVariableType();
+		// Inside a monomorphized generic body a variable's declared type may
+		// be the generic param itself (`fn total<C: Container>(C c)` — calls
+		// on `c` under C -> IntList). Resolve through the active substitution
+		// so the method lookup sees the concrete struct; without this the
+		// lookup failed and the call was silently dropped.
+		if ( varType != nullptr )
+		{
+			auto vSub = mTypeSubstitution.find( varType->getName() );
+			if ( vSub != mTypeSubstitution.end() && vSub->second != nullptr &&
+				 vSub->second->getName() != varType->getName() )
+				varType = vSub->second;
+		}
 		if ( varType != nullptr )
 		{
 			structName = varType->getName();

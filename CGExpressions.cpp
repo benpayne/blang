@@ -170,6 +170,48 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			mHasError = true;
 			return nullptr;
 		}
+
+		// Constraint checking for INFERRED type arguments: Sema checks
+		// explicit-arg calls (REQ-008), but inferred arguments only exist
+		// after inference here. Structural: the bound struct must implement
+		// every required method by name (the arity/shape check happened at
+		// the protocol's impl site). Non-struct / unknown bindings are left
+		// unchecked, mirroring Sema's stance.
+		const auto &cgps = funcDef->getGenericParams();
+		for ( size_t gi = 0; gi < cgps.size() && gi < call->mTypeArgs.size(); gi++ )
+		{
+			if ( cgps[gi].mConstraint.empty() )
+				continue;
+			auto pIt = mProtocolDefMap.find( cgps[gi].mConstraint );
+			if ( pIt == mProtocolDefMap.end() )
+				continue;
+			auto sIt = mStructDefMap.find( ( (Type *)call->mTypeArgs[gi] )->getName() );
+			if ( sIt == mStructDefMap.end() )
+				continue;
+			for ( auto &req : pIt->second->getRequiredMethods() )
+			{
+				if ( req == nullptr )
+					continue;
+				bool found = false;
+				for ( auto &m : sIt->second->getMethods() )
+					if ( m != nullptr && m->getName() == req->getName() )
+					{
+						found = true;
+						break;
+					}
+				if ( !found )
+				{
+					cerr << "CodeGen error: inferred type '"
+						<< ( (Type *)call->mTypeArgs[gi] )->getName()
+						<< "' does not satisfy constraint '" << cgps[gi].mConstraint
+						<< "' on generic parameter '" << cgps[gi].mName
+						<< "' of '" << funcDef->getName() << "': missing method '"
+						<< req->getName() << "'" << endl;
+					mHasError = true;
+					return nullptr;
+				}
+			}
+		}
 	}
 
 	if ( !call->mTypeArgs.empty() && funcDef->isGeneric() )
