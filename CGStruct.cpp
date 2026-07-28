@@ -1473,15 +1473,34 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 				untrackTempStruct( val );
 			mBuilder->CreateCall( getOrDeclareRcRelease(), { oldVal } );
 		}
+		else if ( expr->mOperation == "=" && fTypeName == "Array" )
+		{
+			// Array field reassignment mirrors the struct-field policy above:
+			// the field must hold a COUNTED reference and the previously-held
+			// array is dropped. An existing owner source (variable/field/index —
+			// e.g. `self.fds = keep` where keep is a scope-released local) is
+			// RETAINED, or the field dangles the moment the local's scope
+			// release runs (use-after-free surfaced by the chat example's
+			// Room.leave). A fresh temp (literal/call) transfers ownership by
+			// untracking. Retain/untrack happens BEFORE releasing the old value
+			// so self-assignment is safe.
+			bool srcIsExistingOwner =
+				( dynamic_cast<VariableExpression*>( (Expression*)expr->mValue ) != nullptr ||
+				  dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mValue ) != nullptr ||
+				  dynamic_cast<IndexExpression*>( (Expression*)expr->mValue ) != nullptr );
+			llvm::Value *oldVal = mBuilder->CreateLoad(
+				structType->getElementType( fieldIdx ), fieldPtr,
+				expr->mFieldName + ".old" );
+			mBuilder->CreateStore( val, fieldPtr );
+			if ( srcIsExistingOwner )
+				mBuilder->CreateCall( getOrDeclareArrayRetain(), { val } );
+			else
+				untrackTempArray( val );
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { oldVal } );
+		}
 		else
 		{
 			mBuilder->CreateStore( val, fieldPtr );
-
-			// If a fresh Array<T> rvalue temporary is stored into a field, ownership
-			// transfers to the struct — untrack it so it is not also released as a
-			// statement temporary (which would leave the field pointing at freed memory).
-			if ( fTypeName == "Array" )
-				untrackTempArray( val );
 		}
 	}
 
