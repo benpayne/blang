@@ -41,14 +41,10 @@ enum Ast {
 
 // A mutable cursor over the token stream. Structs are heap references, so
 // field writes made through a passed-in Parser persist for the caller — this
-// is how `pos` advances (and parse errors propagate) across the recursive
-// parse functions. Parse errors live here because the parser returns Ast
-// values; the first failure wins.
+// is how `pos` advances across the recursive parse functions.
 struct Parser {
 	Array<Token> toks;
 	int pos;
-	bool failed;
-	string error;
 }
 
 fn main() -> int {
@@ -80,11 +76,8 @@ fn demo(string expr) {
 // Tie the stages together: tokenize -> parse to an Ast -> evaluate the tree.
 fn eval(string src) -> Result<int, string> {
 	Array<Token> toks = tokenize(src)?;
-	Parser p = Parser { toks: toks, pos: 0, failed: false, error: "" };
-	Ast tree = parse_expr(p);
-	if p.failed {
-		return Result.err(p.error);
-	}
+	Parser p = Parser { toks: toks, pos: 0 };
+	Ast tree = parse_expr(p)?;
 
 	// After a full expression the only token left should be `end`.
 	Token rest = peek(p);
@@ -163,115 +156,85 @@ fn advance(Parser p) -> Token {
 	return t;
 }
 
-// Record a parse error on the parser and return a placeholder node. The
-// caller chain checks p.failed and unwinds; eval() reports p.error.
-fn fail(Parser p, string msg) -> Ast {
-	p.failed = true;
-	p.error = msg;
-	return Ast.num(0);
-}
-
 // --- Recursive-descent parser (builds the Ast) -----------------------------
+// Each parse function returns Result<Ast, string>; errors propagate with `?`.
+// (Ast values ride inside the generic Result via compiler-boxed payloads.)
 
-fn parse_expr(Parser p) -> Ast {
-	Ast left = parse_term(p);
-	if p.failed {
-		return left;
-	}
+fn parse_expr(Parser p) -> Result<Ast, string> {
+	Ast left = parse_term(p)?;
 	for {
 		Token t = peek(p);
 		match t {
 			plus {
 				advance(p);
-				Ast right = parse_term(p);
-				if p.failed {
-					return left;
-				}
+				Ast right = parse_term(p)?;
 				left = Ast.add(left, right);
 			}
 			minus {
 				advance(p);
-				Ast right = parse_term(p);
-				if p.failed {
-					return left;
-				}
+				Ast right = parse_term(p)?;
 				left = Ast.sub(left, right);
 			}
 			_ {
-				return left;
+				return Result.ok(left);
 			}
 		}
 	}
 }
 
-fn parse_term(Parser p) -> Ast {
-	Ast left = parse_factor(p);
-	if p.failed {
-		return left;
-	}
+fn parse_term(Parser p) -> Result<Ast, string> {
+	Ast left = parse_factor(p)?;
 	for {
 		Token t = peek(p);
 		match t {
 			star {
 				advance(p);
-				Ast right = parse_factor(p);
-				if p.failed {
-					return left;
-				}
+				Ast right = parse_factor(p)?;
 				left = Ast.mul(left, right);
 			}
 			slash {
 				advance(p);
-				Ast right = parse_factor(p);
-				if p.failed {
-					return left;
-				}
+				Ast right = parse_factor(p)?;
 				left = Ast.div(left, right);
 			}
 			_ {
-				return left;
+				return Result.ok(left);
 			}
 		}
 	}
 }
 
-fn parse_factor(Parser p) -> Ast {
+fn parse_factor(Parser p) -> Result<Ast, string> {
 	Token t = peek(p);
 	match t {
 		num(value) {
 			advance(p);
-			return Ast.num(value);
+			return Result.ok(Ast.num(value));
 		}
 		minus {
 			advance(p);
-			Ast inner = parse_factor(p);
-			if p.failed {
-				return inner;
-			}
-			return Ast.neg(inner);
+			Ast inner = parse_factor(p)?;
+			return Result.ok(Ast.neg(inner));
 		}
 		lparen {
 			advance(p);
-			Ast inner = parse_expr(p);
-			if p.failed {
-				return inner;
-			}
+			Ast inner = parse_expr(p)?;
 			Token close = peek(p);
 			match close {
 				rparen {
 					advance(p);
-					return inner;
+					return Result.ok(inner);
 				}
 				_ {
-					return fail(p, "expected closing paren");
+					return Result.err("expected closing paren");
 				}
 			}
 		}
 		_ {
-			return fail(p, "expected number, unary minus, or paren");
+			return Result.err("expected number, unary minus, or paren");
 		}
 	}
-	return fail(p, "unreachable");
+	return Result.err("unreachable");
 }
 
 // --- Tree evaluator --------------------------------------------------------

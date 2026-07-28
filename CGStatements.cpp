@@ -235,7 +235,18 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 					// enums) — the shared predicate covers string/Array/Buffer/
 					// struct/boxed-enum.
 					if ( enumHasRefcountedPayload( ed, varType ) )
+					{
+						// Zero the slot before registering: if the INITIALIZER
+						// takes a `?` early return (`Ast t = parse(p)?;`), the
+						// error path's scope cleanup releases this variable
+						// before anything was stored — a zeroed value is tag 0
+						// with null payloads, and every release helper is
+						// null-safe.
+						mBuilder->CreateStore(
+							llvm::Constant::getNullValue( alloca->getAllocatedType() ),
+							alloca );
 						mEnumScopeStack.back().push_back( { alloca, ed, varType } );
+					}
 				}
 			}
 

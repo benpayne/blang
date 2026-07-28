@@ -55,13 +55,33 @@ llvm::Value *CodeGen::genEnumConstruct( EnumConstructExpression *expr )
 			// stored as a POINTER to a heap-allocated copy, so recursive enums
 			// (enum Expr { add(Expr, Expr), ... }) have finite layout. The box
 			// carries a generated dtor that releases the boxed value's own
-			// refcounted payloads when the box's refcount hits zero.
+			// refcounted payloads when the box's refcount hits zero. A GENERIC
+			// slot (built-in Option<T>/Result<T,E>) declares the erased param
+			// name, so it is boxed whenever the VALUE being stored is an enum
+			// struct — that is how `Result.ok(tree)` fits an arbitrarily large
+			// enum into the pointer-sized erased slot.
 			{
+				EnumDefinition *childEd = nullptr;
 				string assocName = variant.mAssociatedTypes[i]->getName();
 				auto boxIt = mEnumDefMap.find( assocName );
-				if ( boxIt != mEnumDefMap.end() && argType->isStructTy() )
+				if ( boxIt != mEnumDefMap.end() )
+					childEd = boxIt->second;
+				if ( childEd == nullptr )
 				{
-					EnumDefinition *childEd = boxIt->second;
+					if ( auto *argSt = llvm::dyn_cast<llvm::StructType>( argType ) )
+					{
+						if ( argSt->hasName() &&
+							 argSt->getName().str().substr( 0, 5 ) == "enum." )
+						{
+							auto it2 = mEnumDefMap.find(
+								argSt->getName().str().substr( 5 ) );
+							if ( it2 != mEnumDefMap.end() )
+								childEd = it2->second;
+						}
+					}
+				}
+				if ( childEd != nullptr && argType->isStructTy() )
+				{
 					llvm::StructType *childTy = getOrCreateEnumType( childEd );
 					llvm::Value *sizeVal = llvm::ConstantInt::get(
 						llvm::Type::getInt64Ty( *mContext ),
@@ -1161,6 +1181,7 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 	mBuilder->SetInsertPoint( okBB );
 
 	llvm::Type *successPayloadType = llvm::Type::getInt32Ty( *mContext ); // default
+	EnumDefinition *boxedPayloadEd = nullptr;
 	if ( !enumDef->mVariants[successIdx].mAssociatedTypes.empty() )
 	{
 		// Resolve the DECLARED associated type against the operand's concrete
@@ -1172,8 +1193,17 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 		Type *operandQType = ( (Expression *)expr->mOperand )->getResolvedType();
 		Type *concretePayload = resolveVariantPayloadType(
 			declared, enumDef, operandQType );
-		successPayloadType = getLLVMType(
-			concretePayload != nullptr ? concretePayload : declared );
+		Type *effective = ( concretePayload != nullptr ) ? concretePayload : declared;
+		// A concrete enum payload is BOXED — the slot holds a pointer to the
+		// child value, not the value itself.
+		auto bIt = mEnumDefMap.find( effective->getName() );
+		if ( bIt != mEnumDefMap.end() )
+		{
+			boxedPayloadEd = bIt->second;
+			successPayloadType = getOrCreateEnumType( boxedPayloadEd );
+		}
+		else
+			successPayloadType = getLLVMType( effective );
 	}
 
 	// GEP to the payload area and load the success value
@@ -1185,8 +1215,27 @@ llvm::Value *CodeGen::genTryExpression( TryExpression *expr )
 		{ llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ),
 		  llvm::ConstantInt::get( llvm::Type::getInt64Ty( *mContext ), 0 ) },
 		"try.ok.byte" );
-	llvm::Value *unwrapped = mBuilder->CreateLoad(
-		successPayloadType, bytePtr, "try.ok.val" );
+	llvm::Value *unwrapped;
+	if ( boxedPayloadEd != nullptr )
+	{
+		// Unbox: load the box pointer and copy the child enum value out. The
+		// operand enum is an abandoned temporary after the unwrap, so transfer
+		// the box's contents to the copy: retain the copied value's own
+		// payloads (children boxes/strings), then release the box itself — its
+		// dtor drops the references the box held, leaving the copy as the
+		// single owner.
+		llvm::Value *boxPtr = mBuilder->CreateLoad(
+			llvm::PointerType::get( *mContext, 0 ), bytePtr, "try.ok.boxptr" );
+		unwrapped = mBuilder->CreateLoad(
+			successPayloadType, boxPtr, "try.ok.boxed" );
+		llvm::Function *pr = getOrGenEnumPayloadRetain( boxedPayloadEd );
+		if ( pr != nullptr )
+			mBuilder->CreateCall( pr, { boxPtr } );
+		mBuilder->CreateCall( getOrDeclareRcRelease(), { boxPtr } );
+	}
+	else
+		unwrapped = mBuilder->CreateLoad(
+			successPayloadType, bytePtr, "try.ok.val" );
 
 	mBuilder->CreateBr( mergeBB );
 
