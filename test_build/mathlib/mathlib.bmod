@@ -1,4 +1,24 @@
 // auto-generated .bmod interface file — do not edit
 
+pub struct Pair<T> {
+	T first;
+	T second;
+}
+impl Pair {
+	fn sum(self) -> T {
+		return self.first + self.second;
+	}
+	fn swap(self) -> Pair<T> {
+		return Pair<T> { first: self.second, second: self.first };
+	}
+}
+
 pub fn add(int a, int b) -> int;
 pub fn multiply(int a, int b) -> int;
+pub fn largest<T>(T a, T b) -> T {
+	if a > b {
+		return a;
+	}
+	return b;
+}
+pub fn max3(int a, int b, int c) -> int;

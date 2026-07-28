@@ -933,8 +933,14 @@ int main( int argc, char *argv[] )
 					FunctionDefinition *f = const_cast<FunctionDefinition*>( (const FunctionDefinition*)sp );
 					if ( f->isPublic() )
 					{
-						// Mark as extern so codegen only declares (no body)
-						f->setFunctionExtern( true );
+						// Non-generic: mark extern so codegen only declares (no
+						// body) — the symbol links from the library archive.
+						// GENERIC functions ship their bodies in the .bmod and
+						// stay non-extern so the consumer monomorphizes them on
+						// demand (instances are linkonce_odr, deduped with the
+						// library's own instantiations at link time).
+						if ( !f->isGeneric() )
+							f->setFunctionExtern( true );
 						gScope->addSymbol( f );
 					}
 				}

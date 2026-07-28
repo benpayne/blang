@@ -27,9 +27,12 @@ llvm::Type *CodeGen::getLLVMType( Type *type )
 
 	const std::string &name = type->getName();
 
-	// Check type substitution first (active during generic instantiation)
+	// Check type substitution first (active during generic instantiation).
+	// Guard against a self-mapping (T -> T) — recursing on it never
+	// terminates; fall through and treat the name as unresolved instead.
 	auto subIt = mTypeSubstitution.find( name );
-	if ( subIt != mTypeSubstitution.end() )
+	if ( subIt != mTypeSubstitution.end() &&
+		 subIt->second != nullptr && subIt->second->getName() != name )
 		return getLLVMType( subIt->second );
 
 	if ( name == "int" )
@@ -72,12 +75,22 @@ llvm::Type *CodeGen::getLLVMType( Type *type )
 	if ( name == "carray" )
 		return llvm::PointerType::get( *mContext, 0 );
 
-	// Check for generic type with type arguments (e.g., Box<int>)
+	// Check for generic type with type arguments (e.g., Box<int>). Type
+	// arguments are resolved through the ACTIVE substitution first, so a
+	// `Pair<T>` mentioned inside a monomorphized body (T -> int) instantiates
+	// Pair_int, not a bogus Pair_T.
 	if ( type->getNumTypeParams() > 0 )
 	{
 		std::vector<SmartPtr<Type>> typeArgs;
 		for ( int i = 0; i < type->getNumTypeParams(); i++ )
-			typeArgs.push_back( type->getTypeParam( i ) );
+		{
+			Type *arg = type->getTypeParam( i );
+			auto argSub = mTypeSubstitution.find( arg->getName() );
+			if ( argSub != mTypeSubstitution.end() && argSub->second != nullptr &&
+				 argSub->second->getName() != arg->getName() )
+				arg = argSub->second;
+			typeArgs.push_back( arg );
+		}
 
 		std::string mangledName = mangleGenericName( name, typeArgs );
 
@@ -86,11 +99,32 @@ llvm::Type *CodeGen::getLLVMType( Type *type )
 		if ( instIt != mGenericInstanceMap.end() )
 			return llvm::PointerType::get( *mContext, 0 );
 
-		// Look up the generic struct definition and instantiate
+		// Look up the generic struct definition and instantiate — unless any
+		// argument is still the definition's own UNRESOLVED generic param
+		// (e.g. a generic method's `-> Pair<T>` signature examined outside
+		// any instantiation): instantiating Pair with its own param creates a
+		// T -> T substitution and recurses forever. Structs lower to pointers
+		// either way, so just return ptr and let a real instantiation happen
+		// at a concrete use site.
 		auto defIt = mStructDefMap.find( name );
 		if ( defIt != mStructDefMap.end() && defIt->second->isGeneric() )
 		{
-			instantiateGenericStruct( defIt->second, typeArgs );
+			bool unresolved = false;
+			for ( auto &gp : defIt->second->mGenericParams )
+			{
+				for ( auto &ta : typeArgs )
+				{
+					if ( ( (Type *)ta )->getName() == gp.mName )
+					{
+						unresolved = true;
+						break;
+					}
+				}
+				if ( unresolved )
+					break;
+			}
+			if ( !unresolved )
+				instantiateGenericStruct( defIt->second, typeArgs );
 			return llvm::PointerType::get( *mContext, 0 );
 		}
 	}
@@ -311,8 +345,11 @@ llvm::StructType *CodeGen::instantiateGenericStruct(
 
 		llvm::FunctionType *ft = llvm::FunctionType::get(
 			retType, paramTypes, method->isVariadic() );
+		// linkonce_odr: a library and its consumers may each monomorphize the
+		// same specialization (cross-module generics ship bodies in .bmod);
+		// the linker keeps one copy instead of reporting a duplicate symbol.
 		llvm::Function *llvmFunc = llvm::Function::Create(
-			ft, llvm::Function::ExternalLinkage, methodMangledName, mModule.get() );
+			ft, llvm::Function::LinkOnceODRLinkage, methodMangledName, mModule.get() );
 
 		mGenericFunctionMap[methodMangledName] = llvmFunc;
 
@@ -457,8 +494,10 @@ llvm::Function *CodeGen::instantiateGenericFunction(
 
 	llvm::FunctionType *ft = llvm::FunctionType::get(
 		retType, paramTypes, genericDef->isVariadic() );
+	// linkonce_odr: see instantiateGenericStruct's method instantiation — the
+	// same specialization may exist in a library and its consumers.
 	llvm::Function *llvmFunc = llvm::Function::Create(
-		ft, llvm::Function::ExternalLinkage, mangledName, mModule.get() );
+		ft, llvm::Function::LinkOnceODRLinkage, mangledName, mModule.get() );
 
 	mGenericFunctionMap[mangledName] = llvmFunc;
 
@@ -1063,8 +1102,67 @@ bool CodeGen::inferCallTypeArgs( CallExpression *call, FunctionDefinition *funcD
 			Type *actual = staticArgType( this, call->mParams[a], mSyntheticTypes );
 			unifyTypeParam( gps[g].mName, param->getVariableType(), actual,
 				bindings[g] );
-			if ( bindings[g] != nullptr )
-				break;
+			if ( bindings[g] == nullptr )
+				continue;
+
+			// Reject a binding that is itself an UNRESOLVED generic param name
+			// (e.g. a nested call to the same generic — its declared return
+			// type is "T"). Accepting it stamps out a bogus largest_T instance
+			// whose params fall back to i32, silently miscompiling pointer
+			// instantiations (fine for int by accident, wrong for string).
+			bool unresolvedName = false;
+			for ( auto &gp2 : gps )
+			{
+				if ( bindings[g]->getName() == gp2.mName )
+				{
+					unresolvedName = true;
+					break;
+				}
+			}
+			if ( unresolvedName )
+			{
+				// Inside a monomorphized body the enclosing substitution may
+				// resolve it (helper(x) where x: T under T -> string).
+				auto s = mTypeSubstitution.find( bindings[g]->getName() );
+				if ( s != mTypeSubstitution.end() && s->second != nullptr &&
+					 s->second->getName() != bindings[g]->getName() )
+				{
+					bindings[g] = s->second;
+					unresolvedName = false;
+				}
+			}
+			if ( unresolvedName )
+			{
+				// A nested generic call: infer ITS type arguments recursively,
+				// then map its declared return param to the inferred argument.
+				auto *innerCall = dynamic_cast<CallExpression*>(
+					(Expression *)call->mParams[a] );
+				FunctionDefinition *innerDef =
+					( innerCall != nullptr ) ? innerCall->mFunction : nullptr;
+				if ( innerDef != nullptr && innerDef->isGeneric() &&
+					 innerDef->getReturnType() != nullptr &&
+					 inferCallTypeArgs( innerCall, innerDef ) )
+				{
+					const auto &igps = innerDef->getGenericParams();
+					const string &rn = innerDef->getReturnType()->getName();
+					for ( size_t ig = 0; ig < igps.size() &&
+						  ig < innerCall->mTypeArgs.size(); ig++ )
+					{
+						if ( igps[ig].mName == rn )
+						{
+							bindings[g] = innerCall->mTypeArgs[ig];
+							unresolvedName = false;
+							break;
+						}
+					}
+				}
+			}
+			if ( unresolvedName )
+			{
+				bindings[g] = nullptr;   // let a later concrete argument bind
+				continue;
+			}
+			break;
 		}
 		if ( bindings[g] == nullptr )
 			return false;   // this param could not be inferred

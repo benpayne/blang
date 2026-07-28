@@ -369,15 +369,30 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 	StructDefinition *structDef = defIt->second;
 	llvm::StructType *structType = nullptr;
 
-	// Handle generic struct instantiation
+	// Handle generic struct instantiation. The literal's written type args are
+	// resolved through the ACTIVE substitution first: a `Pair<T> { ... }`
+	// inside a monomorphized method (T -> string) must instantiate
+	// Pair_string — instantiating with the raw `T` self-maps the enclosing
+	// substitution (T -> T) and stamps out a bogus i32-layout Pair_T whose
+	// 8-byte pointer stores overflow the allocation.
 	std::map<std::string, Type*> savedSub = mTypeSubstitution;
-	if ( !expr->mTypeArgs.empty() && structDef->isGeneric() )
+	std::vector<SmartPtr<Type>> resolvedArgs;
+	for ( auto &ta : expr->mTypeArgs )
 	{
-		structType = instantiateGenericStruct( structDef, expr->mTypeArgs );
+		Type *arg = (Type *)ta;
+		auto s = savedSub.find( arg->getName() );
+		if ( s != savedSub.end() && s->second != nullptr &&
+			 s->second->getName() != arg->getName() )
+			arg = s->second;
+		resolvedArgs.push_back( arg );
+	}
+	if ( !resolvedArgs.empty() && structDef->isGeneric() )
+	{
+		structType = instantiateGenericStruct( structDef, resolvedArgs );
 		// Re-establish substitution map for field value generation
-		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < expr->mTypeArgs.size(); i++ )
+		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < resolvedArgs.size(); i++ )
 		{
-			SmartPtr<Type> arg = expr->mTypeArgs[i];
+			SmartPtr<Type> arg = resolvedArgs[i];
 			mTypeSubstitution[structDef->mGenericParams[i].mName] = (Type*)arg;
 		}
 	}
@@ -594,18 +609,28 @@ llvm::Value *CodeGen::genConstructExpression( ConstructExpression *expr )
 	string structName = structDef->getName();
 	llvm::StructType *structType = nullptr;
 
-	// Handle generic struct instantiation
+	// Handle generic struct instantiation (written type args resolved through
+	// the active substitution — see genStructLiteral for the rationale)
 	std::map<std::string, Type*> savedSub = mTypeSubstitution;
-	if ( !expr->mTypeArgs.empty() && structDef->isGeneric() )
+	std::vector<SmartPtr<Type>> resolvedArgs;
+	for ( auto &ta : expr->mTypeArgs )
 	{
-		structType = instantiateGenericStruct( structDef, expr->mTypeArgs );
-		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < expr->mTypeArgs.size(); i++ )
+		Type *arg = (Type *)ta;
+		auto s = savedSub.find( arg->getName() );
+		if ( s != savedSub.end() && s->second != nullptr &&
+			 s->second->getName() != arg->getName() )
+			arg = s->second;
+		resolvedArgs.push_back( arg );
+	}
+	if ( !resolvedArgs.empty() && structDef->isGeneric() )
+	{
+		structType = instantiateGenericStruct( structDef, resolvedArgs );
+		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < resolvedArgs.size(); i++ )
 		{
-			SmartPtr<Type> arg = expr->mTypeArgs[i];
+			SmartPtr<Type> arg = resolvedArgs[i];
 			mTypeSubstitution[structDef->mGenericParams[i].mName] = (Type*)arg;
 		}
-		std::vector<SmartPtr<Type>> typeArgs( expr->mTypeArgs.begin(), expr->mTypeArgs.end() );
-		structName = mangleGenericName( structName, typeArgs );
+		structName = mangleGenericName( structName, resolvedArgs );
 	}
 	else
 	{

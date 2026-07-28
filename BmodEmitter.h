@@ -25,6 +25,14 @@ private:
 	static void emitAnnotations( const std::vector<AnnotationNode> &annotations, std::ostream &out );
 	static void emitGenericParams( const std::vector<GenericParam> &params, std::ostream &out );
 	static void emitType( Type *type, std::ostream &out );
+
+	// Cross-module generics: a generic definition's BODY is shipped in the
+	// .bmod (verbatim source slice) so consumers can monomorphize it — a
+	// signature alone would leave every downstream instantiation a linker
+	// error. Returns the source text from the start of the definition's line
+	// through its brace-matched closing '}', or empty on failure (caller falls
+	// back to signature-only emission).
+	static std::string sliceDefinitionSource( const SourceLocation &loc );
 };
 
 } // namespace QLang
