@@ -160,6 +160,12 @@ void Server::handleRequest( const Json &id, const std::string &method, const Jso
 		return;
 	}
 
+	if ( method == "textDocument/hover" )
+	{
+		hover( id, params );
+		return;
+	}
+
 	sendError( id, kMethodNotFound, "method not found: " + method );
 }
 
@@ -210,6 +216,7 @@ Json Server::initializeResult() const
 	caps.set( "positionEncoding", "utf-8" );
 	caps.set( "textDocumentSync", sync );
 	caps.set( "definitionProvider", true );
+	caps.set( "hoverProvider", true );
 
 	Json info = Json::object();
 	info.set( "name", "blangd" );
@@ -325,23 +332,23 @@ void Server::publishDiagnostics( const std::string &uri, const std::string &text
 // ---------------------------------------------------------------------------
 // Navigation
 
-void Server::definition( const Json &id, const Json &params )
+const QLang::Statement *Server::nodeAt( const Json &params )
 {
 	const std::string &uri = params.get( "textDocument" ).get( "uri" ).asString();
 	auto it = mCompiles.find( uri );
 	if ( it == mCompiles.end() || it->second.module == nullptr )
-	{
-		sendResult( id, Json() ); // unopened document: null result
-		return;
-	}
+		return nullptr; // unopened document
 
 	// LSP positions are 0-based; SourceLocation is 1-based.
 	const Json &pos = params.get( "position" );
 	uint32_t line = (uint32_t)pos.get( "line" ).asInt() + 1;
 	uint32_t col = (uint32_t)pos.get( "character" ).asInt() + 1;
+	return QLang::AstLocator::locate( (QLang::Module *)it->second.module, line, col );
+}
 
-	const QLang::Statement *node =
-		QLang::AstLocator::locate( (QLang::Module *)it->second.module, line, col );
+void Server::definition( const Json &id, const Json &params )
+{
+	const QLang::Statement *node = nodeAt( params );
 	SourceLocation target;
 	if ( !QLang::AstLocator::definitionLocation( node, target ) )
 	{
@@ -361,6 +368,22 @@ void Server::definition( const Json &id, const Json &params )
 	location.set( "uri", pathToUri( target.file ) );
 	location.set( "range", range );
 	sendResult( id, location );
+}
+
+void Server::hover( const Json &id, const Json &params )
+{
+	std::string text = QLang::AstLocator::hoverText( nodeAt( params ) );
+	if ( text.empty() )
+	{
+		sendResult( id, Json() ); // nothing known under the cursor
+		return;
+	}
+	Json contents = Json::object();
+	contents.set( "kind", "markdown" );
+	contents.set( "value", "```blang\n" + text + "\n```" );
+	Json result = Json::object();
+	result.set( "contents", contents );
+	sendResult( id, result );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"definitionProvider": true, "positionEncoding": "utf-8", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"definitionProvider": true, "hoverProvider": true, "positionEncoding": "utf-8", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
 {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/src/defs.b"}}
 {"id": 2, "jsonrpc": "2.0", "result": {"range": {"end": {"character": 1, "line": 3}, "start": {"character": 1, "line": 3}}, "uri": "file://${ROOT}/test_files/lsp/src/defs.b"}}
 {"id": 3, "jsonrpc": "2.0", "result": {"range": {"end": {"character": 1, "line": 13}, "start": {"character": 1, "line": 13}}, "uri": "file://${ROOT}/test_files/lsp/src/defs.b"}}

@@ -1,0 +1,21 @@
+# Hover on calls renders the signature: `scale(...)` (0-based 7/15) ->
+# "fn scale(int value, int factor) -> int"; the method call `p.norm1()` in
+# defs.b (27/12) -> "fn norm1(self) -> int"; the field access `p.x` (26/12)
+# -> "int x".
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/hovers.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"open": "test_files/lsp/src/defs.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/hovers.b"}, "position": {"line": 7, "character": 15}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 27, "character": 12}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 26, "character": 12}}}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "id": 5, "method": "shutdown"}}
+{"wait_id": 5}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

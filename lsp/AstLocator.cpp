@@ -1,5 +1,7 @@
 #include "AstLocator.h"
 
+#include <sstream>
+
 namespace QLang
 {
 
@@ -282,6 +284,106 @@ bool AstLocator::definitionLocation( const Statement *node, SourceLocation &out 
 		return def != nullptr && located( def->getLocation(), out );
 	}
 	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Hover text
+
+static std::string typeText( const Type *t )
+{
+	if ( t == nullptr )
+		return "void";
+	std::ostringstream out;
+	out << *t;
+	return out.str();
+}
+
+// "Type name" for a variable/field/parameter declaration.
+static std::string declText( const VariableDefinition *def )
+{
+	if ( def == nullptr )
+		return "";
+	return typeText( def->getVariableType() ) + " " + def->getName();
+}
+
+// "fn name(int a, int b) -> int" (void return omits the arrow; the `self`
+// parameter renders bare, matching the source syntax).
+static std::string signatureText( const FunctionDefinition *fn )
+{
+	if ( fn == nullptr )
+		return "";
+	FunctionDefinition *mut = (FunctionDefinition *)fn;
+	std::string out = "fn " + fn->getName() + "(";
+	for ( int i = 0; i < mut->getNumberParams(); i++ )
+	{
+		if ( i > 0 )
+			out += ", ";
+		VariableDefinition *param = mut->getParam( i );
+		if ( param == nullptr )
+			continue;
+		const Type *pt = param->getVariableType();
+		if ( pt != nullptr && pt->getName() == "self" )
+			out += "self";
+		else
+			out += declText( param );
+	}
+	out += ")";
+	if ( mut->getReturnType() != nullptr )
+		out += " -> " + typeText( mut->getReturnType() );
+	return out;
+}
+
+std::string AstLocator::hoverText( const Statement *node )
+{
+	if ( node == nullptr )
+		return "";
+
+	if ( const auto *e = dynamic_cast<const VariableExpression *>( node ) )
+		return declText( e->mVariable );
+	if ( const auto *e = dynamic_cast<const CallExpression *>( node ) )
+		return signatureText( e->mFunction );
+	if ( const auto *e = dynamic_cast<const FunctionRefExpression *>( node ) )
+		return signatureText( e->mFunction );
+	if ( const auto *e = dynamic_cast<const MethodCallExpression *>( node ) )
+	{
+		if ( e->mResolvedMethod != nullptr )
+			return signatureText( e->mResolvedMethod );
+	}
+	else if ( const auto *f = dynamic_cast<const FieldAccessExpression *>( node ) )
+	{
+		if ( f->mResolvedField != nullptr )
+			return declText( f->mResolvedField );
+	}
+	else if ( const auto *c = dynamic_cast<const ConstructExpression *>( node ) )
+	{
+		if ( c->mStructDef != nullptr )
+			return "struct " + c->mStructDef->getName();
+	}
+	else if ( const auto *ec = dynamic_cast<const EnumConstructExpression *>( node ) )
+	{
+		const EnumDefinition *def = ec->mEnumDef;
+		if ( def != nullptr )
+		{
+			const auto &variants = def->getVariants();
+			if ( ec->mVariantIndex >= 0 && ec->mVariantIndex < (int)variants.size() )
+				return "enum " + def->getName() + "." + variants[ ec->mVariantIndex ].mName;
+			return "enum " + def->getName();
+		}
+	}
+	else if ( const auto *ic = dynamic_cast<const IndirectCallExpression *>( node ) )
+	{
+		return declText( ic->mFnVariable );
+	}
+
+	// Fallback: the Sema-resolved expression type (e.g. "int" on an index
+	// expression, "Array<int>" on a method-chain result).
+	if ( const auto *expr = dynamic_cast<const Expression *>( node ) )
+	{
+		Type *rt = expr->getResolvedType();
+		if ( rt != nullptr )
+			return typeText( rt );
+	}
+	return "";
 }
 
 } // namespace QLang

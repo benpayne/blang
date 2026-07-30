@@ -37,6 +37,13 @@ public:
 	// definition has no source location (compiler builtins).
 	static bool definitionLocation( const Statement *node, SourceLocation &out );
 
+	// One-line hover text for a node: a declaration rendering ("int first",
+	// "fn add(int a, int b) -> int", "struct Point") for definition-carrying
+	// kinds, else the expression's Sema-resolved type ("Array<int>"). Empty
+	// when nothing is known — the server answers null. Deliberately minimal
+	// strings: the transcript goldens make any format change a reviewed diff.
+	static std::string hoverText( const Statement *node );
+
 private:
 	AstLocator( uint32_t line, uint32_t col ) : mLine( line ), mCol( col ) {}
 
