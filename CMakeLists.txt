@@ -56,6 +56,11 @@ set_target_properties(lexerTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED
 add_executable(lexerTest2 LexerTest2.cpp FileLexer.cpp LexerReader.cpp)
 set_target_properties(lexerTest2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
+# LSP protocol layer (JSON value type + Content-Length framing) and its unit
+# test. Compiler-side code — deliberately independent of runtime/blang_json.
+add_executable(jsonTest lsp/JsonTest.cpp lsp/Json.cpp lsp/Transport.cpp)
+set_target_properties(jsonTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+
 # Compiler FRONTEND sources: lexer, parser, Sema, diagnostics — no driver
 # main(), no LLVM. Shared by qcc, the fuzzer, and (soon) the LSP server.
 set(BLANG_FRONTEND_SOURCES
@@ -455,3 +460,6 @@ endforeach()
 foreach(c ${HASH_CASES})
 	add_test(NAME hash_${c} COMMAND test_hash ${c})
 endforeach()
+
+# LSP protocol-layer unit test (single binary, internal check table).
+add_test(NAME lsp_json COMMAND jsonTest)
