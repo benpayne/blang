@@ -667,6 +667,12 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		{
 			l.getSymbol(); // consume '.'
 
+			// Member accesses are located at the MEMBER NAME token, not the
+			// leftmost operand: an unknown-field/method diagnostic (and an LSP
+			// hover/definition) should point at `.field`, not at the object
+			// expression that may start many tokens earlier.
+			SourceLocation memberLoc = l.getTokenLocation();
+
 			int fieldSym = l.getSymbol();
 			if ( fieldSym != Lexer::SYMBOL )
 				COMPILE_ERROR( l, "Expected field name after '.'" );
@@ -678,6 +684,7 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 			{
 				l.getSymbol(); // consume '('
 				MethodCallExpression *methodCall = new MethodCallExpression( result, fieldName );
+				methodCall->setLocation( memberLoc );
 
 				// Empty argument list
 				if ( l.peekSymbol() == ')' )
@@ -698,11 +705,13 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 					if ( sym != ')' )
 						COMPILE_ERROR( l, "Expected ',' or ')' in method call" );
 				}
-				result = S( methodCall );
+				result = methodCall;
 			}
 			else
 			{
-				result = S( new FieldAccessExpression( result, fieldName ) );
+				FieldAccessExpression *fieldAccess = new FieldAccessExpression( result, fieldName );
+				fieldAccess->setLocation( memberLoc );
+				result = fieldAccess;
 			}
 		}
 		else if ( l.peekSymbol() == '[' )

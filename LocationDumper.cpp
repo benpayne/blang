@@ -92,6 +92,9 @@ void LocationDumper::visitStruct( const StructDefinition *structDef )
 void LocationDumper::visitEnum( const EnumDefinition *enumDef )
 {
 	emit( enumDef->getLocation(), nodeKind( typeid( *enumDef ) ).c_str() );
+	// Variants are plain structs, not AST nodes, so the kind name is fixed.
+	for ( const auto &variant : enumDef->getVariants() )
+		emit( variant.mLocation, "EnumVariant" );
 }
 
 void LocationDumper::visitProtocol( const ProtocolDefinition *protoDef )

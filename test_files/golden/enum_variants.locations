@@ -1,0 +1,10 @@
+test_files/pass/enum_variants.b:3:1 EnumDefinition
+test_files/pass/enum_variants.b:4:2 EnumVariant
+test_files/pass/enum_variants.b:5:2 EnumVariant
+test_files/pass/enum_variants.b:8:1 EnumDefinition
+test_files/pass/enum_variants.b:9:2 EnumVariant
+test_files/pass/enum_variants.b:10:2 EnumVariant
+test_files/pass/enum_variants.b:13:1 FunctionDefinition
+test_files/pass/enum_variants.b:13:18 Block
+test_files/pass/enum_variants.b:14:2 ReturnStatement
+test_files/pass/enum_variants.b:14:9 ConstInteger

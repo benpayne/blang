@@ -494,6 +494,9 @@ namespace QLang
 		{
 			std::string mName;
 			std::vector<SmartPtr<Type>> mAssociatedTypes;
+			// Position of the variant's name token. Unset (0:0) only for the
+			// compiler-built Option/Result builtins, which have no source.
+			SourceLocation mLocation;
 		};
 
 		static EnumDefinition *Parse( Lexer &l, Scope *s, bool isPublic = false );
