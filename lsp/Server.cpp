@@ -166,6 +166,12 @@ void Server::handleRequest( const Json &id, const std::string &method, const Jso
 		return;
 	}
 
+	if ( method == "textDocument/documentSymbol" )
+	{
+		documentSymbol( id, params );
+		return;
+	}
+
 	sendError( id, kMethodNotFound, "method not found: " + method );
 }
 
@@ -217,6 +223,7 @@ Json Server::initializeResult() const
 	caps.set( "textDocumentSync", sync );
 	caps.set( "definitionProvider", true );
 	caps.set( "hoverProvider", true );
+	caps.set( "documentSymbolProvider", true );
 
 	Json info = Json::object();
 	info.set( "name", "blangd" );
@@ -368,6 +375,96 @@ void Server::definition( const Json &id, const Json &params )
 	location.set( "uri", pathToUri( target.file ) );
 	location.set( "range", range );
 	sendResult( id, location );
+}
+
+// LSP SymbolKind values used below.
+namespace symbolkind
+{
+	const int kMethod = 6;
+	const int kField = 8;
+	const int kEnum = 10;
+	const int kInterface = 11;
+	const int kFunction = 12;
+	const int kEnumMember = 22;
+	const int kStruct = 23;
+}
+
+// One DocumentSymbol node: range == selectionRange, zero-length at the
+// declaration's location (SourceLocation has no end position — v1).
+static Json makeSymbol( const std::string &name, int kind, const SourceLocation &loc )
+{
+	Json start = Json::object();
+	start.set( "line", loc.line > 0 ? (int)loc.line - 1 : 0 );
+	start.set( "character", loc.col > 0 ? (int)loc.col - 1 : 0 );
+	Json range = Json::object();
+	range.set( "start", start );
+	range.set( "end", start );
+
+	Json sym = Json::object();
+	sym.set( "name", name );
+	sym.set( "kind", kind );
+	sym.set( "range", range );
+	sym.set( "selectionRange", range );
+	return sym;
+}
+
+static void addChild( Json &parent, Json child )
+{
+	if ( !parent.has( "children" ) )
+		parent.set( "children", Json::array() );
+	Json children = parent.get( "children" );
+	children.push( std::move( child ) );
+	parent.set( "children", std::move( children ) );
+}
+
+void Server::documentSymbol( const Json &id, const Json &params )
+{
+	const std::string &uri = params.get( "textDocument" ).get( "uri" ).asString();
+	auto it = mCompiles.find( uri );
+	if ( it == mCompiles.end() || it->second.module == nullptr )
+	{
+		sendResult( id, Json() );
+		return;
+	}
+	const QLang::Module *mod = (QLang::Module *)it->second.module;
+
+	// Same category order as --dump-locations: structs, enums, protocols,
+	// functions, tests; source order within each.
+	Json list = Json::array();
+	for ( const auto &s : mod->getStructList() )
+	{
+		Json node = makeSymbol( s->getName(), symbolkind::kStruct, s->getLocation() );
+		for ( const auto &field : s->getFields() )
+			addChild( node, makeSymbol( field->getName(), symbolkind::kField,
+				field->getLocation() ) );
+		for ( const auto &method : s->getMethods() )
+			addChild( node, makeSymbol( method->getName(), symbolkind::kMethod,
+				method->getLocation() ) );
+		list.push( std::move( node ) );
+	}
+	for ( const auto &e : mod->getEnumList() )
+	{
+		Json node = makeSymbol( e->getName(), symbolkind::kEnum, e->getLocation() );
+		for ( const auto &variant : e->getVariants() )
+			addChild( node, makeSymbol( variant.mName, symbolkind::kEnumMember,
+				variant.mLocation ) );
+		list.push( std::move( node ) );
+	}
+	for ( const auto &p : mod->getProtocolList() )
+	{
+		Json node = makeSymbol( p->getName(), symbolkind::kInterface, p->getLocation() );
+		for ( const auto &method : p->getRequiredMethods() )
+			addChild( node, makeSymbol( method->getName(), symbolkind::kMethod,
+				method->getLocation() ) );
+		list.push( std::move( node ) );
+	}
+	for ( const auto &f : mod->getFunctionList() )
+		list.push( makeSymbol( f->getName(), symbolkind::kFunction, f->getLocation() ) );
+	for ( const auto &t : mod->getTestBlocks() )
+		list.push( makeSymbol( "test \"" + t->getName() + "\"",
+			symbolkind::kFunction, t->getLocation() ) );
+
+	sendResult( id, list );
 }
 
 void Server::hover( const Json &id, const Json &params )

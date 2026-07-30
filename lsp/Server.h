@@ -48,6 +48,7 @@ private:
 	// Navigation requests over the retained last-compile AST.
 	void definition( const Json &id, const Json &params );
 	void hover( const Json &id, const Json &params );
+	void documentSymbol( const Json &id, const Json &params );
 
 	// Shared lookup: the AST node under params.position in params.textDocument
 	// (null when the document is not open or nothing is under the cursor).

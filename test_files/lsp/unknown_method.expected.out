@@ -1,4 +1,4 @@
 {"error": {"code": -32002, "message": "server not initialized"}, "id": 9, "jsonrpc": "2.0"}
-{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"definitionProvider": true, "hoverProvider": true, "positionEncoding": "utf-8", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"definitionProvider": true, "documentSymbolProvider": true, "hoverProvider": true, "positionEncoding": "utf-8", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
 {"error": {"code": -32601, "message": "method not found: no/such/method"}, "id": 2, "jsonrpc": "2.0"}
 {"id": 3, "jsonrpc": "2.0", "result": null}
