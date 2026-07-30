@@ -7,8 +7,10 @@
 // caller-supplied so tests can drive the server over stringstreams.
 
 #include <iosfwd>
+#include <map>
 #include <string>
 
+#include "Compile.h"
 #include "DocumentStore.h"
 #include "Json.h"
 
@@ -43,6 +45,9 @@ private:
 	void closeDocument( const Json &params );
 	void publishDiagnostics( const std::string &uri, const std::string &text );
 
+	// Navigation requests over the retained last-compile AST.
+	void definition( const Json &id, const Json &params );
+
 	void sendResult( const Json &id, Json result );
 	void sendError( const Json &id, int code, const std::string &message );
 	void sendNotification( const std::string &method, Json params );
@@ -51,6 +56,8 @@ private:
 	std::istream &mIn;
 	std::ostream &mOut;
 	DocumentStore mDocs;
+	// Last compile per open document, retained for navigation requests.
+	std::map<std::string, CompileResult> mCompiles;
 	bool mInitialized = false;
 	bool mShutdownRequested = false;
 	bool mExitRequested = false;

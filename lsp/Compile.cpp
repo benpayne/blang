@@ -10,8 +10,7 @@
 namespace lsp
 {
 
-std::vector<QLang::Diagnostic> compileDocument( const std::string &path,
-                                                const std::string &text )
+CompileResult compileDocument( const std::string &path, const std::string &text )
 {
 	using namespace QLang;
 
@@ -30,23 +29,23 @@ std::vector<QLang::Diagnostic> compileDocument( const std::string &path,
 	DiagnosticEngine *prevDiag = gDiag;
 	gDiag = &engine;
 
-	{
-		SmartPtr<Scope> fileScope = new Scope( Scope::kScope_Module );
-		fileScope->setParent( gScope );
+	CompileResult result;
+	result.fileScope = new Scope( Scope::kScope_Module );
+	result.fileScope->setParent( gScope );
 
-		StringLexerReader reader( text, path );
-		Lexer lexer( &reader );
+	StringLexerReader reader( text, path );
+	Lexer lexer( &reader );
 
-		// Module::Parse catches CompileError internally, buffers it through
-		// gDiag, and returns null on a catastrophic (unrecoverable) failure —
-		// the diagnostics are already in the engine either way.
-		SmartPtr<Module> mod = Module::Parse( lexer, fileScope );
-		if ( mod != nullptr )
-			Sema::analyze( (Module *)mod, fileScope, engine );
-	}
+	// Module::Parse catches CompileError internally, buffers it through
+	// gDiag, and returns null on a catastrophic (unrecoverable) failure —
+	// the diagnostics are already in the engine either way.
+	result.module = Module::Parse( lexer, (Scope *)result.fileScope );
+	if ( result.module != nullptr )
+		Sema::analyze( (Module *)result.module, (Scope *)result.fileScope, engine );
 
 	gDiag = prevDiag;
-	return engine.diagnostics();
+	result.diagnostics = engine.diagnostics();
+	return result;
 }
 
 } // namespace lsp

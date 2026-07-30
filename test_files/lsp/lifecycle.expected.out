@@ -1,2 +1,2 @@
-{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"positionEncoding": "utf-8", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"definitionProvider": true, "positionEncoding": "utf-8", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
 {"id": 2, "jsonrpc": "2.0", "result": null}

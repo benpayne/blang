@@ -105,6 +105,7 @@ add_executable(blangd
 	lsp/Json.cpp
 	lsp/Transport.cpp
 	lsp/Compile.cpp
+	lsp/AstLocator.cpp
 	lsp/Server.cpp
 	lsp/blangd_main.cpp)
 set_target_properties(blangd PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

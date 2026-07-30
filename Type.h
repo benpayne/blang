@@ -43,6 +43,7 @@ namespace QLang
 		SourceLocation mLocation;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -71,6 +72,7 @@ namespace QLang
 		std::vector<SmartPtr<Type>> mTypeParams;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -93,6 +95,7 @@ namespace QLang
 		std::vector<SmartPtr<Type>> mParamTypes;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -119,6 +122,7 @@ namespace QLang
 		std::string mName;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -254,6 +258,7 @@ namespace QLang
 		std::string mModuleName;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -281,6 +286,7 @@ namespace QLang
 		Module() {}
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
@@ -371,6 +377,7 @@ namespace QLang
 
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class Module;
 	};
@@ -449,6 +456,7 @@ namespace QLang
 		bool mIsTable = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -484,6 +492,7 @@ namespace QLang
 		bool mIsPublic = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -562,6 +571,7 @@ namespace QLang
 		bool mIsPublic = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -583,6 +593,7 @@ namespace QLang
 		SourceLocation mLocation;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 

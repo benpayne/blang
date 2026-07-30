@@ -5,6 +5,7 @@
 #include <istream>
 #include <ostream>
 
+#include "AstLocator.h"
 #include "Compile.h"
 #include "Transport.h"
 
@@ -153,6 +154,12 @@ void Server::handleRequest( const Json &id, const std::string &method, const Jso
 		return;
 	}
 
+	if ( method == "textDocument/definition" )
+	{
+		definition( id, params );
+		return;
+	}
+
 	sendError( id, kMethodNotFound, "method not found: " + method );
 }
 
@@ -202,6 +209,7 @@ Json Server::initializeResult() const
 	// ASCII so utf-16 clients see identical positions).
 	caps.set( "positionEncoding", "utf-8" );
 	caps.set( "textDocumentSync", sync );
+	caps.set( "definitionProvider", true );
 
 	Json info = Json::object();
 	info.set( "name", "blangd" );
@@ -245,6 +253,7 @@ void Server::closeDocument( const Json &params )
 	if ( uri.empty() )
 		return;
 	mDocs.close( uri );
+	mCompiles.erase( uri );
 	// Clear the client's stale squiggles for the closed document.
 	Json cleared = Json::object();
 	cleared.set( "uri", uri );
@@ -254,7 +263,8 @@ void Server::closeDocument( const Json &params )
 
 void Server::publishDiagnostics( const std::string &uri, const std::string &text )
 {
-	std::vector<QLang::Diagnostic> diags = compileDocument( uriToPath( uri ), text );
+	mCompiles[ uri ] = compileDocument( uriToPath( uri ), text );
+	const std::vector<QLang::Diagnostic> &diags = mCompiles[ uri ].diagnostics;
 
 	Json list = Json::array();
 	for ( const auto &d : diags )
@@ -310,6 +320,47 @@ void Server::publishDiagnostics( const std::string &uri, const std::string &text
 	params.set( "uri", uri );
 	params.set( "diagnostics", list );
 	sendNotification( "textDocument/publishDiagnostics", params );
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+
+void Server::definition( const Json &id, const Json &params )
+{
+	const std::string &uri = params.get( "textDocument" ).get( "uri" ).asString();
+	auto it = mCompiles.find( uri );
+	if ( it == mCompiles.end() || it->second.module == nullptr )
+	{
+		sendResult( id, Json() ); // unopened document: null result
+		return;
+	}
+
+	// LSP positions are 0-based; SourceLocation is 1-based.
+	const Json &pos = params.get( "position" );
+	uint32_t line = (uint32_t)pos.get( "line" ).asInt() + 1;
+	uint32_t col = (uint32_t)pos.get( "character" ).asInt() + 1;
+
+	const QLang::Statement *node =
+		QLang::AstLocator::locate( (QLang::Module *)it->second.module, line, col );
+	SourceLocation target;
+	if ( !QLang::AstLocator::definitionLocation( node, target ) )
+	{
+		sendResult( id, Json() ); // no definition pointer / builtin target
+		return;
+	}
+
+	// Single-file semantics: the definition is in this document (target.file
+	// equals the compiled path). Zero-length range at the definition site.
+	Json start = Json::object();
+	start.set( "line", (int)target.line - 1 );
+	start.set( "character", (int)target.col - 1 );
+	Json range = Json::object();
+	range.set( "start", start );
+	range.set( "end", start );
+	Json location = Json::object();
+	location.set( "uri", pathToUri( target.file ) );
+	location.set( "range", range );
+	sendResult( id, location );
 }
 
 // ---------------------------------------------------------------------------
