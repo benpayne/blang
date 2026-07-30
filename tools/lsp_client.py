@@ -186,16 +186,52 @@ class Driver:
             print(line.replace(self.root, "${ROOT}"))
 
 
+def run_sema_fixture(driver, rel_path):
+    """Compile one .b file through the live server and render its published
+    diagnostics as canonical `file:line:col: severity: message` lines — the
+    exact format run_tests.sh's expected-error patterns match against. This
+    piggybacks every test_files/fail/sema/ fixture as an LSP regression test."""
+    driver.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"processId": None, "capabilities": {}}})
+    driver.wait_id(1)
+    driver.send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    driver.open_document(rel_path)
+    driver.wait_method("textDocument/publishDiagnostics")
+    driver.send({"jsonrpc": "2.0", "id": 2, "method": "shutdown"})
+    driver.wait_id(2)
+    driver.send({"jsonrpc": "2.0", "method": "exit"})
+    driver.expect_exit(0)
+
+    published = [m for m in driver.transcript
+                 if m.get("method") == "textDocument/publishDiagnostics"]
+    if not published:
+        driver.fail("no publishDiagnostics received")
+    for d in published[-1]["params"]["diagnostics"]:
+        severity = "error" if d.get("severity", 1) == 1 else "warning"
+        start = d["range"]["start"]
+        print("%s:%d:%d: %s: %s" % (rel_path, start["line"] + 1,
+                                    start["character"] + 1, severity, d["message"]))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", required=True, help="path to the blangd binary")
     ap.add_argument("--root", default=os.getcwd(),
                     help="workspace root substituted for ${ROOT} (default: cwd)")
-    ap.add_argument("--script", required=True, help="fixture (.lsp.jsonl) to run")
+    ap.add_argument("--script", help="fixture (.lsp.jsonl) to run")
+    ap.add_argument("--sema-fixture", metavar="FILE_B",
+                    help="compile one .b file (root-relative) and print its "
+                         "diagnostics as file:line:col: error: message lines")
     args = ap.parse_args()
+    if bool(args.script) == bool(args.sema_fixture):
+        ap.error("exactly one of --script / --sema-fixture is required")
 
     root = os.path.abspath(args.root)
     driver = Driver(args.server, root)
+
+    if args.sema_fixture:
+        return run_sema_fixture(driver, args.sema_fixture)
 
     with open(args.script, "r") as f:
         for lineno, raw in enumerate(f, 1):

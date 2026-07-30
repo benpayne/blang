@@ -215,6 +215,67 @@ for f in "${FIXTURES[@]}"; do
 	run_one_fixture "$f"
 done
 
+# --- fail/sema piggyback ---
+# Every semantic negative fixture must ALSO surface through the LSP: compile
+# it via a live blangd didOpen, render the published diagnostics as canonical
+# file:line:col lines, and hold them to the same expected-error pattern
+# run_tests.sh enforces (companion .b.expected ERE, else // EXPECT-ERROR:,
+# plus the canonical located-error shape). New fail/sema fixtures are covered
+# here automatically. Skipped when specific fixtures were requested on the
+# command line.
+resolve_expected_pattern() {
+	local file="$1"
+	local expfile="${file}.expected"
+	if [ -f "$expfile" ]; then
+		grep -m1 -E '^[[:space:]]*[^#[:space:]]' "$expfile" | sed 's/[[:space:]]*$//'
+		return
+	fi
+	local line
+	line=$(grep -m1 'EXPECT-ERROR:' "$file" 2>/dev/null)
+	if [ -n "$line" ]; then
+		printf '%s' "$line" | sed 's/.*EXPECT-ERROR:[[:space:]]*//; s/[[:space:]]*$//'
+	fi
+}
+
+if [ ${#FILE_ARGS[@]} -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
+	SEMA_FILES=$(find "$SCRIPT_DIR/test_files/fail/sema" -name '*.b' 2>/dev/null | sort)
+	if [ -n "$SEMA_FILES" ]; then
+		echo ""
+		echo "--- fail/sema fixtures via LSP publishDiagnostics ---"
+		while IFS= read -r f; do
+			[ -z "$f" ] && continue
+			TOTAL=$((TOTAL + 1))
+			rel="${f#"$SCRIPT_DIR"/}"
+			out="$(python3 "$DRIVER" --server "$BLANGD" --root "$SCRIPT_DIR" \
+				--sema-fixture "$rel" 2>&1)"
+			drc=$?
+			if [ $drc -ne 0 ]; then
+				echo -e "  ${RED}FAIL${NC}  $rel  (driver failed)"
+				printf '%s\n' "$out" | head -5 | sed 's/^/    /'
+				FAIL_COUNT=$((FAIL_COUNT + 1))
+				continue
+			fi
+			# Canonical located-error shape (the epic's per-file requirement).
+			if ! printf '%s\n' "$out" | grep -qE '^[^:]+\.b:[0-9]+:[0-9]+: error: '; then
+				echo -e "  ${RED}FAIL${NC}  $rel  (no canonical error line via LSP)"
+				printf '%s\n' "$out" | head -5 | sed 's/^/    /'
+				FAIL_COUNT=$((FAIL_COUNT + 1))
+				continue
+			fi
+			pattern="$(resolve_expected_pattern "$f")"
+			if [ -n "$pattern" ] && ! printf '%s\n' "$out" | grep -qE "$pattern"; then
+				echo -e "  ${RED}FAIL${NC}  $rel  (diagnostics do not match expected pattern)"
+				echo "    pattern: $pattern"
+				printf '%s\n' "$out" | head -5 | sed 's/^/    /'
+				FAIL_COUNT=$((FAIL_COUNT + 1))
+				continue
+			fi
+			echo -e "  ${GREEN}PASS${NC}  $rel"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		done <<< "$SEMA_FILES"
+	fi
+fi
+
 echo ""
 echo "==========================================="
 echo "  Passed:  $PASS_COUNT"

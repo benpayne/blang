@@ -94,7 +94,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   ├── blang_fs.h/c          # File I/O + directory operations (open/close/read/write/seek/flush, stat/remove/mkdir/list_dir)
 │   └── blang_db.h/c          # Database abstraction layer (connection, query, result; optional SQLite backend)
 ├── .github/
-│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos, lsp (blangd golden transcripts + jsonTest + inverted selfcheck + determinism) (see docs/ci.md)
+│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos, lsp (blangd golden transcripts + jsonTest + inverted selfcheck + determinism + every fail/sema fixture re-verified via LSP publishDiagnostics) (see docs/ci.md)
 ├── install_deps.sh            # Cross-platform dependency installer
 ├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals
