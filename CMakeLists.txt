@@ -97,6 +97,19 @@ set(BLANG_FRONTEND_SOURCES
 # The qcc driver = frontend + the CLI main.
 set(QCC_SOURCES ${BLANG_FRONTEND_SOURCES} qcc.cpp)
 
+# blangd — the BLang language server: the shared frontend + the LSP layer.
+# Never compiled with LLVM (diagnostics need parse+sema only), so it builds
+# identically in both build modes.
+add_executable(blangd
+	${BLANG_FRONTEND_SOURCES}
+	lsp/Json.cpp
+	lsp/Transport.cpp
+	lsp/Compile.cpp
+	lsp/Server.cpp
+	lsp/blangd_main.cpp)
+set_target_properties(blangd PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(blangd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # Add LLVM code generation when available
 if(LLVM_FOUND)
 	list(APPEND QCC_SOURCES
