@@ -78,6 +78,12 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   └── wordfreq/              # Generic-collections example (Map/Set/sort over strings, inference) — validation program for the generic-ARC unit
 ├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/cgfail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> link -> run)
+├── test_lsp_nvim.sh           # Headless-Neovim LSP smoke (runs ci/nvim_smoke.lua; yellow SKIP without nvim)
+├── ci/
+│   └── nvim_smoke.lua         # Real-client smoke: vim.lsp.start(blangd) on an error fixture, asserts diagnostics arrive
+├── editors/
+│   ├── README.md              # Editor setup: Neovim config, VS Code note, generic stdio-client instructions
+│   └── blang-vscode/          # TextMate grammar (syntax highlighting only)
 ├── test_lsp.sh                # LSP golden-transcript test script (drives blangd via tools/lsp_client.py, cmp vs test_files/lsp/*.expected.out; --update-goldens/--selfcheck)
 ├── tools/
 │   └── lsp_client.py          # Golden-transcript LSP driver (python3 stdlib; strict framing — any stray stdout/stderr byte fails; sort_keys re-serialization; ${ROOT} scrubbing)
@@ -94,7 +100,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   ├── blang_fs.h/c          # File I/O + directory operations (open/close/read/write/seek/flush, stat/remove/mkdir/list_dir)
 │   └── blang_db.h/c          # Database abstraction layer (connection, query, result; optional SQLite backend)
 ├── .github/
-│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos, lsp (blangd golden transcripts + jsonTest + inverted selfcheck + determinism + every fail/sema fixture re-verified via LSP publishDiagnostics) (see docs/ci.md)
+│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos, lsp (blangd golden transcripts + jsonTest + inverted selfcheck + determinism + every fail/sema fixture re-verified via LSP publishDiagnostics + headless-Neovim real-client smoke) (see docs/ci.md)
 ├── install_deps.sh            # Cross-platform dependency installer
 ├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals

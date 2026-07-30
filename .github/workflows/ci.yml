@@ -358,7 +358,7 @@ jobs:
         run: |
           sudo apt-get update
           # No LLVM: blangd is parse+sema only and must build without it.
-          sudo apt-get install -y cmake build-essential libuv1-dev pkg-config libsqlite3-dev
+          sudo apt-get install -y cmake build-essential libuv1-dev pkg-config libsqlite3-dev neovim
       - name: Build blangd + jsonTest (no LLVM)
         run: |
           cmake -S . -B build -DBLANG_ENABLE_LLVM=OFF
@@ -389,3 +389,5 @@ jobs:
           python3 tools/lsp_client.py --server build/blangd --root "$PWD" \
             --script test_files/lsp/diag_change.lsp.jsonl > /tmp/run2.out
           diff /tmp/run1.out /tmp/run2.out
+      - name: Headless-Neovim smoke (real LSP client end to end)
+        run: ./test_lsp_nvim.sh
