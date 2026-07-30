@@ -1,0 +1,15 @@
+# An unknown request method must get a -32601 error response; an unknown
+# notification must be silently ignored (no reply at all). Also pins the
+# not-initialized error: a request before initialize gets -32002.
+{"send": {"jsonrpc": "2.0", "id": 9, "method": "textDocument/definition", "params": {}}}
+{"wait_id": 9}
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"send": {"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration", "params": {"settings": {}}}}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "no/such/method", "params": {}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "shutdown"}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

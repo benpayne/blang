@@ -78,6 +78,10 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   └── wordfreq/              # Generic-collections example (Map/Set/sort over strings, inference) — validation program for the generic-ARC unit
 ├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/cgfail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> link -> run)
+├── test_lsp.sh                # LSP golden-transcript test script (drives blangd via tools/lsp_client.py, cmp vs test_files/lsp/*.expected.out; --update-goldens/--selfcheck)
+├── tools/
+│   └── lsp_client.py          # Golden-transcript LSP driver (python3 stdlib; strict framing — any stray stdout/stderr byte fails; sort_keys re-serialization; ${ROOT} scrubbing)
+├── lsp/                       # blangd language server: Json.{h,cpp} (insertion-ordered JSON), Transport.{h,cpp} (Content-Length framing), Compile.{h,cpp} (reparse pipeline), Server.{h,cpp} (JSON-RPC dispatch), StringLexerReader.h, DocumentStore.h, blangd_main.cpp, JsonTest.cpp
 ├── docs/
 │   └── language_design.md     # BLang language design specification
 │   └── implementation_plan.md # Implementation task list and roadmap
@@ -90,7 +94,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   ├── blang_fs.h/c          # File I/O + directory operations (open/close/read/write/seek/flush, stat/remove/mkdir/list_dir)
 │   └── blang_db.h/c          # Database abstraction layer (connection, query, result; optional SQLite backend)
 ├── .github/
-│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos (see docs/ci.md)
+│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos, lsp (blangd golden transcripts + jsonTest + inverted selfcheck + determinism) (see docs/ci.md)
 ├── install_deps.sh            # Cross-platform dependency installer
 ├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals
@@ -119,6 +123,8 @@ The project has **no external dependencies** for the active build targets. The j
 | `blang_sha256`| SHA-256 hash library (static)   | sha256.c                                                                           |
 | `blang_buildcache`| Build cache library (static) | BuildCache.cpp (links blang_sha256)                                                |
 | `blang_sqlgen`| SQL gen + migrations library     | SQLGen.cpp, SchemaMigration.cpp                                                    |
+| `blangd`    | BLang language server (LSP over stdio) | lsp/blangd_main.cpp, lsp/Server.cpp, lsp/Compile.cpp, lsp/Json.cpp, lsp/Transport.cpp + BLANG_FRONTEND_SOURCES (never LLVM) |
+| `jsonTest`  | LSP protocol-layer unit test       | lsp/JsonTest.cpp, lsp/Json.cpp, lsp/Transport.cpp (CTest: lsp_json)                |
 | `lexerTest` | Basic lexer tokenization test      | LexerTest.cpp, FileLexer.cpp, LexerReader.cpp                                     |
 | `lexerTest2`| Advanced lexer test                | LexerTest2.cpp, FileLexer.cpp, LexerReader.cpp                                    |
 
@@ -434,6 +440,11 @@ Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `te
 ./test_codegen.sh           # Run all codegen_*.b tests (parse -> IR -> compile -> link -> run)
 ./test_codegen.sh test_files/codegen_simple.b   # Run a single codegen test (shows IR)
 ./test_codegen.sh --verbose # Show IR output for all tests
+
+# LSP golden-transcript tests (blangd built in build/ or BUILD_DIR)
+./test_lsp.sh               # Drive blangd through test_files/lsp/*.lsp.jsonl fixtures, compare transcripts to goldens
+./test_lsp.sh --update-goldens   # Regenerate transcript goldens
+./test_lsp.sh --selfcheck   # Teeth proof: corrupted golden must go red (prints SELFCHECK: OK, exits non-zero)
 
 # Manual testing
 cd build

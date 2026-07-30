@@ -348,3 +348,44 @@ jobs:
         run: make -C demos all
       - name: make -C demos run (runs 01-10)
         run: make -C demos run
+
+  # ---- 8. LSP: blangd golden transcripts + protocol-layer units + teeth ----
+  lsp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # No LLVM: blangd is parse+sema only and must build without it.
+          sudo apt-get install -y cmake build-essential libuv1-dev pkg-config libsqlite3-dev
+      - name: Build blangd + jsonTest (no LLVM)
+        run: |
+          cmake -S . -B build -DBLANG_ENABLE_LLVM=OFF
+          cmake --build build -j"$(nproc)" --target blangd jsonTest
+      - name: Protocol-layer unit tests (jsonTest)
+        run: ./build/jsonTest
+      - name: Golden transcript suite (test_lsp.sh)
+        run: ./test_lsp.sh
+      - name: Inverted self-check — corrupted golden MUST go red (teeth)
+        run: |
+          set +e
+          out="$(./test_lsp.sh --selfcheck 2>&1)"
+          ret=$?
+          set -e
+          echo "$out"
+          if [ "$ret" -eq 0 ]; then
+            echo "ERROR: --selfcheck exited 0 (corrupted golden not detected)"
+            exit 1
+          fi
+          echo "$out" | grep -q '^SELFCHECK: OK$' || {
+            echo "ERROR: --selfcheck did not print SELFCHECK: OK"
+            exit 1
+          }
+      - name: Determinism — transcript identical across two runs
+        run: |
+          python3 tools/lsp_client.py --server build/blangd --root "$PWD" \
+            --script test_files/lsp/diag_change.lsp.jsonl > /tmp/run1.out
+          python3 tools/lsp_client.py --server build/blangd --root "$PWD" \
+            --script test_files/lsp/diag_change.lsp.jsonl > /tmp/run2.out
+          diff /tmp/run1.out /tmp/run2.out
