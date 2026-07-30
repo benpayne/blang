@@ -1159,6 +1159,7 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 	{
 		if ( field->getName() == name )
 		{
+			fa->mResolvedField = field;
 			Type *ft = field->getVariableType();
 			// Concrete-only contract, applied RECURSIVELY: Array<K> is not
 			// concrete either — annotating it would make codegen skip the
@@ -1211,6 +1212,7 @@ void Sema::resolveMethodCall( MethodCallExpression *mc, Type *baseType )
 	{
 		if ( method->getName() == name )
 		{
+			mc->mResolvedMethod = method;
 			Type *rt = method->getReturnType();
 			if ( rt != nullptr )
 			{

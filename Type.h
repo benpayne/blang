@@ -272,6 +272,7 @@ namespace QLang
 		const std::vector<SmartPtr<StructDefinition>> &getStructList() const { return mStructList; }
 		const std::vector<SmartPtr<EnumDefinition>> &getEnumList() const { return mEnumList; }
 		const std::vector<SmartPtr<ProtocolDefinition>> &getProtocolList() const { return mProtocolList; }
+		const std::vector<SmartPtr<TestBlock>> &getTestBlocks() const { return mTestBlocks; }
 
 		bool isExtern() const { return mIsExtern; }
 		void setExtern( bool isExtern ) { mIsExtern = isExtern; }

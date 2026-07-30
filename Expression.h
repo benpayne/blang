@@ -250,6 +250,8 @@ namespace QLang
 		void setMangledName( const std::string &name ) { mMangledName = name; }
 		const std::string &getMangledName() const { return mMangledName; }
 
+		FunctionDefinition *getFunction() { return mFunction; }
+
 	private:
 		SmartPtr<FunctionDefinition> mFunction;
 		std::vector<SmartPtr<Type>> mTypeArgs;
@@ -470,9 +472,15 @@ namespace QLang
 		Expression *getObject() { return mObject; }
 		const std::string &getFieldName() const { return mFieldName; }
 
+		// The struct field this access resolved to (stamped by Sema; null when
+		// the base type is not a resolvable struct). Non-owning: the struct
+		// definition owns its fields.
+		VariableDefinition *getResolvedField() { return mResolvedField; }
+
 	private:
 		SmartPtr<Expression> mObject;
 		std::string mFieldName;
+		VariableDefinition *mResolvedField = nullptr;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class Sema;
@@ -544,9 +552,18 @@ namespace QLang
 
 		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
 
+		Expression *getObject() { return mObject; }
+		const std::string &getMethodName() const { return mMethodName; }
+
+		// The struct method this call resolved to (stamped by Sema; null for
+		// builtin string/array methods, channel ops, and unresolvable bases).
+		// Non-owning: the struct definition owns its methods.
+		FunctionDefinition *getResolvedMethod() { return mResolvedMethod; }
+
 	private:
 		SmartPtr<Expression> mObject;
 		std::string mMethodName;
+		FunctionDefinition *mResolvedMethod = nullptr;
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
 		friend class LocationDumper;
