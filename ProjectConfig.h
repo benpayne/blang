@@ -9,7 +9,8 @@ struct Dependency
 	std::string name;
 	std::string path;
 	std::string gitUrl;
-	std::string tag;
+	std::string tag;   // git: tag or branch name (cloned with --branch)
+	std::string rev;   // git: exact commit hash (full clone + checkout)
 };
 
 // A named database connection from [database.<name>].

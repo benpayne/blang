@@ -238,6 +238,21 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 				? funcDef->getParam( pi ) : nullptr;
 			trackEnumArgTemp( call->mParams[pi], argVal,
 				pd != nullptr ? pd->getVariableType() : nullptr );
+
+			// Integer width coercion to the instantiated parameter type,
+			// mirroring the non-generic call path — without it a `bool` param
+			// (i1) receiving a bool literal (codegen'd i32) fails IR
+			// verification (`pick<T>(T a, T b, bool first)`).
+			if ( pi < genFunc->arg_size() )
+			{
+				llvm::Type *paramType = genFunc->getFunctionType()->getParamType( pi );
+				if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
+					 paramType->getIntegerBitWidth() < argVal->getType()->getIntegerBitWidth() )
+					argVal = mBuilder->CreateTrunc( argVal, paramType, "garg.trunc" );
+				else if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
+						  paramType->getIntegerBitWidth() > argVal->getType()->getIntegerBitWidth() )
+					argVal = mBuilder->CreateSExt( argVal, paramType, "garg.ext" );
+			}
 			args.push_back( argVal );
 		}
 

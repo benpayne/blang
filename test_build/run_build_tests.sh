@@ -48,6 +48,75 @@ check "no unresolved-param instantiation (largest_T absent)" \
 ( cd timerapp && rm -f timerapp && "$BCC" build > /dev/null 2>&1 )
 check "timerapp builds (stdlib import)" "[ -x timerapp/timerapp ]"
 
+# --- Git dependency fetching -------------------------------------------------
+# A throwaway local git repo stands in for a remote: lib project committed and
+# tagged, consumer declares { git = "file://...", tag = "v1.0" }. Covers:
+# fetch + build + run (generics included), warm-cache reuse (no re-fetch),
+# and the unpinned-dep error.
+GITTMP=$(mktemp -d)
+trap 'rm -rf "$GITTMP"' EXIT
+mkdir -p "$GITTMP/lib-src" "$GITTMP/app"
+cat > "$GITTMP/lib-src/blang.toml" <<'TOML'
+[project]
+name = "greetlib"
+version = "1.0.0"
+type = "lib"
+TOML
+cat > "$GITTMP/lib-src/greet.b" <<'BLANG'
+pub fn greeting(string name) -> string {
+	return "hello, " + name + "!";
+}
+
+pub fn pick<T>(T a, T b, bool first) -> T {
+	if first {
+		return a;
+	}
+	return b;
+}
+BLANG
+( cd "$GITTMP/lib-src" && git init -q && \
+  git -c user.email=t@t -c user.name=t add -A && \
+  git -c user.email=t@t -c user.name=t commit -qm v1 && git tag v1.0 )
+cat > "$GITTMP/app/blang.toml" <<TOML
+[project]
+name = "gitapp"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+greetlib = { git = "file://$GITTMP/lib-src", tag = "v1.0" }
+TOML
+cat > "$GITTMP/app/main.b" <<'BLANG'
+import greetlib;
+
+fn main() -> int {
+	println("{}", greeting("git"));
+	println("{}", pick("left", "right", true));
+	println("{}", pick(10, 20, false));
+	return 0;
+}
+BLANG
+
+FETCH_LOG=$( cd "$GITTMP/app" && "$BCC" build -v 2>&1 )
+check "git dep fetched on first build" "echo \"\$FETCH_LOG\" | grep -q 'fetching git dep'"
+check "git-dep app builds" "[ -x \"$GITTMP/app/gitapp\" ]"
+GITOUT=$(cd "$GITTMP/app" && ./gitapp)
+GITEXPECTED='hello, git!
+left
+20'
+check "git-dep app output exact (incl. generics from the dep)" "[ \"\$GITOUT\" = \"\$GITEXPECTED\" ]"
+
+REBUILD_LOG=$( cd "$GITTMP/app" && rm -f gitapp && "$BCC" build -v 2>&1 )
+check "warm checkout reused (no re-fetch)" \
+	"echo \"\$REBUILD_LOG\" | grep -q 'cached at' && ! echo \"\$REBUILD_LOG\" | grep -q 'fetching git dep'"
+
+sed 's/, tag = "v1.0"//' "$GITTMP/app/blang.toml" > "$GITTMP/app/blang.toml.tmp" \
+	&& mv "$GITTMP/app/blang.toml.tmp" "$GITTMP/app/blang.toml"
+UNPINNED_LOG=$( cd "$GITTMP/app" && "$BCC" build 2>&1 )
+UNPINNED_EXIT=$?
+check "unpinned git dep is a hard error" \
+	"[ $UNPINNED_EXIT -ne 0 ] && echo \"\$UNPINNED_LOG\" | grep -q 'must pin a version'"
+
 echo ""
 if [ $FAILS -eq 0 ]; then echo -e "${GREEN}All build-system checks passed${NC}"; exit 0
 else echo -e "${RED}$FAILS check(s) failed${NC}"; exit 1; fi
