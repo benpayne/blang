@@ -985,17 +985,15 @@ void CodeGen::validateQueryFields( const std::string &tableName,
 	auto it = mStructDefMap.find( tableName );
 	if ( it == mStructDefMap.end() || it->second == nullptr )
 	{
-		cerr << "CodeGen: query on unknown table '" << tableName << "'" << endl;
-		mHasError = true;
+		reportError( node, "query on unknown table '" + tableName + "'" );
 		return;
 	}
 
 	StructDefinition *structDef = it->second;
 	if ( !structDef->isTable() )
 	{
-		cerr << "CodeGen: '" << tableName
-			 << "' is not a table struct (use `table struct`)" << endl;
-		mHasError = true;
+		reportError( node, "'" + tableName +
+			"' is not a table struct (use `table struct`)" );
 		return;
 	}
 
@@ -1017,9 +1015,8 @@ void CodeGen::validateQueryFields( const std::string &tableName,
 	{
 		if ( fields.find( name ) == fields.end() )
 		{
-			cerr << "CodeGen: field '" << name << "' not found in table '"
-				 << tableName << "'" << endl;
-			mHasError = true;
+			reportError( node, "field '" + name + "' not found in table '" +
+				tableName + "'" );
 		}
 	};
 
@@ -1045,18 +1042,16 @@ void CodeGen::validateInsertFields( InsertExpression *insert )
 	auto it = mStructDefMap.find( insert->mTableName );
 	if ( it == mStructDefMap.end() || it->second == nullptr )
 	{
-		cerr << "CodeGen: insert into unknown table '"
-			 << insert->mTableName << "'" << endl;
-		mHasError = true;
+		reportError( insert, "insert into unknown table '" +
+			insert->mTableName + "'" );
 		return;
 	}
 
 	StructDefinition *structDef = it->second;
 	if ( !structDef->isTable() )
 	{
-		cerr << "CodeGen: '" << insert->mTableName
-			 << "' is not a table struct (use `table struct`)" << endl;
-		mHasError = true;
+		reportError( insert, "'" + insert->mTableName +
+			"' is not a table struct (use `table struct`)" );
 		return;
 	}
 
@@ -1068,9 +1063,8 @@ void CodeGen::validateInsertFields( InsertExpression *insert )
 	{
 		if ( fields.find( name ) == fields.end() )
 		{
-			cerr << "CodeGen: field '" << name << "' not found in table '"
-				 << insert->mTableName << "'" << endl;
-			mHasError = true;
+			reportError( insert, "field '" + name + "' not found in table '" +
+				insert->mTableName + "'" );
 		}
 	}
 }

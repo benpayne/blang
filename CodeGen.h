@@ -454,8 +454,8 @@ private:
 	llvm::Value *paramToCString( llvm::Value *val );
 
 	// Compile-time validation that query/update/delete field references and
-	// insert field names exist on the target table struct.  Reports via
-	// cerr + mHasError (consistent with the rest of codegen).
+	// insert field names exist on the target table struct.  Reports located
+	// errors via reportError (the single diagnostic path).
 	void validateQueryFields( const std::string &tableName,
 		const std::vector<QueryPipelineStep> &steps, Expression *node );
 	void validateInsertFields( InsertExpression *insert );
@@ -709,6 +709,16 @@ private:
 
 	// Flag indicating a codegen error occurred (e.g., ownership violation)
 	bool mHasError = false;
+
+	// Buffer a user-facing codegen error through the single diagnostic path
+	// (gDiag, code "codegen") with the node's source location, and set
+	// mHasError so generate() reports failure. The driver renders everything
+	// via DiagnosticEngine::finish() at exit — the same located
+	// `file:line:col: error:` shape as parse/sema errors, and the LSP can
+	// publish them. Falls back to stderr if no engine is installed.
+	// ICE-style internal errors (verifier failures) stay direct stderr in
+	// the driver.
+	void reportError( const Statement *node, const std::string &message );
 
 	// Test-runner mode (qcc --emit-test-main); see setTestMode().
 	bool mTestMode = false;

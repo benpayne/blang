@@ -422,13 +422,18 @@ int main( int argc, char *argv[] )
 			hadError = true;
 	}
 
-	// U1: render all buffered diagnostics once (human text or --json array), then
-	// stop before any output-producing stage if the compile had errors — never
-	// codegen a rejected program (Constitution III). finish() also flushes
-	// warnings (which do not, without -Werror, set hadError) on the success path.
-	gDiag->finish();
+	// U1: stop before any output-producing stage if the compile had errors —
+	// never codegen a rejected program (Constitution III). finish() renders all
+	// buffered diagnostics once (human text or --json array). On the success
+	// path finish() is DEFERRED to the exit points below so the codegen phase
+	// can buffer its own located errors through the same engine (U-last) and
+	// everything — codegen errors and warnings alike — still renders exactly
+	// once, in one JSON array under --json.
 	if ( hadError || gDiag->hasErrors() )
+	{
+		gDiag->finish();
 		return 1;
+	}
 
 	// --dump-locations: restore stdout and print one line per AST node for
 	// each parsed source module (command-line order), then exit. This is
@@ -441,6 +446,7 @@ int main( int argc, char *argv[] )
 			if ( !mod->isExtern() )
 				LocationDumper::dump( (Module*)mod, std::cout );
 		}
+		gDiag->finish();   // flush warnings (stderr; stdout stays pure)
 		return 0;
 	}
 
@@ -458,6 +464,7 @@ int main( int argc, char *argv[] )
 		if ( !bmodOut.is_open() )
 		{
 			cerr << "Error: cannot open " << emitBmodFile << " for writing" << endl;
+			gDiag->finish();
 			return -1;
 		}
 		QLang::BmodEmitter::emit( modPtrs, bmodOut );
@@ -481,9 +488,11 @@ int main( int argc, char *argv[] )
 		if ( !mig.saveSchema( emitSchemaFile ) )
 		{
 			cerr << "Error: cannot write schema to " << emitSchemaFile << endl;
+			gDiag->finish();
 			return -1;
 		}
 		PARSE_TRACE( "Wrote schema to " << emitSchemaFile );
+		gDiag->finish();
 		return 0;
 	}
 
@@ -550,8 +559,12 @@ int main( int argc, char *argv[] )
 
 				if ( !codegen.generate( modules[idx] ) )
 				{
-					cerr << "Code generation failed for " << inputFiles[idx] << endl;
-					return -1;
+					// The located diagnostics say what failed; add the generic
+					// line only if codegen somehow failed without buffering one.
+					if ( !gDiag->hasErrors() )
+						cerr << "Code generation failed for " << inputFiles[idx] << endl;
+					gDiag->finish();
+					return 1;
 				}
 			}
 
@@ -563,6 +576,7 @@ int main( int argc, char *argv[] )
 				cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
 				if ( debugCompiler )
 					cerr << codegen.getVerifyError() << endl;
+				gDiag->finish();
 				return -1;
 			}
 
@@ -574,6 +588,7 @@ int main( int argc, char *argv[] )
 				if ( !codegen.optimize( optLevel ) )
 				{
 					cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+					gDiag->finish();
 					return -1;
 				}
 				if ( !codegen.verify() )
@@ -581,6 +596,7 @@ int main( int argc, char *argv[] )
 					cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
 					if ( debugCompiler )
 						cerr << codegen.getVerifyError() << endl;
+					gDiag->finish();
 					return -1;
 				}
 			}
@@ -644,8 +660,10 @@ int main( int argc, char *argv[] )
 
 				if ( !codegen.generate( modules[ idx ] ) )
 				{
-					cerr << "Code generation failed for " << inputFile << endl;
-					return -1;
+					if ( !gDiag->hasErrors() )
+						cerr << "Code generation failed for " << inputFile << endl;
+					gDiag->finish();
+					return 1;
 				}
 
 				if ( !codegen.verify() )
@@ -653,6 +671,7 @@ int main( int argc, char *argv[] )
 					cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
 					if ( debugCompiler )
 						cerr << codegen.getVerifyError() << endl;
+					gDiag->finish();
 					return -1;
 				}
 
@@ -663,6 +682,7 @@ int main( int argc, char *argv[] )
 					if ( !codegen.optimize( optLevel ) )
 					{
 						cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+						gDiag->finish();
 						return -1;
 					}
 					if ( !codegen.verify() )
@@ -670,6 +690,7 @@ int main( int argc, char *argv[] )
 						cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
 						if ( debugCompiler )
 							cerr << codegen.getVerifyError() << endl;
+						gDiag->finish();
 						return -1;
 					}
 				}
@@ -718,6 +739,9 @@ int main( int argc, char *argv[] )
 	(void)emitTestMain;
 #endif
 
+	// Single render point on the success path: flushes warnings buffered by
+	// parse/sema (a warning-only compile still exits 0).
+	gDiag->finish();
 	return 0;
 }
 

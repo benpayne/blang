@@ -143,10 +143,10 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 				int extraArgs = (int)call->mParams.size() - funcDef->getNumberParams();
 				if ( phCount != extraArgs )
 				{
-					cerr << "CodeGen error: @format function '" << funcDef->getName()
-						 << "': format string has " << phCount
-						 << " placeholder(s) but " << extraArgs << " extra argument(s) provided" << endl;
-					mHasError = true;
+					reportError( call, "@format function '" + funcDef->getName() +
+						"': format string has " + to_string( phCount ) +
+						" placeholder(s) but " + to_string( extraArgs ) +
+						" extra argument(s) provided" );
 					return nullptr;
 				}
 			}
@@ -164,10 +164,9 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 	{
 		if ( !inferCallTypeArgs( call, funcDef ) )
 		{
-			cerr << "CodeGen error: cannot infer type arguments for generic function '"
-				<< funcDef->getName() << "' — call it with explicit type arguments, "
-				<< "e.g. " << funcDef->getName() << "<int>(...)" << endl;
-			mHasError = true;
+			reportError( call, "cannot infer type arguments for generic function '" +
+				funcDef->getName() + "' — call it with explicit type arguments, e.g. " +
+				funcDef->getName() + "<int>(...)" );
 			return nullptr;
 		}
 
@@ -201,13 +200,12 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 					}
 				if ( !found )
 				{
-					cerr << "CodeGen error: inferred type '"
-						<< ( (Type *)call->mTypeArgs[gi] )->getName()
-						<< "' does not satisfy constraint '" << cgps[gi].mConstraint
-						<< "' on generic parameter '" << cgps[gi].mName
-						<< "' of '" << funcDef->getName() << "': missing method '"
-						<< req->getName() << "'" << endl;
-					mHasError = true;
+					reportError( call, "inferred type '" +
+						( (Type *)call->mTypeArgs[gi] )->getName() +
+						"' does not satisfy constraint '" + cgps[gi].mConstraint +
+						"' on generic parameter '" + cgps[gi].mName +
+						"' of '" + funcDef->getName() + "': missing method '" +
+						req->getName() + "'" );
 					return nullptr;
 				}
 			}
@@ -219,9 +217,8 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		llvm::Function *genFunc = instantiateGenericFunction( funcDef, call->mTypeArgs );
 		if ( genFunc == nullptr )
 		{
-			cerr << "CodeGen error: failed to instantiate generic function '"
-				<< funcDef->getName() << "'" << endl;
-			mHasError = true;
+			reportError( call, "failed to instantiate generic function '" +
+				funcDef->getName() + "'" );
 			return nullptr;
 		}
 
@@ -301,12 +298,11 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 
 	if ( llvmFunc == nullptr )
 	{
-		cerr << "CodeGen error: undefined function '" << funcDef->getName() << "'"
-			<< ( !call->mMangledName.empty() ? " (mangled: " + call->mMangledName + ")" : "" )
-			<< endl;
 		// Loud: without mHasError the compile exited 0 with the call silently
 		// dropped, leaving the consumer reading uninitialized memory.
-		mHasError = true;
+		reportError( call, "undefined function '" + funcDef->getName() + "'" +
+			( !call->mMangledName.empty()
+				? " (mangled: " + call->mMangledName + ")" : "" ) );
 		return nullptr;
 	}
 
@@ -698,8 +694,8 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 	// Reject assignment to shared variables — shared values are immutable
 	if ( ownership == OwnershipQualifier::kOwnership_Shared )
 	{
-		cerr << "CodeGen error: cannot assign to shared variable '"
-			 << varDef->getName() << "' — shared values are immutable" << endl;
+		reportError( assign, "cannot assign to shared variable '" +
+			varDef->getName() + "' — shared values are immutable" );
 		return nullptr;
 	}
 
@@ -1083,15 +1079,13 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 		}
 		else
 		{
-			cerr << "CodeGen error: print/println format string must be a string literal, not a string interpolation with variables" << endl;
-			mHasError = true;
+			reportError( call, "print/println format string must be a string literal, not a string interpolation with variables" );
 			return;
 		}
 	}
 	else
 	{
-		cerr << "CodeGen error: print/println format string must be a string literal" << endl;
-		mHasError = true;
+		reportError( call, "print/println format string must be a string literal" );
 		return;
 	}
 
@@ -1145,8 +1139,7 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 					}
 					if ( spec.empty() )
 					{
-						cerr << "CodeGen error: empty format specifier after ':'" << endl;
-						mHasError = true;
+						reportError( call, "empty format specifier after ':'" );
 						return;
 					}
 					ph.specifier = spec;
@@ -1164,8 +1157,7 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 							{
 								if ( d < '0' || d > '9' )
 								{
-									cerr << "CodeGen error: invalid precision in format specifier: '" << spec << "'" << endl;
-									mHasError = true;
+									reportError( call, "invalid precision in format specifier: '" + spec + "'" );
 									return;
 								}
 								ph.precision = ph.precision * 10 + ( d - '0' );
@@ -1176,16 +1168,14 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 						ph.type = 'e';
 					else
 					{
-						cerr << "CodeGen error: unknown format specifier: '" << spec << "'" << endl;
-						mHasError = true;
+						reportError( call, "unknown format specifier: '" + spec + "'" );
 						return;
 					}
 				}
 
 				if ( i >= fmtStr.size() || fmtStr[i] != '}' )
 				{
-					cerr << "CodeGen error: unterminated format placeholder" << endl;
-					mHasError = true;
+					reportError( call, "unterminated format placeholder" );
 					return;
 				}
 				i++;
@@ -1193,8 +1183,7 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 			}
 			else if ( c == '}' )
 			{
-				cerr << "CodeGen error: unexpected '}' in format string (use '}}' for literal '}')" << endl;
-				mHasError = true;
+				reportError( call, "unexpected '}' in format string (use '}}' for literal '}')" );
 				return;
 			}
 			else
@@ -1211,9 +1200,8 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 
 	if ( numPlaceholders != numArgs )
 	{
-		cerr << "CodeGen error: format string has " << numPlaceholders
-			 << " placeholder(s) but " << numArgs << " argument(s) provided" << endl;
-		mHasError = true;
+		reportError( call, "format string has " + to_string( numPlaceholders ) +
+			" placeholder(s) but " + to_string( numArgs ) + " argument(s) provided" );
 		return;
 	}
 
@@ -1249,9 +1237,8 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 		{
 			if ( isFloatArg )
 			{
-				cerr << "CodeGen error: format specifier ':" << ph.type
-					 << "' requires integer type, got float/double" << endl;
-				mHasError = true;
+				reportError( call, std::string( "format specifier ':" ) + ph.type +
+					"' requires integer type, got float/double" );
 				return;
 			}
 		}
@@ -1259,9 +1246,8 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 		{
 			if ( isIntArg )
 			{
-				cerr << "CodeGen error: format specifier ':" << ph.type
-					 << "' requires float/double type, got integer" << endl;
-				mHasError = true;
+				reportError( call, std::string( "format specifier ':" ) + ph.type +
+					"' requires float/double type, got integer" );
 				return;
 			}
 		}
@@ -1345,9 +1331,8 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				}
 				if ( !hasPrintable )
 				{
-					cerr << "CodeGen error: type '" << structTypeName
-						 << "' is not printable — implement the Printable protocol" << endl;
-					mHasError = true;
+					reportError( call, "type '" + structTypeName +
+						"' is not printable — implement the Printable protocol" );
 					return;
 				}
 				// val already holds the loaded struct value from genExpression above
@@ -1367,8 +1352,7 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				}
 				else
 				{
-					cerr << "CodeGen error: '" << fnName << "' function not found" << endl;
-					mHasError = true;
+					reportError( call, "'" + fnName + "' function not found" );
 					return;
 				}
 			}
