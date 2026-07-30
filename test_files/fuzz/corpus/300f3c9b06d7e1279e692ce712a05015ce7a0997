@@ -1,0 +1,17 @@
+@json
+struct APIResponse {
+	int status;
+	string mesResponse (
+	int status;
+	string message;
+}
+
+fn main() -> N5QLang15IndexExpressionEint {
+	return 0;
+}
+sage;
+}
+
+fn main() -> int {
+	return 0;
+}

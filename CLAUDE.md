@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-BLang is a compiled, native-performance language designed for clarity, safety, and LLM code generation. The compiler is written in C++17 and uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST. LLVM 18+ code generation is integrated via the `CodeGen` class (`CodeGen.h/cpp`), which walks the QLang AST and emits LLVM IR. When built with LLVM (`llvm-18-dev` package), `qcc` parses source, generates IR, and writes `.ll` files. Without LLVM, it operates in parse-only mode. The project also includes an earlier Bison/Flex-based parser (`parser.yy`, `lexer.l`) and its associated code generation helpers (`parse_helpers.cpp`) which have been superseded.
+BLang is a compiled, native-performance language designed for clarity, safety, and LLM code generation. The compiler is written in C++17 and uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST. LLVM 18+ code generation is integrated via the `CodeGen` class (`CodeGen.h/cpp`), which walks the QLang AST and emits LLVM IR. When built with LLVM (`llvm-18-dev` package), `qcc` parses source, generates IR, and writes `.ll` files. Without LLVM, it operates in parse-only mode.  An earlier Bison/Flex-based parser and its helpers were removed in the LSP tech-debt cleanup (preserved in git history).
 
 ## Language Design
 
@@ -32,9 +32,6 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── logging.h                  # Lightweight logging macros (replaces jhcommon logging)
 ├── FileLexer.h / FileLexer.cpp # Hand-written lexer (Lexer and LexerReader classes)
 ├── LexerReader.cpp            # File reader implementation for the lexer
-├── Lexer.h                    # Abstract lexer interface
-├── Symbol.h                   # Symbol class (BLang namespace, legacy LLVM-based approach)
-├── Scope.h                    # Scope class (BLang namespace, legacy LLVM-based approach with BasicBlock/Function)
 ├── QBlock.cpp                 # Block::Parse implementation
 ├── QBreakContinue.cpp         # BreakStatement::Parse and ContinueStatement::Parse
 ├── QEnumDefinition.cpp        # EnumDefinition::Parse (enum/sum types with variants and associated types)
@@ -53,10 +50,6 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── QQueryExpression.cpp        # Query/insert/update/delete expression parsing (table struct queries)
 ├── QLambdaExpression.cpp       # LambdaExpression::Parse (anonymous function expressions)
 ├── QParser.cpp                # Empty (placeholder)
-├── parser.yy                  # Bison grammar (older approach, not used by qcc)
-├── parser.h                   # Generated Bison header with token definitions
-├── lexer.l                    # Flex lexer specification (older approach)
-├── parse_helpers.h/cpp        # LLVM 18+ code generation helpers (legacy Bison/Flex approach, superseded by CodeGen)
 ├── BmodEmitter.h / BmodEmitter.cpp # .bmod interface file emitter (walks AST, emits pub declarations in BLang syntax)
 ├── ProjectConfig.h / ProjectConfig.cpp # blang.toml parser and project configuration (name, version, type, dependencies)
 ├── BuildCache.h / BuildCache.cpp # Content-addressable build cache (SHA-256 keyed, ~/.cache/blang/objects/)
@@ -265,8 +258,6 @@ parser (already located); sema owns member resolution and does not double-report
 
 3. **Code generation — CodeGen** (`QLang::CodeGen` in `CodeGen.h/cpp`): Walks the QLang AST and emits LLVM IR using modern LLVM 18+ APIs (`IRBuilder<>`, opaque pointers, `FunctionCallee`). The `CodeGen` class is a friend of all AST node classes and uses `dynamic_cast` to dispatch to type-specific generation methods. Conditionally compiled (`BLANG_HAS_LLVM`).
 
-4. **Legacy code generation** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`): Earlier procedural C-style API driven by the Bison/Flex parser. Superseded by `CodeGen` but retained for reference.
-
 ### Key class hierarchy (QLang namespace)
 
 ```
@@ -383,7 +374,6 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 ### Namespaces
 
 - `QLang` — Active parser/AST classes
-- `BLang` — Legacy LLVM-based code path
 - Source files use `using namespace QLang;` and `using namespace std;`
 
 ## Testing
@@ -566,7 +556,6 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
 - Git dependencies work: `deps.foo = { git = "<url>", tag = "v1.0" }` (or `rev = "<commit>"`) is fetched with the git CLI into `~/.cache/blang/git/<name>-<hash(url@pin)>` on first build (shallow `--branch` clone for tags/branches, full clone + checkout for revs), reused offline while warm, then treated exactly like a path dep (recursive build, `.a` + `.bmod`, content-addressed caching — generics included). A pin (tag or rev) is REQUIRED; an unpinned git dep is a hard error. `bcc clean` removes checkouts along with the object cache. Automated by the git-dep leg of `test_build/run_build_tests.sh` (local `file://` repo).
 - Generic monomorphization supports struct and function instantiation with full ARC participation: every ARC decision site (scope tracking, borrowed-source bind-retain, untrack-on-store, temp tracking, the `isStringType`/`isArrayType` predicates, and the return-retain borrow rule) resolves declared type names through the active substitution (`resolvedTypeName`/`callReturnTypeName`/`methodReturnTypeName`, CGTypes.cpp), so `T`-typed values inside monomorphized generics are retained/released like concrete ones — `sort<string>`, `Map<string,string>`, struct-valued Map under churn, and `Map<string, Array<int>>` are all ASan-clean (`codegen_generic_arc_*.b`). Generic calls infer their type arguments from argument types when no explicit `<...>` list is given (`sort_items(names)` == `sort_items<string>(names)`); a call that can neither infer nor was given explicit arguments is a loud compile error (`cgfail/generic_infer_fail.b`). Cross-module generic instantiation works (`.bmod` ships generic bodies; instances are `linkonce_odr`). Generic protocols work end to end: `impl Protocol for Struct` checks arity and types (a generic protocol's own params are wildcards), constraints are enforced on inferred calls too (codegen, `cgfail/generic_constraint_inferred.b`), and a constrained generic function's method calls on a param-typed object dispatch to the concrete struct (`codegen_generic_protocol.b`).
 - Nested `@json` structs use an encode/decode round-trip (serialize inner struct to string, decode to JSON tree) — works correctly but adds overhead; direct subtree construction would be more efficient.
-- Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.
 
 ## devbot program conventions
 

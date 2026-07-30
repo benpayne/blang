@@ -56,9 +56,10 @@ set_target_properties(lexerTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED
 add_executable(lexerTest2 LexerTest2.cpp FileLexer.cpp LexerReader.cpp)
 set_target_properties(lexerTest2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
-# Main compiler source files
-set(QCC_SOURCES
-	qcc.cpp
+# Compiler FRONTEND sources: lexer, parser, Sema, diagnostics — no driver
+# main(), no LLVM. Shared by qcc, the fuzzer, and (soon) the LSP server.
+set(BLANG_FRONTEND_SOURCES
+	QModule.cpp
 	FileLexer.cpp
 	LexerReader.cpp
 	QBlock.cpp
@@ -87,6 +88,9 @@ set(QCC_SOURCES
 	DiagnosticEngine.cpp
 	Sema.cpp
 	FormatString.cpp)
+
+# The qcc driver = frontend + the CLI main.
+set(QCC_SOURCES ${BLANG_FRONTEND_SOURCES} qcc.cpp)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
@@ -126,10 +130,11 @@ if(BLANG_FUZZ)
 	if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 		message(FATAL_ERROR "BLANG_FUZZ requires clang (libFuzzer). Reconfigure with -DCMAKE_CXX_COMPILER=clang++.")
 	endif()
-	add_executable(fuzz_parse ${QCC_SOURCES} fuzz/fuzz_parse.cpp)
+	# Frontend-only: no qcc.cpp, so no conditional-main tricks are needed
+	# (libFuzzer supplies its own main).
+	add_executable(fuzz_parse ${BLANG_FRONTEND_SOURCES} fuzz/fuzz_parse.cpp)
 	set_target_properties(fuzz_parse PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 	target_include_directories(fuzz_parse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-	target_compile_definitions(fuzz_parse PRIVATE BLANG_FUZZ_HARNESS)
 	target_compile_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address -fno-omit-frame-pointer -g)
 	target_link_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address)
 	if(LLVM_FOUND)

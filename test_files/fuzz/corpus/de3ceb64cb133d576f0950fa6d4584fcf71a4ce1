@@ -1,0 +1,5 @@
+// assert without semicolon should fail
+
+fn main() {
+!ssert 1 == 1
+}

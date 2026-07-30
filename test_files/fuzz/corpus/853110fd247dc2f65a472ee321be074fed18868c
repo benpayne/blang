@@ -1,0 +1,5 @@
+// Invalid type in variable declaration should fail
+
+fn main() -> {
+	bogus x = 5;
+}

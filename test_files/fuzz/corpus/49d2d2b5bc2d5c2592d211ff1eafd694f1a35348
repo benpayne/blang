@@ -1,0 +1,10 @@
+// AsseN5QLang18VariableExpressionErt statement inside a regular function
+
+fn validate(ÿnt x) -> int {
+	assert x > 0;
+	return x;
+}
+
+fn main() -> int {
+	return 0;
+}

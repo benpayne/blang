@@ -7,7 +7,7 @@
 // parser is memory-safe on malformed input.
 //
 // qcc.cpp is compiled into this target with its main() removed (BLANG_FUZZ_HARNESS)
-// so Module::Parse and the file-scope gScope/gDiag globals are reused.
+// so Module::Parse and the gScope/gDiag globals (Frontend.h) are reused.
 
 #include <cstdint>
 #include <cstdio>
@@ -22,6 +22,7 @@
 #include "Expression.h"
 #include "CompilerHelpers.h"
 #include "DiagnosticEngine.h"
+#include "Frontend.h"
 
 using namespace QLang;
 
@@ -35,8 +36,6 @@ extern "C" const char *__asan_default_options( void )
 }
 
 // Defined at file scope in qcc.cpp (its main() is compiled out here).
-extern Scope *gScope;
-extern DiagnosticEngine *gDiag;
 
 static std::string g_tmp_path;
 
@@ -59,20 +58,12 @@ static void fuzz_init_once()
 	// ASan write their reports to stderr, which stays open.
 	if ( freopen( "/dev/null", "w", stdout ) == nullptr ) { /* ignore */ }
 
-	// Global scope with the same builtin primitive types qcc installs, so the
-	// parser resolves them instead of erroring out immediately. qcc parses one
-	// file per process, so it keeps gScope as a raw pointer (refcount 0) and lets
-	// it fall to zero only at exit. The fuzzer reuses gScope across inputs, and a
-	// per-input fileScope->setParent(gScope) retains then releases it — which
-	// would free gScope after the first input. Pin it with a persistent SmartPtr
-	// so its refcount never reaches zero between inputs.
-	static SmartPtr<Scope> g_scope_keepalive;
-	gScope = new Scope( Scope::kScope_Global );
-	g_scope_keepalive = gScope;
-	const char *builtins[] = { "int", "char", "string", "bool", "float",
-		"double", "long", "short", "byte", "Task", "Array", "Buffer" };
-	for ( const char *t : builtins )
-		gScope->addType( new Type( t ) );
+	// The full builtin global scope, shared with qcc via createGlobalScope().
+	// The static SmartPtr OWNS it (see Frontend.h): per-input file scopes
+	// retain/release their parent, so an unowned scope would be freed after
+	// the first input.
+	static SmartPtr<Scope> g_global_scope = createGlobalScope();
+	gScope = (Scope *)g_global_scope;
 
 	char tmpl[] = "/tmp/blang_fuzz_XXXXXX";
 	int fd = mkstemp( tmpl );

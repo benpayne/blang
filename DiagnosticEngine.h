@@ -80,6 +80,10 @@ public:
 	// Number of buffered diagnostics (test/introspection helper).
 	std::size_t diagnosticCount() const { return mDiags.size(); }
 
+	// Read the buffered diagnostics programmatically (the LSP server publishes
+	// these directly instead of rendering via finish()).
+	const std::vector<Diagnostic> &diagnostics() const { return mDiags; }
+
 private:
 	static const std::size_t kMaxDiags = 50;
 
