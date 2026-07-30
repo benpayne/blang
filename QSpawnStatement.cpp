@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 SET_LOG_CAT( LOG_CAT_ALL );
 SET_LOG_LEVEL( LOG_LVL_NOISE );
@@ -42,7 +43,7 @@ SpawnStatement *SpawnStatement::Parse( Lexer &l, Scope *scope )
 
 	statement->mBody = Block::Parse( l, spawn_scope );
 
-	cout << "Completed spawn statement parse" << endl;
+	PARSE_TRACE( "Completed spawn statement parse" );
 
 	return statement;
 }
@@ -76,7 +77,7 @@ WaitStatement *WaitStatement::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected ';' after wait expression" );
 	}
 
-	cout << "Completed wait statement parse" << endl;
+	PARSE_TRACE( "Completed wait statement parse" );
 
 	return statement;
 }
@@ -103,7 +104,7 @@ WaitAllStatement *WaitAllStatement::Parse( Lexer &l, Scope *scope )
 		COMPILE_ERROR( l, "Expected ';' after wait_all" );
 	}
 
-	cout << "Completed wait_all statement parse" << endl;
+	PARSE_TRACE( "Completed wait_all statement parse" );
 
 	return statement;
 }

@@ -4,6 +4,8 @@
 // Shared compiler-frontend entry points (defined in QModule.cpp), used by the
 // qcc driver, the LSP server, and the fuzz harness.
 
+#include <ostream>
+
 #include "Type.h"
 
 namespace QLang { class DiagnosticEngine; }
@@ -23,5 +25,19 @@ extern QLang::DiagnosticEngine *gDiag;
 // (store it in a SmartPtr) before parenting file scopes to it, or the first
 // file scope's release will free it.
 QLang::Scope *createGlobalScope();
+
+// Parse-progress trace. OFF by default; `qcc -v` enables it. Writes to STDERR
+// so stdout stays clean for machine output (IR, --dump-locations, LSP frames)
+// — no driver ever needs to redirect std::cout to hide compiler chatter.
+namespace QLang
+{
+	void setParseTraceEnabled( bool enabled );
+	bool parseTraceEnabled();
+	std::ostream &parseTrace();  // stderr when enabled, a null sink otherwise
+}
+
+// One trace line. The expression is not evaluated when tracing is off.
+#define PARSE_TRACE( expr ) \
+	do { if ( QLang::parseTraceEnabled() ) QLang::parseTrace() << expr << std::endl; } while ( false )
 
 #endif // BLANG_FRONTEND_H_

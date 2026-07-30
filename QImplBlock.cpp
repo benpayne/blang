@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 using namespace QLang;
 using namespace std;
@@ -235,10 +236,10 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 			}
 		}
 
-		cout << "Completed impl " << protocolName << " for " << structName << endl;
+		PARSE_TRACE( "Completed impl " << protocolName << " for " << structName );
 	}
 	else
 	{
-		cout << "Completed impl " << structName << endl;
+		PARSE_TRACE( "Completed impl " << structName );
 	}
 }

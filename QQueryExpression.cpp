@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 SET_LOG_CAT( LOG_CAT_ALL );
 SET_LOG_LEVEL( LOG_LVL_NOISE );
@@ -170,7 +171,7 @@ QueryExpression *QueryExpression::Parse( Lexer &l, Scope *scope )
 	// Parse pipeline steps
 	parsePipelineSteps( l, scope, expr->mSteps );
 
-	cout << "Completed query expression on " << expr->mTableName << endl;
+	PARSE_TRACE( "Completed query expression on " << expr->mTableName );
 	return expr;
 }
 
@@ -223,7 +224,7 @@ InsertExpression *InsertExpression::Parse( Lexer &l, Scope *scope )
 	if ( sym != '}' )
 		COMPILE_ERROR( l, "Expected '}' in insert expression" );
 
-	cout << "Completed insert expression on " << expr->mTableName << endl;
+	PARSE_TRACE( "Completed insert expression on " << expr->mTableName );
 	return expr;
 }
 
@@ -246,7 +247,7 @@ UpdateExpression *UpdateExpression::Parse( Lexer &l, Scope *scope )
 	// Parse pipeline steps (where, set)
 	parsePipelineSteps( l, scope, expr->mSteps );
 
-	cout << "Completed update expression on " << expr->mTableName << endl;
+	PARSE_TRACE( "Completed update expression on " << expr->mTableName );
 	return expr;
 }
 
@@ -269,6 +270,6 @@ DeleteExpression *DeleteExpression::Parse( Lexer &l, Scope *scope )
 	// Parse pipeline steps (where)
 	parsePipelineSteps( l, scope, expr->mSteps );
 
-	cout << "Completed delete expression on " << expr->mTableName << endl;
+	PARSE_TRACE( "Completed delete expression on " << expr->mTableName );
 	return expr;
 }

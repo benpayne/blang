@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 using namespace QLang;
 using namespace std;
@@ -214,14 +215,14 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 		if ( sym != ';' )
 			COMPILE_ERROR( l, "Expected ';' after extern function declaration" );
 		func->mFuncBody = nullptr;
-		cout << "Completed extern declaration " << endl;
+		PARSE_TRACE( "Completed extern declaration " );
 	}
 	else if ( l.peekSymbol() == ';' )
 	{
 		// Bodyless declaration (e.g. protocol methods)
 		l.getSymbol(); // consume ';'
 		func->mFuncBody = nullptr;
-		cout << "Completed function declaration " << endl;
+		PARSE_TRACE( "Completed function declaration " );
 	}
 	else if ( deferBody )
 	{
@@ -243,12 +244,12 @@ FunctionDefinition *FunctionDefinition::Parse( Lexer &l, Scope *s, bool isExtern
 			else if ( sym == '}' )
 				depth--;
 		}
-		cout << "Declared function " << endl;
+		PARSE_TRACE( "Declared function " );
 	}
 	else
 	{
 		func->mFuncBody = Block::Parse( l, func->mFuncScope );
-		cout << "Completed function " << endl;
+		PARSE_TRACE( "Completed function " );
 	}
 
 	return func;
@@ -323,6 +324,6 @@ FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s )
 	// Parse body
 	func->mFuncBody = Block::Parse( l, func->mFuncScope );
 
-	cout << "Completed init constructor" << endl;
+	PARSE_TRACE( "Completed init constructor" );
 	return func;
 }

@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 SET_LOG_CAT( LOG_CAT_ALL );
 SET_LOG_LEVEL( LOG_LVL_NOISE );
@@ -49,7 +50,7 @@ EventHandler *EventHandler::Parse( Lexer &l, Scope *scope )
 
 	handler->mBody = Block::Parse( l, handler_scope );
 
-	cout << "Completed event handler parse" << endl;
+	PARSE_TRACE( "Completed event handler parse" );
 
 	return handler;
 }

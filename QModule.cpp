@@ -27,6 +27,28 @@
 using namespace QLang;
 using namespace std;
 
+// --- Parse-progress trace (see Frontend.h) ----------------------------------
+
+static bool gParseTraceEnabled = false;
+
+void QLang::setParseTraceEnabled( bool enabled )
+{
+	gParseTraceEnabled = enabled;
+}
+
+bool QLang::parseTraceEnabled()
+{
+	return gParseTraceEnabled;
+}
+
+std::ostream &QLang::parseTrace()
+{
+	if ( gParseTraceEnabled )
+		return std::cerr;
+	static std::ostream nullStream( nullptr );  // badbit sink: writes are no-ops
+	return nullStream;
+}
+
 Scope *gScope;
 
 // The single diagnostic reporting path, owned by main() and referenced here so
@@ -153,7 +175,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 					s->addImportedModule( moduleName );
 				// If namespace not found, it may be an external module — allow for now
 
-				cout << "import " << moduleName << endl;
+				PARSE_TRACE( "import " << moduleName );
 				continue;
 			}
 
@@ -203,7 +225,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				}
 
 				annotations.push_back( ann );
-				cout << "annotation @" << ann.mName << endl;
+				PARSE_TRACE( "annotation @" << ann.mName );
 				nextSym = l.peekSymbol();
 			}
 
@@ -254,7 +276,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 					}
 				}
 
-				cout << "Completed table struct " << structDef->getName() << endl;
+				PARSE_TRACE( "Completed table struct " << structDef->getName() );
 				continue;
 			}
 
@@ -325,7 +347,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			{
 				SmartPtr<EventHandler> handler = EventHandler::Parse( l, s );
 				// Event handlers stored in function list as statements for now
-				cout << "Completed event handler" << endl;
+				PARSE_TRACE( "Completed event handler" );
 				continue;
 			}
 
@@ -378,7 +400,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 			}
 
 			mod->mFunctionList.push_back( def );
-			cout << *def << endl;
+			PARSE_TRACE( *def );
 		} catch( CompileError &err ) {
 			// Buffer the located diagnostic through the single reporting path,
 			// then resync to the next top-level declaration so parsing continues.

@@ -250,38 +250,12 @@ int main( int argc, char *argv[] )
 		combineScope->setParent( gScope );
 	}
 
-	// Quiet by default (FR-007): the parser and codegen emit informational
-	// stdout — per-file "Completed …" progress, "Wrote IR to …", and the
-	// lexer's per-token trace. Divert all of it to a discard sink unless -v
-	// was passed. --dump-locations always diverts here regardless of -v and
-	// restores std::cout just before writing its node dump, so its output is
-	// exactly the dump (U1 golden contract). Error diagnostics are unaffected:
-	// they go to std::cerr, never std::cout.
-	std::ostringstream discardSink;
-	std::streambuf *savedCoutBuf = nullptr;
-	// RAII: guarantee std::cout's original buffer is restored on EVERY exit
-	// path from here on — the two early `return -1` failures below, and the
-	// normal success return. Without this, a quiet (non-verbose) compile left
-	// std::cout pointing at the stack-local `discardSink` after this function
-	// returned; the standard-stream teardown in std::ios_base::Init::~Init()
-	// then flushed that dangling stack streambuf at process exit — an invalid
-	// read that is benign on some hosts but SIGSEGVs on others (surfaced by CI,
-	// invisible locally). Declared after `discardSink` so the guard destructs
-	// FIRST (restoring the real buffer) and `discardSink` dies afterward.
-	struct CoutBufGuard
-	{
-		std::streambuf **saved;
-		~CoutBufGuard()
-		{
-			if ( *saved != nullptr )
-			{
-				std::cout.rdbuf( *saved );
-				*saved = nullptr;
-			}
-		}
-	} coutBufGuard{ &savedCoutBuf };
-	if ( !verbose || dumpLocations )
-		savedCoutBuf = std::cout.rdbuf( discardSink.rdbuf() );
+	// Quiet by default (FR-007): parser progress is a gated trace on STDERR
+	// (Frontend.h), enabled by -v. stdout carries only machine output (the
+	// --dump-locations node dump), so no cout redirection games are needed —
+	// the old rdbuf-swap hack (and the process-teardown SIGSEGV it once
+	// caused) is gone with the unconditional couts it was hiding.
+	setParseTraceEnabled( verbose && !dumpLocations );
 
 	// U1: accumulate failure across all files instead of aborting at the first,
 	// so one compile reports every file's diagnostics. Buffered diagnostics are
@@ -437,8 +411,7 @@ int main( int argc, char *argv[] )
 		}
 
 		modules.push_back( mod );
-		cout << "Completed parse" << endl;
-
+		PARSE_TRACE( "Completed parse" );
 		// Semantic analysis (U3): runs in ALL build modes, immediately after a
 		// non-extern module parses and before any code generation, resolving
 		// member references and annotating expression types through the single
@@ -462,13 +435,7 @@ int main( int argc, char *argv[] )
 	// the entire stdout of a dump run.
 	if ( dumpLocations )
 	{
-		// Restore now (the dump below writes to the real std::cout) and disarm
 		// the RAII guard so it does not restore a second time.
-		if ( savedCoutBuf != nullptr )
-		{
-			std::cout.rdbuf( savedCoutBuf );
-			savedCoutBuf = nullptr;
-		}
 		for ( auto &mod : modules )
 		{
 			if ( !mod->isExtern() )
@@ -494,7 +461,7 @@ int main( int argc, char *argv[] )
 			return -1;
 		}
 		QLang::BmodEmitter::emit( modPtrs, bmodOut );
-		cout << "Wrote .bmod to " << emitBmodFile << endl;
+		PARSE_TRACE( "Wrote .bmod to " << emitBmodFile );
 	}
 
 	// Emit the current schema (table structs) as JSON for `bcc migrate`.
@@ -516,7 +483,7 @@ int main( int argc, char *argv[] )
 			cerr << "Error: cannot write schema to " << emitSchemaFile << endl;
 			return -1;
 		}
-		cout << "Wrote schema to " << emitSchemaFile << endl;
+		PARSE_TRACE( "Wrote schema to " << emitSchemaFile );
 		return 0;
 	}
 
@@ -647,7 +614,7 @@ int main( int argc, char *argv[] )
 			if ( !ec )
 			{
 				codegen.print( outFile );
-				cout << "Wrote IR to " << irFile << endl;
+				PARSE_TRACE( "Wrote IR to " << irFile );
 			}
 			else
 			{
@@ -733,7 +700,7 @@ int main( int argc, char *argv[] )
 				if ( !ec )
 				{
 					codegen.print( outFile );
-					cout << "Wrote IR to " << irFile << endl;
+					PARSE_TRACE( "Wrote IR to " << irFile );
 				}
 				else
 				{

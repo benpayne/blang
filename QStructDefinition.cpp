@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 using namespace QLang;
 using namespace std;
@@ -108,7 +109,7 @@ StructDefinition *StructDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 	s->addSymbol( structDef );
 	s->addType( new Type( structDef->getName() ) );
 
-	cout << "Completed struct " << structDef->getName() << endl;
+	PARSE_TRACE( "Completed struct " << structDef->getName() );
 
 	return structDef;
 }

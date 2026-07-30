@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 using namespace QLang;
 using namespace std;
@@ -98,7 +99,7 @@ ProtocolDefinition *ProtocolDefinition::Parse( Lexer &l, Scope *s, bool isPublic
 
 	s->addSymbol( protoDef );
 
-	cout << "Completed protocol " << protoDef->getName() << endl;
+	PARSE_TRACE( "Completed protocol " << protoDef->getName() );
 
 	return protoDef;
 }
