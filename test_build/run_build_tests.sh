@@ -117,6 +117,30 @@ UNPINNED_EXIT=$?
 check "unpinned git dep is a hard error" \
 	"[ $UNPINNED_EXIT -ne 0 ] && echo \"\$UNPINNED_LOG\" | grep -q 'must pin a version'"
 
+# Security regression: a git URL is passed to git verbatim, never a shell, so
+# shell metacharacters in a (possibly transitive) dependency's URL cannot
+# execute. bcc runs its subprocesses via fork+execvp with no /bin/sh. The
+# clone is expected to FAIL (bogus host) — the point is that the $(...) payload
+# leaves no side effect. The marker path is process-unique so the check is
+# independent of any prior run.
+INJ_MARKER="/tmp/bcc_inj_$$_$RANDOM"
+rm -f "$INJ_MARKER"
+INJTMP=$( mktemp -d )
+cat > "$INJTMP/blang.toml" <<EOF
+[project]
+name = "injapp"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+evil = { git = "https://example.invalid/\$(touch $INJ_MARKER).git", tag = "v1" }
+EOF
+echo 'fn main() -> int { return 0; }' > "$INJTMP/main.b"
+( cd "$INJTMP" && "$BCC" build >/dev/null 2>&1 )
+check "git URL is not shell-evaluated (no command injection)" \
+	"[ ! -e '$INJ_MARKER' ]"
+rm -f "$INJ_MARKER"; rm -rf "$INJTMP"
+
 echo ""
 if [ $FAILS -eq 0 ]; then echo -e "${GREEN}All build-system checks passed${NC}"; exit 0
 else echo -e "${RED}$FAILS check(s) failed${NC}"; exit 1; fi

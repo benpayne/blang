@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <fcntl.h>
 
 #include "ProjectConfig.h"
 #include "BuildCache.h"
@@ -222,9 +223,19 @@ static string getExeDir( const char *argv0 )
 	return ".";
 }
 
-// Run a command and return its exit code
+// Run a command and return its exit code.
+//
+// Executed WITHOUT a shell: fork + execvp with the args passed as a literal
+// argv vector, so no string is ever handed to /bin/sh. This is a security
+// boundary — a dependency's git URL (or any other arg) cannot inject shell
+// metacharacters. `git = "https://x/$(rm -rf ~)"` in a blang.toml is passed
+// to git verbatim rather than evaluated, which the previous system() path
+// (double-quote wrapping does not stop $()/backticks) did not prevent.
 static int runCommand( const vector<string> &args, bool verbose, bool suppressOutput = false )
 {
+	if ( args.empty() )
+		return -1;
+
 	if ( verbose )
 	{
 		for ( size_t i = 0; i < args.size(); i++ )
@@ -235,23 +246,53 @@ static int runCommand( const vector<string> &args, bool verbose, bool suppressOu
 		cerr << endl;
 	}
 
-	// Build command string for system()
-	string cmd;
-	for ( size_t i = 0; i < args.size(); i++ )
+	pid_t pid = fork();
+	if ( pid < 0 )
 	{
-		if ( i > 0 ) cmd += " ";
-		// Quote arguments that might contain spaces
-		cmd += "\"" + args[i] + "\"";
+		cerr << "error: fork failed running '" << args[0] << "'" << endl;
+		return -1;
 	}
 
-	// Suppress stdout/stderr in non-verbose mode when requested
-	// Stderr is captured to a temp file so errors can be shown on failure
-	if ( suppressOutput && !verbose )
-		cmd += " >/dev/null 2>/tmp/bcc_stderr.txt";
+	if ( pid == 0 )
+	{
+		// Child. Replicate the old shell redirect (>/dev/null
+		// 2>/tmp/bcc_stderr.txt) with dup2 so callers can still read captured
+		// stderr from the temp file on failure.
+		if ( suppressOutput && !verbose )
+		{
+			int devnull = open( "/dev/null", O_WRONLY );
+			if ( devnull >= 0 )
+			{
+				dup2( devnull, STDOUT_FILENO );
+				close( devnull );
+			}
+			int errfd = open( "/tmp/bcc_stderr.txt",
+				O_WRONLY | O_CREAT | O_TRUNC, 0600 );
+			if ( errfd >= 0 )
+			{
+				dup2( errfd, STDERR_FILENO );
+				close( errfd );
+			}
+		}
 
-	int ret = system( cmd.c_str() );
-	if ( WIFEXITED( ret ) )
-		return WEXITSTATUS( ret );
+		// execvp searches PATH for argv[0]; argv must be NULL-terminated. The
+		// const_cast is the standard idiom (execvp does not modify argv).
+		vector<char *> argv;
+		argv.reserve( args.size() + 1 );
+		for ( const auto &a : args )
+			argv.push_back( const_cast<char *>( a.c_str() ) );
+		argv.push_back( nullptr );
+
+		execvp( argv[0], argv.data() );
+		_exit( 127 ); // only reached if exec failed (matches shell's "not found")
+	}
+
+	// Parent.
+	int status = 0;
+	if ( waitpid( pid, &status, 0 ) < 0 )
+		return -1;
+	if ( WIFEXITED( status ) )
+		return WEXITSTATUS( status );
 	return -1;
 }
 
