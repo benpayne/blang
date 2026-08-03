@@ -55,6 +55,7 @@ namespace QLang
 		SmartPtr<Statement> mLoopStatement;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -74,6 +75,7 @@ namespace QLang
 		SmartPtr<Statement> mStatement;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -94,6 +96,7 @@ namespace QLang
 		bool mIsInfinite = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -112,6 +115,7 @@ namespace QLang
 		SmartPtr<Statement> mElseStatement;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -128,6 +132,7 @@ namespace QLang
 		SmartPtr<Expression> mExpression;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 	
@@ -152,6 +157,7 @@ namespace QLang
 		int64_t mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};
@@ -165,6 +171,7 @@ namespace QLang
 		double mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};
@@ -178,6 +185,7 @@ namespace QLang
 		std::string mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};
@@ -197,6 +205,7 @@ namespace QLang
 		std::string mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -214,6 +223,7 @@ namespace QLang
 		std::vector<DeclData> mVariables;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 	
@@ -233,6 +243,7 @@ namespace QLang
 		SmartPtr<VariableDefinition> mVariable;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -250,6 +261,8 @@ namespace QLang
 		void setMangledName( const std::string &name ) { mMangledName = name; }
 		const std::string &getMangledName() const { return mMangledName; }
 
+		FunctionDefinition *getFunction() { return mFunction; }
+
 	private:
 		SmartPtr<FunctionDefinition> mFunction;
 		std::vector<SmartPtr<Type>> mTypeArgs;
@@ -257,6 +270,7 @@ namespace QLang
 		std::string mMangledName;  // namespace-mangled name, empty if not mangled
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 	
@@ -270,6 +284,7 @@ namespace QLang
 		std::vector<SmartPtr<Statement> > mStatementList;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -285,6 +300,7 @@ namespace QLang
 		SmartPtr<Expression> mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -302,6 +318,7 @@ namespace QLang
 		SmartPtr<Expression> mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -319,6 +336,7 @@ namespace QLang
 		SmartPtr<Expression> mValue;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -334,6 +352,7 @@ namespace QLang
 		SmartPtr<Expression> mOp2;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};
@@ -349,6 +368,7 @@ namespace QLang
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -364,6 +384,7 @@ namespace QLang
 	private:
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -379,6 +400,7 @@ namespace QLang
 	private:
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -394,6 +416,7 @@ namespace QLang
 		SmartPtr<Block> mBody;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -409,6 +432,7 @@ namespace QLang
 		SmartPtr<Expression> mExpr;   // the Task expression to wait on
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -423,6 +447,7 @@ namespace QLang
 	private:
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -440,6 +465,7 @@ namespace QLang
 		int mLine = 0;         // source line of the assert (for failure reports)
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -456,6 +482,7 @@ namespace QLang
 		SmartPtr<Block> mBody;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -470,11 +497,18 @@ namespace QLang
 		Expression *getObject() { return mObject; }
 		const std::string &getFieldName() const { return mFieldName; }
 
+		// The struct field this access resolved to (stamped by Sema; null when
+		// the base type is not a resolvable struct). Non-owning: the struct
+		// definition owns its fields.
+		VariableDefinition *getResolvedField() { return mResolvedField; }
+
 	private:
 		SmartPtr<Expression> mObject;
 		std::string mFieldName;
+		VariableDefinition *mResolvedField = nullptr;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -500,6 +534,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mFieldValues;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -516,6 +551,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mElements;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -533,6 +569,7 @@ namespace QLang
 		SmartPtr<Expression> mIndex;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -544,12 +581,22 @@ namespace QLang
 
 		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
 
+		Expression *getObject() { return mObject; }
+		const std::string &getMethodName() const { return mMethodName; }
+
+		// The struct method this call resolved to (stamped by Sema; null for
+		// builtin string/array methods, channel ops, and unresolvable bases).
+		// Non-owning: the struct definition owns its methods.
+		FunctionDefinition *getResolvedMethod() { return mResolvedMethod; }
+
 	private:
 		SmartPtr<Expression> mObject;
 		std::string mMethodName;
+		FunctionDefinition *mResolvedMethod = nullptr;
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -564,6 +611,7 @@ namespace QLang
 		SmartPtr<Expression> mEnd;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -580,6 +628,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mParts;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -596,6 +645,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -613,6 +663,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -647,6 +698,7 @@ namespace QLang
 		bool mExprMode = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -659,6 +711,7 @@ namespace QLang
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -671,6 +724,7 @@ namespace QLang
 		SmartPtr<Expression> mOperand;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -683,6 +737,7 @@ namespace QLang
 		SmartPtr<FunctionDefinition> mFunction;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -700,6 +755,7 @@ namespace QLang
 		SmartPtr<Block> mBody;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -715,6 +771,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mParams;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -730,6 +787,7 @@ namespace QLang
 		SmartPtr<Expression> mTransform;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -745,6 +803,7 @@ namespace QLang
 		std::string mFieldName;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -774,6 +833,7 @@ namespace QLang
 		std::vector<QueryPipelineStep> mSteps;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};
@@ -798,6 +858,7 @@ namespace QLang
 		std::vector<SmartPtr<Expression>> mFieldValues;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};
@@ -817,6 +878,7 @@ namespace QLang
 		std::vector<QueryPipelineStep> mSteps;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};
@@ -836,6 +898,7 @@ namespace QLang
 		std::vector<QueryPipelineStep> mSteps;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class SQLGen;
 	};

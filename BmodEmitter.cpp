@@ -1,10 +1,106 @@
 #include "BmodEmitter.h"
 #include "Expression.h"
 
+#include <fstream>
 #include <iostream>
+#include <map>
+#include <sstream>
 
 using namespace QLang;
 using namespace std;
+
+// Cache of source files read for definition slicing (one read per file).
+static map<string, vector<string>> gSourceLineCache;
+
+static const vector<string> *sourceLines( const string &path )
+{
+	auto it = gSourceLineCache.find( path );
+	if ( it != gSourceLineCache.end() )
+		return &it->second;
+
+	ifstream in( path );
+	if ( !in.is_open() )
+		return nullptr;
+
+	vector<string> lines;
+	string line;
+	while ( getline( in, line ) )
+		lines.push_back( line );
+	auto res = gSourceLineCache.emplace( path, std::move( lines ) );
+	return &res.first->second;
+}
+
+string BmodEmitter::sliceDefinitionSource( const SourceLocation &loc )
+{
+	if ( loc.file.empty() || loc.line == 0 )
+		return "";
+	const vector<string> *lines = sourceLines( loc.file );
+	if ( lines == nullptr || (size_t)loc.line > lines->size() )
+		return "";
+
+	// Scan from the start of the definition's line, brace-matching to the
+	// definition's closing '}' while skipping strings, chars, and comments.
+	ostringstream out;
+	int depth = 0;
+	bool sawOpen = false;
+	bool inLineComment = false, inBlockComment = false;
+	bool inString = false, inChar = false;
+
+	for ( size_t li = (size_t)loc.line - 1; li < lines->size(); li++ )
+	{
+		const string &l = ( *lines )[li];
+		inLineComment = false;
+		for ( size_t ci = 0; ci < l.size(); ci++ )
+		{
+			char c = l[ci];
+			char next = ( ci + 1 < l.size() ) ? l[ci + 1] : '\0';
+			if ( inLineComment )
+				continue;
+			if ( inBlockComment )
+			{
+				if ( c == '*' && next == '/' )
+				{
+					inBlockComment = false;
+					ci++;
+				}
+				continue;
+			}
+			if ( inString )
+			{
+				if ( c == '\\' )
+					ci++;
+				else if ( c == '"' )
+					inString = false;
+				continue;
+			}
+			if ( inChar )
+			{
+				if ( c == '\\' )
+					ci++;
+				else if ( c == '\'' )
+					inChar = false;
+				continue;
+			}
+			if ( c == '/' && next == '/' ) { inLineComment = true; continue; }
+			if ( c == '/' && next == '*' ) { inBlockComment = true; ci++; continue; }
+			if ( c == '"' ) { inString = true; continue; }
+			if ( c == '\'' ) { inChar = true; continue; }
+			if ( c == '{' ) { depth++; sawOpen = true; }
+			else if ( c == '}' )
+			{
+				depth--;
+				if ( sawOpen && depth == 0 )
+				{
+					// Emit through this closing brace and stop.
+					out << l.substr( 0, ci + 1 ) << "\n";
+					return out.str();
+				}
+			}
+		}
+		out << l << "\n";
+	}
+	return ""; // ran off the end without closing — malformed, fall back
+}
 
 // Helper to get a non-const Type* from various const SmartPtr contexts.
 // The BmodEmitter only reads from types, never modifies them.
@@ -70,6 +166,22 @@ void BmodEmitter::emitFunction( FunctionDefinition *func, ostream &out )
 
 	emitAnnotations( func->getAnnotations(), out );
 
+	// A GENERIC function ships its full definition (verbatim source): the
+	// consumer must monomorphize the body per instantiation — a signature
+	// alone would leave every downstream use a linker error. Monomorphized
+	// instances are emitted linkonce_odr, so a lib and its consumers
+	// instantiating the same specialization dedup at link time.
+	if ( func->isGeneric() )
+	{
+		string src = sliceDefinitionSource( func->getLocation() );
+		if ( !src.empty() )
+		{
+			out << src;
+			return;
+		}
+		// fall through to signature-only if the source is unavailable
+	}
+
 	out << "pub fn " << func->getName();
 	emitGenericParams( func->getGenericParams(), out );
 	out << "(";
@@ -122,6 +234,35 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 	}
 
 	out << "}" << endl;
+
+	// A GENERIC struct also ships its method bodies (an impl block of verbatim
+	// source slices): instantiating Box<int> in a consumer monomorphizes the
+	// methods, which requires bodies. Non-generic struct methods stay out of
+	// the .bmod — they are ordinary symbols linked from the library archive.
+	if ( !structDef->getGenericParams().empty() &&
+		 !structDef->getMethods().empty() )
+	{
+		ostringstream methods;
+		bool allSliced = true;
+		for ( const auto &msp : structDef->getMethods() )
+		{
+			FunctionDefinition *m = const_cast<FunctionDefinition*>(
+				(const FunctionDefinition*)msp );
+			string src = sliceDefinitionSource( m->getLocation() );
+			if ( src.empty() )
+			{
+				allSliced = false;
+				break;
+			}
+			methods << src;
+		}
+		if ( allSliced )
+		{
+			out << "impl " << structDef->getName() << " {" << endl;
+			out << methods.str();
+			out << "}" << endl;
+		}
+	}
 }
 
 void BmodEmitter::emitEnum( EnumDefinition *enumDef, ostream &out )

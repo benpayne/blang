@@ -8,6 +8,7 @@
 #include "CompilerHelpers.h"
 
 #include "logging.h"
+#include "Frontend.h"
 
 SET_LOG_CAT( LOG_CAT_ALL );
 SET_LOG_LEVEL( LOG_LVL_NOISE );
@@ -40,7 +41,7 @@ TestBlock *TestBlock::Parse( Lexer &l, Scope *s )
 
 	testBlock->mBody = Block::Parse( l, testScope );
 
-	cout << "Completed test block: " << name << endl;
+	PARSE_TRACE( "Completed test block: " << name );
 
 	return testBlock;
 }

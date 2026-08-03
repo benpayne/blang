@@ -1,0 +1,9 @@
+extern fn memset(nvalid type in variable declaration should fail
+
+fn main() -> int
+{
+	bogus x = carray<int> buf, int value, int size) -> carray<int>;
+
+fn main() -> int {
+    return 0;
+}

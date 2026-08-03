@@ -1,0 +1,5 @@
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"definitionProvider": true, "documentSymbolProvider": true, "hoverProvider": true, "positionEncoding": "utf-8", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/src/hovers.b"}}
+{"id": 2, "jsonrpc": "2.0", "result": {"contents": {"kind": "markdown", "value": "```blang\nint\n```"}}}
+{"id": 3, "jsonrpc": "2.0", "result": null}
+{"id": 4, "jsonrpc": "2.0", "result": null}

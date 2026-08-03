@@ -1,0 +1,16 @@
+# Go-to-definition on a call and on a constructor: `add(...)` (0-based 24/14)
+# resolves to `fn add` (18/0); `Point(1, 2)` (25/11) resolves to
+# `struct Point` (2/0).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/defs.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 24, "character": 14}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 25, "character": 11}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "shutdown"}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

@@ -1,0 +1,8 @@
+// Async func%tion declarat‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡‡ion
+
+asyncN5QLang15IndexExpressionEurn 42;
+}
+
+fn main() -> int {
+	return 0;
+}

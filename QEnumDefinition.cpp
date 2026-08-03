@@ -93,6 +93,7 @@ EnumDefinition *EnumDefinition::Parse( Lexer &l, Scope *s, bool isPublic )
 	while ( l.peekSymbol() != '}' )
 	{
 		Variant variant;
+		variant.mLocation = l.getTokenLocation();
 
 		// Parse variant name
 		sym = l.getSymbol();

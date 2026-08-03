@@ -278,6 +278,39 @@ if [ -n "$XFAIL_FILES" ]; then
 	echo ""
 fi
 
+# --- --dump-locations goldens ---
+# Every test_files/golden/<name>.locations pins the exact --dump-locations
+# output for test_files/pass/<name>.b (paths in the golden are relative, so
+# qcc runs from the repo root). Regenerate intentionally with:
+#   ./build/qcc --dump-locations test_files/pass/<name>.b > test_files/golden/<name>.locations
+GOLDEN_FILES=$(find "$SCRIPT_DIR/test_files/golden" -name '*.locations' 2>/dev/null | sort)
+if [ -n "$GOLDEN_FILES" ]; then
+	echo -e "${CYAN}--- --dump-locations goldens ---${NC}"
+	while IFS= read -r g; do
+		[ -z "$g" ] && continue
+		TOTAL=$((TOTAL + 1))
+		gname=$(basename "$g" .locations)
+		gsrc="test_files/pass/$gname.b"
+		if [ ! -f "$SCRIPT_DIR/$gsrc" ]; then
+			echo -e "  ${RED}FAIL${NC}  $gsrc  (golden $g has no source file)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			continue
+		fi
+		g_actual=$(cd "$SCRIPT_DIR" && timeout 10 "$QCC" --dump-locations "$gsrc" 2>/dev/null)
+		if [ "$g_actual" = "$(cat "$g")" ]; then
+			echo -e "  ${GREEN}PASS${NC}  $gsrc  (locations match golden)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		else
+			echo -e "  ${RED}FAIL${NC}  $gsrc  (locations differ from $g)"
+			if [ "$VERBOSE" -eq 1 ]; then
+				diff <(cat "$g") <(printf '%s\n' "$g_actual") | head -20 | sed 's/^/    /'
+			fi
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		fi
+	done <<< "$GOLDEN_FILES"
+	echo ""
+fi
+
 # --- Summary ---
 echo "==========================================="
 echo " Results"

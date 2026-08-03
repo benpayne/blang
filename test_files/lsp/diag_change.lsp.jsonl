@@ -1,0 +1,19 @@
+# Full document lifecycle: clean open -> edit introduces an error -> edit
+# fixes it -> close clears. Regression-tests the fresh-DiagnosticEngine and
+# pinned-global-scope invariants (a stale engine would replay the error after
+# the fix; a freed global scope would crash the second compile).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/clean.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/clean.b", "version": 2}, "contentChanges": [{"text": "fn main() -> int {\n\treturn broken;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/clean.b", "version": 3}, "contentChanges": [{"text": "fn main() -> int {\n\treturn 7;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didClose", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/clean.b"}}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "shutdown"}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

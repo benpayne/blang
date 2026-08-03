@@ -8,25 +8,33 @@
 
 #include "SourceLocation.h"
 
+// Character source for the Lexer. The base class reads from a file; the
+// members Lexer uses are virtual so alternative sources (the LSP server's
+// StringLexerReader over an in-memory buffer) can substitute without touching
+// the Lexer itself.
 class LexerReader
 {
 public:
 	LexerReader( const std::string &filename );
+	virtual ~LexerReader() {}
 
-	char operator[]( int i );
+	virtual char operator[]( int i );
 
-	char popChar();
-	void popChar( int count );
-	char peekChar();
+	virtual char popChar();
+	virtual void popChar( int count );
+	virtual char peekChar();
 
-	bool isEOF();
+	virtual bool isEOF();
 
 	// Position of the next unconsumed character (1-based).
-	const std::string &getFileName() const { return mFileName; }
-	uint32_t getLine() const { return mLine; }
-	uint32_t getCol() const { return mCol; }
+	virtual const std::string &getFileName() const { return mFileName; }
+	virtual uint32_t getLine() const { return mLine; }
+	virtual uint32_t getCol() const { return mCol; }
 
-private:
+protected:
+	// Shared by subclasses that track their own position.
+	LexerReader() {}
+
 	std::ifstream mFile;
 	std::string mFileName;
 	uint32_t mLine = 1;

@@ -346,10 +346,12 @@ int Lexer::getSymbolInternal()
 
 	if ( mTraceEnabled )
 	{
+		// Trace goes to stderr: stdout is reserved for machine output (IR,
+		// --dump-locations, LSP frames).
 		if ( sym <= Lexer::QUESTION_MARK || (sym >= 256 && sym < Lexer::NUM_SYMBOLS) )
-			std::cout << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
+			std::cerr << "Symbol " << sym << " (" << mMatchString << ")" << std::endl;
 		else
-			std::cout << "Symbol " << (char)sym << std::endl;
+			std::cerr << "Symbol " << (char)sym << std::endl;
 	}
 
 	return sym;

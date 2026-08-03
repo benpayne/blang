@@ -1,0 +1,3 @@
+fn process(@string s) -> intâ„
+    return 0;
+}

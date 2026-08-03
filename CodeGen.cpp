@@ -1,5 +1,8 @@
 #include "CodeGen.h"
 
+#include "DiagnosticEngine.h"
+#include "Frontend.h"
+
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Verifier.h"
@@ -80,6 +83,14 @@ bool CodeGen::generate( Module *mod )
 	for ( auto &enumDef : mod->mEnumList )
 	{
 		mEnumDefMap[enumDef->getName()] = enumDef;
+	}
+
+	// Register protocol definitions (for generic-constraint checking on
+	// INFERRED calls — explicit-type-arg calls are checked in Sema, but the
+	// inferred type arguments only exist after codegen-time inference)
+	for ( auto &protoDef : mod->mProtocolList )
+	{
+		mProtocolDefMap[protoDef->getName()] = protoDef;
 	}
 
 	// Register built-in Option<T>/Result<T,E> for codegen resolution (match,
@@ -387,6 +398,19 @@ void CodeGen::registerExternalTypes(
 		if ( mEnumDefMap.find( ed->getName() ) == mEnumDefMap.end() )
 			mEnumDefMap[ed->getName()] = ed;
 	}
+}
+
+void CodeGen::reportError( const Statement *node, const std::string &message )
+{
+	mHasError = true;
+	if ( gDiag != nullptr )
+	{
+		gDiag->error( node != nullptr ? node->getLocation() : SourceLocation(),
+			message, "codegen" );
+		return;
+	}
+	// No engine installed (embedding without a driver): last-resort stderr.
+	std::cerr << "CodeGen error: " << message << std::endl;
 }
 
 void CodeGen::print( llvm::raw_ostream &os )

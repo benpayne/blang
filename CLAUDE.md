@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-BLang is a compiled, native-performance language designed for clarity, safety, and LLM code generation. The compiler is written in C++17 and uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST. LLVM 18+ code generation is integrated via the `CodeGen` class (`CodeGen.h/cpp`), which walks the QLang AST and emits LLVM IR. When built with LLVM (`llvm-18-dev` package), `qcc` parses source, generates IR, and writes `.ll` files. Without LLVM, it operates in parse-only mode. The project also includes an earlier Bison/Flex-based parser (`parser.yy`, `lexer.l`) and its associated code generation helpers (`parse_helpers.cpp`) which have been superseded.
+BLang is a compiled, native-performance language designed for clarity, safety, and LLM code generation. The compiler is written in C++17 and uses a hand-written recursive-descent parser (the "QLang" approach) to build an AST. LLVM 18+ code generation is integrated via the `CodeGen` class (`CodeGen.h/cpp`), which walks the QLang AST and emits LLVM IR. When built with LLVM (`llvm-18-dev` package), `qcc` parses source, generates IR, and writes `.ll` files. Without LLVM, it operates in parse-only mode.  An earlier Bison/Flex-based parser and its helpers were removed in the LSP tech-debt cleanup (preserved in git history).
 
 ## Language Design
 
@@ -32,9 +32,6 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── logging.h                  # Lightweight logging macros (replaces jhcommon logging)
 ├── FileLexer.h / FileLexer.cpp # Hand-written lexer (Lexer and LexerReader classes)
 ├── LexerReader.cpp            # File reader implementation for the lexer
-├── Lexer.h                    # Abstract lexer interface
-├── Symbol.h                   # Symbol class (BLang namespace, legacy LLVM-based approach)
-├── Scope.h                    # Scope class (BLang namespace, legacy LLVM-based approach with BasicBlock/Function)
 ├── QBlock.cpp                 # Block::Parse implementation
 ├── QBreakContinue.cpp         # BreakStatement::Parse and ContinueStatement::Parse
 ├── QEnumDefinition.cpp        # EnumDefinition::Parse (enum/sum types with variants and associated types)
@@ -53,10 +50,6 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 ├── QQueryExpression.cpp        # Query/insert/update/delete expression parsing (table struct queries)
 ├── QLambdaExpression.cpp       # LambdaExpression::Parse (anonymous function expressions)
 ├── QParser.cpp                # Empty (placeholder)
-├── parser.yy                  # Bison grammar (older approach, not used by qcc)
-├── parser.h                   # Generated Bison header with token definitions
-├── lexer.l                    # Flex lexer specification (older approach)
-├── parse_helpers.h/cpp        # LLVM 18+ code generation helpers (legacy Bison/Flex approach, superseded by CodeGen)
 ├── BmodEmitter.h / BmodEmitter.cpp # .bmod interface file emitter (walks AST, emits pub declarations in BLang syntax)
 ├── ProjectConfig.h / ProjectConfig.cpp # blang.toml parser and project configuration (name, version, type, dependencies)
 ├── BuildCache.h / BuildCache.cpp # Content-addressable build cache (SHA-256 keyed, ~/.cache/blang/objects/)
@@ -85,6 +78,16 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   └── wordfreq/              # Generic-collections example (Map/Set/sort over strings, inference) — validation program for the generic-ARC unit
 ├── run_tests.sh               # Automated test runner script (runs qcc against pass/fail/cgfail/xfail test categories)
 ├── test_codegen.sh            # End-to-end codegen test script (parse -> IR -> compile -> link -> run)
+├── test_lsp_nvim.sh           # Headless-Neovim LSP smoke (runs ci/nvim_smoke.lua; yellow SKIP without nvim)
+├── ci/
+│   └── nvim_smoke.lua         # Real-client smoke: vim.lsp.start(blangd) on an error fixture, asserts diagnostics arrive
+├── editors/
+│   ├── README.md              # Editor setup: Neovim config, VS Code note, generic stdio-client instructions
+│   └── blang-vscode/          # TextMate grammar (syntax highlighting only)
+├── test_lsp.sh                # LSP golden-transcript test script (drives blangd via tools/lsp_client.py, cmp vs test_files/lsp/*.expected.out; --update-goldens/--selfcheck)
+├── tools/
+│   └── lsp_client.py          # Golden-transcript LSP driver (python3 stdlib; strict framing — any stray stdout/stderr byte fails; sort_keys re-serialization; ${ROOT} scrubbing)
+├── lsp/                       # blangd language server: Json.{h,cpp} (insertion-ordered JSON), Transport.{h,cpp} (Content-Length framing), Compile.{h,cpp} (reparse pipeline), Server.{h,cpp} (JSON-RPC dispatch), StringLexerReader.h, DocumentStore.h, blangd_main.cpp, JsonTest.cpp
 ├── docs/
 │   └── language_design.md     # BLang language design specification
 │   └── implementation_plan.md # Implementation task list and roadmap
@@ -97,7 +100,7 @@ The language draws from C (performance, simplicity), Rust (ownership, Result typ
 │   ├── blang_fs.h/c          # File I/O + directory operations (open/close/read/write/seek/flush, stat/remove/mkdir/list_dir)
 │   └── blang_db.h/c          # Database abstraction layer (connection, query, result; optional SQLite backend)
 ├── .github/
-│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos (see docs/ci.md)
+│   └── workflows/ci.yml      # GitHub Actions CI: parse-suite matrix (parse-only + with-llvm) plus executing jobs — golden-codegen, bcc-test, sanitizers (ASan/UBSan build + fatal leak-check), runtime-units (ctest in build + build-asan), fuzz (bounded libFuzzer), demos, lsp (blangd golden transcripts + jsonTest + inverted selfcheck + determinism + every fail/sema fixture re-verified via LSP publishDiagnostics + headless-Neovim real-client smoke) (see docs/ci.md)
 ├── install_deps.sh            # Cross-platform dependency installer
 ├── CMakeLists.txt             # Build configuration (CMake 3.16+, C++17)
 ├── README.txt                 # Project goals
@@ -126,6 +129,8 @@ The project has **no external dependencies** for the active build targets. The j
 | `blang_sha256`| SHA-256 hash library (static)   | sha256.c                                                                           |
 | `blang_buildcache`| Build cache library (static) | BuildCache.cpp (links blang_sha256)                                                |
 | `blang_sqlgen`| SQL gen + migrations library     | SQLGen.cpp, SchemaMigration.cpp                                                    |
+| `blangd`    | BLang language server (LSP over stdio) | lsp/blangd_main.cpp, lsp/Server.cpp, lsp/Compile.cpp, lsp/Json.cpp, lsp/Transport.cpp + BLANG_FRONTEND_SOURCES (never LLVM) |
+| `jsonTest`  | LSP protocol-layer unit test       | lsp/JsonTest.cpp, lsp/Json.cpp, lsp/Transport.cpp (CTest: lsp_json)                |
 | `lexerTest` | Basic lexer tokenization test      | LexerTest.cpp, FileLexer.cpp, LexerReader.cpp                                     |
 | `lexerTest2`| Advanced lexer test                | LexerTest2.cpp, FileLexer.cpp, LexerReader.cpp                                    |
 
@@ -192,6 +197,7 @@ type = "bin"          # "lib" emits .a + .bmod; "bin" (default) emits executable
 
 [deps]
 mathlib = { path = "../mathlib" }
+httplib = { git = "https://github.com/x/httplib", tag = "v1.0" }  # or rev = "<commit>"
 
 [database]                         # optional — default connection for queries/migrations
 driver = "sqlite"                  # "sqlite" (tested) or "postgres" (requires libpq)
@@ -263,8 +269,6 @@ parser (already located); sema owns member resolution and does not double-report
 2. **Parsing + IR generation — qcc** (`QLang` namespace in `Type.h`, `Expression.h`, `Q*.cpp`, `qcc.cpp`): Hand-written recursive-descent parser that builds an AST from source files. When built with LLVM, also generates LLVM IR via `CodeGen`.
 
 3. **Code generation — CodeGen** (`QLang::CodeGen` in `CodeGen.h/cpp`): Walks the QLang AST and emits LLVM IR using modern LLVM 18+ APIs (`IRBuilder<>`, opaque pointers, `FunctionCallee`). The `CodeGen` class is a friend of all AST node classes and uses `dynamic_cast` to dispatch to type-specific generation methods. Conditionally compiled (`BLANG_HAS_LLVM`).
-
-4. **Legacy code generation** (`BLang` namespace in `Scope.h`, `Symbol.h`, `parse_helpers.cpp`): Earlier procedural C-style API driven by the Bison/Flex parser. Superseded by `CodeGen` but retained for reference.
 
 ### Key class hierarchy (QLang namespace)
 
@@ -382,7 +386,6 @@ All AST nodes inherit from `RefCount` (defined in `RefCount.h`). Ownership is ma
 ### Namespaces
 
 - `QLang` — Active parser/AST classes
-- `BLang` — Legacy LLVM-based code path
 - Source files use `using namespace QLang;` and `using namespace std;`
 
 ## Testing
@@ -443,6 +446,11 @@ Legacy test files (kept for reference): `test.b`, `test_files/func_call1.b`, `te
 ./test_codegen.sh           # Run all codegen_*.b tests (parse -> IR -> compile -> link -> run)
 ./test_codegen.sh test_files/codegen_simple.b   # Run a single codegen test (shows IR)
 ./test_codegen.sh --verbose # Show IR output for all tests
+
+# LSP golden-transcript tests (blangd built in build/ or BUILD_DIR)
+./test_lsp.sh               # Drive blangd through test_files/lsp/*.lsp.jsonl fixtures, compare transcripts to goldens
+./test_lsp.sh --update-goldens   # Regenerate transcript goldens
+./test_lsp.sh --selfcheck   # Teeth proof: corrupted golden must go red (prints SELFCHECK: OK, exits non-zero)
 
 # Manual testing
 cd build
@@ -543,7 +551,7 @@ This is an active work-in-progress. The recursive-descent parser can parse BLang
 
 **Lexer keywords**: `fn`, `bool`, `struct`, `impl`, `self`, `protocol`, `match`, `import`, `pub`, `break`, `continue`, `enum`, `in`, `own`, `shared`, `sync`, `spawn`, `chan`, `async`, `await`, `on`, `requires`, `ensures`, `test`, `assert`, `table`, `query`, `insert`, `update`, `delete`, `cstring`, `carray`. Additional tokens: `->` (arrow), `..` (range), `_` (wildcard), `?` (try operator), `|>` (pipeline), `@` (annotation), `true`/`false` (boolean constants), float constants.
 
-**CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--emit-bmod <file>`, `--combine` (compile multiple `.b` files into a single `.ll` with shared scope), `--dump-locations` (print one `<file>:<line>:<col> <NodeKind>` line per AST node in deterministic pre-order, then exit; parse-only, no LLVM dependency; locked by the golden files under `test_files/golden/`), `-v`/`--verbose` (emit parse-progress/trace output; quiet by default), `--debug-compiler` (append compiler-internal detail to errors — the C++ throw-site of a `CompileError`, and the raw LLVM verifier text on an IR-verification ICE), `--help` flags and multiple input files (`.b` and `.bmod`). Compiles are **quiet by default**: a clean compile prints nothing on stdout/stderr; user-facing errors are single located diagnostics formatted `<file>:<line>:<col>: error: <message>` (routed through one `DiagnosticEngine`), never the compiler's own C++ coordinates or raw LLVM IR. `run_tests.sh` supports an **expected-error mode** for `fail/`/`cgfail/` tests: a companion `<test>.b.expected` file (or an inline `// EXPECT-ERROR: <pattern>` comment) declares an ERE the compiler's stderr must match — the test passes only if the compiler exits non-zero AND the pattern matches (tests with no declaration keep exit-code-only judgement). `bcc build` reads `blang.toml`, resolves dependencies, and builds projects (lib→.a+.bmod, bin→executable) with content-addressable caching. `bcc clean` removes the build cache. `bcc test [--filter <name>] <file.b>` is a **real test runner** (test-validation U6): it compiles the file with `qcc --emit-test-main` (which emits a `main()` that registers each `test{}` block and dispatches to the fork-isolated C driver `runtime/blang_testrunner.c`), runs each test in a forked child so one failure never aborts the rest, prints per-test `PASS`/`FAIL`, a `<file>:<line>:` located diagnostic on a failed `assert`, and a `N passed, M failed` summary, and exits non-zero iff any test failed; `--filter <substr>` runs the name-matching subset. With no file argument it falls back to discovery (`tests/` or the current directory). `bcc migrate` subcommand supports `--preview`, `--apply`, and `--generate` modes for schema migrations.
+**CLI features**: `qcc` supports `--parse-only`, `-S`/`--emit-ir`, `-c`/`--emit-obj`, `-o`/`--output`, `--emit-bmod <file>`, `--combine` (compile multiple `.b` files into a single `.ll` with shared scope), `--dump-locations` (print one `<file>:<line>:<col> <NodeKind>` line per AST node in deterministic pre-order, then exit; parse-only, no LLVM dependency; locked by the golden files under `test_files/golden/` — one `<name>.locations` per `test_files/pass/<name>.b` fixture (func_simple, match_basic, method_call, enum_variants), enforced by a dedicated leg in `run_tests.sh`; member accesses are located at the member-name token and enum variants carry their own `EnumVariant` location lines), `-v`/`--verbose` (emit parse-progress/trace output; quiet by default), `--debug-compiler` (append compiler-internal detail to errors — the C++ throw-site of a `CompileError`, and the raw LLVM verifier text on an IR-verification ICE), `--help` flags and multiple input files (`.b` and `.bmod`). Compiles are **quiet by default**: a clean compile prints nothing on stdout/stderr; user-facing errors are single located diagnostics formatted `<file>:<line>:<col>: error: <message>` (routed through one `DiagnosticEngine`), never the compiler's own C++ coordinates or raw LLVM IR. `run_tests.sh` supports an **expected-error mode** for `fail/`/`cgfail/` tests: a companion `<test>.b.expected` file (or an inline `// EXPECT-ERROR: <pattern>` comment) declares an ERE the compiler's stderr must match — the test passes only if the compiler exits non-zero AND the pattern matches (tests with no declaration keep exit-code-only judgement). `bcc build` reads `blang.toml`, resolves dependencies, and builds projects (lib→.a+.bmod, bin→executable) with content-addressable caching. `bcc clean` removes the build cache. `bcc test [--filter <name>] <file.b>` is a **real test runner** (test-validation U6): it compiles the file with `qcc --emit-test-main` (which emits a `main()` that registers each `test{}` block and dispatches to the fork-isolated C driver `runtime/blang_testrunner.c`), runs each test in a forked child so one failure never aborts the rest, prints per-test `PASS`/`FAIL`, a `<file>:<line>:` located diagnostic on a failed `assert`, and a `N passed, M failed` summary, and exits non-zero iff any test failed; `--filter <substr>` runs the name-matching subset. With no file argument it falls back to discovery (`tests/` or the current directory). `bcc migrate` subcommand supports `--preview`, `--apply`, and `--generate` modes for schema migrations.
 
 **Runtime libraries**: `blang_string` (safe immutable string type — `BlangString` with refcounting, heap allocation, and bounds-checked access), `blang_array` (safe generic array type — `BlangArray` with refcounting, bounds-checked access, and dynamic growth), `blang_json` (C library for JSON encode/decode), `blang_net` (TCP sockets + poll-based Selector event loop — listen/accept/connect/read/write/close, event-driven I/O with fd-based handle table), `blang_fs` (file I/O + directory operations — open/close/read/write/seek/flush, stat/remove/mkdir/list_dir), `blang_db` (database abstraction with optional SQLite backend).
 
@@ -555,17 +563,16 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
 
 ## Known Issues and Limitations
 
-- Built-in `Option<T>`/`Result<T,E>` use a type-erased pointer-sized (8-byte) payload, so a variant payload must fit in 8 bytes — fine for all primitives, pointers, and heap structs (structs are heap-allocated), but a by-value payload larger than 8 bytes is not supported. The concrete type argument is recovered at the match/`?` site from the subject's static type; expressions whose static type does not carry the type argument fall back to the erased slot.
+- Built-in `Option<T>`/`Result<T,E>` use a type-erased pointer-sized (8-byte) payload slot. All primitives, pointers, and heap structs fit directly, and an **enum value payload is boxed** into the slot (heap child, unboxed at the match binding / `?` unwrap with ownership transferred to the copy) — so `Result<Ast, string>` and `Option<Ast>` work (`codegen_generic_enum_payload.b`; the calculator's parser returns `Result<Ast, string>`). The concrete type argument is recovered at the match/`?` site from the subject's static type; expressions whose static type does not carry the type argument fall back to the erased slot.
 - Async function return value boxing/unboxing is simplified (heap-allocated, not yet optimized).
 - Event handlers (`on EXPR { }`) register on the global poll-based event loop when EXPR yields an fd (timerfd/socket fd); registration does not fire the handler — the program enters the loop explicitly with `timer.run()` (blocks until `timer.stop()` or no sources remain). This is deliberate: it keeps control flow explicit (no hidden loop after `main`) and avoids the footgun where blocking work in `main` would silently delay handlers. A non-fd event expression still falls back to inline invocation. The HTTP server's Selector is a separate loop instance (not yet unified with the global `on` loop).
 - Query result sets ARE mapped back to BLang values: `query T |> ...` returns an `Array<T>`, mapping each result row to a heap-allocated `T` (SELECT * column order == struct field order; int/float/string/bool columns supported), so `Array<Todo> todos = query Todo;` then `for t in todos { ... }` / `todos[i]` works. A pipeline ending in `|> first` returns the built-in `Option<T>` instead — `some(row 0)` when a row matches, `none` otherwise (SQL gets `LIMIT 1`; consumed via `match`, exhaustiveness enforced) — Sema annotates the query expression `Option<T>`/`Array<T>` so assigning a `first` result to an `Array<T>` (or vice versa) is a compile error. `insert`/`update`/`delete` still return affected-row counts. Table struct fields must have a SQL column mapping (int/long/short/char/bool/float/double/string); a nested struct/array field is a located Sema error in all build modes (previously it was silently left null — a guaranteed null-deref on first access).
 - PostgreSQL backend is implemented (libpq, with `?`→`$n` placeholder rewrite) but only compiled when `libpq-dev` is present and has not been exercised in CI; SQLite is the tested backend. Connection pooling is not implemented — the process uses a single shared default connection per name (sufficient for SQLite/single-threaded use).
 - Multi-module codegen shares type definitions (structs/enums) across modules. Cross-module function linking works via `.bmod` interface files and `bcc build` (functions from deps are auto-declared as extern and linked from `.a` archives).
-- Generic functions from dependencies: `.bmod` includes the signature but monomorphization requires the body. Consumer gets a linker error if they try to instantiate a generic from a dep. Full support requires shipping function bodies or pre-instantiated variants.
-- Git dependencies (`deps.foo = { git = "...", tag = "v1.0" }`) are parsed in blang.toml but not yet fetched — only local path deps work currently.
-- Generic monomorphization supports struct and function instantiation with full ARC participation: every ARC decision site (scope tracking, borrowed-source bind-retain, untrack-on-store, temp tracking, the `isStringType`/`isArrayType` predicates, and the return-retain borrow rule) resolves declared type names through the active substitution (`resolvedTypeName`/`callReturnTypeName`/`methodReturnTypeName`, CGTypes.cpp), so `T`-typed values inside monomorphized generics are retained/released like concrete ones — `sort<string>`, `Map<string,string>`, struct-valued Map under churn, and `Map<string, Array<int>>` are all ASan-clean (`codegen_generic_arc_*.b`). Generic calls infer their type arguments from argument types when no explicit `<...>` list is given (`sort_items(names)` == `sort_items<string>(names)`); a call that can neither infer nor was given explicit arguments is a loud compile error (`cgfail/generic_infer_fail.b`). Still unsupported: generic protocols and cross-module generic instantiation (`.bmod` ships signatures, not bodies).
+- Generic functions and generic structs from dependencies WORK: the `.bmod` ships generic definitions **with bodies** (verbatim source slices — generic fns plus an `impl` block of a generic struct's methods), consumers monomorphize on demand, and instances are emitted `linkonce_odr` so a library's own instantiations dedup with the consumer's at link time (`test_build/run_build_tests.sh` proves int/double/string instantiations plus a generic struct with `Pair<T>`-returning methods end to end). Non-generic functions stay signature-only and link from the `.a`.
+- Git dependencies work: `deps.foo = { git = "<url>", tag = "v1.0" }` (or `rev = "<commit>"`) is fetched with the git CLI into `~/.cache/blang/git/<name>-<hash(url@pin)>` on first build (shallow `--branch` clone for tags/branches, full clone + checkout for revs), reused offline while warm, then treated exactly like a path dep (recursive build, `.a` + `.bmod`, content-addressed caching — generics included). A pin (tag or rev) is REQUIRED; an unpinned git dep is a hard error. `bcc clean` removes checkouts along with the object cache. Automated by the git-dep leg of `test_build/run_build_tests.sh` (local `file://` repo).
+- Generic monomorphization supports struct and function instantiation with full ARC participation: every ARC decision site (scope tracking, borrowed-source bind-retain, untrack-on-store, temp tracking, the `isStringType`/`isArrayType` predicates, and the return-retain borrow rule) resolves declared type names through the active substitution (`resolvedTypeName`/`callReturnTypeName`/`methodReturnTypeName`, CGTypes.cpp), so `T`-typed values inside monomorphized generics are retained/released like concrete ones — `sort<string>`, `Map<string,string>`, struct-valued Map under churn, and `Map<string, Array<int>>` are all ASan-clean (`codegen_generic_arc_*.b`). Generic calls infer their type arguments from argument types when no explicit `<...>` list is given (`sort_items(names)` == `sort_items<string>(names)`); a call that can neither infer nor was given explicit arguments is a loud compile error (`cgfail/generic_infer_fail.b`). Cross-module generic instantiation works (`.bmod` ships generic bodies; instances are `linkonce_odr`). Generic protocols work end to end: `impl Protocol for Struct` checks arity and types (a generic protocol's own params are wildcards), constraints are enforced on inferred calls too (codegen, `cgfail/generic_constraint_inferred.b`), and a constrained generic function's method calls on a param-typed object dispatch to the concrete struct (`codegen_generic_protocol.b`).
 - Nested `@json` structs use an encode/decode round-trip (serialize inner struct to string, decode to JSON tree) — works correctly but adds overhead; direct subtree construction would be more efficient.
-- Legacy LLVM code path (`parse_helpers.cpp`) uses `Type::getInt32Ty` as a default pointee type for opaque pointer loads — should be wired to the symbol table's stored type for full correctness.
 
 ## devbot program conventions
 

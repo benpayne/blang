@@ -1,0 +1,3 @@
+fn process(c=string s) -> int {
+    return 0;
+}

@@ -369,15 +369,30 @@ llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 	StructDefinition *structDef = defIt->second;
 	llvm::StructType *structType = nullptr;
 
-	// Handle generic struct instantiation
+	// Handle generic struct instantiation. The literal's written type args are
+	// resolved through the ACTIVE substitution first: a `Pair<T> { ... }`
+	// inside a monomorphized method (T -> string) must instantiate
+	// Pair_string — instantiating with the raw `T` self-maps the enclosing
+	// substitution (T -> T) and stamps out a bogus i32-layout Pair_T whose
+	// 8-byte pointer stores overflow the allocation.
 	std::map<std::string, Type*> savedSub = mTypeSubstitution;
-	if ( !expr->mTypeArgs.empty() && structDef->isGeneric() )
+	std::vector<SmartPtr<Type>> resolvedArgs;
+	for ( auto &ta : expr->mTypeArgs )
 	{
-		structType = instantiateGenericStruct( structDef, expr->mTypeArgs );
+		Type *arg = (Type *)ta;
+		auto s = savedSub.find( arg->getName() );
+		if ( s != savedSub.end() && s->second != nullptr &&
+			 s->second->getName() != arg->getName() )
+			arg = s->second;
+		resolvedArgs.push_back( arg );
+	}
+	if ( !resolvedArgs.empty() && structDef->isGeneric() )
+	{
+		structType = instantiateGenericStruct( structDef, resolvedArgs );
 		// Re-establish substitution map for field value generation
-		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < expr->mTypeArgs.size(); i++ )
+		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < resolvedArgs.size(); i++ )
 		{
-			SmartPtr<Type> arg = expr->mTypeArgs[i];
+			SmartPtr<Type> arg = resolvedArgs[i];
 			mTypeSubstitution[structDef->mGenericParams[i].mName] = (Type*)arg;
 		}
 	}
@@ -594,18 +609,28 @@ llvm::Value *CodeGen::genConstructExpression( ConstructExpression *expr )
 	string structName = structDef->getName();
 	llvm::StructType *structType = nullptr;
 
-	// Handle generic struct instantiation
+	// Handle generic struct instantiation (written type args resolved through
+	// the active substitution — see genStructLiteral for the rationale)
 	std::map<std::string, Type*> savedSub = mTypeSubstitution;
-	if ( !expr->mTypeArgs.empty() && structDef->isGeneric() )
+	std::vector<SmartPtr<Type>> resolvedArgs;
+	for ( auto &ta : expr->mTypeArgs )
 	{
-		structType = instantiateGenericStruct( structDef, expr->mTypeArgs );
-		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < expr->mTypeArgs.size(); i++ )
+		Type *arg = (Type *)ta;
+		auto s = savedSub.find( arg->getName() );
+		if ( s != savedSub.end() && s->second != nullptr &&
+			 s->second->getName() != arg->getName() )
+			arg = s->second;
+		resolvedArgs.push_back( arg );
+	}
+	if ( !resolvedArgs.empty() && structDef->isGeneric() )
+	{
+		structType = instantiateGenericStruct( structDef, resolvedArgs );
+		for ( size_t i = 0; i < structDef->mGenericParams.size() && i < resolvedArgs.size(); i++ )
 		{
-			SmartPtr<Type> arg = expr->mTypeArgs[i];
+			SmartPtr<Type> arg = resolvedArgs[i];
 			mTypeSubstitution[structDef->mGenericParams[i].mName] = (Type*)arg;
 		}
-		std::vector<SmartPtr<Type>> typeArgs( expr->mTypeArgs.begin(), expr->mTypeArgs.end() );
-		structName = mangleGenericName( structName, typeArgs );
+		structName = mangleGenericName( structName, resolvedArgs );
 	}
 	else
 	{
@@ -1473,15 +1498,34 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 				untrackTempStruct( val );
 			mBuilder->CreateCall( getOrDeclareRcRelease(), { oldVal } );
 		}
+		else if ( expr->mOperation == "=" && fTypeName == "Array" )
+		{
+			// Array field reassignment mirrors the struct-field policy above:
+			// the field must hold a COUNTED reference and the previously-held
+			// array is dropped. An existing owner source (variable/field/index —
+			// e.g. `self.fds = keep` where keep is a scope-released local) is
+			// RETAINED, or the field dangles the moment the local's scope
+			// release runs (use-after-free surfaced by the chat example's
+			// Room.leave). A fresh temp (literal/call) transfers ownership by
+			// untracking. Retain/untrack happens BEFORE releasing the old value
+			// so self-assignment is safe.
+			bool srcIsExistingOwner =
+				( dynamic_cast<VariableExpression*>( (Expression*)expr->mValue ) != nullptr ||
+				  dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mValue ) != nullptr ||
+				  dynamic_cast<IndexExpression*>( (Expression*)expr->mValue ) != nullptr );
+			llvm::Value *oldVal = mBuilder->CreateLoad(
+				structType->getElementType( fieldIdx ), fieldPtr,
+				expr->mFieldName + ".old" );
+			mBuilder->CreateStore( val, fieldPtr );
+			if ( srcIsExistingOwner )
+				mBuilder->CreateCall( getOrDeclareArrayRetain(), { val } );
+			else
+				untrackTempArray( val );
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { oldVal } );
+		}
 		else
 		{
 			mBuilder->CreateStore( val, fieldPtr );
-
-			// If a fresh Array<T> rvalue temporary is stored into a field, ownership
-			// transfers to the struct — untrack it so it is not also released as a
-			// statement temporary (which would leave the field pointing at freed memory).
-			if ( fTypeName == "Array" )
-				untrackTempArray( val );
 		}
 	}
 
@@ -1750,6 +1794,18 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
 	{
 		Type *varType = ve->mVariable->getVariableType();
+		// Inside a monomorphized generic body a variable's declared type may
+		// be the generic param itself (`fn total<C: Container>(C c)` — calls
+		// on `c` under C -> IntList). Resolve through the active substitution
+		// so the method lookup sees the concrete struct; without this the
+		// lookup failed and the call was silently dropped.
+		if ( varType != nullptr )
+		{
+			auto vSub = mTypeSubstitution.find( varType->getName() );
+			if ( vSub != mTypeSubstitution.end() && vSub->second != nullptr &&
+				 vSub->second->getName() != varType->getName() )
+				varType = vSub->second;
+		}
 		if ( varType != nullptr )
 		{
 			structName = varType->getName();

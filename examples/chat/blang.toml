@@ -1,0 +1,4 @@
+[project]
+name = "chat"
+version = "0.1.0"
+type = "bin"

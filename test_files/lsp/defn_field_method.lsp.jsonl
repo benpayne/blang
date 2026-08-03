@@ -1,0 +1,17 @@
+# Go-to-definition through the Sema-resolved member pointers: `p.x` (0-based
+# 26/12, cursor on the field name) resolves to the field `int x;` (3/1);
+# `p.norm1()` (27/12, cursor on the method name) resolves to `fn norm1`
+# (13/1). Member nodes are located at the member-name token (U0c).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/defs.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 26, "character": 12}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 27, "character": 12}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "shutdown"}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

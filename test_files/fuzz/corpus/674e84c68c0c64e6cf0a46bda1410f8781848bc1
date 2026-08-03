@@ -1,0 +1,4 @@
+fn is_positive(int x) -> b int {
+	bool flag = 1;
+	return 0;
+}

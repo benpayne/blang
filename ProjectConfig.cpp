@@ -70,6 +70,8 @@ static void parseInlineTable( const string &name, const string &body, vector<Dep
 			dep.gitUrl = value;
 		else if ( key == "tag" )
 			dep.tag = value;
+		else if ( key == "rev" )
+			dep.rev = value;
 	}
 
 	deps.push_back( dep );

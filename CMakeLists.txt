@@ -56,9 +56,15 @@ set_target_properties(lexerTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED
 add_executable(lexerTest2 LexerTest2.cpp FileLexer.cpp LexerReader.cpp)
 set_target_properties(lexerTest2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
-# Main compiler source files
-set(QCC_SOURCES
-	qcc.cpp
+# LSP protocol layer (JSON value type + Content-Length framing) and its unit
+# test. Compiler-side code — deliberately independent of runtime/blang_json.
+add_executable(jsonTest lsp/JsonTest.cpp lsp/Json.cpp lsp/Transport.cpp)
+set_target_properties(jsonTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+
+# Compiler FRONTEND sources: lexer, parser, Sema, diagnostics — no driver
+# main(), no LLVM. Shared by qcc, the fuzzer, and (soon) the LSP server.
+set(BLANG_FRONTEND_SOURCES
+	QModule.cpp
 	FileLexer.cpp
 	LexerReader.cpp
 	QBlock.cpp
@@ -87,6 +93,23 @@ set(QCC_SOURCES
 	DiagnosticEngine.cpp
 	Sema.cpp
 	FormatString.cpp)
+
+# The qcc driver = frontend + the CLI main.
+set(QCC_SOURCES ${BLANG_FRONTEND_SOURCES} qcc.cpp)
+
+# blangd — the BLang language server: the shared frontend + the LSP layer.
+# Never compiled with LLVM (diagnostics need parse+sema only), so it builds
+# identically in both build modes.
+add_executable(blangd
+	${BLANG_FRONTEND_SOURCES}
+	lsp/Json.cpp
+	lsp/Transport.cpp
+	lsp/Compile.cpp
+	lsp/AstLocator.cpp
+	lsp/Server.cpp
+	lsp/blangd_main.cpp)
+set_target_properties(blangd PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(blangd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
@@ -126,10 +149,11 @@ if(BLANG_FUZZ)
 	if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 		message(FATAL_ERROR "BLANG_FUZZ requires clang (libFuzzer). Reconfigure with -DCMAKE_CXX_COMPILER=clang++.")
 	endif()
-	add_executable(fuzz_parse ${QCC_SOURCES} fuzz/fuzz_parse.cpp)
+	# Frontend-only: no qcc.cpp, so no conditional-main tricks are needed
+	# (libFuzzer supplies its own main).
+	add_executable(fuzz_parse ${BLANG_FRONTEND_SOURCES} fuzz/fuzz_parse.cpp)
 	set_target_properties(fuzz_parse PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 	target_include_directories(fuzz_parse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-	target_compile_definitions(fuzz_parse PRIVATE BLANG_FUZZ_HARNESS)
 	target_compile_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address -fno-omit-frame-pointer -g)
 	target_link_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address)
 	if(LLVM_FOUND)
@@ -450,3 +474,6 @@ endforeach()
 foreach(c ${HASH_CASES})
 	add_test(NAME hash_${c} COMMAND test_hash ${c})
 endforeach()
+
+# LSP protocol-layer unit test (single binary, internal check table).
+add_test(NAME lsp_json COMMAND jsonTest)

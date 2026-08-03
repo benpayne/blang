@@ -43,6 +43,7 @@ namespace QLang
 		SourceLocation mLocation;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -71,6 +72,7 @@ namespace QLang
 		std::vector<SmartPtr<Type>> mTypeParams;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -93,6 +95,7 @@ namespace QLang
 		std::vector<SmartPtr<Type>> mParamTypes;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -119,6 +122,7 @@ namespace QLang
 		std::string mName;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -254,6 +258,7 @@ namespace QLang
 		std::string mModuleName;
 		SourceLocation mLocation;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -272,6 +277,7 @@ namespace QLang
 		const std::vector<SmartPtr<StructDefinition>> &getStructList() const { return mStructList; }
 		const std::vector<SmartPtr<EnumDefinition>> &getEnumList() const { return mEnumList; }
 		const std::vector<SmartPtr<ProtocolDefinition>> &getProtocolList() const { return mProtocolList; }
+		const std::vector<SmartPtr<TestBlock>> &getTestBlocks() const { return mTestBlocks; }
 
 		bool isExtern() const { return mIsExtern; }
 		void setExtern( bool isExtern ) { mIsExtern = isExtern; }
@@ -280,6 +286,7 @@ namespace QLang
 		Module() {}
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 
 		std::vector<SmartPtr<FunctionDefinition> > mFunctionList;
@@ -370,6 +377,7 @@ namespace QLang
 
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 		friend class Module;
 	};
@@ -448,6 +456,7 @@ namespace QLang
 		bool mIsTable = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -483,6 +492,7 @@ namespace QLang
 		bool mIsPublic = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -494,6 +504,9 @@ namespace QLang
 		{
 			std::string mName;
 			std::vector<SmartPtr<Type>> mAssociatedTypes;
+			// Position of the variant's name token. Unset (0:0) only for the
+			// compiler-built Option/Result builtins, which have no source.
+			SourceLocation mLocation;
 		};
 
 		static EnumDefinition *Parse( Lexer &l, Scope *s, bool isPublic = false );
@@ -558,6 +571,7 @@ namespace QLang
 		bool mIsPublic = false;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 
@@ -579,6 +593,7 @@ namespace QLang
 		SourceLocation mLocation;
 		friend class CodeGen;
 		friend class LocationDumper;
+		friend class AstLocator;
 		friend class Sema;
 	};
 

@@ -23,9 +23,11 @@
 #include <cstdlib>
 #include <cstdio>
 #include <sys/wait.h>
+#include "sha256.h"
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <fcntl.h>
 
 #include "ProjectConfig.h"
 #include "BuildCache.h"
@@ -221,9 +223,19 @@ static string getExeDir( const char *argv0 )
 	return ".";
 }
 
-// Run a command and return its exit code
+// Run a command and return its exit code.
+//
+// Executed WITHOUT a shell: fork + execvp with the args passed as a literal
+// argv vector, so no string is ever handed to /bin/sh. This is a security
+// boundary — a dependency's git URL (or any other arg) cannot inject shell
+// metacharacters. `git = "https://x/$(rm -rf ~)"` in a blang.toml is passed
+// to git verbatim rather than evaluated, which the previous system() path
+// (double-quote wrapping does not stop $()/backticks) did not prevent.
 static int runCommand( const vector<string> &args, bool verbose, bool suppressOutput = false )
 {
+	if ( args.empty() )
+		return -1;
+
 	if ( verbose )
 	{
 		for ( size_t i = 0; i < args.size(); i++ )
@@ -234,23 +246,53 @@ static int runCommand( const vector<string> &args, bool verbose, bool suppressOu
 		cerr << endl;
 	}
 
-	// Build command string for system()
-	string cmd;
-	for ( size_t i = 0; i < args.size(); i++ )
+	pid_t pid = fork();
+	if ( pid < 0 )
 	{
-		if ( i > 0 ) cmd += " ";
-		// Quote arguments that might contain spaces
-		cmd += "\"" + args[i] + "\"";
+		cerr << "error: fork failed running '" << args[0] << "'" << endl;
+		return -1;
 	}
 
-	// Suppress stdout/stderr in non-verbose mode when requested
-	// Stderr is captured to a temp file so errors can be shown on failure
-	if ( suppressOutput && !verbose )
-		cmd += " >/dev/null 2>/tmp/bcc_stderr.txt";
+	if ( pid == 0 )
+	{
+		// Child. Replicate the old shell redirect (>/dev/null
+		// 2>/tmp/bcc_stderr.txt) with dup2 so callers can still read captured
+		// stderr from the temp file on failure.
+		if ( suppressOutput && !verbose )
+		{
+			int devnull = open( "/dev/null", O_WRONLY );
+			if ( devnull >= 0 )
+			{
+				dup2( devnull, STDOUT_FILENO );
+				close( devnull );
+			}
+			int errfd = open( "/tmp/bcc_stderr.txt",
+				O_WRONLY | O_CREAT | O_TRUNC, 0600 );
+			if ( errfd >= 0 )
+			{
+				dup2( errfd, STDERR_FILENO );
+				close( errfd );
+			}
+		}
 
-	int ret = system( cmd.c_str() );
-	if ( WIFEXITED( ret ) )
-		return WEXITSTATUS( ret );
+		// execvp searches PATH for argv[0]; argv must be NULL-terminated. The
+		// const_cast is the standard idiom (execvp does not modify argv).
+		vector<char *> argv;
+		argv.reserve( args.size() + 1 );
+		for ( const auto &a : args )
+			argv.push_back( const_cast<char *>( a.c_str() ) );
+		argv.push_back( nullptr );
+
+		execvp( argv[0], argv.data() );
+		_exit( 127 ); // only reached if exec failed (matches shell's "not found")
+	}
+
+	// Parent.
+	int status = 0;
+	if ( waitpid( pid, &status, 0 ) < 0 )
+		return -1;
+	if ( WIFEXITED( status ) )
+		return WEXITSTATUS( status );
 	return -1;
 }
 
@@ -1012,6 +1054,107 @@ static string resolvePath( const string &basePath, const string &relPath )
 	return combined;
 }
 
+// --- Git dependency fetching ------------------------------------------------
+
+// Checkout cache root, sibling of BuildCache's objects/ dir so `bcc clean`
+// (which removes the whole blang cache directory) clears checkouts too.
+static string gitCacheRoot()
+{
+	const char *xdg = getenv( "XDG_CACHE_HOME" );
+	if ( xdg != nullptr && xdg[0] != '\0' )
+		return string( xdg ) + "/blang/git";
+	const char *home = getenv( "HOME" );
+	if ( home != nullptr && home[0] != '\0' )
+		return string( home ) + "/.cache/blang/git";
+	return "/tmp/.cache/blang/git";
+}
+
+static string shortHashHex( const string &s )
+{
+	SHA256_CTX ctx;
+	uint8_t h[32];
+	sha256_init( &ctx );
+	sha256_update( &ctx, (const uint8_t *)s.data(), s.size() );
+	sha256_final( &ctx, h );
+	static const char *hex = "0123456789abcdef";
+	string out;
+	for ( int i = 0; i < 8; i++ )
+	{
+		out += hex[h[i] >> 4];
+		out += hex[h[i] & 0xf];
+	}
+	return out;
+}
+
+// Resolve a git dependency to a local checkout under the cache, fetching it
+// with the git CLI on first use. The pin (rev, else tag) is REQUIRED — an
+// unpinned git dep would make the build irreproducible. A warm checkout is
+// reused without touching the network (the cache key is url@pin). The clone
+// lands in a ".part" temp dir and is renamed into place only on success, so
+// an interrupted fetch never poisons the cache.
+static int resolveGitDependency( const Dependency &dep, bool verbose, string &outDir )
+{
+	string pin = !dep.rev.empty() ? dep.rev : dep.tag;
+	if ( pin.empty() )
+	{
+		cerr << "error: git dependency '" << dep.name
+			 << "' must pin a version: add tag = \"...\" or rev = \"...\"" << endl;
+		return 1;
+	}
+
+	string root = gitCacheRoot();
+	string dir = root + "/" + dep.name + "-" + shortHashHex( dep.gitUrl + "@" + pin );
+
+	struct stat st;
+	if ( stat( ( dir + "/blang.toml" ).c_str(), &st ) == 0 )
+	{
+		if ( verbose )
+			cerr << "  git dep '" << dep.name << "' cached at " << dir << endl;
+		outDir = dir;
+		return 0;
+	}
+
+	runCommand( { "mkdir", "-p", root }, false, true );
+	string tmp = dir + ".part";
+	runCommand( { "rm", "-rf", tmp }, false, true );
+
+	if ( verbose )
+		cerr << "  fetching git dep '" << dep.name << "' (" << dep.gitUrl
+			 << " @ " << pin << ")" << endl;
+
+	// A tag/branch pin clones shallow; an exact rev needs history to check out.
+	int ret;
+	if ( !dep.rev.empty() )
+	{
+		ret = runCommand( { "git", "clone", "--quiet", dep.gitUrl, tmp },
+			verbose, !verbose );
+		if ( ret == 0 )
+			ret = runCommand( { "git", "-C", tmp, "checkout", "--quiet", dep.rev },
+				verbose, !verbose );
+	}
+	else
+	{
+		ret = runCommand( { "git", "clone", "--quiet", "--depth", "1",
+			"--branch", pin, dep.gitUrl, tmp }, verbose, !verbose );
+	}
+	if ( ret != 0 )
+	{
+		runCommand( { "rm", "-rf", tmp }, false, true );
+		cerr << "error: failed to fetch git dependency '" << dep.name << "' from "
+			 << dep.gitUrl << " @ " << pin << endl;
+		return 1;
+	}
+	if ( rename( tmp.c_str(), dir.c_str() ) != 0 )
+	{
+		runCommand( { "rm", "-rf", tmp }, false, true );
+		cerr << "error: failed to install git dependency '" << dep.name
+			 << "' into " << dir << endl;
+		return 1;
+	}
+	outDir = dir;
+	return 0;
+}
+
 // Build a single project directory. Returns 0 on success.
 // Outputs: fills aFile and bmodFile if type=lib.
 // depBmodFiles/depAFiles receive dependency artifacts to pass downstream.
@@ -1049,14 +1192,26 @@ static int buildProject( const string &projectDir, const string &exeDir,
 
 	for ( const auto &dep : config->getDependencies() )
 	{
-		if ( dep.path.empty() )
+		string depDir;
+		if ( !dep.gitUrl.empty() )
 		{
-			cerr << "error: dependency '" << dep.name << "' has no path (git deps not yet supported)" << endl;
+			// Fetch (or reuse) a pinned checkout, then treat it as a path dep.
+			if ( resolveGitDependency( dep, verbose, depDir ) != 0 )
+			{
+				delete config;
+				return 1;
+			}
+		}
+		else if ( dep.path.empty() )
+		{
+			cerr << "error: dependency '" << dep.name << "' has neither a path nor a git url" << endl;
 			delete config;
 			return 1;
 		}
-
-		string depDir = resolvePath( projectDir, dep.path );
+		else
+		{
+			depDir = resolvePath( projectDir, dep.path );
+		}
 
 		// Check build cache
 		ProjectConfig *depConfig = ProjectConfig::loadFromDirectory( depDir );
@@ -1405,16 +1560,18 @@ static int runClean()
 {
 	string cacheDir = BuildCache::getCacheDir();
 	cerr << "Removing build cache: " << cacheDir << endl;
-	if ( BuildCache::clean() )
-	{
-		cerr << "Done." << endl;
-		return 0;
-	}
-	else
+	if ( !BuildCache::clean() )
 	{
 		cerr << "error: failed to remove cache directory" << endl;
 		return 1;
 	}
+	// Git dependency checkouts live beside the object cache; clean removes
+	// them too so a stale/moved pin can always be re-fetched.
+	string gitDir = gitCacheRoot();
+	cerr << "Removing git checkouts: " << gitDir << endl;
+	runCommand( { "rm", "-rf", gitDir }, false, true );
+	cerr << "Done." << endl;
+	return 0;
 }
 
 int main( int argc, char *argv[] )

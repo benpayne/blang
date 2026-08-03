@@ -16,6 +16,7 @@
 #include "LocationDumper.h"
 #include "DiagnosticEngine.h"
 #include "Sema.h"
+#include "Frontend.h"
 #include "SchemaMigration.h"
 
 #ifdef BLANG_HAS_LLVM
@@ -25,519 +26,6 @@
 
 using namespace QLang;
 using namespace std;
-
-Scope *gScope;
-
-// The single diagnostic reporting path, owned by main() and referenced here so
-// the top-level parse-catch (inside Module::Parse) renders through it. Null
-// until main() installs it; the catch falls back to a local engine if unset.
-DiagnosticEngine *gDiag = nullptr;
-
-// True if `sym` can start a top-level declaration — a panic-mode resync target.
-static bool isTopLevelStarter( int sym )
-{
-	switch ( sym )
-	{
-		case Lexer::KEYWORD_IMPORT:
-		case Lexer::KEYWORD_PUB:
-		case Lexer::KEYWORD_TABLE:
-		case Lexer::KEYWORD_STRUCT:
-		case Lexer::KEYWORD_PROTOCOL:
-		case Lexer::KEYWORD_IMPL:
-		case Lexer::KEYWORD_ENUM:
-		case Lexer::KEYWORD_TEST:
-		case Lexer::KEYWORD_ON:
-		case Lexer::KEYWORD_FN:
-		case Lexer::KEYWORD_ASYNC:
-		case Lexer::TYPE_MODIFIER:   // extern
-		case Lexer::AT_SIGN:         // @annotation
-			return true;
-		default:
-			return false;
-	}
-}
-
-// Panic-mode recovery after a top-level parse error: consume the current token
-// then skip to the next top-level declaration starter (at brace depth 0, so a
-// `fn` inside a lambda/body is not a false resync point) or EOF. Guarantees
-// forward progress so Module::Parse's loop cannot spin.
-static void resyncTopLevel( Lexer &l )
-{
-	int depth = 0;
-	bool first = true;
-	while ( !l.isEOF() )
-	{
-		int p = l.peekSymbol();
-		if ( p == -1 )
-			break;
-		if ( !first && depth == 0 && isTopLevelStarter( p ) )
-			break;
-		int sym = l.getSymbol();
-		if ( sym == '{' )
-			depth++;
-		else if ( sym == '}' && depth > 0 )
-			depth--;
-		first = false;
-	}
-}
-
-string CompileError::getMessage() const
-{
-	// Raw message body only. The located "<file>:<line>:<col>: error: " prefix
-	// and any compiler-internal C++ throw-site detail are the DiagnosticEngine's
-	// job (U2, FR-001/FR-003); this accessor no longer formats them.
-	return mMessage;
-}
-
-Module *Module::Parse( Lexer &l, Scope *s )
-{
-	// Module namespacing: `import sys;` enables `sys.args`, `sys.exit()`.
-	// In combine mode, stdlib files are parsed into per-module namespace
-	// scopes. The expression parser resolves `sys.args` → `sys__args()` etc.
-
-	Module *mod = new Module();
-	mod->mScope = s;
-	SmartPtr<FunctionDefinition> def;
-	// Top-level functions are parsed signature-first with their bodies deferred,
-	// so every function is registered before any body is parsed (forward
-	// references / mutual recursion). Bodies are parsed after the declaration
-	// loop below.
-	std::vector<FunctionDefinition*> deferredFuncs;
-	while( !l.isEOF() )
-	{
-		// Peek past any trailing whitespace/comments to check for real EOF
-		int nextSym = l.peekSymbol();
-		if ( nextSym == -1 )
-			break;
-
-		// Per-declaration try/catch enables panic-mode recovery: one bad
-		// declaration is reported and skipped, and parsing continues so a single
-		// compile reports all top-level syntax errors.
-		try {
-			// Handle import statements
-			if ( nextSym == Lexer::KEYWORD_IMPORT )
-			{
-				SourceLocation importLoc = l.getTokenLocation();
-				l.getSymbol(); // consume 'import'
-				int importSym = l.getSymbol();
-				if ( importSym != Lexer::SYMBOL )
-					COMPILE_ERROR( l, "Expected module name after 'import'" );
-
-				string moduleName = l.getSymbolText();
-
-				// Support dotted paths: import std.io
-				while ( l.peekSymbol() == '.' )
-				{
-					l.getSymbol(); // consume '.'
-					importSym = l.getSymbol();
-					if ( importSym != Lexer::SYMBOL )
-						COMPILE_ERROR( l, "Expected module name after '.'" );
-					moduleName += "." + l.getSymbolText();
-				}
-
-				// Expect semicolon
-				int semi = l.getSymbol();
-				if ( semi != ';' )
-					COMPILE_ERROR( l, "Expected ';' after import statement" );
-
-				{
-					ImportStatement *imp = new ImportStatement( moduleName );
-					imp->setLocation( importLoc );
-					mod->mImports.push_back( imp );
-				}
-
-				// Validate and register the import for qualified access
-				Scope *ns = s->findNamespace( moduleName );
-				if ( ns != nullptr )
-					s->addImportedModule( moduleName );
-				// If namespace not found, it may be an external module — allow for now
-
-				cout << "import " << moduleName << endl;
-				continue;
-			}
-
-			// Task 63 — Symbol visibility checking:
-			// Once multi-module linking is implemented, the compiler must enforce
-			// that symbols imported from another module are only accessible when
-			// they carry the `pub` modifier in their defining module. Concretely:
-			//   - After all modules are parsed, build a per-module export table
-			//     containing only symbols whose mIsPublic flag is true.
-			//   - During name resolution, when a lookup crosses a module boundary,
-			//     reject any symbol that is not in the exporting module's export
-			//     table with a "symbol is not public" compile error.
-			// At present, each module is parsed independently with no cross-module
-			// symbol resolution, so this check is deferred to that future phase.
-
-			// Parse annotations before declarations: @name or @name("arg")
-			std::vector<AnnotationNode> annotations;
-			while ( nextSym == Lexer::AT_SIGN )
-			{
-				l.getSymbol(); // consume '@'
-				int annSym = l.getSymbol();
-				if ( annSym != Lexer::SYMBOL )
-					COMPILE_ERROR( l, "Expected annotation name after '@'" );
-
-				AnnotationNode ann;
-				ann.mName = l.getSymbolText();
-
-				// Check for optional arguments: @name("arg")
-				if ( l.peekSymbol() == '(' )
-				{
-					l.getSymbol(); // consume '('
-					// Parse string arguments
-					while ( l.peekSymbol() != ')' )
-					{
-						int argSym = l.getSymbol();
-						if ( argSym == Lexer::CONSTANT_STRING )
-							ann.mArgs.push_back( l.getSymbolText() );
-						else if ( argSym == Lexer::SYMBOL )
-							ann.mArgs.push_back( l.getSymbolText() );
-						else
-							COMPILE_ERROR( l, "Expected string or identifier in annotation argument" );
-
-						if ( l.peekSymbol() == ',' )
-							l.getSymbol(); // consume ','
-					}
-					l.getSymbol(); // consume ')'
-				}
-
-				annotations.push_back( ann );
-				cout << "annotation @" << ann.mName << endl;
-				nextSym = l.peekSymbol();
-			}
-
-			// Handle pub visibility modifier
-			bool isPublic = false;
-			if ( nextSym == Lexer::KEYWORD_PUB )
-			{
-				l.getSymbol(); // consume 'pub'
-				isPublic = true;
-				nextSym = l.peekSymbol();
-			}
-
-			// Handle table struct
-			if ( nextSym == Lexer::KEYWORD_TABLE )
-			{
-				l.getSymbol(); // consume 'table'
-				nextSym = l.peekSymbol();
-				if ( nextSym != Lexer::KEYWORD_STRUCT )
-					COMPILE_ERROR( l, "Expected 'struct' after 'table'" );
-
-				SmartPtr<StructDefinition> structDef = StructDefinition::Parse( l, s, isPublic );
-				structDef->setIsTable( true );
-				structDef->setAnnotations( annotations );
-				mod->mStructList.push_back( structDef );
-
-				// A table struct may also be @json (serialized over the wire);
-				// register the generated to_json/from_json forward declarations
-				// just like a plain @json struct so they resolve at parse time.
-				for ( const auto &ann : annotations )
-				{
-					if ( ann.mName == "json" )
-					{
-						if ( structDef->isGeneric() )
-							COMPILE_ERROR( l, "@json is not yet supported on generic struct '" + structDef->getName() + "' (requires monomorphization)" );
-
-						FunctionDefinition *toJson = new FunctionDefinition( structDef->getName() + "_to_json" );
-						toJson->mReturnType = new Type( "string" );
-						toJson->mParameters.push_back( new VariableDefinition( new Type( structDef->getName() ), "self" ) );
-						toJson->mIsExtern = true;
-						s->addSymbol( toJson );
-
-						FunctionDefinition *fromJson = new FunctionDefinition( structDef->getName() + "_from_json" );
-						fromJson->mReturnType = new Type( structDef->getName() );
-						fromJson->mParameters.push_back( new VariableDefinition( new Type( "string" ), "input" ) );
-						fromJson->mIsExtern = true;
-						s->addSymbol( fromJson );
-						break;
-					}
-				}
-
-				cout << "Completed table struct " << structDef->getName() << endl;
-				continue;
-			}
-
-			if ( nextSym == Lexer::KEYWORD_STRUCT )
-			{
-				SmartPtr<StructDefinition> structDef = StructDefinition::Parse( l, s, isPublic );
-				structDef->setAnnotations( annotations );
-				mod->mStructList.push_back( structDef );
-
-				// Register forward declarations for @json generated functions
-				for ( const auto &ann : annotations )
-				{
-					if ( ann.mName == "json" )
-					{
-						if ( structDef->isGeneric() )
-							COMPILE_ERROR( l, "@json is not yet supported on generic struct '" + structDef->getName() + "' (requires monomorphization)" );
-
-						// StructName_to_json(StructType self) -> string
-						FunctionDefinition *toJson = new FunctionDefinition( structDef->getName() + "_to_json" );
-						toJson->mReturnType = new Type( "string" );
-						toJson->mParameters.push_back( new VariableDefinition( new Type( structDef->getName() ), "self" ) );
-						toJson->mIsExtern = true;
-						s->addSymbol( toJson );
-
-						// StructName_from_json(string input) -> StructType
-						FunctionDefinition *fromJson = new FunctionDefinition( structDef->getName() + "_from_json" );
-						fromJson->mReturnType = new Type( structDef->getName() );
-						fromJson->mParameters.push_back( new VariableDefinition( new Type( "string" ), "input" ) );
-						fromJson->mIsExtern = true;
-						s->addSymbol( fromJson );
-						break;
-					}
-				}
-
-				continue;
-			}
-
-			if ( nextSym == Lexer::KEYWORD_PROTOCOL )
-			{
-				SmartPtr<ProtocolDefinition> protoDef = ProtocolDefinition::Parse( l, s, isPublic );
-				mod->mProtocolList.push_back( protoDef );
-				continue;
-			}
-
-			if ( nextSym == Lexer::KEYWORD_IMPL )
-			{
-				StructDefinition::ParseImplBlock( l, s );
-				continue;
-			}
-
-			if ( nextSym == Lexer::KEYWORD_ENUM )
-			{
-				SmartPtr<EnumDefinition> enumDef = EnumDefinition::Parse( l, s, isPublic );
-				enumDef->setAnnotations( annotations );
-				mod->mEnumList.push_back( enumDef );
-				continue;
-			}
-
-			if ( nextSym == Lexer::KEYWORD_TEST )
-			{
-				SmartPtr<TestBlock> testBlock = TestBlock::Parse( l, s );
-				mod->mTestBlocks.push_back( testBlock );
-				continue;
-			}
-
-			// Handle 'on' event handlers at module level
-			if ( nextSym == Lexer::KEYWORD_ON )
-			{
-				SmartPtr<EventHandler> handler = EventHandler::Parse( l, s );
-				// Event handlers stored in function list as statements for now
-				cout << "Completed event handler" << endl;
-				continue;
-			}
-
-			// Handle extern fn declarations
-			bool isExtern = false;
-			if ( nextSym == Lexer::TYPE_MODIFIER )
-			{
-				l.getSymbol(); // consume the modifier
-				string modText = l.getSymbolText();
-				if ( modText == "extern" )
-				{
-					isExtern = true;
-					// Next token should be 'fn'
-				}
-				else
-				{
-					COMPILE_ERROR( l, "Unexpected modifier '" + modText + "' at top level" );
-				}
-			}
-
-			if ( l.peekSymbol() != Lexer::KEYWORD_FN && l.peekSymbol() != Lexer::KEYWORD_ASYNC )
-				COMPILE_ERROR( l, "Expected 'fn' or 'async fn' for function declaration" );
-
-			// Task 66 — Mandatory pub type signatures on public functions:
-			// Public functions must have fully explicit type signatures with no
-			// type inference. This is already enforced by the `fn` grammar: every
-			// parameter must carry an explicit type annotation and the return type
-			// must be declared after `->` (or omitted to mean void). There is no
-			// syntax for inferred parameter or return types in BLang, so public
-			// functions automatically satisfy this requirement. No additional
-			// validation is required here.
-
-			def = FunctionDefinition::Parse( l, s, isExtern, isPublic, /*deferBody=*/true );
-			def->setAnnotations( annotations );
-			if ( def->hasDeferredBody() )
-				deferredFuncs.push_back( def );
-
-			// Validate @format annotation
-			for ( const auto &ann : annotations )
-			{
-				if ( ann.mName == "format" )
-				{
-					if ( def->getNumberParams() < 1 ||
-						 def->getParamType( 0 )->getName() != "string" )
-						COMPILE_ERROR( l, "@format requires first parameter to be type 'string'" );
-					if ( !def->isVariadic() )
-						COMPILE_ERROR( l, "@format requires function to be variadic (...)" );
-					break;
-				}
-			}
-
-			mod->mFunctionList.push_back( def );
-			cout << *def << endl;
-		} catch( CompileError &err ) {
-			// Buffer the located diagnostic through the single reporting path,
-			// then resync to the next top-level declaration so parsing continues.
-			// gDiag is installed by main() before parsing; fall back defensively.
-			// The fallback is a collector like gDiag, so on the (degenerate)
-			// gDiag==null path finish() it immediately or the error is dropped.
-			DiagnosticEngine fallback;
-			DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
-			eng.reportCompileError( err );
-			if ( gDiag == nullptr )
-				fallback.finish();
-			resyncTopLevel( l );
-		}
-	}
-
-	// Second pass: parse the deferred function bodies now that every top-level
-	// function signature is registered in scope (forward references / mutual
-	// recursion). Each body gets its own try/catch so one bad body is reported
-	// through the diagnostic engine and the rest still parse.
-	//
-	// Bodies are parsed in REVERSE source order: parsing a body can rewrite the
-	// lexer's symbol-replay list (splitShiftIntoCloseAngles inserts a '>' when a
-	// nested generic closes with ">>"), which shifts every position AFTER the
-	// insert. Going last-to-first, any insertion lands in a region whose body is
-	// already parsed, so the remaining (earlier, smaller) recorded body
-	// positions stay valid.
-	for ( auto it = deferredFuncs.rbegin(); it != deferredFuncs.rend(); ++it )
-	{
-		try {
-			(*it)->ParseDeferredBody( l );
-		} catch( CompileError &err ) {
-			DiagnosticEngine fallback;
-			DiagnosticEngine &eng = ( gDiag != nullptr ) ? *gDiag : fallback;
-			eng.reportCompileError( err );
-			if ( gDiag == nullptr )
-				fallback.finish();
-		}
-	}
-
-	return mod;
-}
-
-WhileStatement *WhileStatement::Parse( Lexer &l, Scope *scope )
-{
-	SourceLocation loc = l.getTokenLocation();
-	int sym = l.getSymbol();
-	if ( sym != Lexer::KEYWORD_WHILE )
-	{
-		COMPILE_ERROR( l, "Internal Compiler Error" );
-	}
-
-	WhileStatement *statement = new WhileStatement;
-	statement->setLocation( loc );
-
-	statement->mLoopExpression = Expression::ParseExpr( l, scope, 0 );
-
-	if ( statement->mLoopExpression == nullptr )
-	{
-		COMPILE_ERROR( l, "Expected expression in while condition" );
-	}
-	
-	Scope *loop_scope = new Scope( Scope::kScope_Loop );
-	loop_scope->setParent( scope );
-	
-	if ( l.peekSymbol() == '{' )
-		statement->mLoopStatement = Block::Parse( l, loop_scope );
-	else
-		statement->mLoopStatement = Statement::Parse( l, loop_scope );
-
-	return statement;
-}
-
-IfStatement *IfStatement::Parse( Lexer &l, Scope *scope )
-{
-	SourceLocation loc = l.getTokenLocation();
-	int sym = l.getSymbol();
-	if ( sym != Lexer::KEYWORD_IF )
-	{
-		COMPILE_ERROR( l, "Internal Compiler Error" );
-	}
-
-	IfStatement *statement = new IfStatement;
-	statement->setLocation( loc );
-
-	statement->mIfExpression = Expression::ParseExpr( l, scope, 0 );
-
-	if ( statement->mIfExpression == nullptr )
-	{
-		COMPILE_ERROR( l, "Expected expression in if condition" );
-	}
-	
-	Scope *if_scope = new Scope( Scope::kScope_IfElse );
-	if_scope->setParent( scope );
-	
-	if ( l.peekSymbol() == '{' )
-		statement->mStatement = Block::Parse( l, if_scope );
-	else
-		statement->mStatement = Statement::Parse( l, if_scope );
-	
-	if ( l.peekSymbol() == Lexer::KEYWORD_ELSE )
-	{
-		Scope *else_scope = new Scope( Scope::kScope_IfElse );
-		else_scope->setParent( scope );
-		
-		sym = l.getSymbol();
-		if ( l.peekSymbol() == '{' )
-			statement->mElseStatement = Block::Parse( l, else_scope );
-		else
-			statement->mElseStatement = Statement::Parse( l, else_scope );
-	}
-
-	return statement;
-}
-
-ForStatement *ForStatement::Parse( Lexer &l, Scope *scope )
-{
-	SourceLocation loc = l.getTokenLocation();
-	int sym = l.getSymbol();
-	if ( sym != Lexer::KEYWORD_FOR )
-	{
-		COMPILE_ERROR( l, "Internal Compiler Error" );
-	}
-
-	sym = l.getSymbol();
-	if ( sym != '(' )
-	{
-		COMPILE_ERROR( l, "Expected \'(\'" );
-	}
-
-	ForStatement *statement = new ForStatement;
-	statement->setLocation( loc );
-
-	statement->mInitialExpression = Expression::Parse( l, scope );
-	if ( statement->mInitialExpression == nullptr )
-	{
-		COMPILE_ERROR( l, "Expected Expression in for statement" );
-	}
-
-	statement->mTestExpression = Expression::Parse( l, scope );
-	if ( statement->mTestExpression == nullptr )
-	{
-		COMPILE_ERROR( l, "Expected Expression in for statement" );
-	}
-
-	statement->mIterationExpression = Expression::Parse( l, scope, ')' );
-	if ( statement->mIterationExpression == nullptr )
-	{
-		COMPILE_ERROR( l, "Expected Expression in for statement" );
-	}
-
-	Scope *for_scope = new Scope( Scope::kScope_Loop );
-	for_scope->setParent( scope );
-
-	if ( l.peekSymbol() == '{' )
-		statement->mStatement = Block::Parse( l, for_scope );
-	else
-		statement->mStatement = Statement::Parse( l, for_scope );
-
-	return statement;
-}
 
 static void printUsage( const char *progName )
 {
@@ -558,11 +46,6 @@ static void printUsage( const char *progName )
 	std::cerr << "  -h, --help        Show this help" << std::endl;
 }
 
-// The libFuzzer harness (fuzz/fuzz_parse.cpp, U5) reuses this translation unit's
-// Module::Parse and the file-scope gScope/gDiag globals, but must NOT provide a
-// second `main` (libFuzzer supplies its own). Building fuzz_parse defines
-// BLANG_FUZZ_HARNESS to compile out qcc's main. No-op for normal qcc/bcc builds.
-#ifndef BLANG_FUZZ_HARNESS
 int main( int argc, char *argv[] )
 {
 	if ( argc < 2 )
@@ -724,60 +207,11 @@ int main( int argc, char *argv[] )
 	diagnostics.setWerror( werror );
 	gDiag = &diagnostics;
 
-	// Set up the global scope with built-in types. All per-file module scopes
-	// will parent to this scope so they share the same primitive type set.
-	gScope = new Scope( Scope::kScope_Global );
-	gScope->addType( new Type( "int" ) );
-	gScope->addType( new Type( "char" ) );
-	gScope->addType( new Type( "string" ) );
-	gScope->addType( new Type( "bool" ) );
-	gScope->addType( new Type( "float" ) );
-	gScope->addType( new Type( "double" ) );
-	gScope->addType( new Type( "long" ) );
-	gScope->addType( new Type( "short" ) );
-	gScope->addType( new Type( "byte" ) );
-	gScope->addType( new Type( "Task" ) );
-	gScope->addType( new Type( "Array" ) );
-	gScope->addType( new Type( "Buffer" ) );
-
-	// Register print/println as compiler builtins
-	{
-		gScope->addSymbol( FunctionDefinition::CreateBuiltin( "print",
-			new Type( "void" ),
-			{ new VariableDefinition( new Type( "string" ), "fmt" ) },
-			true /* variadic */ ) );
-
-		gScope->addSymbol( FunctionDefinition::CreateBuiltin( "println",
-			new Type( "void" ),
-			{ new VariableDefinition( new Type( "string" ), "fmt" ) },
-			true /* variadic */ ) );
-
-		// to_json(value) -> string: serializes a @json-annotated struct.
-		// Variadic so the parser accepts any struct argument; codegen resolves
-		// the concrete type and dispatches to StructName_to_json.
-		gScope->addSymbol( FunctionDefinition::CreateBuiltin( "to_json",
-			new Type( "string" ),
-			{},
-			true /* variadic */ ) );
-	}
-
-	// Register Printable as a builtin protocol
-	{
-		FunctionDefinition *toStr = FunctionDefinition::CreateBuiltin( "to_string",
-			new Type( "string" ),
-			{ new VariableDefinition( new Type( "self" ), "self" ) } );
-		gScope->addSymbol( ProtocolDefinition::CreateBuiltin( "Printable", { toStr } ) );
-	}
-
-	// Register Option<T> and Result<T,E> as builtin generic enums. A program that
-	// defines its own Option/Result enum shadows these (user defs land in a child
-	// scope), so this is backward compatible.
-	{
-		gScope->addType( new Type( "Option" ) );
-		gScope->addSymbol( EnumDefinition::CreateBuiltinOption() );
-		gScope->addType( new Type( "Result" ) );
-		gScope->addSymbol( EnumDefinition::CreateBuiltinResult() );
-	}
+	// Build the global scope of compiler builtins. main() OWNS it via the
+	// SmartPtr; gScope is a non-owning alias for the parser (see Frontend.h —
+	// without an owner, the first file scope's parent release would free it).
+	SmartPtr<Scope> globalScopeOwner = createGlobalScope();
+	gScope = (Scope *)globalScopeOwner;
 
 	// Parse each input file into its own Module. Each module gets its own
 	// module-level scope parented to the shared global scope so that built-in
@@ -816,38 +250,12 @@ int main( int argc, char *argv[] )
 		combineScope->setParent( gScope );
 	}
 
-	// Quiet by default (FR-007): the parser and codegen emit informational
-	// stdout — per-file "Completed …" progress, "Wrote IR to …", and the
-	// lexer's per-token trace. Divert all of it to a discard sink unless -v
-	// was passed. --dump-locations always diverts here regardless of -v and
-	// restores std::cout just before writing its node dump, so its output is
-	// exactly the dump (U1 golden contract). Error diagnostics are unaffected:
-	// they go to std::cerr, never std::cout.
-	std::ostringstream discardSink;
-	std::streambuf *savedCoutBuf = nullptr;
-	// RAII: guarantee std::cout's original buffer is restored on EVERY exit
-	// path from here on — the two early `return -1` failures below, and the
-	// normal success return. Without this, a quiet (non-verbose) compile left
-	// std::cout pointing at the stack-local `discardSink` after this function
-	// returned; the standard-stream teardown in std::ios_base::Init::~Init()
-	// then flushed that dangling stack streambuf at process exit — an invalid
-	// read that is benign on some hosts but SIGSEGVs on others (surfaced by CI,
-	// invisible locally). Declared after `discardSink` so the guard destructs
-	// FIRST (restoring the real buffer) and `discardSink` dies afterward.
-	struct CoutBufGuard
-	{
-		std::streambuf **saved;
-		~CoutBufGuard()
-		{
-			if ( *saved != nullptr )
-			{
-				std::cout.rdbuf( *saved );
-				*saved = nullptr;
-			}
-		}
-	} coutBufGuard{ &savedCoutBuf };
-	if ( !verbose || dumpLocations )
-		savedCoutBuf = std::cout.rdbuf( discardSink.rdbuf() );
+	// Quiet by default (FR-007): parser progress is a gated trace on STDERR
+	// (Frontend.h), enabled by -v. stdout carries only machine output (the
+	// --dump-locations node dump), so no cout redirection games are needed —
+	// the old rdbuf-swap hack (and the process-teardown SIGSEGV it once
+	// caused) is gone with the unconditional couts it was hiding.
+	setParseTraceEnabled( verbose && !dumpLocations );
 
 	// U1: accumulate failure across all files instead of aborting at the first,
 	// so one compile reports every file's diagnostics. Buffered diagnostics are
@@ -933,8 +341,14 @@ int main( int argc, char *argv[] )
 					FunctionDefinition *f = const_cast<FunctionDefinition*>( (const FunctionDefinition*)sp );
 					if ( f->isPublic() )
 					{
-						// Mark as extern so codegen only declares (no body)
-						f->setFunctionExtern( true );
+						// Non-generic: mark extern so codegen only declares (no
+						// body) — the symbol links from the library archive.
+						// GENERIC functions ship their bodies in the .bmod and
+						// stay non-extern so the consumer monomorphizes them on
+						// demand (instances are linkonce_odr, deduped with the
+						// library's own instantiations at link time).
+						if ( !f->isGeneric() )
+							f->setFunctionExtern( true );
 						gScope->addSymbol( f );
 					}
 				}
@@ -997,8 +411,7 @@ int main( int argc, char *argv[] )
 		}
 
 		modules.push_back( mod );
-		cout << "Completed parse" << endl;
-
+		PARSE_TRACE( "Completed parse" );
 		// Semantic analysis (U3): runs in ALL build modes, immediately after a
 		// non-extern module parses and before any code generation, resolving
 		// member references and annotating expression types through the single
@@ -1009,31 +422,31 @@ int main( int argc, char *argv[] )
 			hadError = true;
 	}
 
-	// U1: render all buffered diagnostics once (human text or --json array), then
-	// stop before any output-producing stage if the compile had errors — never
-	// codegen a rejected program (Constitution III). finish() also flushes
-	// warnings (which do not, without -Werror, set hadError) on the success path.
-	gDiag->finish();
+	// U1: stop before any output-producing stage if the compile had errors —
+	// never codegen a rejected program (Constitution III). finish() renders all
+	// buffered diagnostics once (human text or --json array). On the success
+	// path finish() is DEFERRED to the exit points below so the codegen phase
+	// can buffer its own located errors through the same engine (U-last) and
+	// everything — codegen errors and warnings alike — still renders exactly
+	// once, in one JSON array under --json.
 	if ( hadError || gDiag->hasErrors() )
+	{
+		gDiag->finish();
 		return 1;
+	}
 
 	// --dump-locations: restore stdout and print one line per AST node for
 	// each parsed source module (command-line order), then exit. This is
 	// the entire stdout of a dump run.
 	if ( dumpLocations )
 	{
-		// Restore now (the dump below writes to the real std::cout) and disarm
 		// the RAII guard so it does not restore a second time.
-		if ( savedCoutBuf != nullptr )
-		{
-			std::cout.rdbuf( savedCoutBuf );
-			savedCoutBuf = nullptr;
-		}
 		for ( auto &mod : modules )
 		{
 			if ( !mod->isExtern() )
 				LocationDumper::dump( (Module*)mod, std::cout );
 		}
+		gDiag->finish();   // flush warnings (stderr; stdout stays pure)
 		return 0;
 	}
 
@@ -1051,10 +464,11 @@ int main( int argc, char *argv[] )
 		if ( !bmodOut.is_open() )
 		{
 			cerr << "Error: cannot open " << emitBmodFile << " for writing" << endl;
+			gDiag->finish();
 			return -1;
 		}
 		QLang::BmodEmitter::emit( modPtrs, bmodOut );
-		cout << "Wrote .bmod to " << emitBmodFile << endl;
+		PARSE_TRACE( "Wrote .bmod to " << emitBmodFile );
 	}
 
 	// Emit the current schema (table structs) as JSON for `bcc migrate`.
@@ -1074,9 +488,11 @@ int main( int argc, char *argv[] )
 		if ( !mig.saveSchema( emitSchemaFile ) )
 		{
 			cerr << "Error: cannot write schema to " << emitSchemaFile << endl;
+			gDiag->finish();
 			return -1;
 		}
-		cout << "Wrote schema to " << emitSchemaFile << endl;
+		PARSE_TRACE( "Wrote schema to " << emitSchemaFile );
+		gDiag->finish();
 		return 0;
 	}
 
@@ -1143,8 +559,12 @@ int main( int argc, char *argv[] )
 
 				if ( !codegen.generate( modules[idx] ) )
 				{
-					cerr << "Code generation failed for " << inputFiles[idx] << endl;
-					return -1;
+					// The located diagnostics say what failed; add the generic
+					// line only if codegen somehow failed without buffering one.
+					if ( !gDiag->hasErrors() )
+						cerr << "Code generation failed for " << inputFiles[idx] << endl;
+					gDiag->finish();
+					return 1;
 				}
 			}
 
@@ -1156,6 +576,7 @@ int main( int argc, char *argv[] )
 				cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
 				if ( debugCompiler )
 					cerr << codegen.getVerifyError() << endl;
+				gDiag->finish();
 				return -1;
 			}
 
@@ -1167,6 +588,7 @@ int main( int argc, char *argv[] )
 				if ( !codegen.optimize( optLevel ) )
 				{
 					cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+					gDiag->finish();
 					return -1;
 				}
 				if ( !codegen.verify() )
@@ -1174,6 +596,7 @@ int main( int argc, char *argv[] )
 					cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
 					if ( debugCompiler )
 						cerr << codegen.getVerifyError() << endl;
+					gDiag->finish();
 					return -1;
 				}
 			}
@@ -1207,7 +630,7 @@ int main( int argc, char *argv[] )
 			if ( !ec )
 			{
 				codegen.print( outFile );
-				cout << "Wrote IR to " << irFile << endl;
+				PARSE_TRACE( "Wrote IR to " << irFile );
 			}
 			else
 			{
@@ -1237,8 +660,10 @@ int main( int argc, char *argv[] )
 
 				if ( !codegen.generate( modules[ idx ] ) )
 				{
-					cerr << "Code generation failed for " << inputFile << endl;
-					return -1;
+					if ( !gDiag->hasErrors() )
+						cerr << "Code generation failed for " << inputFile << endl;
+					gDiag->finish();
+					return 1;
 				}
 
 				if ( !codegen.verify() )
@@ -1246,6 +671,7 @@ int main( int argc, char *argv[] )
 					cerr << "internal compiler error: generated IR failed verification; please report this bug" << endl;
 					if ( debugCompiler )
 						cerr << codegen.getVerifyError() << endl;
+					gDiag->finish();
 					return -1;
 				}
 
@@ -1256,6 +682,7 @@ int main( int argc, char *argv[] )
 					if ( !codegen.optimize( optLevel ) )
 					{
 						cerr << "error: invalid optimization level '-O" << optLevel << "'" << endl;
+						gDiag->finish();
 						return -1;
 					}
 					if ( !codegen.verify() )
@@ -1263,6 +690,7 @@ int main( int argc, char *argv[] )
 						cerr << "internal compiler error: IR failed verification after optimization; please report this bug" << endl;
 						if ( debugCompiler )
 							cerr << codegen.getVerifyError() << endl;
+						gDiag->finish();
 						return -1;
 					}
 				}
@@ -1293,7 +721,7 @@ int main( int argc, char *argv[] )
 				if ( !ec )
 				{
 					codegen.print( outFile );
-					cout << "Wrote IR to " << irFile << endl;
+					PARSE_TRACE( "Wrote IR to " << irFile );
 				}
 				else
 				{
@@ -1311,6 +739,9 @@ int main( int argc, char *argv[] )
 	(void)emitTestMain;
 #endif
 
+	// Single render point on the success path: flushes warnings buffered by
+	// parse/sema (a warning-only compile still exits 0).
+	gDiag->finish();
 	return 0;
 }
-#endif // BLANG_FUZZ_HARNESS
+
