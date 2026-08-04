@@ -647,3 +647,21 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     array/aggregate ARC edges it surfaced (refcounted-element `sort<string>`,
     struct-valued hashed Map under churn, etc.) in
     `docs/epics/001-toolchain-and-stdlib/known-issues.md`. First NNN-numbered epic.
+  - `modules-v2` (`docs/epics/modules-v2/`) — status: **draft — scoping
+    complete, ready for `/devbot-plan`**. Modules & visibility: replaces v1's
+    flat-merge-into-one-global-scope with a per-module import graph, and fixes
+    an export model that today ships struct *layout* while hiding the *methods*
+    consumers need. Every "today" claim in `overview.md` was reproduced against
+    the compiler: methods of a non-generic `pub struct` never reach the `.bmod`
+    (P8); a `pub` signature may reference a private type, emitting a `.bmod`
+    that fails to parse at the *consumer* while the library builds green (P9);
+    generic mangling ignores the defining module, so two same-named types would
+    collapse onto one `linkonce_odr` symbol once modules can coexist (P10); and
+    there are seven accidental type tiers with `Buffer` spanning three (P11).
+    Carries a 14-entry decision record — qualified access everywhere, nominal
+    identity owned by the defining module, module-local qualifiers (no global
+    uniqueness), identity = canonical origin with no dedup, implied
+    use-capability vs explicit name-capability, no re-export, always-private
+    fields with explicit `pub` on methods, identity-aware mangling, and three
+    principled type tiers (core/prelude/library). 13 units (2 stretch);
+    2 open questions.
