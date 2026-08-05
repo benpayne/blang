@@ -103,6 +103,17 @@ Statement *Statement::Parse( Lexer &l, Scope *scope )
 			if ( statement == nullptr )
 			{
 				l.setCurrentPos( pos );
+				// The expression attempt did not THROW — it simply produced
+				// nothing — so the `deeperError` arm above never ran and
+				// `declErr` was discarded in favour of a generic "Unexpected
+				// token" at the statement's first column. That hid every
+				// located cause raised inside VariableDeclaration::Parse:
+				// `string s = "{missing}";` reported "Unexpected token"
+				// instead of naming the unresolvable interpolation
+				// placeholder. Surface the declaration attempt's located cause,
+				// exactly as the both-threw path already does.
+				if ( declErr.getLocation().isSet() )
+					throw declErr;
 				COMPILE_ERROR( l, "Unexpected token" );
 			}
 		}

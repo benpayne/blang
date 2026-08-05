@@ -250,6 +250,13 @@ private:
 	// String interpolation codegen
 	llvm::Value *genStringInterpolation( StringInterpolation *interp );
 
+	// Interpolation parts that denote a struct must render through Printable,
+	// not be handed to the string runtime as a BlangString (known-issues KI-8).
+	StructDefinition *structDefForInterpolationPart( Expression *part );
+	llvm::Function *lookupToStringFn( StructDefinition *sd );
+	llvm::Value *genPrintableToString( StructDefinition *sd, Expression *node,
+		llvm::Value *selfPtr );
+
 	// Pipeline expression codegen
 	llvm::Value *genPipelineExpression( PipelineExpression *pipeline );
 

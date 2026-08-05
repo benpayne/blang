@@ -1,0 +1,6 @@
+# U4 fail/sema fixture: a string-interpolation placeholder whose base is not a
+# variable in scope. Before U4 this was emitted as literal SOURCE TEXT, so the
+# program printed "value={missing}" with no diagnostic at all (known-issues
+# KI-8(a)). Pattern combines the canonical located-error format with the
+# specific message. Same in both build modes.
+^[^:]+\.b:[0-9]+:[0-9]+: error: cannot interpolate '\{missing\}': 'missing' is not a variable in scope$

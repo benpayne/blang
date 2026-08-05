@@ -918,6 +918,98 @@ llvm::AllocaInst *CodeGen::getExpressionAddress( Expression *expr )
 	return nullptr;
 }
 
+
+// The struct a string-interpolation part denotes, or nullptr when the part is
+// not a struct value. Used to route struct parts through Printable rather than
+// handing a struct pointer to the string runtime as if it were a BlangString.
+// The LLVM function implementing a struct's `to_string`. Prefers the emitted
+// symbol, then falls back to the method's entry in mFunctionMap — the symbol may
+// not exist yet when the CALLER is generated before the conformance impl block
+// that defines it (method emission follows source order).
+llvm::Function *CodeGen::lookupToStringFn( StructDefinition *sd )
+{
+	if ( sd == nullptr )
+		return nullptr;
+	if ( llvm::Function *fn = mModule->getFunction( sd->getName() + "_to_string" ) )
+		return fn;
+	for ( auto &msp : sd->mMethods )
+	{
+		FunctionDefinition *m = const_cast<FunctionDefinition*>(
+			(const FunctionDefinition*)msp );
+		if ( m == nullptr || m->getName() != "to_string" )
+			continue;
+		auto it = mFunctionMap.find( m );
+		if ( it != mFunctionMap.end() )
+			return it->second;
+
+		// The method is declared on the struct but its LLVM function has not
+		// been created yet: method bodies are generated in source order, so a
+		// caller earlier in the file reaches here before the conformance impl
+		// block that defines to_string. Forward-declare it; the definition lands
+		// later in this same module.
+		llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+		llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
+		return llvm::Function::Create( ft, llvm::Function::ExternalLinkage,
+			sd->getName() + "_to_string", mModule.get() );
+	}
+	return nullptr;
+}
+
+StructDefinition *CodeGen::structDefForInterpolationPart( Expression *part )
+{
+	std::string typeName;
+	if ( auto *ve = dynamic_cast<VariableExpression*>( part ) )
+	{
+		if ( ve->mVariable != nullptr && ve->mVariable->getVariableType() != nullptr )
+			typeName = ve->mVariable->getVariableType()->getName();
+	}
+	else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( part ) )
+	{
+		Type *rt = fa->getResolvedType();
+		if ( rt != nullptr )
+			typeName = rt->getName();
+	}
+	if ( typeName.empty() )
+		return nullptr;
+
+	auto it = mStructDefMap.find( typeName );
+	if ( it == mStructDefMap.end() )
+		return nullptr;
+	return it->second;
+}
+
+// Render a struct value through the Printable protocol. `selfPtr` must already
+// be the struct's self pointer (see genPrintCall for why that must come from the
+// variable's ADDRESS and not from a loaded value).
+llvm::Value *CodeGen::genPrintableToString( StructDefinition *sd, Expression *node,
+	llvm::Value *selfPtr )
+{
+	bool hasPrintable = false;
+	for ( const auto &proto : sd->getConformedProtocols() )
+		if ( proto == "Printable" )
+			hasPrintable = true;
+	if ( !hasPrintable && !sd->isFromInterface() )
+	{
+		for ( auto &m : sd->getMethods() )
+			if ( m->getName() == "to_string" )
+				hasPrintable = true;
+	}
+	if ( !hasPrintable )
+	{
+		reportError( node, "type '" + sd->getName() +
+			"' is not printable — implement the Printable protocol" );
+		return nullptr;
+	}
+
+	llvm::Function *toStrFn = lookupToStringFn( sd );
+	if ( toStrFn == nullptr )
+	{
+		reportError( node, "'" + sd->getName() + "_to_string' function not found" );
+		return nullptr;
+	}
+	return mBuilder->CreateCall( toStrFn, { selfPtr }, "interp.structstr" );
+}
+
 llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 {
 	if ( interp->mParts.empty() )
@@ -987,8 +1079,31 @@ llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 			}
 			else if ( val->getType()->isPointerTy() )
 			{
-				// Already a BlangString pointer — use directly (borrowed)
-				parts.push_back( val );
+				// A pointer here is EITHER a BlangString or a struct value —
+				// struct values are refcounted heap pointers too. Passing a
+				// struct straight through handed a non-BlangString to
+				// __blang_string_concat_many, which read a string header out of
+				// struct memory and rendered empty. Dispatch a struct through
+				// Printable instead, exactly as the `{}` placeholder path does.
+				StructDefinition *psd = structDefForInterpolationPart( part );
+				if ( psd != nullptr )
+				{
+					llvm::Value *strPart = genPrintableToString( psd, part, val );
+					if ( strPart == nullptr )
+						return nullptr;   // reportError already fired
+					// to_string returns a FRESH string (refcount 1) that nothing
+					// else owns — exactly like the intstr/fltstr/boolstr parts
+					// above — so it must be tracked or the interpolation leaks it.
+					// A BlangString part (the else branch) is BORROWED from the
+					// variable that holds it and must NOT be tracked.
+					trackTempString( strPart );
+					parts.push_back( strPart );
+				}
+				else
+				{
+					// Already a BlangString pointer — use directly (borrowed)
+					parts.push_back( val );
+				}
 			}
 		}
 	}
@@ -1304,6 +1419,22 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				if ( ve->mVariable && ve->mVariable->getVariableType() )
 				{
 					structTypeName = ve->mVariable->getVariableType()->getName();
+
+					// The implicit `self` parameter's declared type name is the
+					// literal "self", so it failed the struct test below and fell
+					// through to the generic path — which handed a raw struct
+					// pointer to __blang_string_concat_many AS IF it were a
+					// BlangString. `println("{}", self)` therefore printed empty,
+					// a type confusion at the C boundary that rendered harmlessly
+					// by luck (known-issues KI-10). Resolve it to the enclosing
+					// struct, which mSelfStructMap already records.
+					if ( structTypeName == "self" )
+					{
+						auto selfIt = mSelfStructMap.find( ve->mVariable );
+						if ( selfIt != mSelfStructMap.end() && selfIt->second != nullptr )
+							structTypeName = selfIt->second->getName();
+					}
+
 					if ( structTypeName != "string" && structTypeName != "cstring" &&
 						 structTypeName != "int" && structTypeName != "long" &&
 						 structTypeName != "short" && structTypeName != "char" &&
@@ -1377,7 +1508,7 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 					return;
 				}
 				std::string fnName = structTypeName + "_to_string";
-				llvm::Function *toStrFn = mModule->getFunction( fnName );
+				llvm::Function *toStrFn = lookupToStringFn( sd );
 				if ( toStrFn )
 				{
 					// Obtain the receiver's self POINTER exactly as genMethodCall

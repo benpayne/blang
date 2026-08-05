@@ -1,0 +1,12 @@
+id=7
+name=seven
+depth=2
+label=deep
+Outer(id=7,name=seven)
+self-arg = Outer#7
+interp=[Plain(41)]
+placeholder=[Plain(41)]
+Plain(41)
+7/seven/2
+fmt=12 and ff
+interp expressions codegen test passed!
