@@ -90,9 +90,14 @@ removed.
 
 ---
 
-## KI-4 — imported method signatures are exported wholesale until `pub` exists on impl members
+## KI-4 — imported method signatures are exported wholesale until `pub` exists on impl members — CLOSED in U3
 
 **Filed**: U1 (design decision A3; reviewer MIN-6). **Owner**: U3, by design.
+**CLOSED (U3)**: `pub` now parses on impl members, visibility is private by
+default, and the `.bmod` emits only `pub` members for non-generic structs. Every
+committed golden was regenerated — the churn this entry predicted came due and
+was paid. `.bmod` format moved 2 → 3, and a format-2 file is now REJECTED on
+read rather than silently reinterpreted.
 
 The `.bmod` currently ships **every** method of a non-generic exported struct,
 not only the `pub` ones, because `pub` does not yet parse inside `impl` blocks
@@ -544,3 +549,48 @@ either the dependency's protocol names threaded into the emitter's resolvable se
 (the emitter would have to read the dep `.bmod`s it was given), or a decision
 about how a foreign protocol is *named* in an interface at all — which runs into
 re-export and qualification (D8, Epic B). That is a design choice, not a patch.
+
+---
+
+## KI-16 — `mDefiningFile` has no file → module mapping
+
+**Filed**: U3 (M-3 obligation 1). **Owner**: Epic B (`modules-v2-graph`).
+
+`mDefiningFile` holds a source file's base name. A library split across several
+`.b` files therefore yields several distinct values, so a module-private rule
+that compared those strings directly would **reject legal intra-library access**.
+
+**Obligation 2 is done**: origin stamping lives in one shared
+`stampDefiningOrigin()` called by both `qcc` and `blangd`, so the compiler and
+the editor cannot disagree about a definition's origin.
+
+**Obligation 1 — the mapping itself — is deferred**, and the deferral is safe
+because **nothing reads the field today**. U3's rules are keyed on predicates
+that already carry the right meaning: the private-`init` check uses
+`isFromInterface()` (the ABI predicate) and P9 uses `isPublic()`. No rule in this
+epic needs the mapping.
+
+**Owner rationale**: mapping a file to a module is a fragment of canonical module
+identity, which is Epic B's (D5). Building a half-identity here would be a second
+mechanism Epic B then has to reconcile or delete.
+
+**Constraint for whoever picks it up**: do not key a module-private rule on this
+field until the mapping exists, and populate it on the `lsp/Compile.cpp` path so
+`qcc` and `blangd` cannot diverge.
+
+---
+
+## KI-17 — stdlib `FileOps` conformance methods were not `pub`
+
+**Filed and FIXED in U3.** Recorded because it is the first real-code consequence
+of the sixth P9 surface, and because a reviewer seeing `stdlib/*.b` in a U3 diff
+should know why.
+
+`File.read`/`write`/`close` (`stdlib/fs.b`) and `Socket`/`ServerSocket`'s same
+three (`stdlib/net.b`) implement the exported `FileOps` conformance but carried
+no `pub`. Under the new rule that is a library-build error — correctly: the
+conformance is exported, so the methods that satisfy it are API.
+
+Marked `pub`. This is not a workaround: those methods *are* the public surface of
+`File` and `Socket`, and every caller in `examples/` already uses them. The rule
+found real under-marking, not a false positive.

@@ -406,6 +406,47 @@ int main( int argc, char *argv[] )
 
 		if ( isBmod )
 		{
+			// Validate the interface FORMAT VERSION before trusting the file.
+			// Without this the marker is write-only: a format-2 .bmod read by a
+			// format-3 compiler would silently invert the meaning of every
+			// unmarked `init` (exported in 2, private in 3) — the exact inversion
+			// the marker exists to prevent. A mismatch is a located error naming
+			// the fix, not a mysterious downstream failure.
+			{
+				std::ifstream bin( inputFile );
+				std::string bline;
+				int fileVersion = -1;
+				for ( int probe = 0; probe < 8 && std::getline( bin, bline ); probe++ )
+				{
+					const std::string marker = "// blang-bmod-format:";
+					size_t at = bline.find( marker );
+					if ( at != std::string::npos )
+					{
+						fileVersion = atoi( bline.c_str() + at + marker.size() );
+						break;
+					}
+				}
+				// No marker at all == format 1 (pre-versioned, emitted before the
+				// marker existed).
+				if ( fileVersion < 0 )
+					fileVersion = 1;
+				if ( fileVersion != BlangBmod::kFormatVersion )
+				{
+					SourceLocation bloc;
+					bloc.file = inputFile;
+					bloc.line = 1;
+					bloc.col = 1;
+					gDiag->error( bloc,
+						"interface file was produced by a different compiler version "
+						"(.bmod format " + std::to_string( fileVersion ) +
+						", this compiler expects " +
+						std::to_string( BlangBmod::kFormatVersion ) +
+						"); rebuild the dependency" );
+					hadError = true;
+					continue;
+				}
+			}
+
 			mod->setExtern( true );
 
 			// Stamp ABI provenance on every struct this interface declares.

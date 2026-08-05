@@ -102,11 +102,37 @@ referenced by any of these is a located `file:line:col: error:`:
 
 1. `pub fn` parameter or return type
 2. `pub` method / `pub init` parameter or return type
-3. `pub struct` field type **that must appear in D15 metadata** (i.e. `table` /
-   `@json` structs — U5 consumes it; U3 enforces it)
+3. **Every `pub struct`'s field types**, for as long as the emitter ships field
+   layout for that struct.
+
+   **AMENDED by manager ruling (2026-08-05)** from the original "only `table` /
+   `@json` structs". The sequencing argument is decisive: **U5 is the unit that
+   REMOVES the layout**, so scoping this to annotated structs would leave the
+   design record's own P9 reproduction live for exactly the interval U3 exists
+   to close it — and close it later, by accident. While a plain `pub struct`'s
+   fields are in the `.bmod`, their types cross the boundary.
+
+   The data-contract distinction is still real, but it is the **U5** case, not
+   the U3 scope limit: once layout is dropped, only `table`/`@json` structs keep
+   field metadata (D15), and only those fields still need to be exported.
 4. exported enum variant payload type (D17)
 5. **a protocol named in an exported conformance record** (U2's deferral —
    without this it has no owner)
+6. **the methods backing an exported conformance record must be `pub`** — on
+   **non-generic** structs.
+
+   Rule chosen (BLOCKER-2, option (a)): reject at the library build rather than
+   implicitly exporting the method. Implicit export would make a method's
+   visibility depend on a conformance declared elsewhere in the file, so reading
+   `fn to_string(...)` would no longer tell you whether it crosses the boundary;
+   rejecting keeps `pub` meaning exactly one thing — "this is API" — and keeps
+   the error at the library that caused it rather than at the consumer that
+   cannot fix it.
+
+   **Non-generic only.** A generic struct ships ALL its method bodies (A6), so
+   the `pub` filter never runs on it and a non-`pub` conformance method IS
+   reachable. The premise does not hold there, and rejecting would force `pub`
+   onto helpers D9 says are private.
 
 Located at the offending *declaration*, not at a use site.
 

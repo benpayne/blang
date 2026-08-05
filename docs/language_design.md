@@ -644,6 +644,9 @@ The `pub` modifier is placed immediately before the keyword it modifies (`fn`, `
 - `pub struct Name { ... }` — exported struct
 - `pub enum Name { ... }` — exported enum
 - `pub protocol Name { ... }` — exported protocol
+- `pub init(...) { ... }` — exported constructor (inside an `impl` block)
+- `pub fn name(self, ...) { ... }` — exported method (inside an `impl` block)
+- `pub static fn name(...) { ... }` — exported static method
 
 ### Default Private Visibility
 
@@ -675,8 +678,8 @@ pub struct Counter {
 }
 
 impl Counter {
-	init(int start) { self.count = start; }
-	fn bump(self) -> int { self.count = self.count + 1; return self.count; }
+	pub init(int start) { self.count = start; }
+	pub fn bump(self) -> int { self.count = self.count + 1; return self.count; }
 }
 
 // main.b — the consumer
@@ -729,6 +732,76 @@ int __count = 0;              // error
 
 The one exception is `extern fn`, which names a symbol defined outside BLang (the
 runtime's `__blang_*` entry points) rather than creating a BLang declaration.
+
+### Members Are Private by Default
+
+Inside an `impl` block, methods and `init` follow the same rule as everything
+else: **private unless marked `pub`**. A private member is visible throughout its
+own module and is not part of the interface, so another module cannot call it.
+
+```
+pub struct Counter {
+	int count;
+}
+
+impl Counter {
+	pub init(int start) { self.count = start; }
+
+	pub fn bump(self) -> int {          // API — callable from another module
+		self.count = self.count + 1;
+		return self.count;
+	}
+
+	fn reset(self) {                    // private — this module only
+		self.count = 0;
+	}
+}
+```
+
+A consumer calling `c.reset()` gets a located error saying the type has no such
+method, because `reset` is not in `counter`'s interface at all.
+
+A struct may also keep its **constructor** private:
+
+```
+impl Handle {
+	init(int v) { self.id = v; }        // no pub — module-only construction
+	pub fn id(self) -> int { return self.id; }
+}
+```
+
+Such a type is constructed only inside its own module — a factory-style or
+handle-style type, with no extra mechanism needed. A consumer writing
+`Handle(7)` is told the constructor is *private*, rather than that it does not
+exist, so the distinction between "you may not" and "there is none" stays
+visible.
+
+A method that implements an **exported protocol conformance** must be `pub`:
+otherwise the interface would promise a conformance whose methods the consumer
+cannot call.
+
+### Exported Declarations May Only Reference Exported Types
+
+If a declaration is exported, every type it names must be exported too. This is
+checked when the **library** is built:
+
+```
+struct Secret {                  // not pub
+	int hidden;
+}
+
+pub fn leak(Secret s) -> int {   // error: exported function 'leak' references
+	return s.hidden;             // struct 'Secret', which is not exported
+}
+```
+
+The rule covers a `pub fn`'s parameters and return type, a `pub` method's or
+`pub init`'s signature, an exported struct's field types, an exported enum's
+variant payload types, and any protocol named in an exported conformance.
+
+Catching it at the library build is the point: otherwise the interface file
+names a type it never declares, the library compiles cleanly, and the error
+surfaces in *someone else's* build, inside a generated file they did not write.
 
 ### Flat Module Namespace
 
@@ -1189,6 +1262,76 @@ fn internal_helper() -> int {
 ```
 
 This gives LLMs stable anchors: when generating code that calls a module's public API, the LLM can rely on the type signature without needing to trace through implementation details.
+
+### Members Are Private by Default
+
+Inside an `impl` block, methods and `init` follow the same rule as everything
+else: **private unless marked `pub`**. A private member is visible throughout its
+own module and is not part of the interface, so another module cannot call it.
+
+```
+pub struct Counter {
+	int count;
+}
+
+impl Counter {
+	pub init(int start) { self.count = start; }
+
+	pub fn bump(self) -> int {          // API — callable from another module
+		self.count = self.count + 1;
+		return self.count;
+	}
+
+	fn reset(self) {                    // private — this module only
+		self.count = 0;
+	}
+}
+```
+
+A consumer calling `c.reset()` gets a located error saying the type has no such
+method, because `reset` is not in `counter`'s interface at all.
+
+A struct may also keep its **constructor** private:
+
+```
+impl Handle {
+	init(int v) { self.id = v; }        // no pub — module-only construction
+	pub fn id(self) -> int { return self.id; }
+}
+```
+
+Such a type is constructed only inside its own module — a factory-style or
+handle-style type, with no extra mechanism needed. A consumer writing
+`Handle(7)` is told the constructor is *private*, rather than that it does not
+exist, so the distinction between "you may not" and "there is none" stays
+visible.
+
+A method that implements an **exported protocol conformance** must be `pub`:
+otherwise the interface would promise a conformance whose methods the consumer
+cannot call.
+
+### Exported Declarations May Only Reference Exported Types
+
+If a declaration is exported, every type it names must be exported too. This is
+checked when the **library** is built:
+
+```
+struct Secret {                  // not pub
+	int hidden;
+}
+
+pub fn leak(Secret s) -> int {   // error: exported function 'leak' references
+	return s.hidden;             // struct 'Secret', which is not exported
+}
+```
+
+The rule covers a `pub fn`'s parameters and return type, a `pub` method's or
+`pub init`'s signature, an exported struct's field types, an exported enum's
+variant payload types, and any protocol named in an exported conformance.
+
+Catching it at the library build is the point: otherwise the interface file
+names a type it never declares, the library compiles cleanly, and the error
+surfaces in *someone else's* build, inside a generated file they did not write.
 
 ### Flat Module Namespace
 

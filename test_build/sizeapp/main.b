@@ -3,6 +3,9 @@ import sizelib;
 fn main() -> int {
 	Box b = Box(11);
 	println("size = {}", b.size());
+	// A second user-defined protocol crossing the boundary, with a `pub`
+	// conformance method (F-1: a USER-DEFINED instance, not a builtin).
+	println("label = {}", b.label());
 	// INTENDED BREAKAGE, landed in U3 (known-issues KI-4, flagged in place by U2):
 	// `secret` is reachable only through `impl Hidden for Box`, and `Hidden` is not
 	// `pub`. Under U2's interim semantics every non-generic method shipped in the

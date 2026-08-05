@@ -28,6 +28,13 @@
 //
 // U5 bumps it again when field layout is dropped in favour of D15 metadata.
 //
+// THE MARKER IS VALIDATED ON READ (U3, qcc.cpp). A .bmod whose version differs
+// from this constant is REJECTED with a located diagnostic telling the user to
+// rebuild the dependency. Until U3 the marker was written but never parsed, so
+// the protection claimed above did not exist: a format-2 file read by a
+// format-3 compiler would have silently inverted the meaning of every unmarked
+// `init`. A file with NO marker is treated as format 1.
+//
 // NOT every emission fix is a format change. Within U2, protocol declarations
 // were reordered ahead of structs so a conformance record naming a user-defined
 // protocol is no longer a forward reference. That reorder does not change the

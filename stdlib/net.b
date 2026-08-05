@@ -48,15 +48,15 @@ pub struct Socket {
 }
 
 impl FileOps for Socket {
-	fn read(self, int max_len) -> string {
+	pub fn read(self, int max_len) -> string {
 		return __blang_tcp_read(self.fd, max_len);
 	}
 
-	fn write(self, string data) -> int {
+	pub fn write(self, string data) -> int {
 		return __blang_tcp_write_string(self.fd, data);
 	}
 
-	fn close(self) {
+	pub fn close(self) {
 		__blang_tcp_close(self.fd);
 	}
 }
@@ -100,15 +100,15 @@ pub struct ServerSocket {
 }
 
 impl FileOps for ServerSocket {
-	fn read(self, int max_len) -> string {
+	pub fn read(self, int max_len) -> string {
 		return __blang_tcp_read(self.fd, max_len);
 	}
 
-	fn write(self, string data) -> int {
+	pub fn write(self, string data) -> int {
 		return __blang_tcp_write_string(self.fd, data);
 	}
 
-	fn close(self) {
+	pub fn close(self) {
 		__blang_tcp_close(self.fd);
 	}
 }

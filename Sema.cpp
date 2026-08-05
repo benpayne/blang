@@ -213,15 +213,29 @@ void Sema::visitStruct( StructDefinition *structDef )
 	{
 		const string sname = structDef->getName();
 
-		// (3) A data-contract struct's FIELD types cross (D15).
-		if ( isExportedDataContract( structDef ) )
+		// (3) FIELD types of every exported struct.
+		//
+		// AMENDED by manager ruling (2026-08-05) from "table/@json structs only"
+		// to "every `pub struct`, for as long as the emitter ships field layout".
+		// The sequencing argument is decisive: U5 is the unit that REMOVES the
+		// layout, so scoping this to annotated structs would leave the design
+		// record's own P9 reproduction live for exactly the interval U3 exists to
+		// close it, and then close it later by accident. While a plain `pub
+		// struct`'s fields are in the .bmod, their types cross the boundary and
+		// must be exported — annotated or not.
+		//
+		// The data-contract distinction is still real; it just is not the U3
+		// scope limit. It becomes the U5 case: once layout is dropped, only
+		// `table`/`@json` structs keep field metadata (D15), and only those
+		// fields still need to be exported.
+		for ( const auto &f : structDef->getFields() )
 		{
-			for ( const auto &f : structDef->getFields() )
-			{
-				if ( f != nullptr )
-					checkExportedTypeRef( f->getVariableType(), structDef->getLocation(),
-						"field '" + f->getName() + "' of exported data-contract struct '" + sname + "'" );
-			}
+			if ( f == nullptr )
+				continue;
+			const string kindWord = isExportedDataContract( structDef )
+				? "exported data-contract struct" : "exported struct";
+			checkExportedTypeRef( f->getVariableType(), structDef->getLocation(),
+				"field '" + f->getName() + "' of " + kindWord + " '" + sname + "'" );
 		}
 
 		// (5) A protocol named in an exported conformance record. U2's emitter
@@ -231,13 +245,65 @@ void Sema::visitStruct( StructDefinition *structDef )
 		{
 			Symbol *psym = mScope->findSymbol( proto );
 			ProtocolDefinition *pd = dynamic_cast<ProtocolDefinition *>( psym );
-			if ( pd != nullptr && !pd->isPublic() )
+			if ( pd == nullptr )
+				continue;
+
+			if ( !pd->isPublic() )
 			{
 				mDiag.error( structDef->getLocation(),
 					"exported struct '" + sname + "' conforms to protocol '" + proto +
 					"', which is not exported; add 'pub' to protocol '" + proto +
 					"' or drop the conformance" );
 				mReported = true;
+				continue;
+			}
+
+			// (6) The conformance record is EXPORTED, so a consumer will believe
+			// the type satisfies the protocol — but the methods that satisfy it
+			// are filtered out of the interface unless they are `pub`. That ships
+			// a library that builds green and a .bmod whose promise the consumer
+			// cannot use.
+			//
+			// Rejecting here (rather than implicitly exporting the method) keeps
+			// `pub` meaning exactly one thing — "this is API" — and keeps the
+			// error at the library that caused it. Implicit export would make a
+			// method's visibility depend on a conformance declared elsewhere in
+			// the file, so reading `fn to_string(...)` would no longer tell you
+			// whether it crosses the boundary.
+			//
+			// NON-GENERIC ONLY. A generic struct ships ALL its method bodies in
+			// the .bmod (A6) — the `pub` filter never runs on it, because a
+			// consumer monomorphizes from those bodies and public methods call
+			// private helpers. So a non-`pub` conformance method on a generic
+			// struct IS reachable, and the premise of this rule does not hold.
+			// Rejecting it would force `pub` onto helpers that D9 says are
+			// private, for no gain.
+			if ( structDef->isGeneric() )
+				continue;
+
+			for ( const auto &rsp : pd->getRequiredMethods() )
+			{
+				FunctionDefinition *req = const_cast<FunctionDefinition *>(
+					(const FunctionDefinition *)rsp );
+				if ( req == nullptr )
+					continue;
+				for ( const auto &msp : structDef->getMethods() )
+				{
+					FunctionDefinition *m = const_cast<FunctionDefinition *>(
+						(const FunctionDefinition *)msp );
+					if ( m == nullptr || m->getName() != req->getName() )
+						continue;
+					if ( !m->isPublic() )
+					{
+						mDiag.error( m->getLocation(),
+							"method '" + m->getName() + "' of exported struct '" + sname +
+							"' implements exported conformance to protocol '" + proto +
+							"', so it must be 'pub'; otherwise the interface promises a "
+							"conformance a consumer cannot call" );
+						mReported = true;
+					}
+					break;
+				}
 			}
 		}
 	}
@@ -311,6 +377,14 @@ void Sema::checkExportedTypeRef( const Type *type, const SourceLocation &loc,
 	if ( name.empty() || name == "self" || name == "void" )
 		return;
 
+	// Generic ARGUMENTS travel with the type, so they must be checked BEFORE any
+	// early return below. `Box<Secret>` and `Array<Secret>` both export Secret
+	// even though `Box` and `Array` are themselves fine — checking only after
+	// the container passed its own test made this branch unreachable for exactly
+	// the cases it was written for.
+	for ( int i = 0; i < const_cast<Type *>( type )->getNumTypeParams(); i++ )
+		checkExportedTypeRef( const_cast<Type *>( type )->getTypeParam( i ), loc, what );
+
 	// Only user-declared types can be non-exported. A name that resolves to no
 	// symbol is a primitive, a generic parameter, or already-diagnosed; leaving
 	// it alone means this check never invents an error.
@@ -347,10 +421,6 @@ void Sema::checkExportedTypeRef( const Type *type, const SourceLocation &loc,
 		"', which is not exported; add 'pub' to " + kind + " '" + name +
 		"' or remove it from the exported signature" );
 	mReported = true;
-
-	// Generic ARGUMENTS travel too: Box<Secret> exports Secret.
-	for ( int i = 0; i < const_cast<Type *>( type )->getNumTypeParams(); i++ )
-		checkExportedTypeRef( const_cast<Type *>( type )->getTypeParam( i ), loc, what );
 }
 
 void Sema::checkExportedSignature( FunctionDefinition *func, const string &what )

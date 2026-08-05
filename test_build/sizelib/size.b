@@ -44,3 +44,18 @@ impl Box {
 		return 0;
 	}
 }
+
+// A second user-defined protocol whose conformance IS exported, with its backing
+// method correctly `pub`. The rejected form — an exported conformance whose
+// method is not `pub`, which would ship a .bmod promising a conformance the
+// consumer cannot call — is covered by
+// test_files/fail/sema/p9_conformance_method_not_pub.b.
+pub protocol Labelled {
+	fn label(self) -> string;
+}
+
+impl Labelled for Box {
+	pub fn label(self) -> string {
+		return "box";
+	}
+}
