@@ -120,4 +120,7 @@ devbot:
   runs:
     - run_id: 370bedc3-7619-4e21-bdcd-af18b007c893
       launched: 2026-08-05
+      outcome: stopped   # 0 turns — controller structured-output truncation (adaptive thinking on claude-opus-5 ate the max_tokens budget); fixed in devbot provider (thinking disabled + 16k cap), run left 'interrupted' by backend restart
+    - run_id: 92b1f2a0-c643-4fa9-a60a-fbdc6c305783
+      launched: 2026-08-05
       outcome: pending

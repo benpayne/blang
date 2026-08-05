@@ -179,6 +179,8 @@ by a committed test that CI runs:
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
+| 2026-08-05 | 92b1f2a0-c643-4fa9-a60a-fbdc6c305783 | relaunched (redo) | root cause of turn-0 pauses fixed in devbot: claude-opus-5 runs adaptive thinking when `thinking` is omitted and it shares the max_tokens budget — team-plan JSON truncated mid-string every retry; provider now pins thinking disabled + 16k cap; prior run left `interrupted` at 0 turns/0 tokens by the backend restart |
+| 2026-08-05 | 370bedc3-7619-4e21-bdcd-af18b007c893 | paused → resumed | auto-paused at turn 0 (alert: controller `plan_team` returned invalid output after retry — transient); resumed, status running |
 | 2026-08-05 | 370bedc3-7619-4e21-bdcd-af18b007c893 | launched | fully_autonomous; limits 120 turns / 16h / 5M tokens; planning docs committed at d980c37 |
 | 2026-08-05 | — | review passed | `/devbot-review` + fresh-context audit (AF-1..AF-10); all findings fixed: generic-emission exemption, promoted-module exemption + Map/Set pub init, fail/xmodule harness, reach-in script committed, done conditions sharpened; mechanical checks green (sync verbatim, traceability, deps, manifest) |
 | 2026-08-04 | — | epic created | Split from modules-v2 per review; D15–D17 recorded in design record |
