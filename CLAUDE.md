@@ -626,6 +626,17 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     `sanitizers` CI job's full-suite `--leak-check` is green. `known-issues.md`
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
+  - `modules-v2-exports` (`docs/epics/modules-v2-exports/`) — status:
+    **ready** (review passed 2026-08-05). Epic A of the modules-v2 split: opaque exports — cross-module
+    construction via library-emitted factory, `pub` methods/`init`
+    (private-by-default), always-private fields, `.bmod` as true interface
+    (signatures + protocol-conformance records + compiler-facing `table`/`@json`
+    field metadata), P9 export-signature enforcement, stdlib accessor-API
+    redesign, build-cache format versioning. Binding design record (D1–D17):
+    `docs/epics/modules-v2/overview.md` (shared with the future
+    `modules-v2-graph` Epic B — module identity, per-module scopes, import
+    enforcement, type tiers, module-prefix ARC fix, cross-module LSP — to be
+    planned after Epic A completes).
   - `001-toolchain-and-stdlib` (`docs/epics/001-toolchain-and-stdlib/`) — status:
     **complete-local** (devbot run `3a358cfb-38ff-4189-82f5-172d64f05c14`; all 7
     units U0–U6 merged to local master; done-conditions #1–#5 independently

@@ -1,0 +1,120 @@
+# manifest.yaml — machine-readable compilation of the modules-v2-exports epic.
+# v0: compiled by /devbot-launch into devbot REST calls.
+
+manifest_version: 0
+epic: modules-v2-exports
+entry: overview.md
+archetype: evolve
+constitution: .specify/memory/constitution.md
+
+run:
+  # Epic-level done condition — duplicated from overview.md verbatim.
+  done_condition: |
+    All of the following hold on `master` after the epic's PRs merge, each backed
+    by a committed test that CI runs:
+
+    1. A `test_build/` fixture pair (lib + bin across a `.bmod` boundary) where
+       the bin does `Counter c = Counter(5);` and `c.bump()` against the lib's
+       non-generic `pub struct` — builds and runs with expected output via
+       `test_build/run_build_tests.sh`.
+    2. A struct literal for an imported type (`Counter { count: 5 }`) and a field
+       access on an imported type (`c.count`) are each a located
+       `file:line:col: error:` at the consumer build — `fail/xmodule/`
+       lib+consumer fixture pairs with `.expected` patterns, green in both build
+       modes via `run_tests.sh`.
+    3. `pub` parses on methods and `init` in `impl` blocks; a method without
+       `pub` is unreachable from another module (`fail/xmodule/` fixture) and
+       callable inside its own module (positive fixture).
+    4. A non-`pub` type in an exported signature — function param/return, method
+       signature, or enum variant payload — is a located error at the **library**
+       build (`fail/sema` fixtures with `.expected` patterns), including the
+       design record's P9 reproduction (a `pub struct` referencing a non-`pub`
+       type) — the scenario that previously produced a consumer-side
+       generated-file syntax error.
+    5. `print("{}", x)` on an imported struct that `impl Printable` works
+       end-to-end — a `test_build/` lib+bin fixture with an exact-output check in
+       `test_build/run_build_tests.sh` — conformance records cross the `.bmod`
+       (D16).
+    6. From a consumer module, `query T |> where { .field == ... }` and
+       `to_json(x)` on an imported `@json table struct` compile and run — a new
+       sqlite-backed lib+bin fixture in `test_build/` — while the same consumer
+       naming that field in ordinary source is a located error (`fail/xmodule/`
+       fixture) — D15 both ways.
+    7. `BuildCache` keys incorporate a `.bmod` format version: a test proves a
+       format-version bump invalidates a warm cache entry.
+    8. `tools/check_no_field_reachins.sh examples/ test_build/` exits 0 (the
+       committed script greps a maintained list of opaque stdlib/imported-struct
+       fields), and all examples compile and their integration scripts pass
+       using the new accessor/method surface.
+    9. `./run_tests.sh` and `./test_codegen.sh` fully green in both build modes;
+       `./test_codegen.sh --leak-check` clean; `./test_lsp.sh` green;
+       `test_build/run_build_tests.sh` green; docs updated
+       (`docs/language_design.md` + `CLAUDE.md`) per Principle I.
+  guidance: >
+    Start by reading docs/epics/modules-v2-exports/overview.md and its
+    companion documents (workplan.md, design.md, evaluation.md). Then read
+    docs/epics/modules-v2/overview.md — its decision record D1-D17 is binding
+    for this epic and is not to be relitigated — and
+    docs/epics/modules-v2/review-2026-08-04.md for the findings this epic
+    implements. Honor the constitution at .specify/memory/constitution.md
+    (v1.2.0), including the design-audit-before-implementation rule
+    (Principle VI) and the PR + secondary-reviewer merge policy. Follow the
+    workplan units in dependency order; U1 is a spike-first crux — if the
+    factory ABI hits a wall, stop and raise a question rather than widening
+    scope. The factory applies only to non-generic structs: generic structs
+    keep shipping full field layout and ALL method bodies in the .bmod
+    (consumers monomorphize; visibility for generics is Sema-only), and the
+    combine-promoted buffer/collections/cli modules are exempt from
+    module-private enforcement this epic. If U5 runs long, split it
+    (enforcement flip, then corpus migration) rather than cutting fixtures.
+    Do not touch the flat-merge resolution path in qcc.cpp (that is
+    Epic B, modules-v2-graph). Raise questions instead of guessing on
+    anything marked as an open question.
+  oversight_level: fully_autonomous
+  limits:
+    max_turns: 120
+    max_runtime_seconds: 57600
+    session_token_limit: 5000000
+  models:
+    controller: null          # devbot default manager model
+    worker: null              # manager staffs hires per unit
+
+units:
+  - id: U1
+    reqs: [REQ-001]
+    summary: Construction ABI — library-emitted factory (spike first)
+    depends_on: []
+    done: Spike lib+bin fixture in test_build/ constructs/calls/releases across a .bmod with zero consumer layout knowledge, ASan-clean; full gates green
+    speckit: 002-construction-abi-factory
+  - id: U2
+    reqs: [REQ-002, REQ-007, REQ-009, REQ-011]
+    summary: .bmod true interface — method/init/factory signatures, conformance records, cache format-version salt
+    depends_on: [U1]
+    done: Overview done-conditions 1, 5, 7 pass; test_build suite green with new fixtures; full gates green
+    speckit: 003-bmod-true-interface
+  - id: U3
+    reqs: [REQ-003, REQ-006, REQ-011]
+    summary: pub on methods/init; private-by-default; P9 enforcement; fail/xmodule harness + defining-origin marker
+    depends_on: [U2]
+    done: Overview done-conditions 3, 4 pass; fail/xmodule runner leg exists in run_tests.sh; new fail/sema + fail/xmodule fixtures match .expected in both build modes; cross-module generic tests stay green; full gates green
+    speckit: 004-pub-members-and-export-enforcement
+  - id: U4
+    reqs: [REQ-010]
+    summary: stdlib public-API redesign for opaque types (design-audited); Map/Set pub init + call-site migration
+    depends_on: [U2]
+    done: Approved design artifact committed before implementation; accessor surface + Map/Set pub init shipped with migrated goldens green; all examples/ integration scripts pass; tools/check_no_field_reachins.sh examples/ exits 0; full gates green
+    speckit: 005-stdlib-opaque-api
+  - id: U5
+    reqs: [REQ-004, REQ-005, REQ-008]
+    summary: Fields become private; opaque .bmod with D15 metadata; corpus migration
+    depends_on: [U3, U4]
+    done: Overview done-conditions 2, 6, 8 pass and done-condition 9 gate list green; open question 1 resolved and recorded
+    speckit: 006-private-fields-opaque-bmod
+
+foldback:
+  status_into: overview.md
+
+devbot:
+  endpoint: null
+  directory_id: null
+  runs: []
