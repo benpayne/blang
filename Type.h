@@ -310,7 +310,7 @@ namespace QLang
 		// enabling forward references and mutual recursion.
 		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false,
 			bool isPublic = false, bool deferBody = false );
-		static FunctionDefinition *ParseInit( Lexer &l, Scope *s );
+		static FunctionDefinition *ParseInit( Lexer &l, Scope *s, bool isPublic = false );
 
 		// Parse the previously-skipped body (see deferBody above) into this same
 		// function object, using its already-built scope.
@@ -522,6 +522,15 @@ namespace QLang
 			const std::vector<FunctionDefinition*> &methods )
 		{
 			ProtocolDefinition *p = new ProtocolDefinition( name );
+			// A builtin protocol is in scope everywhere without being declared or
+			// imported, so it is exported by definition. Marking it public keeps
+			// that fact in ONE place: P9 enforcement asks `isPublic()` of every
+			// type an exported signature names, and a builtin that answered
+			// "private" would reject `impl Printable for MyStruct` in every
+			// library — while the .bmod emitter, which special-cases the name,
+			// happily emitted the record. Two rules for one fact is how that kind
+			// of contradiction survives.
+			p->mIsPublic = true;
 			for ( auto *m : methods )
 				p->mRequiredMethods.push_back( m );
 			return p;

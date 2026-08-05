@@ -17,10 +17,23 @@
 //   1 — pre-versioned: field layout, generic bodies, and (from modules-v2-exports
 //       U1) non-generic init/method signatures. No version marker in the file.
 //   2 — U2: version marker line, protocol conformance records, `pub table struct`
-//       emission order corrected.
+//       emission order corrected. An unmarked `init`/method is EXPORTED here,
+//       because `pub` could not yet be written on impl members.
+//   3 — U3: impl members are filtered by `pub` (private by default, D9), and
+//       members are emitted with their `pub` marker. From this version onward
+//       `pub init(...)` means externally constructible and a bare `init(...)`
+//       means declared-but-private. Reading a format-2 file under format-3 rules
+//       would invert the meaning of every unmarked member, which is exactly what
+//       the version marker exists to prevent.
 //
-// Later units in this epic each bump it again: U3 when `pub` filters impl
-// members, U5 when field layout is dropped in favour of D15 metadata.
+// U5 bumps it again when field layout is dropped in favour of D15 metadata.
+//
+// THE MARKER IS VALIDATED ON READ (U3, qcc.cpp). A .bmod whose version differs
+// from this constant is REJECTED with a located diagnostic telling the user to
+// rebuild the dependency. Until U3 the marker was written but never parsed, so
+// the protection claimed above did not exist: a format-2 file read by a
+// format-3 compiler would have silently inverted the meaning of every unmarked
+// `init`. A file with NO marker is treated as format 1.
 //
 // NOT every emission fix is a format change. Within U2, protocol declarations
 // were reordered ahead of structs so a conformance record naming a user-defined
@@ -32,7 +45,7 @@
 // consumer sees changes; not when a broken emission is repaired.
 namespace BlangBmod
 {
-	static const int kFormatVersion = 2;
+	static const int kFormatVersion = 3;
 }
 
 #endif // BLANG_BMOD_FORMAT_H_

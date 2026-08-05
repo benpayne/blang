@@ -4,6 +4,7 @@
 // Shared compiler-frontend entry points (defined in QModule.cpp), used by the
 // qcc driver, the LSP server, and the fuzz harness.
 
+#include <string>
 #include <ostream>
 
 #include "Type.h"
@@ -25,6 +26,17 @@ extern QLang::DiagnosticEngine *gDiag;
 // (store it in a SmartPtr) before parenting file scopes to it, or the first
 // file scope's release will free it.
 QLang::Scope *createGlobalScope();
+
+// Stamp every struct a just-parsed module declares with the source file it came
+// from. SHARED by qcc and blangd on purpose: a visibility rule that reads this
+// must see the same value in the compiler and in the editor, and two copies of
+// the stamping logic is how they drift apart (M-3).
+//
+// NOTE: this records a FILE origin, not a module identity. A library split
+// across several .b files yields several values, so a module-private rule must
+// map file -> module before comparing — it must not compare these strings
+// directly, or it will reject legal intra-library access.
+void stampDefiningOrigin( QLang::Module *mod, const std::string &path );
 
 // Parse-progress trace. OFF by default; `qcc -v` enables it. Writes to STDERR
 // so stdout stays clean for machine output (IR, --dump-locations, LSP frames)

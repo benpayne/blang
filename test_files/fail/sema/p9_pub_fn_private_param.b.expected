@@ -1,0 +1,1 @@
+^[^:]+\.b:[0-9]+:[0-9]+: error: exported function 'use_it' references struct 'Secret', which is not exported

@@ -291,7 +291,7 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out,
 	//
 	// Interim semantics: every method ships until `pub` exists on impl members;
 	// the unit that adds `pub` flips this to pub-only.
-	if ( !structDef->getMethods().empty() )
+	if ( structHasInterfaceMembers( structDef ) )
 		emitStructInterface( structDef, out );
 
 	emitConformances( structDef, out, exportedProtocols );
@@ -325,6 +325,21 @@ void BmodEmitter::emitConformances( StructDefinition *structDef, ostream &out,
 	}
 }
 
+bool BmodEmitter::structHasInterfaceMembers( StructDefinition *structDef )
+{
+	for ( const auto &msp : structDef->getMethods() )
+	{
+		FunctionDefinition *m = const_cast<FunctionDefinition*>(
+			(const FunctionDefinition*)msp );
+		if ( m->isGeneric() )
+			continue;
+		// A PRIVATE init is still emitted (as a bare `init`) — see below.
+		if ( m->isPublic() || m->isInit() )
+			return true;
+	}
+	return false;
+}
+
 void BmodEmitter::emitStructInterface( StructDefinition *structDef, ostream &out )
 {
 	out << "impl " << structDef->getName() << " {" << endl;
@@ -355,10 +370,26 @@ void BmodEmitter::emitStructInterface( StructDefinition *structDef, ostream &out
 		if ( method->isGeneric() )
 			continue;
 
+		// VISIBILITY FILTER (D9, format 3+). Private by default: an unmarked
+		// method is module-visible only and does not belong in the interface.
+		//
+		// `init` is the one exception, and it is deliberate. A PRIVATE init is
+		// still emitted, as a bare `init(...)` with no `pub`, so a consumer can
+		// tell "this type's constructor is private" from "this type has no
+		// constructor" and get the better diagnostic. Under format 3 the
+		// spellings mean:
+		//     pub init(...)  -> externally constructible
+		//     init(...)      -> declared, but private (module-only)
+		//     (absent)       -> no constructor at all
+		// A format-2 .bmod must NOT be read under this rule: there an unmarked
+		// init was EXPORTED, because `pub` could not yet be written.
+		if ( !method->isPublic() && !method->isInit() )
+			continue;
+
 		if ( method->isInit() )
-			out << "\tinit(";
+			out << ( method->isPublic() ? "\tpub init(" : "\tinit(" );
 		else
-			out << "\tfn " << method->getName() << "(";
+			out << "\tpub fn " << method->getName() << "(";
 
 		bool first = true;
 		for ( int i = 0; i < method->getNumberParams(); i++ )

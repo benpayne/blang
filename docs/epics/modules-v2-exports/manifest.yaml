@@ -91,13 +91,13 @@ units:
     summary: .bmod true interface — method/init/factory signatures, conformance records, cache format-version salt
     depends_on: [U1]
     done: Overview done-conditions 1, 5, 7 pass; test_build suite green with new fixtures; full gates green
-    speckit: 030-bmod-true-interface   # spec.md + plan.md committed
+    speckit: 030-bmod-true-interface   # spec.md + plan.md committed; merged a00bb20
   - id: U3
     reqs: [REQ-003, REQ-006, REQ-011]
     summary: pub on methods/init; private-by-default; P9 enforcement; fail/xmodule harness + defining-origin marker
     depends_on: [U2]
     done: Overview done-conditions 3, 4 pass; fail/xmodule runner leg exists in run_tests.sh; new fail/sema + fail/xmodule fixtures match .expected in both build modes; cross-module generic tests stay green; full gates green
-    speckit: 031-pub-members-and-export-enforcement
+    speckit: 031-pub-members-and-export-enforcement   # spec.md + plan.md committed
   - id: U4
     reqs: [REQ-010]
     summary: stdlib public-API redesign for opaque types (design-audited); Map/Set pub init + call-site migration

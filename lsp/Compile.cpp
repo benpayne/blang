@@ -41,7 +41,14 @@ CompileResult compileDocument( const std::string &path, const std::string &text 
 	// the diagnostics are already in the engine either way.
 	result.module = Module::Parse( lexer, (Scope *)result.fileScope );
 	if ( result.module != nullptr )
+	{
+		// Same origin stamping the compiler does (M-3). Without this a Sema rule
+		// keyed on a definition's origin would see an empty value here and a
+		// populated one in qcc — the same rule reporting different diagnostics
+		// in the editor and at the command line.
+		stampDefiningOrigin( (Module *)result.module, path );
 		Sema::analyze( (Module *)result.module, (Scope *)result.fileScope, engine );
+	}
 
 	gDiag = prevDiag;
 	result.diagnostics = engine.diagnostics();

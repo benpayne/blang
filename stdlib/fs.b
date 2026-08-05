@@ -59,17 +59,17 @@ pub struct File {
 }
 
 impl FileOps for File {
-	fn read(self, int max_len) -> string {
+	pub fn read(self, int max_len) -> string {
 		long max_long = max_len;
 		Buffer buf = Buffer(max_len);
 		long n = __blang_file_read_into_byte_array(self._fd, buf.get_bytes(), max_long);
 		if n <= 0 { return ""; }
 		return buf.to_string();
 	}
-	fn write(self, string data) -> int {
+	pub fn write(self, string data) -> int {
 		return __blang_file_write_string(self._fd, data);
 	}
-	fn close(self) { __blang_file_close(self._fd); }
+	pub fn close(self) { __blang_file_close(self._fd); }
 }
 
 impl File {

@@ -630,3 +630,27 @@ Scope *createGlobalScope()
 
 	return s;
 }
+
+// See Frontend.h. Shared by qcc and blangd so the two cannot disagree about a
+// definition's origin (M-3).
+void stampDefiningOrigin( QLang::Module *mod, const std::string &path )
+{
+	if ( mod == nullptr )
+		return;
+
+	std::string origin = path;
+	size_t slash = origin.rfind( '/' );
+	if ( slash != std::string::npos )
+		origin = origin.substr( slash + 1 );
+	size_t dot = origin.rfind( '.' );
+	if ( dot != std::string::npos )
+		origin = origin.substr( 0, dot );
+
+	for ( const auto &sp : mod->getStructList() )
+	{
+		QLang::StructDefinition *s = const_cast<QLang::StructDefinition *>(
+			(const QLang::StructDefinition *)sp );
+		if ( s->getDefiningFile().empty() )
+			s->setDefiningFile( origin );
+	}
+}

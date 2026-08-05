@@ -212,7 +212,10 @@ fi
 # fail/warn/ is a distinct WARNING category (below): those fixtures compile with
 # exit 0 (a warning is not an error) unless -Werror is given, so they must not be
 # swept into the exit-non-zero fail glob.
-FAIL_FILES=$(find "$SCRIPT_DIR/test_files/fail" -name '*.b' -not -path '*/fail/warn/*' 2>/dev/null | sort)
+# fail/xmodule/ is a PAIR category (below): each fixture is a lib.b + consumer.b
+# that must be compiled in two steps, so its files must not be run standalone
+# (lib.b compiles fine on its own and would be reported as a spurious failure).
+FAIL_FILES=$(find "$SCRIPT_DIR/test_files/fail" -name '*.b' -not -path '*/fail/warn/*' -not -path '*/fail/xmodule/*' 2>/dev/null | sort)
 if [ -n "$FAIL_FILES" ]; then
 	echo -e "${CYAN}--- Tests expected to FAIL (negative tests) ---${NC}"
 	while IFS= read -r f; do
@@ -269,6 +272,51 @@ if [ -n "$CGFAIL_FILES" ]; then
 fi
 
 # --- Expected failure tests ---
+
+# --- Cross-module tests (fail/xmodule/) ---
+# Each fixture is a DIRECTORY holding lib.b + consumer.b + consumer.b.expected.
+# The runner emits lib.bmod from lib.b, then compiles `consumer.b lib.bmod` and
+# requires a non-zero exit AND a canonical located diagnostic matching the
+# fixture's pattern. This is the consumer-side counterpart to fail/sema: it is
+# where "the library said no" becomes visible at the module boundary.
+XMOD_DIRS=$(find "$SCRIPT_DIR/test_files/fail/xmodule" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+if [ -n "$XMOD_DIRS" ]; then
+	echo -e "${CYAN}--- Cross-module tests (fail/xmodule/) ---${NC}"
+	while IFS= read -r d; do
+		[ -z "$d" ] && continue
+		TOTAL=$((TOTAL + 1))
+		xname=$(basename "$d")
+		xtmp=$(mktemp -d)
+		if ! timeout 10 "$QCC" --emit-bmod "$xtmp/lib.bmod" "$d/lib.b" > /dev/null 2>&1; then
+			echo -e "  ${RED}FAIL${NC}  $xname  (library failed to build its own interface)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			rm -rf "$xtmp"; continue
+		fi
+		x_out=$(timeout 10 "$QCC" --parse-only "$d/consumer.b" "$xtmp/lib.bmod" 2>&1 >/dev/null)
+		x_rc=$?
+		rm -rf "$xtmp"
+		x_pat="$(resolve_expected_pattern "$d/consumer.b")"
+		if [ "$x_rc" -eq 0 ]; then
+			echo -e "  ${RED}FAIL${NC}  $xname  (consumer compiled; expected rejection)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		elif ! printf '%s' "$x_out" | grep -Eq -- '^[^:]+\.b:[0-9]+:[0-9]+: error: '; then
+			echo -e "  ${RED}FAIL${NC}  $xname  (missing canonical file:line:col diagnostic)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		elif [ -n "$x_pat" ] && ! printf '%s' "$x_out" | grep -Eq -- "$x_pat"; then
+			echo -e "  ${RED}FAIL${NC}  $xname  (wrong diagnostic)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			if [ "$VERBOSE" -eq 1 ]; then
+				echo "    expected pattern: $x_pat"
+				printf '%s\n' "$x_out" | tail -3 | sed 's/^/    /'
+			fi
+		else
+			echo -e "  ${GREEN}PASS${NC}  $xname  (correctly rejected at the module boundary)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		fi
+	done <<< "$XMOD_DIRS"
+	echo ""
+fi
+
 XFAIL_FILES=$(find "$SCRIPT_DIR/test_files/xfail" -name '*.b' 2>/dev/null | sort)
 if [ -n "$XFAIL_FILES" ]; then
 	echo -e "${CYAN}--- Tests for known-broken features (XFAIL) ---${NC}"

@@ -15,18 +15,18 @@ pub table struct Point {
 }
 
 impl Point {
-	init(int px, int py) {
+	pub init(int px, int py) {
 		self.x = px;
 		self.y = py;
 	}
 
-	fn sum(self) -> int {
+	pub fn sum(self) -> int {
 		return self.x + self.y;
 	}
 }
 
 impl Printable for Point {
-	fn to_string(self) -> string {
+	pub fn to_string(self) -> string {
 		// NOTE: the fields are copied into locals deliberately. A dotted
 		// expression inside a string interpolation ("{self.x}") is silently
 		// emitted as literal text rather than interpolated — a pre-existing

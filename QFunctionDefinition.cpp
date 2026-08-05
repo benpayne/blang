@@ -275,7 +275,7 @@ VariableDefinition *FunctionDefinition::getParam( int p )
 	return mParameters[ p ];
 }
 
-FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s )
+FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s, bool isPublic )
 {
 	// 'init' keyword has already been consumed by the caller.
 	// Parse: init(params) { body }
@@ -284,6 +284,7 @@ FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s )
 	FunctionDefinition *func = new FunctionDefinition( "init" );
 	func->setLocation( l.getTokenLocation() );
 	func->mIsInit = true;
+	func->mIsPublic = isPublic;
 	func->mFuncScope = new Scope( Scope::kScope_Function, "init" );
 	func->mFuncScope->setParent( s );
 

@@ -129,6 +129,14 @@ migration target (review F1/F8 sequencing).
 - **Audit**: per constitution.
 - **Budget hint**: 8–12 turns.
 - **Team hint**: parallel with U4.
+- **Amended during U3** (manager rulings 2026-08-05): P9 field-type enforcement
+  covers **every `pub struct`**, not only `table`/`@json` ones, for as long as
+  the emitter ships field layout — U5 is the unit that removes the layout, so
+  the narrower rule would have left the design record's reproduction live for
+  exactly the interval U3 exists to close. A sixth P9 surface was added: the
+  methods backing an exported conformance record must be `pub` (non-generic
+  structs only). KI-4 is CLOSED here; M-3 obligation 1 (file → module mapping)
+  is deferred to Epic B as KI-16, safe because nothing reads the field.
 - **Speckit**: `031-pub-members-and-export-enforcement`
 
 ### U4 — stdlib public-API redesign for opaque types (design-audited)

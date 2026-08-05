@@ -3,14 +3,16 @@ import sizelib;
 fn main() -> int {
 	Box b = Box(11);
 	println("size = {}", b.size());
-	// INTERIM SEMANTICS (known-issues KI-4): `secret` is reachable only through
-	// `impl Hidden for Box`, and `Hidden` is NOT `pub`. U2 still ships every
-	// non-generic method in the .bmod because `pub` cannot yet be written on impl
-	// members, so this call compiles today.
+	// A second user-defined protocol crossing the boundary, with a `pub`
+	// conformance method (F-1: a USER-DEFINED instance, not a builtin).
+	println("label = {}", b.label());
+	// INTENDED BREAKAGE, landed in U3 (known-issues KI-4, flagged in place by U2):
+	// `secret` is reachable only through `impl Hidden for Box`, and `Hidden` is not
+	// `pub`. Under U2's interim semantics every non-generic method shipped in the
+	// .bmod, so this call compiled. U3's `pub` filter removes it from the
+	// interface — correctly — so the call is gone.
 	//
-	// U3's `pub` filter MUST break this line. That change is intended, not a
-	// regression: when it lands, either mark the method `pub` or delete this call
-	// and its expected-output line.
-	println("secret = {}", b.secret());
+	// `secret` staying private is deliberate: sizelib/sizeapp is the F-1 fixture
+	// pair whose NEGATIVE leg asserts a non-`pub` method is absent from the .bmod.
 	return 0;
 }

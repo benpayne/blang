@@ -35,6 +35,12 @@ private:
 	// factory instead of allocating locally.
 	static void emitStructInterface( StructDefinition *structDef, std::ostream &out );
 
+	// True when a non-generic struct has anything worth an interface block:
+	// any `pub` member, or an `init` of either visibility (a private init is
+	// still declared so a consumer can be told the constructor is private
+	// rather than absent).
+	static bool structHasInterfaceMembers( StructDefinition *structDef );
+
 	// Protocol conformance records (`impl Protocol for Type { }`, D16), emitted
 	// after the interface block so the conformance check sees the methods.
 	//

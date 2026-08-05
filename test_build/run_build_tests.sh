@@ -83,10 +83,10 @@ check "no unresolved-param instantiation (largest_T absent)" \
 ( cd counterlib && rm -f libcounterlib.a counterlib.bmod && "$BCC" build > /dev/null 2>&1 )
 check "counterlib builds (lib)" "[ -f counterlib/libcounterlib.a ] && [ -f counterlib/counterlib.bmod ]"
 bmod_parses counterlib/counterlib.bmod
-check "bmod ships non-generic init signature" \
-	"grep -q 'init(int start, string name);' counterlib/counterlib.bmod"
-check "bmod ships non-generic method signatures" \
-	"grep -q 'fn bump(self) -> int;' counterlib/counterlib.bmod"
+check "bmod ships non-generic init signature (with its pub marker, format 3)" \
+	"grep -q '^	pub init(int start, string name);' counterlib/counterlib.bmod"
+check "bmod ships non-generic method signatures (pub-marked)" \
+	"grep -q '^	pub fn bump(self) -> int;' counterlib/counterlib.bmod"
 check "bmod method signatures are bodyless" \
 	"! grep -q 'fn bump(self) -> int {' counterlib/counterlib.bmod"
 
@@ -275,16 +275,48 @@ check "sizelib builds (user-defined pub protocol)" \
 	"[ -f sizelib/libsizelib.a ] && [ -f sizelib/sizelib.bmod ]"
 check "protocol is declared BEFORE the conformance record that names it" \
 	"[ \"\$(grep -n 'pub protocol Sizeable' sizelib/sizelib.bmod | cut -d: -f1)\" -lt \"\$(grep -n 'impl Sizeable for Box' sizelib/sizelib.bmod | cut -d: -f1)\" ]"
-check "no record is emitted for a NON-exported protocol" \
-	"! grep -q 'impl Hidden for Box' sizelib/sizelib.bmod"
+# The non-exported-protocol conformance this fixture used to carry is now
+# REJECTED at the library build by P9 (U3), so the emitter's skip is unreachable
+# from valid source; the rejection is covered by
+# test_files/fail/sema/p9_private_protocol_conformance.b.
+check "only the declared conformances appear (Sizeable + Labelled, no stray)" \
+	"[ \"\$(grep -c '^impl .* for Box' sizelib/sizelib.bmod)\" = '2' ]"
 bmod_parses sizelib/sizelib.bmod
 
 ( cd sizeapp && rm -f sizeapp && "$BCC" build > /dev/null 2>&1 )
 check "sizeapp builds against a user-defined-protocol interface" "[ -x sizeapp/sizeapp ]"
 SOUT=$(cd sizeapp && ./sizeapp)
 SEXPECTED='size = 11
-secret = 0'
+label = box'
 check "sizeapp output exact" "[ \"\$SOUT\" = \"\$SEXPECTED\" ]"
+
+# F-1 NEGATIVE LEG: a visibility filter must be proven by ABSENCE, not only by
+# what survives it. `secret` is a real method on Box, reachable only through the
+# non-`pub` protocol `Hidden`; it must not appear in the interface at all.
+check "non-pub method is ABSENT from the .bmod (pub filter)" \
+	"! grep -q 'secret' sizelib/sizelib.bmod"
+check "pub method IS present (filter is not blanket suppression)" \
+	"grep -q 'pub fn size(self) -> int;' sizelib/sizelib.bmod"
+check "pub init is emitted with its pub marker (format 3)" \
+	"grep -q 'pub init(int v);' sizelib/sizelib.bmod"
+check "a second user-defined conformance record crosses the boundary" \
+	"grep -q '^impl Labelled for Box {' sizelib/sizelib.bmod"
+check "its pub backing method is in the interface" \
+	"grep -q 'pub fn label(self) -> string;' sizelib/sizelib.bmod"
+
+# FORMAT-VERSION VALIDATION (U3). The marker must be READ, not merely written:
+# a format-2 .bmod read by a format-3 compiler would silently invert the meaning
+# of every unmarked `init` (exported in 2, private in 3). Take a good interface,
+# rewind its version, and require a located rejection naming the fix.
+FTMP=$(mktemp -d)
+sed 's/blang-bmod-format: [0-9][0-9]*/blang-bmod-format: 2/' \
+	sizelib/sizelib.bmod > "$FTMP/stale.bmod"
+check "a stale-format .bmod is not silently accepted" \
+	"! \"$QCC\" --parse-only \"$FTMP/stale.bmod\" > /dev/null 2>&1"
+FOUT=$("$QCC" --parse-only "$FTMP/stale.bmod" 2>&1 >/dev/null)
+check "the stale-format rejection is located and names the fix" \
+	"echo \"\$FOUT\" | grep -Eq '^[^:]+\.bmod:[0-9]+:[0-9]+: error: .*format 2.*expects 3.*rebuild'"
+rm -rf "$FTMP"
 
 # Prefix-aware factory mangling (known-issues KI-5 action 2). The factory symbol
 # carries the defining module's codegen prefix, mirroring method mangling, so two
