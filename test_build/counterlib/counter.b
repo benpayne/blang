@@ -11,21 +11,21 @@ pub struct Counter {
 }
 
 impl Counter {
-	init(int start, string name) {
+	pub init(int start, string name) {
 		self.count = start;
 		self.label = name;
 	}
 
-	fn bump(self) -> int {
+	pub fn bump(self) -> int {
 		self.count = self.count + 1;
 		return self.count;
 	}
 
-	fn value(self) -> int {
+	pub fn value(self) -> int {
 		return self.count;
 	}
 
-	fn name(self) -> string {
+	pub fn name(self) -> string {
 		return self.label;
 	}
 }

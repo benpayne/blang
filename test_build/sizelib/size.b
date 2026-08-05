@@ -19,25 +19,27 @@ pub struct Box {
 }
 
 impl Box {
-	init(int v) {
+	pub init(int v) {
 		self.n = v;
 	}
 }
 
 impl Sizeable for Box {
-	fn size(self) -> int {
+	pub fn size(self) -> int {
 		return self.n;
 	}
 }
 
-// A non-`pub` protocol must NOT produce a record: it is not emitted into the
-// interface, so a record naming it would dangle and take the file down with it.
-// (Rejecting this combination at the LIBRARY build is P9 enforcement — U3's.)
-protocol Hidden {
-	fn secret(self) -> int;
-}
-
-impl Hidden for Box {
+// A non-`pub` method on an exported struct. It must NOT appear in the interface
+// — that is the F-1 negative leg this fixture carries.
+//
+// This block used to be `impl Hidden for Box` with a non-`pub` protocol, to
+// exercise the emitter's dangling-record SKIP. U3's P9 enforcement now REJECTS
+// that combination at the library build, which makes the skip unreachable from
+// valid source — the better outcome, and why the skip stays only as
+// defence-in-depth. The rejection itself is covered by
+// test_files/fail/sema/p9_private_protocol_conformance.b.
+impl Box {
 	fn secret(self) -> int {
 		return 0;
 	}

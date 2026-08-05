@@ -53,6 +53,24 @@ namespace QLang
 		// foreign C symbol rather than creating a BLang one.
 		void checkReservedName( const std::string &name, const SourceLocation &loc,
 			const std::string &kind );
+
+		// P9 (design record): an exported declaration may only reference
+		// exported types. Enforced at the LIBRARY build, located at the
+		// offending declaration.
+		//
+		// Without this the emitter writes a reference to a type it never
+		// declares, the library exits 0, and the failure lands on the CONSUMER
+		// as a syntax error inside a generated file they never wrote. That is
+		// the wrong error, in the wrong file, at the wrong time, shown to the
+		// wrong person.
+		//
+		// `what` names the offending position for the diagnostic
+		// ("parameter of pub fn 'x'", "field of @json struct 'T'", ...).
+		void checkExportedTypeRef( const Type *type, const SourceLocation &loc,
+			const std::string &what );
+		void checkExportedSignature( FunctionDefinition *func,
+			const std::string &what );
+		bool isExportedDataContract( StructDefinition *structDef ) const;
 		void visitStmt( Statement *stmt );
 
 		// Resolve/annotate an expression bottom-up. Returns its resolved Type

@@ -1,5 +1,5 @@
 // auto-generated .bmod interface file — do not edit
-// blang-bmod-format: 2
+// blang-bmod-format: 3
 
 pub protocol Summable {
 	fn total(self) -> int;

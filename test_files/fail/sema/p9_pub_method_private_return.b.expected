@@ -1,0 +1,1 @@
+^[^:]+\.b:[0-9]+:[0-9]+: error: method 'leak' of exported struct 'Holder' references struct 'Secret', which is not exported
