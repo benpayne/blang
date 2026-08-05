@@ -594,3 +594,72 @@ conformance is exported, so the methods that satisfy it are API.
 Marked `pub`. This is not a workaround: those methods *are* the public surface of
 `File` and `Socket`, and every caller in `examples/` already uses them. The rule
 found real under-marking, not a false positive.
+
+---
+
+## KI-18 — an interface-version mismatch reports correctly, then cascades
+
+**Filed**: U3 (reviewer MINOR-8). **Owner: U5.**
+
+U3 made `qcc` validate a `.bmod`'s format version on read and reject a mismatch
+with a correct located primary diagnostic:
+
+```
+lib.bmod:1:1: error: interface file was produced by a different compiler version
+(.bmod format 2, this compiler expects 3); rebuild the dependency
+```
+
+But the read path then `continue`s to the next input, so the consumer's own
+**correct** source is analysed against a dependency that was never loaded, and
+the user gets a spurious cascade underneath the real error:
+
+```
+consumer.b:4:12: error: Failed parse varible
+consumer.b:5:9:  error: Failed to find symbol 'c'
+```
+
+**The irony is worth stating**, because it is the argument for fixing it: this is
+a small instance of exactly the failure mode the P9 narrative exists to end — a
+correct file blamed for a defect that lives somewhere else. The primary
+diagnostic is right; everything after it is noise pointing at innocent code.
+
+**Suggested fix** (reviewer's, and I agree): treat an interface-version mismatch
+as **fatal** — stop before analysing dependents rather than continuing. Nothing
+downstream can be trusted once an interface failed to load, so there is no value
+in the extra diagnostics and real cost in the misdirection.
+
+**Why U5 owns it**: U5 bumps the format version again (layout → D15 metadata), so
+it is the unit that will actually exercise a format transition against a warm
+cache and real dependents. Fixing it there means the fix is tested by the
+transition rather than by a synthetic fixture. U4 touches no `.bmod` version
+path.
+
+---
+
+## KI-19 — multi-argument generics in exported signatures are untested
+
+**Filed**: U3 (reviewer NIT-9). **Owner: U4** (must not assume coverage);
+underlying parser limitation is pre-existing and unowned.
+
+U3 widened `checkExportedTypeRef` to recurse into generic type ARGUMENTS before
+its early returns, so `pub fn take(Box<Secret> b)` is now correctly rejected
+(fixture `p9_generic_arg_private_type.b`). That fixture uses a **one**-argument
+generic.
+
+The **two**-argument form cannot be tested, because the PARSER rejects it first:
+
+```blang
+pub fn take(Map<string, Secret> b) -> int { ... }
+//                    ^ expected ',' or ')'
+```
+
+A multi-argument generic type in a parameter position does not parse. This is a
+**pre-existing parser limitation**, not something U3 introduced — but the
+consequence is that the widened recursion is **unverified for multi-argument
+containers**, so nobody should assume `Map<K,V>` in an exported signature behaves
+like `Box<T>` does.
+
+**Flagged explicitly at U4** because U4 redesigns `Map`/`Set`'s public API. If
+U4's accessor surface puts a `Map<K,V>` or `Set<T>` into any exported signature,
+it will meet the parser limitation first — and must not read "no P9 error" as
+"P9 checked it".
