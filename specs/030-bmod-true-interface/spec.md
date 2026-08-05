@@ -94,8 +94,19 @@ mode for a version *mismatch* should be a cache miss and a rebuild, not a parse
 error in a generated file (which is the P9 experience this epic exists to
 eliminate). Version 1 is the implicit format U1 shipped; U2 emits 2.
 
-`BuildCache::computeKey` gains the version as a salt. The DC7 test bumps the real
-constant and asserts a warm entry misses, per the manager's ruling on Q8.
+`BuildCache::computeKey` gains the version as a salt.
+
+The DC7 test is a **unit test over the real `computeKey`** (`build_cache_key`,
+ctest), not an end-to-end warm-cache run. `computeKey` takes an optional
+`formatVersion` defaulting to the shipped constant; the test calls it with
+`kFormatVersion` and `kFormatVersion + 1` and asserts the keys differ, **and**
+that the default equals the shipped constant — without that second assertion the
+first would only prove something about a parameter production never passes.
+
+This satisfies the manager's ruling on Q8 (the mechanism under test is the
+shipped one, not a stub) while running in milliseconds and needing no toolchain.
+An end-to-end warm-cache test would require rebuilding the compiler with a
+different constant mid-suite.
 
 ### 4.2 Conformance records (D16)
 
@@ -103,13 +114,24 @@ For each exported type with `impl Protocol for Type`, emit the conformance:
 
 ```
 impl Printable for Counter {
-	fn to_string(self) -> string;
 }
 ```
 
+The block is **empty on purpose**: the method signatures are already in the
+struct's own interface block, and repeating them would give the re-parsed struct
+two copies of every conforming method. Conformance checking validates against the
+struct's accumulated methods (`QImplBlock.cpp:156-157`), not the impl block's own
+members, so an empty body still satisfies it — which is also why the record must
+be emitted **after** the interface block, never before.
+
 This is existing syntax — `ParseImplBlock` already handles `impl P for S`
-(`QImplBlock.cpp:36-55`) — so no parser change is needed, and bodyless members
-already parse and lower to `declare` after U1.
+(`QImplBlock.cpp:36-55`) — so no parser change is needed.
+
+**Consumption**: print dispatch reads `getConformedProtocols()`. For an imported
+type the record is REQUIRED — the "does it have a method called `to_string`"
+name scan is kept only for types defined in the compiling module, so the record
+cannot become decorative, and does not break when U3's `pub` filter removes
+non-public methods from the interface.
 
 ### 4.3 Golden `.bmod` files
 
@@ -125,17 +147,28 @@ Emit `pub table struct Name`, matching source order, and add a `table`-struct
 library + consumer fixture whose `.bmod` is re-parsed. The existing order is a
 latent break, not a cosmetic one.
 
-### 4.5 The visibility predicate (M5)
+### 4.5 The origin predicate (M5)
 
-Add a **module-origin string** to definitions, separate from `mFromInterface`:
+Add an origin string to struct definitions, separate from `mFromInterface`:
 
 | Predicate | Question | Set for |
 |---|---|---|
 | `mFromInterface` (U1) | did this arrive through a `.bmod`? — **ABI** | `.bmod` structs only |
-| `mDefiningModule` (U2) | which module defines this? — **visibility** | every parsed definition, `.b` and `.bmod` alike |
+| `mDefiningFile` (U2) | which SOURCE FILE defines this? | every parsed struct, `.b` and `.bmod` alike |
 
-U2 introduces and populates it; U3/U5 enforce against it. It is a string, not a
-graph node — Epic B owns canonical identity (D5).
+**It is named for what it holds.** An earlier draft called it
+`mDefiningModule`, which it is not: it stores the file's base name, so a library
+split across several `.b` files yields several distinct values. A module-private
+rule keyed directly on it would reject legal intra-library access.
+
+The unit that enforces visibility (U3) must therefore **map file → module** —
+project name for a library, module name for a namespaced stdlib module — rather
+than compare these strings, and must **also populate it on the blangd path**
+(`lsp/Compile.cpp`), which does not today. Without that, a Sema rule keyed on it
+would diverge between `qcc` and the LSP. Canonical module identity is Epic B's
+(D5); this is deliberately less than that.
+
+U2 introduces and populates it; nothing reads it yet.
 
 ### 4.6 CI job
 
@@ -155,7 +188,7 @@ Without it U1's ASan leg prints `SKIP` forever while the suite reports green
 | # | Test | Proves |
 |---|---|---|
 | 1 | Golden `.bmod` for `counterlib` and a new `tablelib` | G3, G4 |
-| 2 | `table` lib + consumer builds and queries | G4 |
+| 2 | `table` lib + consumer builds; its `.bmod` re-parses (the old `table pub struct` form was a hard parse error) | G4 |
 | 3 | Imported `impl Printable` type printed E2E, exact output | G2, DC5 |
 | 4 | Format-version bump invalidates a warm cache entry | G1, DC7 |
 | 5 | `.bmod` carries a conformance record (golden) | G2 |
@@ -218,5 +251,20 @@ The alternative — introducing a bmod-only marker syntax in U2 purely to hold t
 information a unit later would express with `pub` — adds a second way to say the
 same thing, which Principle I ("one right way") exists to prevent.
 
-**I have not guessed.** Implementation proceeds on everything else; this item
-stays open until ruled on.
+**Manager ruling (2026-08-05): APPROVED as recommended.** U2 defines the
+representation; U3 lands the producer and the diagnostic together. No bmod-only
+marker syntax is to be invented.
+
+**Required qualifier — the rule applies from format v3 onward.** U2's goldens are
+format **2**, and they contain bodyless `init(...)` with no `pub`. Under the rule
+above that spelling reads as *private*, which is the inverse of U2's interim
+semantics, where every member is exported because `pub` cannot yet be written
+(A3, KI-4). So:
+
+> **In format 2, an `init`/method with no `pub` is EXPORTED** (interim: `pub` is
+> unspellable in impl blocks). **From format 3 onward, `pub init` means
+> externally constructible and a bare `init` means declared-but-private.**
+
+U3 bumps the format to 3 in the same change that adds `pub` parsing, emits the
+producer, and updates the goldens. A reader must not apply format-3 rules to a
+format-2 `.bmod` — which is exactly what the version marker is for.

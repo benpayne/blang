@@ -395,11 +395,16 @@ int main( int argc, char *argv[] )
 			continue;
 		}
 
-		// Stamp the VISIBILITY predicate on every struct this file defines: the
-		// module that owns it. Deliberately separate from the ABI predicate
-		// (setFromInterface, below) — see the comment on setDefiningModule.
-		// Applied to .b and .bmod inputs alike, because the namespaced stdlib
-		// modules have a real module boundary but arrive as .b source.
+		// Stamp each struct with the SOURCE FILE that defines it. Deliberately
+		// separate from the ABI predicate (setFromInterface, below) — see the
+		// comment on setDefiningFile. Applied to .b and .bmod inputs alike,
+		// because the namespaced stdlib modules have a real module boundary but
+		// arrive as .b source.
+		//
+		// This is a FILE origin, not a module identity: a multi-file library
+		// yields several values. The unit that enforces visibility must map file
+		// -> module rather than compare these strings directly, and must also
+		// populate it on the blangd path (lsp/Compile.cpp), which does not today.
 		//
 		// Populated here, enforced by a later unit. Nothing reads it yet.
 		{
@@ -414,8 +419,8 @@ int main( int argc, char *argv[] )
 			{
 				StructDefinition *s = const_cast<StructDefinition*>(
 					(const StructDefinition*)sp );
-				if ( s->getDefiningModule().empty() )
-					s->setDefiningModule( originName );
+				if ( s->getDefiningFile().empty() )
+					s->setDefiningFile( originName );
 			}
 		}
 

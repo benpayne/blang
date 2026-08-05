@@ -9,13 +9,13 @@ Q-U2-1 (spec §9) blocks only step 7; everything else proceeds.
 |---|------|-------|--------|
 | 1 | Format-version constant, emitted as a comment line | `BmodEmitter.{h,cpp}` | G1 |
 | 2 | Salt the version into the cache key | `BuildCache.{h,cpp}`, `bcc.cpp` | G1, DC7 |
-| 3 | Cache-invalidation test bumping the **real** constant | `test_build/run_build_tests.sh` | DC7 |
+| 3 | Cache-key unit test over the real `computeKey` via an injectable `formatVersion` (default = shipped constant) | `BuildCacheTest.cpp`, `CMakeLists.txt` | DC7 |
 | 4 | `pub table struct` emission order + round-trip fixture | `BmodEmitter.cpp`, `test_build/tablelib` | G4 |
 | 5 | Conformance records (`impl P for S`) | `BmodEmitter.{h,cpp}` | G2 |
 | 6 | Imported-`Printable` E2E fixture with exact output | `test_build/` | DC5 |
-| 7 | *(blocked on Q-U2-1)* private-`init` marker | — | — |
+| 7 | private-`init` marker — **ruled: deferred to U3** (representation defined in spec §9, with the format-2 vs format-3 qualifier) | `spec.md` | — |
 | 8 | Golden `.bmod` files + `--update-goldens` | `test_files/golden/bmod/`, `run_build_tests.sh` | G3 |
-| 9 | Module-origin visibility predicate, populated not enforced | `Type.h`, `qcc.cpp`, `Sema.cpp` | G5 |
+| 9 | `mDefiningFile` origin predicate, populated not enforced (named for what it holds; U3 maps file → module and covers the LSP path) | `Type.h`, `qcc.cpp` | G5 |
 | 10 | Prefix-aware factory coverage (KI-5 dead code) | `test_build/` | MINOR-B |
 | 11 | `build-system` CI job + sanitizer provisioning | `.github/workflows/ci.yml` | G6 |
 | 12 | Docs (Principle I) + KI updates | `CLAUDE.md`, `docs/` | gate 5 |
@@ -23,8 +23,11 @@ Q-U2-1 (spec §9) blocks only step 7; everything else proceeds.
 ## Sequencing notes
 
 - **Step 1 before 2**: the salt needs a constant to read.
-- **Step 3 must bump the real constant**, not a test double (manager ruling on
-  Q8), so it belongs immediately after the salt while the mechanism is fresh.
+- **Step 3 tests the real `computeKey`**, not a reimplementation (manager ruling
+  on Q8). The seam is an optional `formatVersion` parameter defaulting to the
+  shipped constant, so the test can vary the version *and* assert the default is
+  the shipped one — an end-to-end warm-cache test would need the compiler rebuilt
+  with a different constant mid-suite.
 - **Step 8 last among emission changes**: goldens written before steps 4–5 would
   be rewritten twice, hiding which change moved them.
 - **Step 9 lands unused.** The predicate is populated and asserted only for

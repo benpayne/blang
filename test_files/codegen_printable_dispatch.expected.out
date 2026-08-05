@@ -1,5 +1,8 @@
 direct = Point(3,4)
 dispatch = Point(3,4)
-direct = Named[widget]
-dispatch = Named[widget]
-Point(3,4) / 42 / Named[widget]
+direct = Wide(1,mid,2)
+dispatch = Wide(1,mid,2)
+shared = Point(10,20)
+sync = Point(30,40)
+shared wide = Wide(5,shared,6)
+Point(3,4) / 42 / Wide(1,mid,2)

@@ -212,13 +212,15 @@ it does — field layout still ships in the `.bmod` today.
 
 ---
 
-## KI-8 — a dotted expression inside a string interpolation is emitted as literal text
+## KI-8 — struct-valued expressions inside a string interpolation are dropped
 
 **Filed**: U2 (surfaced while writing the D16 fixture). **Owner**: unowned —
 pre-existing, unrelated to this epic. **Severity: silent wrong output.**
 
-String interpolation resolves bare identifiers but **silently passes through any
-dotted expression**:
+String interpolation resolves bare identifiers of scalar/string type. Anything
+else is **silently mishandled**, in two different ways, with no diagnostic:
+
+**(a) a dotted expression is passed through as literal text**:
 
 ```blang
 struct P { int x; string n; }
@@ -230,9 +232,23 @@ int q = p.x;
 println("{}", "local={q}");     // prints:  local=7     <- only this works
 ```
 
-`{self.x}` inside a method body behaves the same way. There is **no diagnostic**:
-the placeholder is copied to the output verbatim, so a program that looks right
-prints its own source text.
+`{self.x}` inside a method body behaves the same way. The placeholder is copied
+to the output verbatim, so a program that looks right prints its own source text.
+
+**(b) a bare STRUCT identifier yields an empty string**, rather than either
+dispatching through `Printable` or being rejected:
+
+```blang
+S s = S(9);
+println("bare={}", s);        // prints:  bare=S(9)   <- the placeholder path works
+println("interp={}", "x={s}"); // prints:  interp=x=  <- interpolation drops it
+```
+
+So the same value renders correctly as a `{}` argument and vanishes inside an
+interpolated literal. "Dotted expression" under-described this: the common thread
+is that the interpolation path resolves a narrower set of expressions than the
+format-placeholder path, and silently emits nothing (or source text) for the
+rest.
 
 **Why not fixed here**: it is in the string-interpolation parser/codegen, an
 independent subsystem from anything U2 touches, and U2 already carries the format
@@ -243,8 +259,9 @@ blind inside this unit would make the PR unreviewable.
 locals before interpolating, with a comment pointing here.
 
 **Recommendation**: fix as a standalone change with `fail/sema` coverage — the
-right behaviour is either to interpolate the field access or to reject the
-placeholder, never to emit it as text (Principle III).
+right behaviour is either to evaluate the expression (dispatching through
+`Printable` for structs, as the placeholder path does) or to reject the
+placeholder, never to emit source text or nothing at all (Principle III).
 
 ---
 
@@ -280,3 +297,42 @@ non-Printable arguments in one call.
 **Note for U2's own scope**: done-condition 5 (`print("{}", x)` on an imported
 `impl Printable` type) was **unreachable** until this was fixed — the conformance
 record makes dispatch resolve, but dispatch itself was broken.
+
+---
+
+## KI-10 — `println("{}", self)` inside a method hands a raw struct pointer to the string runtime
+
+**Filed**: U2 (surfaced while fixing KI-9). **Owner**: unowned — pre-existing.
+**Severity: silent wrong output; a type confusion at a runtime boundary.**
+
+The struct-argument detection at the print dispatch site keys on the argument
+being a `VariableExpression` whose `mVariable` has a struct type. The implicit
+`self` parameter does not satisfy that test, so a `self` argument falls through
+to the generic path and the raw struct pointer is passed to
+`__blang_string_concat_many` **as if it were a `BlangString`**:
+
+```blang
+impl S {
+	fn show(self) { println("self={}", self); }   // prints:  self=
+}
+```
+
+It prints empty rather than dispatching through `Printable`, even when the struct
+conforms — `println("{}", s)` on the same value from outside the method is
+correct. Nothing is diagnosed.
+
+This is a **type confusion across the C boundary**: the runtime reads a
+`BlangString` header out of a pointer that is a struct. It happens to render as
+empty here rather than crashing, which is luck, not safety.
+
+**Why not fixed in U2**: it is the same dispatch site KI-9 touched, but a
+different defect — `self`-argument *recognition*, not receiver-pointer
+derivation — and the fix needs its own decision about whether `self` should be
+Printable-dispatched, rejected, or given a distinct diagnostic. U2 already
+carries the format version, conformance records, the `table` fix, goldens, a CI
+job and the KI-9 regression; adding a second semantic change at the same site
+would obscure both.
+
+**Recommendation**: fix alongside KI-8 — they are the same underlying gap (the
+set of expressions the print/interpolation paths can actually render) and should
+get one coherent answer, with `fail/sema` coverage for whatever is rejected.

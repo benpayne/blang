@@ -267,6 +267,12 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 			out << methods.str();
 			out << "}" << endl;
 		}
+
+		// Conformance records apply to generic structs too: D16 names generic
+		// CONSTRAINT checking (`sort<T: Comparable>` with a foreign T) as one of
+		// the things that needs them, so returning early here would leave exactly
+		// that case unserved.
+		emitConformances( structDef, out );
 		return;
 	}
 

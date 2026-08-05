@@ -192,12 +192,15 @@ if [ "${UPDATE_GOLDENS:-0}" = "1" ]; then
 	mkdir -p "$GOLDEN_DIR"
 	cp printlib/printlib.bmod "$GOLDEN_DIR/printlib.bmod"
 	cp counterlib/counterlib.bmod "$GOLDEN_DIR/counterlib.bmod"
+	cp mathlib/mathlib.bmod "$GOLDEN_DIR/mathlib.bmod"
 	echo "  updated .bmod goldens"
 fi
 check "printlib.bmod matches its golden" \
 	"diff -u \"$GOLDEN_DIR/printlib.bmod\" printlib/printlib.bmod"
 check "counterlib.bmod matches its golden" \
 	"diff -u \"$GOLDEN_DIR/counterlib.bmod\" counterlib/counterlib.bmod"
+check "mathlib.bmod matches its golden (generic bodies + conformances)" \
+	"diff -u \"$GOLDEN_DIR/mathlib.bmod\" mathlib/mathlib.bmod"
 
 ( cd printapp && rm -f printapp && "$BCC" build > /dev/null 2>&1 )
 check "printapp builds (imports a table struct + Printable type)" "[ -x printapp/printapp ]"
@@ -209,6 +212,73 @@ sum = 7'
 # carries the conformance record (D16). Epic done-condition 5.
 check "imported Printable dispatches through print (DC5)" \
 	"[ \"\$POUT\" = \"\$PEXPECTED\" ]"
+
+# NEGATIVE leg: the conformance record must be LOAD-BEARING, not decorative.
+# Strip `impl Printable for Point { }` from the interface and the consumer must
+# refuse to compile, with a located diagnostic naming the missing conformance.
+# Without this, dispatch could keep working off a "does it have a method called
+# to_string" scan and the record would prove nothing -- and that scan breaks
+# outright once U3's `pub` filter removes non-public methods from the interface.
+NTMP=$(mktemp -d)
+cp printlib/printlib.bmod "$NTMP/stripped.bmod"
+python3 - "$NTMP/stripped.bmod" <<'PYEOF'
+import sys, re
+p = sys.argv[1]
+s = open(p).read()
+open(p, 'w').write(re.sub(r'impl Printable for Point \{\n\}\n', '', s))
+PYEOF
+check "stripping the conformance record removes it from the .bmod" \
+	"! grep -q 'impl Printable for Point' \"$NTMP/stripped.bmod\""
+NEG_OUT=$("$QCC" --combine printapp/main.b "$NTMP/stripped.bmod" -o "$NTMP/neg.ll" 2>&1 >/dev/null)
+NEG_EXIT=$?
+check "consumer REJECTS an imported Printable with no conformance record" \
+	"[ $NEG_EXIT -ne 0 ]"
+check "the rejection is a located diagnostic naming the conformance" \
+	"echo \"\$NEG_OUT\" | grep -Eq '^[^:]+\.b:[0-9]+:[0-9]+: error: .*not printable.*impl Printable for Point'"
+rm -rf "$NTMP"
+
+# Prefix-aware factory mangling (known-issues KI-5 action 2). The factory symbol
+# carries the defining module's codegen prefix, mirroring method mangling, so two
+# namespaced modules that both define a `Socket` get distinct factories instead
+# of silently sharing one symbol. No stdlib module has an init-bearing struct
+# today, so without this the branch is dead code — and an untested branch is not
+# a working branch.
+#
+# Under --combine every non-user module gets a prefix, which is exactly the
+# condition the branch keys on.
+PTMP=$(mktemp -d)
+cat > "$PTMP/alpha.b" <<'BLANG'
+pub struct Widget {
+	int n;
+}
+impl Widget {
+	init(int v) { self.n = v; }
+	fn get(self) -> int { return self.n; }
+}
+BLANG
+cat > "$PTMP/beta.b" <<'BLANG'
+pub struct Widget {
+	int m;
+}
+impl Widget {
+	init(int v) { self.m = v * 2; }
+	fn get(self) -> int { return self.m; }
+}
+BLANG
+cat > "$PTMP/user.b" <<'BLANG'
+fn main() -> int { return 0; }
+BLANG
+"$QCC" --combine "$PTMP/alpha.b" "$PTMP/beta.b" "$PTMP/user.b" \
+	-o "$PTMP/pfx.ll" > /dev/null 2>&1
+check "factory symbol carries the defining module's prefix" \
+	"grep -q '^define ptr @__alpha__Widget_new(' \"$PTMP/pfx.ll\""
+check "two same-named structs get DISTINCT factory symbols" \
+	"grep -q '^define ptr @__beta__Widget_new(' \"$PTMP/pfx.ll\""
+check "no unprefixed factory leaks out of a namespaced module" \
+	"! grep -q '^define ptr @__Widget_new(' \"$PTMP/pfx.ll\""
+check "each prefixed factory calls its OWN module's init" \
+	"sed -n '/define ptr @__beta__Widget_new/,/^}/p' \"$PTMP/pfx.ll\" | grep -q 'call void @beta__Widget_init'"
+rm -rf "$PTMP"
 
 # Build-cache format-version salt (REQ-009, done-condition 7) is proven by the
 # dedicated unit test `build_cache_key` (ctest), which calls the real
