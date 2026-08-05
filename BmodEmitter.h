@@ -1,6 +1,8 @@
 #ifndef BLANG_BMOD_EMITTER_H_
 #define BLANG_BMOD_EMITTER_H_
 
+#include "BmodFormat.h"
+#include <set>
 #include <string>
 #include <vector>
 #include <ostream>
@@ -13,13 +15,18 @@ namespace QLang
 class BmodEmitter
 {
 public:
+	// The .bmod interface format version (see BmodFormat.h for the history
+	// and the bump rule). Aliased here so emitter code reads naturally.
+	static const int kFormatVersion = BlangBmod::kFormatVersion;
+
 	// Emit a .bmod interface file from one or more parsed modules.
 	// Only pub symbols are emitted.
 	static void emit( const std::vector<Module*> &modules, std::ostream &out );
 
 private:
 	static void emitFunction( FunctionDefinition *func, std::ostream &out );
-	static void emitStruct( StructDefinition *structDef, std::ostream &out );
+	static void emitStruct( StructDefinition *structDef, std::ostream &out,
+		const std::set<std::string> &exportedProtocols );
 
 	// Non-generic structs ship an `impl` block of bodyless init/method
 	// SIGNATURES — the interface that makes an imported type constructible and
@@ -27,6 +34,16 @@ private:
 	// its presence tells a consumer to construct through the library-emitted
 	// factory instead of allocating locally.
 	static void emitStructInterface( StructDefinition *structDef, std::ostream &out );
+
+	// Protocol conformance records (`impl Protocol for Type { }`, D16), emitted
+	// after the interface block so the conformance check sees the methods.
+	//
+	// `exportedProtocols` is the set of protocol names a consumer will be able to
+	// resolve from this file: the protocols this .bmod itself declares, plus the
+	// always-in-scope builtins. A record naming anything else would be a dangling
+	// reference that makes the whole interface unparseable, so it is skipped.
+	static void emitConformances( StructDefinition *structDef, std::ostream &out,
+		const std::set<std::string> &exportedProtocols );
 	static void emitEnum( EnumDefinition *enumDef, std::ostream &out );
 	static void emitProtocol( ProtocolDefinition *protoDef, std::ostream &out );
 	static void emitAnnotations( const std::vector<AnnotationNode> &annotations, std::ostream &out );

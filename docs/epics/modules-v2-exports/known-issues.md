@@ -105,6 +105,11 @@ selectively reachable (D9) are two reviewable changes, and doing them in one
 commit would produce a change no reviewer could check properly. Recorded here so
 that anyone reading the `.bmod` between U1 and U3 knows the state is intentional.
 
+**Consequence for U2**: any golden `.bmod` U2 commits will contain private
+methods, and **U3 will have to update those goldens** when the `pub` filter lands.
+That is the intended signal, not churn to avoid — a format change that does not
+move a golden is a format change no reviewer can see.
+
 ---
 
 ## KI-5 — the factory symbol is prefix-free on the consuming side
@@ -129,8 +134,28 @@ miscompile**, which is the failure mode to prefer. Closing it properly means
 carrying the defining module's identity in the interface, which is Epic B's
 canonical module identity (design record D5/D10), not this epic's.
 
-**U2 action**: if U2 makes any namespaced stdlib module produce a `.bmod`, this
-must be resolved first.
+**U2 actions** (both blocking):
+
+1. If U2 makes any namespaced stdlib module produce a `.bmod`, this must be
+   resolved first.
+2. **The prefix-aware emission branch is currently dead code** (reviewer
+   MINOR-B): no namespaced stdlib struct has an `init` today, so
+   `mangleStructFactoryName` is never called with a non-empty prefix in any
+   test. U2 must add coverage for it when it wires the `build-system` CI job —
+   an untested branch is not a working branch, and the whole point of the
+   prefix-aware form is to be correct the first time a prefixed module needs it.
+3. **CI must provision the sanitizer archives** (reviewer MAJOR-6). U1's
+   cross-module ASan leg lives in `test_build/run_build_tests.sh` and skips when
+   `build-asan/` is absent. A `build-system` job with only the package list from
+   audit F-A would print `SKIP` on every run while reporting green. The job needs
+
+   ```yaml
+   - run: cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined
+   - run: cmake --build build-asan --parallel
+   ```
+
+   The leg itself now **fails rather than skips when `CI=true`**, so a
+   provisioning regression is loud rather than invisible.
 
 ---
 
@@ -174,9 +199,348 @@ layout, but it is not the only consumer-side site that needs it:
   whichever module compiles the call.
 - `Sema::checkTableField` validates `.field` references against
   `StructDefinition::getFields()` in the consumer's compile.
+- `CodeGen::registerExternalTypes` itself still calls `getOrCreateStructType` for
+  every non-generic imported struct, which builds the LLVM type from the shipped
+  field list. U1 removed the *construction site's* dependence on layout, not this
+  one.
 
 **Consequence**: **U5 cannot drop field layout from the `.bmod` until these paths
 are handled**, either through the D15 compiler-facing metadata section or by
 routing them through the same library-emitted-entry-point idea the factory uses.
 The factory alone does not make an imported struct opaque, and U1 does not claim
 it does — field layout still ships in the `.bmod` today.
+
+---
+
+## KI-8 — struct-valued expressions inside a string interpolation are dropped
+
+**Filed**: U2 (surfaced while writing the D16 fixture). **Owner: U4**
+(manager ruling 2026-08-05 — see "Ownership" below). **Severity: silent wrong
+output.**
+
+String interpolation resolves bare identifiers of scalar/string type. Anything
+else is **silently mishandled**, in two different ways, with no diagnostic:
+
+**(a) a dotted expression is passed through as literal text**:
+
+```blang
+struct P { int x; string n; }
+// ...
+P p = P(7, "hi");
+println("{}", "obj={p.x}");     // prints:  obj={p.x}
+println("{}", "str={p.n}");     // prints:  str={p.n}
+int q = p.x;
+println("{}", "local={q}");     // prints:  local=7     <- only this works
+```
+
+`{self.x}` inside a method body behaves the same way. The placeholder is copied
+to the output verbatim, so a program that looks right prints its own source text.
+
+**(b) a bare STRUCT identifier yields an empty string**, rather than either
+dispatching through `Printable` or being rejected:
+
+```blang
+S s = S(9);
+println("bare={}", s);        // prints:  bare=S(9)   <- the placeholder path works
+println("interp={}", "x={s}"); // prints:  interp=x=  <- interpolation drops it
+```
+
+So the same value renders correctly as a `{}` argument and vanishes inside an
+interpolated literal. "Dotted expression" under-described this: the common thread
+is that the interpolation path resolves a narrower set of expressions than the
+format-placeholder path, and silently emits nothing (or source text) for the
+rest.
+
+**Why not fixed here**: it is in the string-interpolation parser/codegen, an
+independent subsystem from anything U2 touches, and U2 already carries the format
+version, conformance records, the `table` fix, goldens and a CI job. Fixing it
+blind inside this unit would make the PR unreviewable.
+
+**Workaround in the corpus**: `test_build/printlib/shape.b` copies fields into
+locals before interpolating, with a comment pointing here.
+
+**Recommendation**: fix as a standalone change with `fail/sema` coverage — the
+right behaviour is either to evaluate the expression (dispatching through
+`Printable` for structs, as the placeholder path does) or to reject the
+placeholder, never to emit source text or nothing at all (Principle III).
+
+---
+
+## KI-9 — Printable dispatch through `print`/`println` passed the wrong `self` — FIXED in U2
+
+**Filed and fixed**: U2. Recorded because it was a **silent wrong-output bug in a
+documented feature** that survived every existing gate.
+
+`println("{}", p)` on a struct implementing `Printable` printed garbage:
+
+```
+direct   = P(3,4)      // p.to_string() called explicitly — always correct
+dispatch = P(-933207160,24747)   // println("{}", p) — garbage
+```
+
+**Cause** (`CGExpressions.cpp`): a struct value is a refcounted **heap pointer**,
+and `genExpression` on a struct variable yields that pointer. The print path
+nevertheless stored it into a fresh alloca and passed *the alloca* as `self` —
+a pointer **to** the self pointer — so `to_string` read its fields out of a stack
+slot. The stale comment ("val already holds the loaded struct value") dated from
+an earlier model in which structs were values.
+
+**Fix**: pass `val` directly. One line, plus the comment explaining why.
+
+**Why it survived**: no test exercised it. `p.to_string()` called directly took a
+different code path and was always correct, and the codegen matrix had no
+Printable-through-a-placeholder case at all — despite `CLAUDE.md` advertising
+"structs implementing it can be used in `{}` print placeholders". Locked in by
+`test_files/codegen_printable_dispatch.b`, which asserts direct and dispatched
+output agree, covers a refcounted (`string`) field, and mixes Printable and
+non-Printable arguments in one call.
+
+**Note for U2's own scope**: done-condition 5 (`print("{}", x)` on an imported
+`impl Printable` type) was **unreachable** until this was fixed — the conformance
+record makes dispatch resolve, but dispatch itself was broken.
+
+---
+
+## KI-10 — `println("{}", self)` inside a method hands a raw struct pointer to the string runtime
+
+**Filed**: U2 (surfaced while fixing KI-9). **Owner: U4** (manager ruling
+2026-08-05 — see KI-8's "Ownership"). **Severity: silent wrong output; a type
+confusion at a runtime boundary.**
+
+The struct-argument detection at the print dispatch site keys on the argument
+being a `VariableExpression` whose `mVariable` has a struct type. The implicit
+`self` parameter does not satisfy that test, so a `self` argument falls through
+to the generic path and the raw struct pointer is passed to
+`__blang_string_concat_many` **as if it were a `BlangString`**:
+
+```blang
+impl S {
+	fn show(self) { println("self={}", self); }   // prints:  self=
+}
+```
+
+It prints empty rather than dispatching through `Printable`, even when the struct
+conforms — `println("{}", s)` on the same value from outside the method is
+correct. Nothing is diagnosed.
+
+This is a **type confusion across the C boundary**: the runtime reads a
+`BlangString` header out of a pointer that is a struct. It happens to render as
+empty here rather than crashing, which is luck, not safety.
+
+**Why not fixed in U2**: it is the same dispatch site KI-9 touched, but a
+different defect — `self`-argument *recognition*, not receiver-pointer
+derivation — and the fix needs its own decision about whether `self` should be
+Printable-dispatched, rejected, or given a distinct diagnostic. U2 already
+carries the format version, conformance records, the `table` fix, goldens, a CI
+job and the KI-9 regression; adding a second semantic change at the same site
+would obscure both.
+
+**Recommendation**: fix alongside KI-8 — they are the same underlying gap (the
+set of expressions the print/interpolation paths can actually render) and should
+get one coherent answer, with `fail/sema` coverage for whatever is rejected.
+
+---
+
+## Ownership ruling — KI-8 and KI-10 belong to U4, and must land before U5
+
+**Manager ruling, 2026-08-05.** Both are assigned to **U4** (stdlib opaque API),
+not to a standalone fix and not left unowned.
+
+**Why U4 owns them.** They are one defect asked at two sites — *which expressions
+can this renderer actually render?* — and deserve one coherent answer rather than
+two point fixes. U4 owns the question they answer: once fields are private and
+the stdlib exposes accessors, **a method call and `Printable` are the only ways
+to read data out of an opaque type**, and these bugs break exactly those two
+spellings at the print surface.
+
+**Two indirect done-condition exposures**, which is what makes this more than
+tidiness:
+
+- **DC8 pushes authors into the broken spellings.** The reach-in gate moves code
+  from `p.x` toward `p.get_x()` and `"{...}"` interpolations. A migrated example
+  writing `"{obj.field()}"` prints *its own source text*, and an integration
+  script that only checks the exit code still passes. U5's corpus migration is
+  when this would land in the corpus at scale.
+- **`CLAUDE.md` advertises coverage no test has.** It states that Printable
+  structs work in `{}` placeholders. That is false inside interpolated literals
+  and false for `self`. This is the exact shape of KI-9, which survived precisely
+  because the documented claim was broader than the tested one.
+
+**Hard constraint**: these must be fixed **before U5's corpus migration**, not
+after. Migrating the corpus onto spellings that silently misbehave would bake the
+defect into every example and every golden, and the goldens would then *lock in*
+the wrong output.
+
+---
+
+## KI-11 — a single-line `impl` block makes a generic struct's `.bmod` unparseable
+
+**Filed**: U2 (surfaced while adding generic-conformance coverage for M-1).
+**Owner**: unowned — **pre-existing**, and confirmed untouched by U2
+(`sliceDefinitionSource` is `BmodEmitter.cpp:33-103`; U2's earliest change to
+that file is at line 222).
+
+A generic struct ships its method bodies as verbatim source slices, sliced from
+the start of the method's line. When an `impl` block is written on **one line**,
+the method's location *is* the `impl` line, so the slice takes the whole block —
+and the emitter then wraps it in another `impl` block:
+
+```blang
+pub struct Holder<T> { T item; }
+impl Holder { fn get(self) -> T { return self.item; } }
+```
+
+emits
+
+```
+impl Holder {
+impl Holder { fn get(self) -> T { return self.item; } }
+}
+```
+
+which fails to re-parse: `Expected 'fn', 'init', or 'static fn' in impl block`.
+
+Multi-line `impl` blocks — the form every fixture and every stdlib module uses —
+are unaffected, which is why this has never been hit.
+
+**Scope check performed**: generic **conformance records** themselves are fine.
+A generic struct with a multi-line conformance impl emits
+`impl Summable for Pair { }` after its interface block and round-trips cleanly;
+that is now covered by `test_build/mathlib` + `myapp`. The slicing defect is
+orthogonal to M-1, so suppressing generic record emission would have removed
+working behaviour to work around an unrelated bug.
+
+**Current corpus exposure: nil.** Measured, not assumed:
+
+- zero single-line `impl` blocks in `stdlib/`, `examples/` or `test_build/`;
+- the six in `test_files/` (`codegen_ix_method_chain_field.b:10`,
+  `codegen_ix_match_bind.b:6`, and four `fail/sema` fixtures) are all on
+  **non-generic** structs, which never ship method bodies in a `.bmod`;
+- the only generic structs anywhere are `Pair<T>` (multi-line) and
+  `collections.b`'s `Map`/`Set` (multi-line, and exempt this epic per KI-3).
+
+Residual risk is therefore a **future** library shipping a single-line `impl` on
+a **generic** struct — the one combination that triggers it.
+
+**Recommendation**: slice from the method's `fn` token rather than the start of
+its line, or record a precise body span at parse time. Needs its own change and
+its own fixtures.
+
+---
+
+## KI-12 — a `sync` receiver is not locked around a method call
+
+**Filed**: U2 (noticed while fixing B1). **Owner**: not this epic — file only.
+
+Taking a method receiver from the variable's *address* (which is what
+`genMethodCall` has always done, and what print dispatch now does too) means the
+`sync` lock/unlock that `genVariableExpression` emits around a *read* is not
+emitted around a *method call*. So:
+
+```blang
+sync Counter c = Counter(0);
+c.bump();          // no lock is taken for the duration of bump()
+```
+
+`sync` therefore provides **no mutual exclusion for method bodies at all** — only
+for whole-value reads through a variable expression. Print dispatch is now
+consistent with method calls, which is the right consistency; but the shared
+behaviour is itself weaker than `sync` implies.
+
+Not U2's to fix: it is a concurrency-semantics question (should a `sync` receiver
+hold the lock for the whole call? what about re-entrancy and nested calls?) that
+needs a design decision, not a codegen tweak.
+
+---
+
+## KI-13 — `bcc build` swallows qcc's located diagnostic
+
+**Filed**: U2 (noticed while adding the B2 negative leg). **Owner**: not this
+epic — file only, but it undercuts this epic's value proposition.
+
+`qcc` produces a precise located diagnostic:
+
+```
+sizeapp/main.b:8:2: error: imported type 'Point' is not printable — its interface
+declares no 'impl Printable for Point'
+```
+
+but through the normal user path `bcc build` reports only:
+
+```
+error: compilation failed for sizeapp
+```
+
+The located line never reaches the user. This is **pre-existing `bcc` behaviour**,
+not caused by U2 — but this epic exists to replace confusing cross-module
+failures with precise located ones (P9), and every diagnostic it adds is
+invisible through the command users actually run. The build tests see the good
+message only because they invoke `qcc` directly.
+
+**Recommendation**: forward the child's stderr. Small change, large effect on the
+epic's user-visible value; worth scheduling within this epic if a unit has room.
+
+---
+
+## KI-14 — two rules decide whether a struct is Printable
+
+**Filed**: U2 (B2). **Owner**: U5 convergence item.
+
+Print dispatch answers "is this type Printable?" two different ways:
+
+- **local** struct — does it have a method named `to_string`?
+- **imported** struct — does its interface carry `impl Printable for X`?
+
+Both are commented at the dispatch site, and the split is deliberate: it keeps
+same-module behaviour byte-identical while making the conformance record
+load-bearing (without which the record is decorative, and dispatch breaks once
+U3's `pub` filter hides non-public methods).
+
+But it is two rules for one core protocol, and the local rule accepts a type that
+never declared conformance. **U5 should converge them** — most likely by
+requiring `impl Printable for X` everywhere — as part of the pass where
+visibility rules are finalised. Recorded now so the divergence is a decision
+rather than a drift.
+
+---
+
+## KI-15 — `impl ForeignProtocol for MyStruct` records are silently dropped
+
+**Filed**: U2 (reviewer MAJOR-1). **Owner: U5.**
+**Not a regression** — see below.
+
+`BmodEmitter::emit` builds its set of resolvable protocol names from the modules
+being emitted, plus the hardcoded builtin `"Printable"`. A protocol that arrives
+through a **dependency's** `.bmod` is never in that set, so `emitConformances`
+skips the record.
+
+Reproduced with a two-library chain: `protolib` exports `pub protocol Drawable`;
+`uselib` depends on it and declares `impl Drawable for Shape`. `uselib.bmod`
+contains `Shape`, its `init` and `draw` signatures — and **no conformance
+record**.
+
+**Why this is not a regression, and why the skip is still right.** Before the N1
+fix the same source emitted the record anyway, producing a *forward/dangling
+reference* that made `uselib.bmod` unparseable — the N1 class, a library whose
+interface no consumer can read. Skipping strictly improves that: a missing record
+degrades one capability, an unparseable interface destroys all of them. And
+naively re-widening the predicate to "emit every recorded conformance" is
+**exactly how N1 happened**. Do not do that; the fix is to widen the set of names
+the emitter can *resolve*, not to stop checking.
+
+**No observable impact today**: `Printable` is the only conformance anything in
+the compiler consumes (print dispatch), and it is in the set. Generic constraint
+checking against a foreign protocol has no consumer yet.
+
+**What this caps.** REQ-007 / D16 is delivered for **`Printable`** and for
+**same-module user-defined protocols**, and **not** for foreign protocols.
+**U5 must not read a green suite as "D16 complete"** — the suite contains no
+foreign-protocol conformance, by construction, because one cannot currently be
+expressed in a `.bmod`.
+
+**Why U5.** U5 does the cross-module data-contract work where generic constraint
+checking against an imported type first becomes reachable. Closing it needs
+either the dependency's protocol names threaded into the emitter's resolvable set
+(the emitter would have to read the dep `.bmod`s it was given), or a decision
+about how a foreign protocol is *named* in an interface at all — which runs into
+re-export and qualification (D8, Epic B). That is a design choice, not a patch.

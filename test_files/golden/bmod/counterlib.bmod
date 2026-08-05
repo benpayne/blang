@@ -1,0 +1,14 @@
+// auto-generated .bmod interface file — do not edit
+// blang-bmod-format: 2
+
+pub struct Counter {
+	int count;
+	string label;
+}
+impl Counter {
+	init(int start, string name);
+	fn bump(self) -> int;
+	fn value(self) -> int;
+	fn name(self) -> string;
+}
+

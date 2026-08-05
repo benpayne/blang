@@ -59,10 +59,30 @@ migration target (review F1/F8 sequencing).
   salted into `BuildCache::computeKey` (review F6) — this unit makes the
   first format change, so the salt lands here. **Interim semantics** (state
   in the PR): all methods ship until U3 adds `pub`; U3 flips the default.
+- **Added after U1's review** (findings folded in from `audit-u1.md` §0.4 and
+  `known-issues.md`):
+  - **`build-system` CI job** running `test_build/run_build_tests.sh` — without
+    it, done-conditions 1, 5 and 6 rest on a suite CI never runs (F-A). The job
+    must **provision the sanitizer archives**
+    (`cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined` + build), or
+    U1's cross-module ASan leg prints `SKIP` forever while the suite reports
+    green (MAJOR-6). The leg now fails rather than skips under `CI=true`.
+  - **Golden `.bmod` files** rather than more `grep` assertions (F-F). Expect
+    U3 to update them when `pub` filtering lands — that is the signal, not churn
+    (KI-4).
+  - **Fix the `table pub struct` emission order** with a regression fixture
+    (M1/F-C): `emitStruct` writes the annotation before `pub`, the inverse of
+    source order, and U5's D15 work makes `table` structs load-bearing across
+    the boundary.
+  - **Cover the prefix-aware factory branch** — it is dead code today, since no
+    namespaced stdlib struct has an `init` (MINOR-B, KI-5).
+  - **Separate the visibility predicate from `mFromInterface`** (M5): the ABI
+    predicate must not be reused for visibility, or the namespaced stdlib is
+    silently exempted from every later visibility rule.
 - **Done condition**: overview done-conditions 1, 5, and 7 pass (imported
   struct constructible + callable; imported-Printable print E2E with golden;
   cache-invalidation test); `test_build/run_build_tests.sh` green including
-  the new fixtures; full gates green.
+  the new fixtures **and run by CI**; full gates green.
 - **Audit**: per constitution; **security dimension mandatory** (`.bmod` is
   parsed input — emitter/parser round-trip fuzz-safety noted in review).
 - **Budget hint**: 10–14 turns.
@@ -82,9 +102,13 @@ migration target (review F1/F8 sequencing).
   `find_slot`/`rehash`; visibility for generics is a Sema resolution rule
   only). Sema enforces P9 at the **library** build: a non-`pub` type
   referenced in any exported signature — function param/return, method
-  signature, `pub struct` field type that must appear in D15 metadata, or
-  exported enum variant payload (D17) — is a located
-  `file:line:col: error:`. Enforcement applies in `--combine` mode for
+  signature, `pub struct` field type that must appear in D15 metadata,
+  exported enum variant payload (D17), **or a protocol named in an exported
+  conformance record** — is a located `file:line:col: error:`. (The last case is
+  U2's deferral: `BmodEmitter` currently *skips* a record naming a non-`pub`
+  protocol so it does not emit an unreadable interface; rejecting the
+  combination at the library build is U3's, and without this line it had no
+  owner.) Enforcement applies in `--combine` mode for
   **namespaced** stdlib modules (the combine-promoted `buffer`/
   `collections`/`cli` are exempt this epic — no boundary exists; see
   overview constraints). Two pieces of infrastructure land here: (a) a
@@ -130,6 +154,20 @@ migration target (review F1/F8 sequencing).
   change. Existing field access keeps working until U5 flips the rule — this
   unit ships the *target* surface and migrates `examples/` onto it ahead of
   the flip.
+- **Added after U2's review (manager ruling 2026-08-05)**: U4 also owns
+  **KI-8 and KI-10** — the print/interpolation renderer defects. They are one
+  defect at two sites (*which expressions can this renderer actually render?*)
+  and U4 owns the question they answer: once fields are private and the stdlib
+  exposes accessors, a method call and `Printable` are the only ways to read data
+  out of an opaque type, and these bugs break exactly those spellings.
+  Two indirect exposures make this load-bearing: (a) DC8 pushes authors from
+  `p.x` toward `"{obj.field()}"`, which silently prints its own source text while
+  an exit-code-only integration script still passes; (b) `CLAUDE.md` claims
+  Printable structs work in `{}` placeholders, which is false inside interpolated
+  literals and false for `self` — the exact shape of KI-9, which survived for
+  years for that reason. **Hard constraint: fixed BEFORE U5's corpus migration**,
+  or the migration bakes the defect into every example and locks the wrong output
+  into the goldens.
 - **Done condition**: design artifact committed under the unit's speckit dir
   and marked approved in its PR; new accessor surface implemented; `Map`/
   `Set` `pub init` shipped with migrated call sites and goldens green; all

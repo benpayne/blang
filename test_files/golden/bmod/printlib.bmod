@@ -1,0 +1,15 @@
+// auto-generated .bmod interface file — do not edit
+// blang-bmod-format: 2
+
+pub table struct Point {
+	int x;
+	int y;
+}
+impl Point {
+	init(int px, int py);
+	fn sum(self) -> int;
+	fn to_string(self) -> string;
+}
+impl Printable for Point {
+}
+

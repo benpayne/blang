@@ -1,0 +1,7 @@
+[project]
+name = "sizeapp"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+sizelib = { path = "../sizelib" }

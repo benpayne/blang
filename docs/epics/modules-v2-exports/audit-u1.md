@@ -80,6 +80,21 @@ the prerequisites the reviewer enumerated: `llvm-18-dev`, `llvm-18`,
 (binutils — the suite's `linkonce_odr` assertions at
 `run_build_tests.sh:43-46` depend on it).
 
+**Amended after U1 review (MAJOR-6) — the package list alone is not enough.**
+U1 added a cross-module ASan/LSan leg to that suite, and it **skips** when
+`build-asan/` archives are absent. A CI job with only the packages above would
+print `SKIP` on every run, forever, while the suite still reports green — the
+worst kind of green. The job must therefore also:
+
+```yaml
+- run: cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined
+- run: cmake --build build-asan --parallel
+```
+
+and the leg itself must **fail rather than skip when `CI=true`**, so a
+provisioning regression is loud. Both are U2 deliverables, tracked in KI-5 and in
+the 030 spec.
+
 **F-B — the generic-slice `pub` hazard (affects U3 ordering; justifies A2).**
 Generic structs ship methods as **verbatim source slices** inside an
 `impl Name { … }` block (`BmodEmitter.cpp:238-265`). The impl parser rejects

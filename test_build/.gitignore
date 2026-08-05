@@ -1,7 +1,14 @@
-myapp/myapp
-timerapp/timerapp
+# Generated build artifacts. POLICY: nothing produced by `bcc build` is tracked.
+# The .bmod that IS reviewed lives under test_files/golden/bmod/ and is compared
+# byte-for-byte by run_build_tests.sh — tracking a second, self-updating copy
+# next to the sources would give the same file two sources of truth, and the
+# tracked one would silently drift whenever a build ran.
 *.ll
 *.o
+*.a
+*.bmod
+myapp/myapp
+timerapp/timerapp
 counterapp/counterapp
-counterlib/libcounterlib.a
-counterlib/counterlib.bmod
+printapp/printapp
+sizeapp/sizeapp

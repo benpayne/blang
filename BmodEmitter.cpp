@@ -213,16 +213,22 @@ void BmodEmitter::emitFunction( FunctionDefinition *func, ostream &out )
 	out << ";" << endl;
 }
 
-void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
+void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out,
+	const std::set<std::string> &exportedProtocols )
 {
 	if ( !structDef->isPublic() )
 		return;
 
 	emitAnnotations( structDef->getAnnotations(), out );
 
+	// Source order is `pub table struct Name` — the visibility modifier first.
+	// This emitted the inverse (`table pub struct`) until U2; it round-tripped
+	// only through parser leniency, and U5's D15 metadata work makes table
+	// structs load-bearing across the boundary, so it has to be right first.
+	out << "pub ";
 	if ( structDef->isTable() )
 		out << "table ";
-	out << "pub struct " << structDef->getName();
+	out << "struct " << structDef->getName();
 	emitGenericParams( structDef->getGenericParams(), out );
 	out << " {" << endl;
 
@@ -262,6 +268,12 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 			out << methods.str();
 			out << "}" << endl;
 		}
+
+		// Conformance records apply to generic structs too: D16 names generic
+		// CONSTRAINT checking (`sort<T: Comparable>` with a foreign T) as one of
+		// the things that needs them, so returning early here would leave exactly
+		// that case unserved.
+		emitConformances( structDef, out, exportedProtocols );
 		return;
 	}
 
@@ -281,16 +293,61 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 	// the unit that adds `pub` flips this to pub-only.
 	if ( !structDef->getMethods().empty() )
 		emitStructInterface( structDef, out );
+
+	emitConformances( structDef, out, exportedProtocols );
+}
+
+void BmodEmitter::emitConformances( StructDefinition *structDef, ostream &out,
+	const std::set<std::string> &exportedProtocols )
+{
+	// Protocol conformance records (design record D16). Emitted as EMPTY impl
+	// blocks: the method signatures are already in the struct's interface block
+	// above, and repeating them here would give the struct two copies of every
+	// conforming method. An empty body still satisfies the conformance check,
+	// which validates against the struct's accumulated methods rather than the
+	// impl block's own members (QImplBlock.cpp:156-157) — so this must be
+	// emitted AFTER the interface block, never before.
+	//
+	// Without these records a consumer cannot dispatch `print("{}", x)` through
+	// Printable on an imported type, and a foreign type cannot satisfy a generic
+	// constraint.
+	for ( const auto &proto : structDef->getConformedProtocols() )
+	{
+		// Only emit a record a consumer can actually resolve. A non-`pub`
+		// protocol is not emitted into this .bmod, so a record naming it would
+		// dangle and take the whole interface down with it. (Rejecting that
+		// combination at the LIBRARY build is P9 enforcement, which U3 owns —
+		// until then U2's job is simply not to emit an unreadable file.)
+		if ( exportedProtocols.count( proto ) == 0 )
+			continue;
+		out << "impl " << proto << " for " << structDef->getName() << " {" << endl
+		    << "}" << endl;
+	}
 }
 
 void BmodEmitter::emitStructInterface( StructDefinition *structDef, ostream &out )
 {
 	out << "impl " << structDef->getName() << " {" << endl;
 
+	// A struct accumulates methods from every impl block that targets it — its
+	// own, plus one per `impl Protocol for Struct`. Emitting the list verbatim
+	// would repeat any method that satisfies a protocol, giving the re-parsed
+	// struct two copies of it. BLang has no overloading, so the name alone is
+	// the identity.
+	std::vector<std::string> emitted;
+
 	for ( const auto &msp : structDef->getMethods() )
 	{
 		FunctionDefinition *method = const_cast<FunctionDefinition*>(
 			(const FunctionDefinition*)msp );
+
+		bool already = false;
+		for ( const auto &n : emitted )
+			if ( n == method->getName() )
+				already = true;
+		if ( already )
+			continue;
+		emitted.push_back( method->getName() );
 
 		// Generic methods on a non-generic struct would need their body shipped
 		// to be monomorphized; that is out of this unit's scope, so skip them
@@ -421,15 +478,58 @@ void BmodEmitter::emitProtocol( ProtocolDefinition *protoDef, ostream &out )
 void BmodEmitter::emit( const vector<Module*> &modules, ostream &out )
 {
 	out << "// auto-generated .bmod interface file — do not edit" << endl;
+	// Format version, deliberately a COMMENT: a compiler that predates the
+	// marker still parses the file. A version mismatch should cost a cache miss
+	// and a rebuild, never a syntax error inside a generated file.
+	out << "// blang-bmod-format: " << kFormatVersion << endl;
 	out << endl;
+
+	// Names a consumer of this file will be able to resolve: the protocols this
+	// .bmod declares, plus the builtins that are in scope everywhere.
+	std::set<std::string> exportedProtocols;
+	// KEEP IN SYNC with the builtin protocol registration in
+	// QModule.cpp (createGlobalScope, "Register Printable as a builtin
+	// protocol"). A builtin is resolvable in every scope without being declared
+	// in any .bmod, so it must be listed here or every conformance record naming
+	// it would be silently dropped (known-issues KI-15 is the same failure for
+	// protocols arriving via a dependency).
+	exportedProtocols.insert( "Printable" );
+	for ( auto *mod : modules )
+		for ( const auto &sp : mod->getProtocolList() )
+		{
+			ProtocolDefinition *p = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
+			if ( p->isPublic() )
+				exportedProtocols.insert( p->getName() );
+		}
 
 	for ( auto *mod : modules )
 	{
+		// PROTOCOLS FIRST. A struct's conformance record (`impl P for S { }`)
+		// names a protocol, and the impl-block parser resolves that name at the
+		// point of use — so emitting protocols after structs makes every record a
+		// forward reference and the whole interface unparseable:
+		//
+		//     t.bmod:11:23: error: Unknown protocol 'Sizeable' in impl block
+		//
+		// It went unnoticed at first because the only conformance in the corpus
+		// was to `Printable`, the one builtin protocol pre-registered in every
+		// scope. Any user-defined `pub protocol` broke its library's interface.
+		//
+		// The "a record must follow its struct's interface block" constraint
+		// (conformance checking reads the struct's accumulated methods) concerns
+		// the STRUCT, not the protocol, so both orderings satisfy it.
+		for ( const auto &sp : mod->getProtocolList() )
+		{
+			ProtocolDefinition *protoDef = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
+			emitProtocol( protoDef, out );
+			out << endl;
+		}
+
 		// Emit structs
 		for ( const auto &sp : mod->getStructList() )
 		{
 			StructDefinition *structDef = const_cast<StructDefinition*>( (const StructDefinition*)sp );
-			emitStruct( structDef, out );
+			emitStruct( structDef, out, exportedProtocols );
 			out << endl;
 		}
 
@@ -438,14 +538,6 @@ void BmodEmitter::emit( const vector<Module*> &modules, ostream &out )
 		{
 			EnumDefinition *enumDef = const_cast<EnumDefinition*>( (const EnumDefinition*)sp );
 			emitEnum( enumDef, out );
-			out << endl;
-		}
-
-		// Emit protocols
-		for ( const auto &sp : mod->getProtocolList() )
-		{
-			ProtocolDefinition *protoDef = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
-			emitProtocol( protoDef, out );
 			out << endl;
 		}
 

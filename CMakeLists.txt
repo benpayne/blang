@@ -477,3 +477,10 @@ endforeach()
 
 # LSP protocol-layer unit test (single binary, internal check table).
 add_test(NAME lsp_json COMMAND jsonTest)
+
+# Build-cache key unit test (modules-v2-exports U2, done-condition 7): proves the
+# .bmod format version participates in the cache key, so a format bump
+# invalidates every warm entry rather than serving a stale interface.
+add_executable(buildCacheTest BuildCacheTest.cpp BuildCache.cpp sha256.c)
+set_target_properties(buildCacheTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME build_cache_key COMMAND buildCacheTest)

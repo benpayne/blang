@@ -447,6 +447,45 @@ namespace QLang
 		bool isFromInterface() const { return mFromInterface; }
 		void setFromInterface( bool v ) { mFromInterface = v; }
 
+		// Protocols this struct conforms to via `impl Protocol for Struct`.
+		// Recorded so the .bmod can carry conformance records across a module
+		// boundary (design record D16): without them a consumer cannot dispatch
+		// `print("{}", foreignValue)` through Printable, and a foreign type
+		// cannot satisfy a generic constraint.
+		void addConformedProtocol( const std::string &name )
+		{
+			for ( const auto &p : mConformedProtocols )
+				if ( p == name )
+					return;
+			mConformedProtocols.push_back( name );
+		}
+		const std::vector<std::string> &getConformedProtocols() const
+		{
+			return mConformedProtocols;
+		}
+
+		// Which SOURCE FILE defines this type. A visibility-flavoured predicate,
+		// deliberately distinct from isFromInterface(), which is an ABI predicate
+		// answering "must construction go through the library-emitted factory?".
+		//
+		// They are not interchangeable: the namespaced stdlib modules (net, fs,
+		// timer, ...) have a real module boundary but arrive as parsed .b source,
+		// so isFromInterface() is false for them. Reusing the ABI flag for
+		// visibility would silently exempt the entire stdlib from every
+		// visibility rule.
+		//
+		// NAMED FOR WHAT IT HOLDS: this is the file's base name, not a module
+		// identity. A library split across several .b files yields several
+		// distinct values, so a module-private rule keyed directly on this would
+		// reject legal intra-library access. The unit that enforces visibility
+		// must map file -> module (project name for a library, module name for a
+		// namespaced stdlib module) rather than compare these strings; and it
+		// must populate the mapping on the blangd path too (lsp/Compile.cpp),
+		// which does not set this today, or qcc and the LSP will disagree.
+		// Canonical module identity is Epic B's (D5).
+		const std::string &getDefiningFile() const { return mDefiningFile; }
+		void setDefiningFile( const std::string &f ) { mDefiningFile = f; }
+
 		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
 		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 
@@ -464,6 +503,8 @@ namespace QLang
 		bool mIsPublic = false;
 		bool mIsTable = false;
 		bool mFromInterface = false;
+		std::vector<std::string> mConformedProtocols;
+		std::string mDefiningFile;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class AstLocator;

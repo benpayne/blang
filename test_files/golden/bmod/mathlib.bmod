@@ -1,4 +1,9 @@
 // auto-generated .bmod interface file — do not edit
+// blang-bmod-format: 2
+
+pub protocol Summable {
+	fn total(self) -> int;
+}
 
 pub struct Pair<T> {
 	T first;
@@ -11,6 +16,11 @@ impl Pair {
 	fn swap(self) -> Pair<T> {
 		return Pair<T> { first: self.second, second: self.first };
 	}
+	fn total(self) -> int {
+		return 0;
+	}
+}
+impl Summable for Pair {
 }
 
 pub fn add(int a, int b) -> int;

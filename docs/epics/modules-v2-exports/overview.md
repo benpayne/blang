@@ -169,6 +169,28 @@ by a committed test that CI runs:
 - All work lands via PR with a distinct reviewer hire per the constitution's
   audit pattern; no direct commits to `master`.
 
+## Standing checks (epic-wide, from U2 onward)
+
+Inherited by every remaining unit; stated here once rather than restated per
+unit.
+
+**SC-1 — every `.bmod` any fixture produces must parse standalone.**
+`test_build/run_build_tests.sh` runs `qcc --parse-only <lib>.bmod` over every
+library it builds (`bmod_parses`). Three P9-class breaks in this epic were all
+"a library whose interface no consumer can read", and each was invisible until
+someone re-parsed the file: `table pub struct` emitted in the inverse of source
+order (U2/M1); a conformance record naming a user-defined protocol emitted
+*before* the protocol it names (U2/N1); and a record naming a non-exported
+protocol, which dangles (U2/N1). Any new library fixture must be added to this
+check.
+
+**SC-2 — a new `.bmod` construct must be proven with a USER-DEFINED instance.**
+Formalised as constraint F-1 in U3's spec test-plan and applying from U3 onward.
+Both U2 emission breaks hid because the corpus exercised only compiler builtins
+(`Printable` is pre-registered in every scope, so its conformance record resolved
+wherever it appeared). A green suite over builtin-only fixtures says nothing
+about user code.
+
 ## Open questions
 
 | # | Question | Blocking | Status | Answer |

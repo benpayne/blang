@@ -208,7 +208,55 @@ jobs:
           echo "full=$full filt=$filt"
           test "$filt" -gt 0 && test "$filt" -lt "$full"
 
-  # ---- 3. Sanitizer (ASan/UBSan) build + leak-check with teeth ----
+  # ---- 3. Cross-module build fixtures (.bmod interfaces, factory ABI) ----
+  build-system:
+    # Cross-module build fixtures: .bmod interfaces, the library-emitted
+    # construction factory, protocol conformance records, golden .bmod content,
+    # and the cross-module destructor ASan/LSan leg.
+    #
+    # This suite carries ALL of the epic's cross-module evidence (done-conditions
+    # 1, 5 and 6). Until this job existed it was run by nobody automatically.
+    runs-on: ubuntu-latest
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential binutils pkg-config git \
+            libuv1-dev llvm-18-dev llvm-18 libzstd-dev libsqlite3-dev
+      - name: Build (with LLVM)
+        run: |
+          cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build -j"$(nproc)"
+      - name: Build sanitizer runtime archives
+        # REQUIRED, not optional: run_build_tests.sh relinks the cross-module
+        # fixture against these to prove the destructor hand-off is leak-clean.
+        # Without them the ASan leg would skip -- and because CI=true is set
+        # above, a skip is a hard FAILURE rather than a silent green.
+        run: |
+          cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined \
+            -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build-asan -j"$(nproc)"
+      - name: Build-system integration suite
+        run: ./test_build/run_build_tests.sh
+      - name: Build-cache key unit test (.bmod format-version salt)
+        run: ctest --test-dir build -R build_cache_key --output-on-failure
+      - name: Golden .bmod files are committed and current
+        # A format change must move a golden, or no reviewer can see it.
+        # Regenerate into the working tree, THEN diff -- checking git status
+        # without regenerating can never fail, because the suite only writes
+        # goldens under UPDATE_GOLDENS=1.
+        run: |
+          UPDATE_GOLDENS=1 ./test_build/run_build_tests.sh > /dev/null
+          git diff --exit-code -- test_files/golden/bmod/ || {
+            echo "Golden .bmod files are stale. Regenerate with:"
+            echo "  UPDATE_GOLDENS=1 ./test_build/run_build_tests.sh"
+            exit 1
+          }
+
+  # ---- 4. Sanitizer (ASan/UBSan) build + leak-check with teeth ----
   sanitizers:
     runs-on: ubuntu-latest
     steps:

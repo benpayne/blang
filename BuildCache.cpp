@@ -1,5 +1,6 @@
 #include "BuildCache.h"
 #include "sha256.h"
+#include "BmodFormat.h"
 
 #include <fstream>
 #include <sstream>
@@ -120,10 +121,28 @@ static string extractFilename( const string &path )
 
 string BuildCache::computeKey( const vector<string> &sourceFiles,
                                 const string &tomlContent,
-                                const vector<string> &depHashes )
+                                const vector<string> &depHashes,
+                                int formatVersion )
 {
+	if ( formatVersion < 0 )
+		formatVersion = BlangBmod::kFormatVersion;
+
 	SHA256_CTX ctx;
 	sha256_init( &ctx );
+
+	// Salt with the .bmod interface FORMAT version. A cache entry holds a .bmod
+	// as well as a .a, so an entry written before a format change would
+	// otherwise be served as a valid interface to a compiler that expects the
+	// new shape. Bumping BlangBmod::kFormatVersion invalidates every entry —
+	// which is the point.
+	//
+	// NOTE (known-issues KI-1): this key still hashes file CONTENTS only — no
+	// filenames and no separator between files — so renaming a source, or moving
+	// a line between two sources in one project, does not change it. Filed, not
+	// fixed here: it is a behavioural change to every project's key and traces
+	// to no requirement in this epic.
+	string formatSalt = "bmod-format:" + std::to_string( formatVersion ) + "\n";
+	sha256_update( &ctx, (const uint8_t *)formatSalt.data(), formatSalt.size() );
 
 	for ( const auto &file : sourceFiles )
 	{

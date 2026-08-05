@@ -91,7 +91,7 @@ units:
     summary: .bmod true interface — method/init/factory signatures, conformance records, cache format-version salt
     depends_on: [U1]
     done: Overview done-conditions 1, 5, 7 pass; test_build suite green with new fixtures; full gates green
-    speckit: 030-bmod-true-interface
+    speckit: 030-bmod-true-interface   # spec.md + plan.md committed
   - id: U3
     reqs: [REQ-003, REQ-006, REQ-011]
     summary: pub on methods/init; private-by-default; P9 enforcement; fail/xmodule harness + defining-origin marker

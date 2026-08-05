@@ -19,6 +19,14 @@ pub fn largest<T>(T a, T b) -> T {
 	return b;
 }
 
+// A user-defined protocol conformed to by a GENERIC struct. This is what gives
+// the "generic bodies + conformances" golden check its second half: before this
+// the golden contained zero conformance records, so the generic conformance path
+// M-1 opened was emitted but never exercised.
+pub protocol Summable {
+	fn total(self) -> int;
+}
+
 pub struct Pair<T> {
 	T first;
 	T second;
@@ -31,6 +39,12 @@ impl Pair {
 
 	fn swap(self) -> Pair<T> {
 		return Pair<T> { first: self.second, second: self.first };
+	}
+}
+
+impl Summable for Pair {
+	fn total(self) -> int {
+		return 0;
 	}
 }
 
