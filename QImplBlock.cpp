@@ -98,6 +98,18 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 	// Parse methods until '}'
 	while ( l.peekSymbol() != '}' )
 	{
+		// Visibility on an impl member (design record D9). Private is the
+		// default — an unmarked method or `init` is module-visible only and is
+		// not emitted into the .bmod. `pub` is the explicit opt-in, which keeps
+		// the language's single rule (private by default) and means a `priv`
+		// keyword is never needed.
+		bool isPublic = false;
+		if ( l.peekSymbol() == Lexer::KEYWORD_PUB )
+		{
+			l.getSymbol(); // consume 'pub'
+			isPublic = true;
+		}
+
 		// Check for 'static fn' methods
 		bool isStatic = false;
 		if ( l.peekSymbol() == Lexer::KEYWORD_STATIC )
@@ -114,7 +126,7 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 			if ( structDef->hasInit() )
 				COMPILE_ERROR( l, "Duplicate 'init' constructor for struct '" + structName + "'" );
 
-			SmartPtr<FunctionDefinition> initFunc = FunctionDefinition::ParseInit( l, implScope );
+			SmartPtr<FunctionDefinition> initFunc = FunctionDefinition::ParseInit( l, implScope, isPublic );
 			structDef->addMethod( initFunc );
 			structDef->setInitMethod( initFunc );
 			continue;
@@ -122,10 +134,12 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 
 		if ( l.peekSymbol() != Lexer::KEYWORD_FN )
 		{
-			COMPILE_ERROR( l, "Expected 'fn', 'init', or 'static fn' in impl block" );
+			COMPILE_ERROR( l, "Expected 'fn', 'init', 'static fn', or a 'pub' "
+				"form of one of those, in impl block" );
 		}
 
-		SmartPtr<FunctionDefinition> method = FunctionDefinition::Parse( l, implScope );
+		SmartPtr<FunctionDefinition> method = FunctionDefinition::Parse(
+			l, implScope, false /*isExtern*/, isPublic );
 		method->setStatic( isStatic );
 
 		// Validate: static methods must NOT have self parameter

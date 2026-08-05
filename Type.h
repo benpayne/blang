@@ -310,7 +310,7 @@ namespace QLang
 		// enabling forward references and mutual recursion.
 		static FunctionDefinition *Parse( Lexer &l, Scope *s, bool isExtern = false,
 			bool isPublic = false, bool deferBody = false );
-		static FunctionDefinition *ParseInit( Lexer &l, Scope *s );
+		static FunctionDefinition *ParseInit( Lexer &l, Scope *s, bool isPublic = false );
 
 		// Parse the previously-skipped body (see deferBody above) into this same
 		// function object, using its already-built scope.
