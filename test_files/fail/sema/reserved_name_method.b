@@ -1,5 +1,8 @@
-// Reserved-family check on methods: without it, a method named `__new` would
-// mangle onto the factory symbol the defining module emits.
+// Reserved-family check on methods. The rule is uniform rather than
+// collision-driven: a method's own mangling (`Counter___dtor`) would not clash
+// with a generated symbol, but allowing `__` names in source would make the
+// reservation a convention the compiler does not actually hold, and reviewers
+// could not tell a generated symbol from a hand-written one.
 struct Counter {
 	int count;
 }

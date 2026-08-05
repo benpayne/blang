@@ -717,10 +717,14 @@ returning zero.
 ### Reserved Names
 
 Identifiers beginning with a double underscore (`__`) are reserved for symbols
-the compiler generates and cannot be declared in source:
+the compiler generates and cannot be declared in source. The rule covers every
+kind of declaration — functions, methods, structs, struct fields, enums,
+protocols, and variables:
 
 ```
 fn __my_helper() { }          // error: name '__my_helper' is reserved
+struct __Cache { }            // error
+int __count = 0;              // error
 ```
 
 The one exception is `extern fn`, which names a symbol defined outside BLang (the

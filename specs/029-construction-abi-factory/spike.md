@@ -119,10 +119,18 @@ struct itself.
 Program output is exact-matched. The fixture uses a `string` field specifically
 so the destructor the **library** installed has real work to do on release.
 
-**Sanitizers**: linked against the ASan/UBSan runtime archives (`build-asan/`)
-and run with `detect_leaks=1` — clean, exit 0, correct output. This matters more
-than the aggregate leak gate here, because the fixture is the only program in the
-tree whose destructor is installed by one module and invoked by another.
+**Sanitizers**: `test_build/run_build_tests.sh` carries a **committed ASan/LSan
+leg** for this fixture — it relinks `counterapp` against the ASan/UBSan runtime
+archives in `build-asan/` and runs it with `detect_leaks=1`, asserting both a
+clean sanitizer report and unchanged output. It **skips loudly (yellow)** when
+those archives or `llc` are absent rather than passing silently, and honours
+`ASAN_BUILD_DIR` like `test_codegen.sh` does.
+
+This leg matters more than the aggregate leak gate: `counterapp` is the first
+program in the tree whose destructor is **installed by one module and invoked by
+another**, and `Counter.label` is a refcounted string, so a broken hand-off shows
+up as a leak or a double-free rather than as wrong output. Asserting it by hand
+once would not have protected the property.
 
 **Generic regression guard** (audit A6/W4): `test_build/mathlib` + `myapp` ship a
 generic struct with `impl` bodies and generic functions instantiated on both
@@ -153,11 +161,30 @@ generic factory was attempted.
 1. **Field layout still ships in the `.bmod`.** U1 changed *how construction
    works*, not *what the interface carries*. Removing layout is U5's job and is
    blocked on more than the factory — see below.
-2. **The factory symbol carries no module prefix.** Both sides derive
-   `__<Struct>_new` from the bare struct name. That is correct for today's flat
-   merge (which admits only one `Counter`), and it is the same assumption
-   `mangleGenericName` already makes (design record P10). Module-qualified
-   mangling is Epic B's, and P10 is the reason it exists.
+2. **The factory symbol is prefix-aware when emitted and prefix-free when
+   consumed** — a deliberate asymmetry, and a **deviation from the audit's
+   `__<modulePrefix__>StructName_new` design that U2 must plan around** (filed as
+   KI-5).
+
+   The emitting side (`CodeGen::mangleStructFactoryName`) includes the defining
+   module's codegen prefix, mirroring method mangling
+   (`net__Socket_read`), so two namespaced modules that both define a `Socket`
+   get distinct factories instead of silently sharing one symbol.
+
+   The consuming side (`CodeGen::mangleImportedStructFactoryName`) cannot: a
+   consumer knows the struct's name but not the defining module's prefix, which
+   the `.bmod` does not carry. It therefore derives the prefix-free form.
+
+   This is sound **only** because the sole producers of `.bmod` files today are
+   `bcc build` library projects, which run with no module prefix; the namespaced
+   stdlib modules that do get a prefix are combined into the consumer's own
+   compilation, where construction takes the inline path and no factory is
+   involved. **U2 introduces namespaced stdlib modules to this path and must
+   resolve the asymmetry before any prefixed module ships a `.bmod`.** If it is
+   not resolved, the failure is a link error against a symbol the library never
+   emitted — loud, not a miscompile — but it is still a failure. Closing it
+   properly means carrying the defining module's identity in the interface, which
+   is Epic B's canonical module identity (D5/D10).
 3. **`table`/`@json` and query codegen still need consumer-side layout.**
    Query-row materialisation (`CGRuntime.cpp:1134-1145`) independently calls
    `getOrCreateStructType`, `getTypeAllocSize` and `getOrGenStructDestructor`,

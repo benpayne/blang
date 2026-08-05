@@ -602,7 +602,16 @@ private:
 	// and can never be called from source. Both sides derive it from the struct
 	// name alone, so the two modules agree without the name crossing the .bmod
 	// as a symbol.
-	static std::string mangleStructFactoryName( const std::string &structName );
+	// Emitting side: mirrors method mangling, so two namespaced modules that
+	// both define a `Socket` get distinct factory symbols.
+	static std::string mangleStructFactoryName( const std::string &structName,
+		const std::string &modulePrefix );
+
+	// Consuming side: prefix-free, because a consumer cannot know the defining
+	// module's codegen prefix (it is not carried in the .bmod). Sound while only
+	// unprefixed `bcc build` library projects produce .bmod files; see the
+	// comment at the definition for what breaks if that changes.
+	static std::string mangleImportedStructFactoryName( const std::string &structName );
 
 	// LLVM signature of a struct's factory: ptr(<init params, self dropped>).
 	// nullptr when the struct declares no init.

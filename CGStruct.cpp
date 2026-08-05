@@ -362,12 +362,38 @@ llvm::Function *CodeGen::getOrDeclareRcAllocDtor()
 
 // ---- Cross-module construction ABI: the library-emitted factory ----
 
-std::string CodeGen::mangleStructFactoryName( const std::string &structName )
+std::string CodeGen::mangleStructFactoryName( const std::string &structName,
+	const std::string &modulePrefix )
 {
 	// Reserved "__" family, alongside __<Struct>_dtor. A user cannot spell this
 	// (Sema rejects source identifiers that would mangle into the reserved
 	// family), so it can never collide with a method named `new`.
-	return "__" + structName + "_new";
+	//
+	// The module prefix mirrors method mangling (CodeGen.cpp: "net__Socket_read"),
+	// so two namespaced modules that both define a `Socket` get distinct
+	// factories rather than silently sharing one symbol.
+	if ( modulePrefix.empty() )
+		return "__" + structName + "_new";
+	return "__" + modulePrefix + "__" + structName + "_new";
+}
+
+// The name a CONSUMER derives for an imported struct's factory.
+//
+// Deliberately prefix-free, and asymmetric with the emitting side above: a
+// consumer knows the struct's name but not the defining module's codegen prefix,
+// which is not carried in the .bmod. That is sound today because the only
+// producers of .bmod files are `bcc build` library projects, which run with no
+// module prefix — the namespaced stdlib modules that DO get a prefix are
+// combined into the consumer's own compilation, where construction takes the
+// inline path and no factory is involved.
+//
+// If a namespaced module ever ships a .bmod, this asymmetry becomes a link
+// error, not a miscompile (the consumer references a symbol the library never
+// emitted). Closing it means carrying the defining module's identity in the
+// interface — which is Epic B's canonical module identity, not this epic's.
+std::string CodeGen::mangleImportedStructFactoryName( const std::string &structName )
+{
+	return mangleStructFactoryName( structName, std::string() );
 }
 
 // Build the LLVM signature of a struct's factory: ptr(<init params...>).
@@ -402,17 +428,45 @@ void CodeGen::genStructFactory( StructDefinition *structDef )
 	if ( initMethod == nullptr || initMethod->mFuncBody == nullptr )
 		return;
 
-	std::string factoryName = mangleStructFactoryName( structDef->getName() );
-	if ( mModule->getFunction( factoryName ) != nullptr )
-		return; // already emitted (combine mode may visit a module twice)
+	std::string factoryName = mangleStructFactoryName( structDef->getName(), mModulePrefix );
 
+	// Already present. Two ways to get here, both benign:
+	//   - combine mode may walk the same module twice;
+	//   - a consumer declared the factory (declareInterfaceStructMembers) and
+	//     then compiled the defining module in the same LLVM module.
+	// In both cases the existing entry is the same symbol for the same type, so
+	// re-emitting would be a duplicate definition. Note this is keyed on the
+	// MANGLED name, so two same-named structs in different namespaced modules no
+	// longer collide here — they mangle differently now that the prefix is
+	// included. Two same-named structs in the SAME prefix are already a
+	// duplicate-symbol error earlier in the pipeline.
+	if ( mModule->getFunction( factoryName ) != nullptr )
+		return;
+
+	// Everything below this point is a compiler invariant, not a user error: we
+	// have already established the struct is non-generic and has an init WITH A
+	// BODY. Bailing out silently would emit no factory while a consumer still
+	// emits `declare ptr @__X_new` — producing exactly the consumer-side link
+	// error against a generated symbol that this epic exists to eliminate.
 	llvm::FunctionType *ft = structFactoryType( structDef );
 	if ( ft == nullptr )
+	{
+		std::cerr << "internal compiler error: cannot build a factory signature "
+		             "for struct '" << structDef->getName()
+		          << "' — please report" << std::endl;
+		mHasError = true;
 		return;
+	}
 
 	auto initIt = mFunctionMap.find( initMethod );
 	if ( initIt == mFunctionMap.end() || initIt->second == nullptr )
-		return; // no init symbol to call — nothing coherent to emit
+	{
+		std::cerr << "internal compiler error: no emitted symbol for the "
+		             "constructor of struct '" << structDef->getName()
+		          << "' — please report" << std::endl;
+		mHasError = true;
+		return;
+	}
 
 	llvm::Function *factory = llvm::Function::Create(
 		ft, llvm::Function::ExternalLinkage, factoryName, mModule.get() );
@@ -470,7 +524,7 @@ void CodeGen::declareInterfaceStructMembers( StructDefinition *structDef )
 	// The factory, if the interface declared an init.
 	if ( structDef->getInitMethod() != nullptr )
 	{
-		std::string factoryName = mangleStructFactoryName( structDef->getName() );
+		std::string factoryName = mangleImportedStructFactoryName( structDef->getName() );
 		if ( mModule->getFunction( factoryName ) == nullptr )
 		{
 			llvm::FunctionType *ft = structFactoryType( structDef );
@@ -778,7 +832,7 @@ llvm::Value *CodeGen::genConstructExpression( ConstructExpression *expr )
 			return nullptr;
 		}
 
-		std::string factoryName = mangleStructFactoryName( structName );
+		std::string factoryName = mangleImportedStructFactoryName( structName );
 		llvm::Function *factory = mModule->getFunction( factoryName );
 		if ( factory == nullptr )
 		{

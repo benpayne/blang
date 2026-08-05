@@ -30,7 +30,7 @@ symlink (a dpkg alternative, present in no `.deb`). `~/toolchain/env.sh` exports
 > **Manager ruling (Q6), binding on this epic:** the prefix is acceptable as a
 > local dev aid, but **CI is the authority — no claim in any PR may be gated on
 > the local prefix alone.** Every unit's PR quotes CI results; local gate output
-> is corroborating evidence only. Recorded in Known Issues.
+> is corroborating evidence only. Filed as KI-2 in [known-issues.md](known-issues.md).
 
 ### 0.2 Regression baseline — fully green
 
@@ -102,8 +102,9 @@ boundary — so it must be correct before then, not after.
 **F-D / Q8 — `BuildCache::computeKey` weakness.** `BuildCache.cpp:121-144` hashes
 **file contents only**: no filenames, no separators between files, no compiler
 version, no format version. Renaming a source, or moving a line between two
-sources in the same project, does not change the key. **[Manager ruling: file in
-Known Issues; do not fix here.]** U2 adds only the format-version salt REQ-009
+sources in the same project, does not change the key. **[Manager ruling: file as
+KI-1 in [known-issues.md](known-issues.md); do not fix here.]** U2 adds only the
+format-version salt REQ-009
 asks for, and **DC7's test must bump the real version constant** — not a
 test-only stub — so the test proves the shipped mechanism.
 
@@ -137,10 +138,10 @@ warm cache written between two units would otherwise be silently misread.
 They are **exempt from module-private enforcement for this entire epic** (design
 A7). Enforcement applies to the *namespaced* stdlib modules (`net`, `fs`, `timer`,
 …), which do get their own `Scope` (`qcc.cpp:315-322`). This exemption is recorded
-in Known Issues, not silently applied.
+as KI-3 in [known-issues.md](known-issues.md), not silently applied.
 
-**M6 — tracked, not fixed here.** Recorded on the epic's issue list and revisited
-at U5; no U1 action.
+**M6 — tracked, not fixed here.** Filed as part of the epic's Known Issues
+([known-issues.md](known-issues.md)) and revisited at U5; no U1 action.
 
 ---
 
@@ -362,7 +363,7 @@ The same applies to `genMethodCall`'s silent `nullptr` (`CGStruct.cpp:2014-2015`
 member: if the next token is `;` it sets `mFuncBody = nullptr`
 (`QFunctionDefinition.cpp:220-226`, the path protocol methods use). So
 `fn bump(self) -> int;` inside an `impl` block parses today. **`init` does not** —
-`ParseInit` unconditionally calls `Block::Parse` (`QFunctionDefinition.cpp:332`).
+`ParseInit` unconditionally calls `Block::Parse` (`QFunctionDefinition.cpp:325`).
 U1 must relax `ParseInit` to accept `;` → `mFuncBody = nullptr`, or the `.bmod`
 cannot carry an `init` signature at all and DC1 is unreachable.
 
@@ -548,7 +549,7 @@ merge, per B5.
 **Resolved by manager ruling — recorded, not re-escalated:** Q1 (reserved `__`
 symbol + Sema check), Q2 (struct attribute, settled in U1), Q3 (record private
 `init`), Q5 (029–033 + manifest), Q6 (CI is the authority), Q7 (`build-system` CI
-job in U2, with the listed prerequisites), Q8 (Known Issues; DC7 bumps the real
+job in U2, with the listed prerequisites), Q8 (filed as KI-1; DC7 bumps the real
 constant).
 
 **Q4 — open question #1 in `overview.md`** (cross-module spelling of generated
@@ -567,7 +568,7 @@ already ships (W1′). If one does, that is a wall and I stop.
 | Requirement | Status |
 |---|---|
 | VI — design artifact before implementation | this document, rev 2; no code written before it |
-| VI — security dimension mandatory for U1 | allocation ABI and dtor function pointers analysed (b.2, b.4); the factory installs the dtor in the *library*, narrowing consumer trust in foreign layout; reserved-name check prevents symbol capture of the `__` family |
+| VI — security dimension mandatory for U1 | allocation ABI and dtor function pointers analysed (b.2, b.4); the factory installs the dtor in the *library*, narrowing consumer trust in foreign layout; the reserved-name check closes source capture of the `__` family for every declaration kind (functions, methods, structs, fields, enums, protocols, variables), with `extern fn` necessarily exempt — a deliberately declared `extern fn __Counter_new(...)` can still shadow a generated symbol, and fails at link rather than silently (KI-6) |
 | III — reject, don't coerce | three fail-open paths converted to located errors (b.4, b.4a); bodyless-member hole closed |
 | II — tests | exit criteria name every fixture (b.9) |
 | IV — ARC/runtime verified | no runtime change; `--leak-check` in exit criteria |
