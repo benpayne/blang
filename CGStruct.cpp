@@ -430,16 +430,28 @@ void CodeGen::genStructFactory( StructDefinition *structDef )
 
 	std::string factoryName = mangleStructFactoryName( structDef->getName(), mModulePrefix );
 
-	// Already present. Two ways to get here, both benign:
+	// Already present. Two benign ways to get here:
 	//   - combine mode may walk the same module twice;
 	//   - a consumer declared the factory (declareInterfaceStructMembers) and
 	//     then compiled the defining module in the same LLVM module.
 	// In both cases the existing entry is the same symbol for the same type, so
-	// re-emitting would be a duplicate definition. Note this is keyed on the
-	// MANGLED name, so two same-named structs in different namespaced modules no
-	// longer collide here — they mangle differently now that the prefix is
-	// included. Two same-named structs in the SAME prefix are already a
-	// duplicate-symbol error earlier in the pipeline.
+	// re-emitting would be a duplicate definition.
+	//
+	// It is keyed on the MANGLED name, so two same-named structs in DIFFERENT
+	// namespaced modules no longer meet here — they mangle apart now that the
+	// prefix is included (__a__Thing_new vs __b__Thing_new).
+	//
+	// But do NOT read this early return as a duplicate-type guard. Two
+	// same-named structs under the SAME prefix are not diagnosed anywhere in the
+	// pipeline: the second definition's addSymbol is silently dropped (design
+	// record P2) and both share ONE LLVM struct type, so
+	//   - with identical field layouts they silently merge, and
+	//   - with differing layouts the second init indexes past the first's type
+	//     and qcc dies on an LLVM assertion (StructType::getElementType,
+	//     "Element number out of range"), not on a diagnostic.
+	// That is a pre-existing flat-merge/type-identity defect (P2/P10), owned by
+	// Epic B's canonical module identity — this early return neither causes it
+	// nor protects against it.
 	if ( mModule->getFunction( factoryName ) != nullptr )
 		return;
 
