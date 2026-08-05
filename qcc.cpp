@@ -395,34 +395,14 @@ int main( int argc, char *argv[] )
 			continue;
 		}
 
-		// Stamp each struct with the SOURCE FILE that defines it. Deliberately
-		// separate from the ABI predicate (setFromInterface, below) — see the
-		// comment on setDefiningFile. Applied to .b and .bmod inputs alike,
-		// because the namespaced stdlib modules have a real module boundary but
-		// arrive as .b source.
+		// Stamp each struct with the SOURCE FILE that defines it. Applied to .b
+		// and .bmod inputs alike, because the namespaced stdlib modules have a
+		// real module boundary but arrive as .b source. Shared with blangd via
+		// stampDefiningOrigin so the compiler and the editor cannot disagree.
 		//
-		// This is a FILE origin, not a module identity: a multi-file library
-		// yields several values. The unit that enforces visibility must map file
-		// -> module rather than compare these strings directly, and must also
-		// populate it on the blangd path (lsp/Compile.cpp), which does not today.
-		//
-		// Populated here, enforced by a later unit. Nothing reads it yet.
-		{
-			std::string originName = inputFile;
-			size_t oslash = originName.rfind( '/' );
-			if ( oslash != std::string::npos )
-				originName = originName.substr( oslash + 1 );
-			size_t odot = originName.rfind( '.' );
-			if ( odot != std::string::npos )
-				originName = originName.substr( 0, odot );
-			for ( const auto &sp : mod->getStructList() )
-			{
-				StructDefinition *s = const_cast<StructDefinition*>(
-					(const StructDefinition*)sp );
-				if ( s->getDefiningFile().empty() )
-					s->setDefiningFile( originName );
-			}
-		}
+		// Populated here, enforced by a later unit. Nothing reads it yet — and
+		// nothing may, until the file -> module mapping exists (M-3).
+		stampDefiningOrigin( (Module *)mod, inputFile );
 
 		if ( isBmod )
 		{
