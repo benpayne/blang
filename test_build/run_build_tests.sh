@@ -99,7 +99,22 @@ check "construction lowers to a factory call" \
 # Counter.label is a refcounted string, so a broken hand-off leaks or
 # double-frees. Requires ASan-instrumented runtime archives:
 #   cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined && make -C build-asan
-# Skips loudly (yellow) rather than silently passing when they are absent.
+# Skips loudly (yellow) rather than silently passing when they are absent —
+# EXCEPT under CI, where a skip is a provisioning regression and must be a hard
+# failure. Otherwise the job would print SKIP forever while reporting green,
+# which is exactly how this leg would stop protecting anything.
+asan_unavailable() {
+	if [ "${CI:-}" = "true" ]; then
+		echo -e "  ${RED}FAIL${NC}  cross-module ASan leg unavailable under CI ($1)"
+		echo "        CI must provision the sanitizer archives:"
+		echo "          cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined"
+		echo "          cmake --build build-asan --parallel"
+		FAILS=$((FAILS+1))
+	else
+		echo -e "  ${YELLOW}SKIP${NC}  cross-module ASan leg ($1)"
+	fi
+}
+
 ASAN_DIR="${ASAN_BUILD_DIR:-$(cd .. && pwd)/build-asan}"
 QCC="$(cd .. && pwd)/build/qcc"
 LLC="$(command -v llc-18 || command -v llc || true)"
@@ -116,6 +131,11 @@ if [ -d "$ASAN_DIR" ] && ls "$ASAN_DIR"/libblang_*.a > /dev/null 2>&1 && [ -n "$
 		-Wl,--start-group "$ASAN_DIR"/libblang_*.a -Wl,--end-group \
 		-lpthread -lm > /dev/null 2>&1
 	if [ -x "$ATMP/counterapp_asan" ]; then
+		# Self-proof: a negative grep for sanitizer output passes trivially on an
+		# UNINSTRUMENTED binary, so assert the instrumentation is actually there
+		# before trusting the clean report.
+		check "ASan leg is actually instrumented (__asan_init present)" \
+			"nm \"$ATMP/counterapp_asan\" | grep -q '__asan_init'"
 		ASAN_OUT=$(ASAN_OPTIONS=detect_leaks=1 "$ATMP/counterapp_asan" 2>&1)
 		ASAN_EXIT=$?
 		check "cross-module destructor is ASan/LSan clean" \
@@ -123,11 +143,11 @@ if [ -d "$ASAN_DIR" ] && ls "$ASAN_DIR"/libblang_*.a > /dev/null 2>&1 && [ -n "$
 		check "ASan build still produces correct output" \
 			"[ \"\$ASAN_OUT\" = \"\$CEXPECTED\" ]"
 	else
-		echo -e "  ${YELLOW}SKIP${NC}  cross-module ASan leg (link failed)"
+		asan_unavailable "link failed"
 	fi
 	rm -rf "$ATMP"
 else
-	echo -e "  ${YELLOW}SKIP${NC}  cross-module ASan leg (no $ASAN_DIR archives or no llc)"
+	asan_unavailable "no $ASAN_DIR archives or no llc"
 fi
 rm -rf "$XTMP"
 

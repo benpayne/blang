@@ -59,10 +59,30 @@ migration target (review F1/F8 sequencing).
   salted into `BuildCache::computeKey` (review F6) — this unit makes the
   first format change, so the salt lands here. **Interim semantics** (state
   in the PR): all methods ship until U3 adds `pub`; U3 flips the default.
+- **Added after U1's review** (findings folded in from `audit-u1.md` §0.4 and
+  `known-issues.md`):
+  - **`build-system` CI job** running `test_build/run_build_tests.sh` — without
+    it, done-conditions 1, 5 and 6 rest on a suite CI never runs (F-A). The job
+    must **provision the sanitizer archives**
+    (`cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined` + build), or
+    U1's cross-module ASan leg prints `SKIP` forever while the suite reports
+    green (MAJOR-6). The leg now fails rather than skips under `CI=true`.
+  - **Golden `.bmod` files** rather than more `grep` assertions (F-F). Expect
+    U3 to update them when `pub` filtering lands — that is the signal, not churn
+    (KI-4).
+  - **Fix the `table pub struct` emission order** with a regression fixture
+    (M1/F-C): `emitStruct` writes the annotation before `pub`, the inverse of
+    source order, and U5's D15 work makes `table` structs load-bearing across
+    the boundary.
+  - **Cover the prefix-aware factory branch** — it is dead code today, since no
+    namespaced stdlib struct has an `init` (MINOR-B, KI-5).
+  - **Separate the visibility predicate from `mFromInterface`** (M5): the ABI
+    predicate must not be reused for visibility, or the namespaced stdlib is
+    silently exempted from every later visibility rule.
 - **Done condition**: overview done-conditions 1, 5, and 7 pass (imported
   struct constructible + callable; imported-Printable print E2E with golden;
   cache-invalidation test); `test_build/run_build_tests.sh` green including
-  the new fixtures; full gates green.
+  the new fixtures **and run by CI**; full gates green.
 - **Audit**: per constitution; **security dimension mandatory** (`.bmod` is
   parsed input — emitter/parser round-trip fuzz-safety noted in review).
 - **Budget hint**: 10–14 turns.

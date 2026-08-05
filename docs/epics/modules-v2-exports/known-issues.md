@@ -105,6 +105,11 @@ selectively reachable (D9) are two reviewable changes, and doing them in one
 commit would produce a change no reviewer could check properly. Recorded here so
 that anyone reading the `.bmod` between U1 and U3 knows the state is intentional.
 
+**Consequence for U2**: any golden `.bmod` U2 commits will contain private
+methods, and **U3 will have to update those goldens** when the `pub` filter lands.
+That is the intended signal, not churn to avoid — a format change that does not
+move a golden is a format change no reviewer can see.
+
 ---
 
 ## KI-5 — the factory symbol is prefix-free on the consuming side
@@ -129,8 +134,28 @@ miscompile**, which is the failure mode to prefer. Closing it properly means
 carrying the defining module's identity in the interface, which is Epic B's
 canonical module identity (design record D5/D10), not this epic's.
 
-**U2 action**: if U2 makes any namespaced stdlib module produce a `.bmod`, this
-must be resolved first.
+**U2 actions** (both blocking):
+
+1. If U2 makes any namespaced stdlib module produce a `.bmod`, this must be
+   resolved first.
+2. **The prefix-aware emission branch is currently dead code** (reviewer
+   MINOR-B): no namespaced stdlib struct has an `init` today, so
+   `mangleStructFactoryName` is never called with a non-empty prefix in any
+   test. U2 must add coverage for it when it wires the `build-system` CI job —
+   an untested branch is not a working branch, and the whole point of the
+   prefix-aware form is to be correct the first time a prefixed module needs it.
+3. **CI must provision the sanitizer archives** (reviewer MAJOR-6). U1's
+   cross-module ASan leg lives in `test_build/run_build_tests.sh` and skips when
+   `build-asan/` is absent. A `build-system` job with only the package list from
+   audit F-A would print `SKIP` on every run while reporting green. The job needs
+
+   ```yaml
+   - run: cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined
+   - run: cmake --build build-asan --parallel
+   ```
+
+   The leg itself now **fails rather than skips when `CI=true`**, so a
+   provisioning regression is loud rather than invisible.
 
 ---
 
@@ -174,6 +199,10 @@ layout, but it is not the only consumer-side site that needs it:
   whichever module compiles the call.
 - `Sema::checkTableField` validates `.field` references against
   `StructDefinition::getFields()` in the consumer's compile.
+- `CodeGen::registerExternalTypes` itself still calls `getOrCreateStructType` for
+  every non-generic imported struct, which builds the LLVM type from the shipped
+  field list. U1 removed the *construction site's* dependence on layout, not this
+  one.
 
 **Consequence**: **U5 cannot drop field layout from the `.bmod` until these paths
 are handled**, either through the D15 compiler-facing metadata section or by
