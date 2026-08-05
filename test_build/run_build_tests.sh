@@ -151,6 +151,71 @@ else
 fi
 rm -rf "$XTMP"
 
+# ---------------------------------------------------------------------------
+# The .bmod as a true interface (modules-v2-exports U2)
+#
+# Covers: protocol conformance records crossing the boundary (D16), the
+# `pub table struct` emission order, the format-version marker, and golden
+# .bmod content.
+# ---------------------------------------------------------------------------
+
+( cd printlib && rm -f libprintlib.a printlib.bmod && "$BCC" build > /dev/null 2>&1 )
+check "printlib builds (table struct + Printable conformance)" \
+	"[ -f printlib/libprintlib.a ] && [ -f printlib/printlib.bmod ]"
+
+# The emitted order must be `pub table struct`, matching source. The inverse
+# (`table pub struct`, emitted before U2) is a HARD PARSE ERROR --
+# "Expected 'struct' after 'table'" -- so a table struct's interface was
+# unreadable by any consumer.
+check "bmod emits 'pub table struct' (round-trips)" \
+	"grep -q '^pub table struct Point {' printlib/printlib.bmod"
+check "bmod does NOT emit the unparseable 'table pub struct'" \
+	"! grep -q 'table pub struct' printlib/printlib.bmod"
+check "bmod carries the format-version marker" \
+	"grep -q '^// blang-bmod-format: [0-9]' printlib/printlib.bmod"
+check "bmod carries the protocol conformance record" \
+	"grep -q '^impl Printable for Point {' printlib/printlib.bmod"
+check "bmod does not duplicate a protocol-satisfying method" \
+	"[ \"\$(grep -c 'fn to_string(self) -> string;' printlib/printlib.bmod)\" = '1' ]"
+
+# Emission must be deterministic, or goldens are noise.
+"$QCC" --emit-bmod /tmp/bmod_det_a.bmod printlib/shape.b > /dev/null 2>&1
+"$QCC" --emit-bmod /tmp/bmod_det_b.bmod printlib/shape.b > /dev/null 2>&1
+check "bmod emission is deterministic" \
+	"cmp -s /tmp/bmod_det_a.bmod /tmp/bmod_det_b.bmod"
+rm -f /tmp/bmod_det_a.bmod /tmp/bmod_det_b.bmod
+
+# Golden .bmod: the format is the interface, so a format change must be visible
+# in review rather than inferred from greps. Regenerate with --update-goldens.
+GOLDEN_DIR="../test_files/golden/bmod"
+if [ "${UPDATE_GOLDENS:-0}" = "1" ]; then
+	mkdir -p "$GOLDEN_DIR"
+	cp printlib/printlib.bmod "$GOLDEN_DIR/printlib.bmod"
+	cp counterlib/counterlib.bmod "$GOLDEN_DIR/counterlib.bmod"
+	echo "  updated .bmod goldens"
+fi
+check "printlib.bmod matches its golden" \
+	"diff -u \"$GOLDEN_DIR/printlib.bmod\" printlib/printlib.bmod"
+check "counterlib.bmod matches its golden" \
+	"diff -u \"$GOLDEN_DIR/counterlib.bmod\" counterlib/counterlib.bmod"
+
+( cd printapp && rm -f printapp && "$BCC" build > /dev/null 2>&1 )
+check "printapp builds (imports a table struct + Printable type)" "[ -x printapp/printapp ]"
+
+POUT=$(cd printapp && ./printapp)
+PEXPECTED='Point(3, 4)
+sum = 7'
+# print("{}", x) on an IMPORTED Printable type -- only works because the .bmod
+# carries the conformance record (D16). Epic done-condition 5.
+check "imported Printable dispatches through print (DC5)" \
+	"[ \"\$POUT\" = \"\$PEXPECTED\" ]"
+
+# Build-cache format-version salt (REQ-009, done-condition 7) is proven by the
+# dedicated unit test `build_cache_key` (ctest), which calls the real
+# BuildCache::computeKey with two format versions and asserts the keys differ --
+# and that the default is the shipped constant. It lives there rather than here
+# because it needs no toolchain and runs in milliseconds.
+
 ( cd timerapp && rm -f timerapp && "$BCC" build > /dev/null 2>&1 )
 check "timerapp builds (stdlib import)" "[ -x timerapp/timerapp ]"
 

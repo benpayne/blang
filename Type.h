@@ -447,6 +447,36 @@ namespace QLang
 		bool isFromInterface() const { return mFromInterface; }
 		void setFromInterface( bool v ) { mFromInterface = v; }
 
+		// Protocols this struct conforms to via `impl Protocol for Struct`.
+		// Recorded so the .bmod can carry conformance records across a module
+		// boundary (design record D16): without them a consumer cannot dispatch
+		// `print("{}", foreignValue)` through Printable, and a foreign type
+		// cannot satisfy a generic constraint.
+		void addConformedProtocol( const std::string &name )
+		{
+			for ( const auto &p : mConformedProtocols )
+				if ( p == name )
+					return;
+			mConformedProtocols.push_back( name );
+		}
+		const std::vector<std::string> &getConformedProtocols() const
+		{
+			return mConformedProtocols;
+		}
+
+		// Which module defines this type. VISIBILITY predicate — deliberately
+		// distinct from isFromInterface(), which is an ABI predicate answering
+		// "must construction go through the library-emitted factory?".
+		//
+		// They are not interchangeable: the namespaced stdlib modules (net, fs,
+		// timer, ...) have a real module boundary but arrive as parsed .b source,
+		// so isFromInterface() is false for them. Reusing the ABI flag for
+		// visibility would silently exempt the entire stdlib from every
+		// visibility rule. A string, not a graph node — canonical module identity
+		// is Epic B's (D5).
+		const std::string &getDefiningModule() const { return mDefiningModule; }
+		void setDefiningModule( const std::string &m ) { mDefiningModule = m; }
+
 		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
 		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 
@@ -464,6 +494,8 @@ namespace QLang
 		bool mIsPublic = false;
 		bool mIsTable = false;
 		bool mFromInterface = false;
+		std::vector<std::string> mConformedProtocols;
+		std::string mDefiningModule;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class AstLocator;

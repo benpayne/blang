@@ -395,6 +395,30 @@ int main( int argc, char *argv[] )
 			continue;
 		}
 
+		// Stamp the VISIBILITY predicate on every struct this file defines: the
+		// module that owns it. Deliberately separate from the ABI predicate
+		// (setFromInterface, below) — see the comment on setDefiningModule.
+		// Applied to .b and .bmod inputs alike, because the namespaced stdlib
+		// modules have a real module boundary but arrive as .b source.
+		//
+		// Populated here, enforced by a later unit. Nothing reads it yet.
+		{
+			std::string originName = inputFile;
+			size_t oslash = originName.rfind( '/' );
+			if ( oslash != std::string::npos )
+				originName = originName.substr( oslash + 1 );
+			size_t odot = originName.rfind( '.' );
+			if ( odot != std::string::npos )
+				originName = originName.substr( 0, odot );
+			for ( const auto &sp : mod->getStructList() )
+			{
+				StructDefinition *s = const_cast<StructDefinition*>(
+					(const StructDefinition*)sp );
+				if ( s->getDefiningModule().empty() )
+					s->setDefiningModule( originName );
+			}
+		}
+
 		if ( isBmod )
 		{
 			mod->setExtern( true );

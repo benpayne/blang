@@ -1,6 +1,7 @@
 #ifndef BLANG_BMOD_EMITTER_H_
 #define BLANG_BMOD_EMITTER_H_
 
+#include "BmodFormat.h"
 #include <string>
 #include <vector>
 #include <ostream>
@@ -13,6 +14,10 @@ namespace QLang
 class BmodEmitter
 {
 public:
+	// The .bmod interface format version (see BmodFormat.h for the history
+	// and the bump rule). Aliased here so emitter code reads naturally.
+	static const int kFormatVersion = BlangBmod::kFormatVersion;
+
 	// Emit a .bmod interface file from one or more parsed modules.
 	// Only pub symbols are emitted.
 	static void emit( const std::vector<Module*> &modules, std::ostream &out );
@@ -27,6 +32,10 @@ private:
 	// its presence tells a consumer to construct through the library-emitted
 	// factory instead of allocating locally.
 	static void emitStructInterface( StructDefinition *structDef, std::ostream &out );
+
+	// Protocol conformance records (`impl Protocol for Type { }`, D16), emitted
+	// after the interface block so the conformance check sees the methods.
+	static void emitConformances( StructDefinition *structDef, std::ostream &out );
 	static void emitEnum( EnumDefinition *enumDef, std::ostream &out );
 	static void emitProtocol( ProtocolDefinition *protoDef, std::ostream &out );
 	static void emitAnnotations( const std::vector<AnnotationNode> &annotations, std::ostream &out );

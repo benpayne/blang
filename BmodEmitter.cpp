@@ -220,9 +220,14 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 
 	emitAnnotations( structDef->getAnnotations(), out );
 
+	// Source order is `pub table struct Name` — the visibility modifier first.
+	// This emitted the inverse (`table pub struct`) until U2; it round-tripped
+	// only through parser leniency, and U5's D15 metadata work makes table
+	// structs load-bearing across the boundary, so it has to be right first.
+	out << "pub ";
 	if ( structDef->isTable() )
 		out << "table ";
-	out << "pub struct " << structDef->getName();
+	out << "struct " << structDef->getName();
 	emitGenericParams( structDef->getGenericParams(), out );
 	out << " {" << endl;
 
@@ -281,16 +286,51 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 	// the unit that adds `pub` flips this to pub-only.
 	if ( !structDef->getMethods().empty() )
 		emitStructInterface( structDef, out );
+
+	emitConformances( structDef, out );
+}
+
+void BmodEmitter::emitConformances( StructDefinition *structDef, ostream &out )
+{
+	// Protocol conformance records (design record D16). Emitted as EMPTY impl
+	// blocks: the method signatures are already in the struct's interface block
+	// above, and repeating them here would give the struct two copies of every
+	// conforming method. An empty body still satisfies the conformance check,
+	// which validates against the struct's accumulated methods rather than the
+	// impl block's own members (QImplBlock.cpp:156-157) — so this must be
+	// emitted AFTER the interface block, never before.
+	//
+	// Without these records a consumer cannot dispatch `print("{}", x)` through
+	// Printable on an imported type, and a foreign type cannot satisfy a generic
+	// constraint.
+	for ( const auto &proto : structDef->getConformedProtocols() )
+		out << "impl " << proto << " for " << structDef->getName() << " {" << endl
+		    << "}" << endl;
 }
 
 void BmodEmitter::emitStructInterface( StructDefinition *structDef, ostream &out )
 {
 	out << "impl " << structDef->getName() << " {" << endl;
 
+	// A struct accumulates methods from every impl block that targets it — its
+	// own, plus one per `impl Protocol for Struct`. Emitting the list verbatim
+	// would repeat any method that satisfies a protocol, giving the re-parsed
+	// struct two copies of it. BLang has no overloading, so the name alone is
+	// the identity.
+	std::vector<std::string> emitted;
+
 	for ( const auto &msp : structDef->getMethods() )
 	{
 		FunctionDefinition *method = const_cast<FunctionDefinition*>(
 			(const FunctionDefinition*)msp );
+
+		bool already = false;
+		for ( const auto &n : emitted )
+			if ( n == method->getName() )
+				already = true;
+		if ( already )
+			continue;
+		emitted.push_back( method->getName() );
 
 		// Generic methods on a non-generic struct would need their body shipped
 		// to be monomorphized; that is out of this unit's scope, so skip them
@@ -421,6 +461,10 @@ void BmodEmitter::emitProtocol( ProtocolDefinition *protoDef, ostream &out )
 void BmodEmitter::emit( const vector<Module*> &modules, ostream &out )
 {
 	out << "// auto-generated .bmod interface file — do not edit" << endl;
+	// Format version, deliberately a COMMENT: a compiler that predates the
+	// marker still parses the file. A version mismatch should cost a cache miss
+	// and a rebuild, never a syntax error inside a generated file.
+	out << "// blang-bmod-format: " << kFormatVersion << endl;
 	out << endl;
 
 	for ( auto *mod : modules )

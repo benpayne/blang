@@ -209,3 +209,74 @@ are handled**, either through the D15 compiler-facing metadata section or by
 routing them through the same library-emitted-entry-point idea the factory uses.
 The factory alone does not make an imported struct opaque, and U1 does not claim
 it does — field layout still ships in the `.bmod` today.
+
+---
+
+## KI-8 — a dotted expression inside a string interpolation is emitted as literal text
+
+**Filed**: U2 (surfaced while writing the D16 fixture). **Owner**: unowned —
+pre-existing, unrelated to this epic. **Severity: silent wrong output.**
+
+String interpolation resolves bare identifiers but **silently passes through any
+dotted expression**:
+
+```blang
+struct P { int x; string n; }
+// ...
+P p = P(7, "hi");
+println("{}", "obj={p.x}");     // prints:  obj={p.x}
+println("{}", "str={p.n}");     // prints:  str={p.n}
+int q = p.x;
+println("{}", "local={q}");     // prints:  local=7     <- only this works
+```
+
+`{self.x}` inside a method body behaves the same way. There is **no diagnostic**:
+the placeholder is copied to the output verbatim, so a program that looks right
+prints its own source text.
+
+**Why not fixed here**: it is in the string-interpolation parser/codegen, an
+independent subsystem from anything U2 touches, and U2 already carries the format
+version, conformance records, the `table` fix, goldens and a CI job. Fixing it
+blind inside this unit would make the PR unreviewable.
+
+**Workaround in the corpus**: `test_build/printlib/shape.b` copies fields into
+locals before interpolating, with a comment pointing here.
+
+**Recommendation**: fix as a standalone change with `fail/sema` coverage — the
+right behaviour is either to interpolate the field access or to reject the
+placeholder, never to emit it as text (Principle III).
+
+---
+
+## KI-9 — Printable dispatch through `print`/`println` passed the wrong `self` — FIXED in U2
+
+**Filed and fixed**: U2. Recorded because it was a **silent wrong-output bug in a
+documented feature** that survived every existing gate.
+
+`println("{}", p)` on a struct implementing `Printable` printed garbage:
+
+```
+direct   = P(3,4)      // p.to_string() called explicitly — always correct
+dispatch = P(-933207160,24747)   // println("{}", p) — garbage
+```
+
+**Cause** (`CGExpressions.cpp`): a struct value is a refcounted **heap pointer**,
+and `genExpression` on a struct variable yields that pointer. The print path
+nevertheless stored it into a fresh alloca and passed *the alloca* as `self` —
+a pointer **to** the self pointer — so `to_string` read its fields out of a stack
+slot. The stale comment ("val already holds the loaded struct value") dated from
+an earlier model in which structs were values.
+
+**Fix**: pass `val` directly. One line, plus the comment explaining why.
+
+**Why it survived**: no test exercised it. `p.to_string()` called directly took a
+different code path and was always correct, and the codegen matrix had no
+Printable-through-a-placeholder case at all — despite `CLAUDE.md` advertising
+"structs implementing it can be used in `{}` print placeholders". Locked in by
+`test_files/codegen_printable_dispatch.b`, which asserts direct and dispatched
+output agree, covers a refcounted (`string`) field, and mixes Printable and
+non-Printable arguments in one call.
+
+**Note for U2's own scope**: done-condition 5 (`print("{}", x)` on an imported
+`impl Printable` type) was **unreachable** until this was fixed — the conformance
+record makes dispatch resolve, but dispatch itself was broken.

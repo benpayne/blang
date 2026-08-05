@@ -5,3 +5,6 @@ timerapp/timerapp
 counterapp/counterapp
 counterlib/libcounterlib.a
 counterlib/counterlib.bmod
+printapp/printapp
+printlib/libprintlib.a
+printlib/printlib.bmod

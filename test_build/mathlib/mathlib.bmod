@@ -1,4 +1,5 @@
 // auto-generated .bmod interface file — do not edit
+// blang-bmod-format: 2
 
 pub struct Pair<T> {
 	T first;

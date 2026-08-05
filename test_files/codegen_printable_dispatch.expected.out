@@ -1,0 +1,5 @@
+direct = Point(3,4)
+dispatch = Point(3,4)
+direct = Named[widget]
+dispatch = Named[widget]
+Point(3,4) / 42 / Named[widget]

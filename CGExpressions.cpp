@@ -1341,12 +1341,19 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				llvm::Function *toStrFn = mModule->getFunction( fnName );
 				if ( toStrFn )
 				{
-					// Store the struct value in a temporary alloca and pass its address
-					llvm::AllocaInst *tmpAlloca = mBuilder->CreateAlloca(
-						val->getType(), nullptr, "print.tmp" );
-					mBuilder->CreateStore( val, tmpAlloca );
+					// `val` is ALREADY the struct's self pointer: a struct value is
+					// a refcounted heap pointer (CGTypes lowers struct types to
+					// `ptr`), and genExpression on a struct variable loads that
+					// pointer out of its alloca.
+					//
+					// This used to store `val` into a fresh alloca and pass the
+					// alloca — i.e. a pointer TO the self pointer. to_string then
+					// read its fields out of the stack slot and printed garbage,
+					// silently, for every Printable struct. `p.to_string()` called
+					// directly was always correct, which is why it survived: only
+					// the print/println dispatch path was wrong.
 					llvm::Value *strPart = mBuilder->CreateCall(
-						toStrFn, { tmpAlloca }, "print.structstr" );
+						toStrFn, { val }, "print.structstr" );
 					trackTempString( strPart );
 					parts.push_back( strPart );
 				}

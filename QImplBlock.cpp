@@ -236,6 +236,12 @@ void StructDefinition::ParseImplBlock( Lexer &l, Scope *s )
 			}
 		}
 
+		// Record the conformance so the .bmod can carry it across a module
+		// boundary (D16). Until now the protocol name was used for checking and
+		// then discarded, so a consumer had no way to know a foreign type was
+		// Printable.
+		structDef->addConformedProtocol( protocolName );
+
 		PARSE_TRACE( "Completed impl " << protocolName << " for " << structName );
 	}
 	else
