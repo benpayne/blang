@@ -955,27 +955,15 @@ llvm::Function *CodeGen::lookupToStringFn( StructDefinition *sd )
 	return nullptr;
 }
 
+// Only a VARIABLE or a FIELD ACCESS can be an interpolation part today — the
+// parser builds nothing else — and receiverStructDef handles both, including a
+// `self` base. Anything else is not a struct value.
 StructDefinition *CodeGen::structDefForInterpolationPart( Expression *part )
 {
-	std::string typeName;
-	if ( auto *ve = dynamic_cast<VariableExpression*>( part ) )
-	{
-		if ( ve->mVariable != nullptr && ve->mVariable->getVariableType() != nullptr )
-			typeName = ve->mVariable->getVariableType()->getName();
-	}
-	else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( part ) )
-	{
-		Type *rt = fa->getResolvedType();
-		if ( rt != nullptr )
-			typeName = rt->getName();
-	}
-	if ( typeName.empty() )
+	if ( dynamic_cast<VariableExpression*>( part ) == nullptr &&
+		 dynamic_cast<FieldAccessExpression*>( part ) == nullptr )
 		return nullptr;
-
-	auto it = mStructDefMap.find( typeName );
-	if ( it == mStructDefMap.end() )
-		return nullptr;
-	return it->second;
+	return receiverStructDef( part );
 }
 
 // Render a struct value through the Printable protocol. `selfPtr` must already
@@ -1420,32 +1408,18 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				{
 					structTypeName = ve->mVariable->getVariableType()->getName();
 
-					// The implicit `self` parameter's declared type name is the
-					// literal "self", so it failed the struct test below and fell
+					// receiverStructDef, not a bare mStructDefMap lookup: the
+					// implicit `self` parameter's declared type name is the
+					// literal "self", so the name lookup missed and `self` fell
 					// through to the generic path — which handed a raw struct
 					// pointer to __blang_string_concat_many AS IF it were a
-					// BlangString. `println("{}", self)` therefore printed empty,
-					// a type confusion at the C boundary that rendered harmlessly
-					// by luck (known-issues KI-10). Resolve it to the enclosing
-					// struct, which mSelfStructMap already records.
-					if ( structTypeName == "self" )
+					// BlangString. `println("{}", self)` therefore printed
+					// empty, a type confusion at the C boundary that rendered
+					// harmlessly by luck (known-issues KI-10).
+					if ( StructDefinition *rsd = receiverStructDef( argExpr ) )
 					{
-						auto selfIt = mSelfStructMap.find( ve->mVariable );
-						if ( selfIt != mSelfStructMap.end() && selfIt->second != nullptr )
-							structTypeName = selfIt->second->getName();
-					}
-
-					if ( structTypeName != "string" && structTypeName != "cstring" &&
-						 structTypeName != "int" && structTypeName != "long" &&
-						 structTypeName != "short" && structTypeName != "char" &&
-						 structTypeName != "float" && structTypeName != "double" &&
-						 structTypeName != "bool" )
-					{
-						auto sIt = mStructDefMap.find( structTypeName );
-						if ( sIt != mStructDefMap.end() )
-						{
-							isStructArg = true;
-						}
+						structTypeName = rsd->getName();
+						isStructArg = true;
 					}
 				}
 			}

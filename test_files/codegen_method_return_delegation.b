@@ -108,6 +108,14 @@ fn main() -> int {
 	println("I={}", h.describe());
 	println("J={}", via_param(p));
 
+	// A method call whose RECEIVER is a field, from outside the owning struct.
+	// genMethodCall had no branch for a field receiver at all, so this call was
+	// dropped on the floor with no diagnostic: it printed nothing (and `int`
+	// results printed 0). Composition — an object delegating to a field — is
+	// the shape an accessor-only API pushes code towards, so it must work.
+	println("M={}", h.inner.describe());
+	println("N={}", h.inner.get_tag());
+
 	// A borrowed field return still hands the caller its own reference.
 	string t = p.get_tag();
 	println("K={}", t);

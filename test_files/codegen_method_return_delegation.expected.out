@@ -1,0 +1,15 @@
+A=P(3,hi)
+B=P(3,hi)
+C=P(3,hi)
+D=P(3,hi)
+E=P(3,hi)
+F=P(3,hi)
+G=P(3,hi)
+H=[P(3,hi)]
+I=P(3,hi)
+J=P(3,hi)
+M=P(3,hi)
+N=hi
+K=hi
+L=hi
+method return delegation codegen test passed!
