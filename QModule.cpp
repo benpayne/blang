@@ -604,7 +604,13 @@ Scope *createGlobalScope()
 			true /* variadic */ ) );
 	}
 
-	// Register Printable as a builtin protocol
+	// Register Printable as a builtin protocol.
+	//
+	// KEEP IN SYNC with BmodEmitter::emit's `exportedProtocols` set: a builtin
+	// is resolvable everywhere without appearing in any .bmod, so the emitter
+	// must know its name or it will silently drop every conformance record that
+	// names it. Adding a second builtin protocol here without adding it there is
+	// a silent-drop bug, not a compile error.
 	{
 		FunctionDefinition *toStr = FunctionDefinition::CreateBuiltin( "to_string",
 			new Type( "string" ),

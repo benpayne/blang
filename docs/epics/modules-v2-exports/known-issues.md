@@ -410,6 +410,18 @@ that is now covered by `test_build/mathlib` + `myapp`. The slicing defect is
 orthogonal to M-1, so suppressing generic record emission would have removed
 working behaviour to work around an unrelated bug.
 
+**Current corpus exposure: nil.** Measured, not assumed:
+
+- zero single-line `impl` blocks in `stdlib/`, `examples/` or `test_build/`;
+- the six in `test_files/` (`codegen_ix_method_chain_field.b:10`,
+  `codegen_ix_match_bind.b:6`, and four `fail/sema` fixtures) are all on
+  **non-generic** structs, which never ship method bodies in a `.bmod`;
+- the only generic structs anywhere are `Pair<T>` (multi-line) and
+  `collections.b`'s `Map`/`Set` (multi-line, and exempt this epic per KI-3).
+
+Residual risk is therefore a **future** library shipping a single-line `impl` on
+a **generic** struct — the one combination that triggers it.
+
 **Recommendation**: slice from the method's `fn` token rather than the start of
 its line, or record a precise body span at parse time. Needs its own change and
 its own fixtures.
@@ -489,3 +501,46 @@ never declared conformance. **U5 should converge them** — most likely by
 requiring `impl Printable for X` everywhere — as part of the pass where
 visibility rules are finalised. Recorded now so the divergence is a decision
 rather than a drift.
+
+---
+
+## KI-15 — `impl ForeignProtocol for MyStruct` records are silently dropped
+
+**Filed**: U2 (reviewer MAJOR-1). **Owner: U5.**
+**Not a regression** — see below.
+
+`BmodEmitter::emit` builds its set of resolvable protocol names from the modules
+being emitted, plus the hardcoded builtin `"Printable"`. A protocol that arrives
+through a **dependency's** `.bmod` is never in that set, so `emitConformances`
+skips the record.
+
+Reproduced with a two-library chain: `protolib` exports `pub protocol Drawable`;
+`uselib` depends on it and declares `impl Drawable for Shape`. `uselib.bmod`
+contains `Shape`, its `init` and `draw` signatures — and **no conformance
+record**.
+
+**Why this is not a regression, and why the skip is still right.** Before the N1
+fix the same source emitted the record anyway, producing a *forward/dangling
+reference* that made `uselib.bmod` unparseable — the N1 class, a library whose
+interface no consumer can read. Skipping strictly improves that: a missing record
+degrades one capability, an unparseable interface destroys all of them. And
+naively re-widening the predicate to "emit every recorded conformance" is
+**exactly how N1 happened**. Do not do that; the fix is to widen the set of names
+the emitter can *resolve*, not to stop checking.
+
+**No observable impact today**: `Printable` is the only conformance anything in
+the compiler consumes (print dispatch), and it is in the set. Generic constraint
+checking against a foreign protocol has no consumer yet.
+
+**What this caps.** REQ-007 / D16 is delivered for **`Printable`** and for
+**same-module user-defined protocols**, and **not** for foreign protocols.
+**U5 must not read a green suite as "D16 complete"** — the suite contains no
+foreign-protocol conformance, by construction, because one cannot currently be
+expressed in a `.bmod`.
+
+**Why U5.** U5 does the cross-module data-contract work where generic constraint
+checking against an imported type first becomes reachable. Closing it needs
+either the dependency's protocol names threaded into the emitter's resolvable set
+(the emitter would have to read the dep `.bmod`s it was given), or a decision
+about how a foreign protocol is *named* in an interface at all — which runs into
+re-export and qualification (D8, Epic B). That is a design choice, not a patch.

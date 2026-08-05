@@ -102,9 +102,13 @@ migration target (review F1/F8 sequencing).
   `find_slot`/`rehash`; visibility for generics is a Sema resolution rule
   only). Sema enforces P9 at the **library** build: a non-`pub` type
   referenced in any exported signature — function param/return, method
-  signature, `pub struct` field type that must appear in D15 metadata, or
-  exported enum variant payload (D17) — is a located
-  `file:line:col: error:`. Enforcement applies in `--combine` mode for
+  signature, `pub struct` field type that must appear in D15 metadata,
+  exported enum variant payload (D17), **or a protocol named in an exported
+  conformance record** — is a located `file:line:col: error:`. (The last case is
+  U2's deferral: `BmodEmitter` currently *skips* a record naming a non-`pub`
+  protocol so it does not emit an unreadable interface; rejecting the
+  combination at the library build is U3's, and without this line it had no
+  owner.) Enforcement applies in `--combine` mode for
   **namespaced** stdlib modules (the combine-promoted `buffer`/
   `collections`/`cli` are exempt this epic — no boundary exists; see
   overview constraints). Two pieces of infrastructure land here: (a) a

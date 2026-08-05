@@ -487,6 +487,12 @@ void BmodEmitter::emit( const vector<Module*> &modules, ostream &out )
 	// Names a consumer of this file will be able to resolve: the protocols this
 	// .bmod declares, plus the builtins that are in scope everywhere.
 	std::set<std::string> exportedProtocols;
+	// KEEP IN SYNC with the builtin protocol registration in
+	// QModule.cpp (createGlobalScope, "Register Printable as a builtin
+	// protocol"). A builtin is resolvable in every scope without being declared
+	// in any .bmod, so it must be listed here or every conformance record naming
+	// it would be silently dropped (known-issues KI-15 is the same failure for
+	// protocols arriving via a dependency).
 	exportedProtocols.insert( "Printable" );
 	for ( auto *mod : modules )
 		for ( const auto &sp : mod->getProtocolList() )

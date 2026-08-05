@@ -12,15 +12,34 @@ check() {
 	else echo -e "  ${RED}FAIL${NC}  $1"; FAILS=$((FAILS+1)); fi
 }
 
+# EPIC-WIDE STANDING CHECK (modules-v2-exports, from U2 onward).
+#
+# Every .bmod any fixture produces must parse STANDALONE. Three P9-class breaks
+# in this epic were all "a library whose interface no consumer can read", and
+# each was invisible until someone re-parsed the file:
+#   - `table pub struct` (emitted in the inverse of source order)
+#   - a conformance record naming a user-defined protocol, emitted before the
+#     protocol it names (a forward reference)
+#   - a record naming a non-exported protocol (a dangling reference)
+# A per-unit reminder would not have caught them; this runs over every library
+# the script builds, so U3-U5 inherit it without restating it.
+bmod_parses() {
+	# $1 = path to a .bmod
+	check "[$1] re-parses standalone (epic standing check)" \
+		"\"$QCC\" --parse-only \"$1\" > /dev/null 2>&1"
+}
+
 BCC=../build/bcc
 [ -x "$BCC" ] || { echo "bcc not built"; exit 1; }
 BCC="$(cd .. && pwd)/build/bcc"
+QCC="$(cd .. && pwd)/build/qcc"
 
 # Fresh build: no stale cache artifacts.
 "$BCC" clean > /dev/null 2>&1
 
 ( cd mathlib && rm -f libmathlib.a mathlib.bmod && "$BCC" build > /dev/null 2>&1 )
 check "mathlib builds (lib)" "[ -f mathlib/libmathlib.a ] && [ -f mathlib/mathlib.bmod ]"
+bmod_parses mathlib/mathlib.bmod
 check "bmod ships generic fn body" "grep -q 'pub fn largest<T>(T a, T b) -> T {' mathlib/mathlib.bmod"
 check "bmod ships generic struct impl" "grep -q 'impl Pair {' mathlib/mathlib.bmod"
 check "bmod keeps non-generics signature-only" "grep -q 'pub fn add(int a, int b) -> int;' mathlib/mathlib.bmod"
@@ -63,6 +82,7 @@ check "no unresolved-param instantiation (largest_T absent)" \
 
 ( cd counterlib && rm -f libcounterlib.a counterlib.bmod && "$BCC" build > /dev/null 2>&1 )
 check "counterlib builds (lib)" "[ -f counterlib/libcounterlib.a ] && [ -f counterlib/counterlib.bmod ]"
+bmod_parses counterlib/counterlib.bmod
 check "bmod ships non-generic init signature" \
 	"grep -q 'init(int start, string name);' counterlib/counterlib.bmod"
 check "bmod ships non-generic method signatures" \
@@ -122,7 +142,6 @@ asan_unavailable() {
 }
 
 ASAN_DIR="${ASAN_BUILD_DIR:-$(cd .. && pwd)/build-asan}"
-QCC="$(cd .. && pwd)/build/qcc"
 LLC="$(command -v llc-18 || command -v llc || true)"
 if [ -d "$ASAN_DIR" ] && ls "$ASAN_DIR"/libblang_*.a > /dev/null 2>&1 && [ -n "$LLC" ]; then
 	# No EXIT trap here: the git-dep leg below installs its own, which would
@@ -168,6 +187,7 @@ rm -rf "$XTMP"
 ( cd printlib && rm -f libprintlib.a printlib.bmod && "$BCC" build > /dev/null 2>&1 )
 check "printlib builds (table struct + Printable conformance)" \
 	"[ -f printlib/libprintlib.a ] && [ -f printlib/printlib.bmod ]"
+bmod_parses printlib/printlib.bmod
 
 # The emitted order must be `pub table struct`, matching source. The inverse
 # (`table pub struct`, emitted before U2) is a HARD PARSE ERROR --
@@ -257,8 +277,7 @@ check "protocol is declared BEFORE the conformance record that names it" \
 	"[ \"\$(grep -n 'pub protocol Sizeable' sizelib/sizelib.bmod | cut -d: -f1)\" -lt \"\$(grep -n 'impl Sizeable for Box' sizelib/sizelib.bmod | cut -d: -f1)\" ]"
 check "no record is emitted for a NON-exported protocol" \
 	"! grep -q 'impl Hidden for Box' sizelib/sizelib.bmod"
-check "the .bmod re-parses standalone" \
-	"\"\$QCC\" --parse-only sizelib/sizelib.bmod > /dev/null 2>&1"
+bmod_parses sizelib/sizelib.bmod
 
 ( cd sizeapp && rm -f sizeapp && "$BCC" build > /dev/null 2>&1 )
 check "sizeapp builds against a user-defined-protocol interface" "[ -x sizeapp/sizeapp ]"
