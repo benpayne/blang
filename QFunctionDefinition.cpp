@@ -321,6 +321,19 @@ FunctionDefinition *FunctionDefinition::ParseInit( Lexer &l, Scope *s )
 	// No return type — init is void (caller allocates and passes self)
 	func->mReturnType = nullptr;
 
+	// A bodyless 'init(params);' is an interface declaration: it is what a
+	// .bmod carries so a consumer can construct an imported struct through the
+	// library-emitted factory. Sema rejects the bodyless form in ordinary .b
+	// source (see Sema::checkBodylessMember) — the parser stays permissive so
+	// the diagnostic is a located semantic error, not a parse error.
+	if ( l.peekSymbol() == ';' )
+	{
+		l.getSymbol(); // consume ';'
+		func->mFuncBody = nullptr;
+		PARSE_TRACE( "Completed init declaration " );
+		return func;
+	}
+
 	// Parse body
 	func->mFuncBody = Block::Parse( l, func->mFuncScope );
 

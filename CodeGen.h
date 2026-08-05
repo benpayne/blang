@@ -584,6 +584,50 @@ private:
 	// Cache of generated struct destructor functions
 	std::map<std::string, llvm::Function*> mStructDtorMap;
 
+	// ---- Cross-module construction ABI (library-emitted factory) ----
+	//
+	// Construction is caller-allocating inside a module: the call site computes
+	// the struct's alloc size and generates its destructor from the field list.
+	// A consumer of a .bmod has neither, so a struct that arrives through an
+	// interface is constructed by calling a factory the DEFINING module emitted:
+	//
+	//     ptr __<Struct>_new(<init params>)
+	//         = __blang_rc_alloc_dtor(size, dtor) + <Struct>_init(self, args)
+	//
+	// Release needs no counterpart: __blang_rc_release invokes the destructor
+	// pointer stored in the allocation header, so it is already layout-free.
+	//
+	// The factory symbol lives in the reserved "__" family (alongside
+	// __<Struct>_dtor) so it can never collide with a user method named `new`
+	// and can never be called from source. Both sides derive it from the struct
+	// name alone, so the two modules agree without the name crossing the .bmod
+	// as a symbol.
+	// Emitting side: mirrors method mangling, so two namespaced modules that
+	// both define a `Socket` get distinct factory symbols.
+	static std::string mangleStructFactoryName( const std::string &structName,
+		const std::string &modulePrefix );
+
+	// Consuming side: prefix-free, because a consumer cannot know the defining
+	// module's codegen prefix (it is not carried in the .bmod). Sound while only
+	// unprefixed `bcc build` library projects produce .bmod files; see the
+	// comment at the definition for what breaks if that changes.
+	static std::string mangleImportedStructFactoryName( const std::string &structName );
+
+	// LLVM signature of a struct's factory: ptr(<init params, self dropped>).
+	// nullptr when the struct declares no init.
+	llvm::FunctionType *structFactoryType( StructDefinition *structDef );
+
+	// Library side: emit the factory body for a non-generic struct whose init
+	// has a body. No-op for generic structs — their construction is
+	// consumer-side by design (bodies ship in the .bmod and the consumer
+	// monomorphizes, computing size and dtor locally).
+	void genStructFactory( StructDefinition *structDef );
+
+	// Consumer side: declare (never define) the factory and the method
+	// signatures of a struct that arrived through a .bmod, so call sites resolve
+	// and the symbols link from the library archive.
+	void declareInterfaceStructMembers( StructDefinition *structDef );
+
 	// Check if a type name refers to a user-defined struct (not a builtin)
 	bool isUserStructType( const std::string &typeName );
 

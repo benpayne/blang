@@ -5,7 +5,7 @@
 # methods), and linkonce_odr dedups the instantiation the library itself uses.
 set -u
 cd "$(dirname "$0")"
-RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 FAILS=0
 check() {
 	if eval "$2"; then echo -e "  ${GREEN}PASS${NC}  $1"
@@ -44,6 +44,92 @@ check "linkonce instantiations dedup (largest_int weak, single)" \
 	"[ \"\$(nm myapp/myapp | grep -c ' W largest_int')\" = '1' ]"
 check "no unresolved-param instantiation (largest_T absent)" \
 	"! nm myapp/myapp | grep -q 'largest_T'"
+
+# ---------------------------------------------------------------------------
+# Cross-module construction ABI (modules-v2-exports U1)
+#
+# Before the library-emitted factory, a consumer of a .bmod could reach into an
+# imported struct's fields but could neither construct it (`Counter(5)` did not
+# parse) nor call anything on it (`no method 'bump'`) — design record P8. The
+# consumer now calls __Counter_new, which the LIBRARY emits; it never computes
+# Counter's size and never generates Counter's destructor.
+# ---------------------------------------------------------------------------
+
+( cd counterlib && rm -f libcounterlib.a counterlib.bmod && "$BCC" build > /dev/null 2>&1 )
+check "counterlib builds (lib)" "[ -f counterlib/libcounterlib.a ] && [ -f counterlib/counterlib.bmod ]"
+check "bmod ships non-generic init signature" \
+	"grep -q 'init(int start, string name);' counterlib/counterlib.bmod"
+check "bmod ships non-generic method signatures" \
+	"grep -q 'fn bump(self) -> int;' counterlib/counterlib.bmod"
+check "bmod method signatures are bodyless" \
+	"! grep -q 'fn bump(self) -> int {' counterlib/counterlib.bmod"
+
+( cd counterapp && rm -f counterapp && "$BCC" build > /dev/null 2>&1 )
+check "counterapp builds (constructs + calls an imported struct)" "[ -x counterapp/counterapp ]"
+
+COUT=$(cd counterapp && ./counterapp)
+CEXPECTED='start = 5
+bump = 6
+bump = 7
+label = hits
+other = 100 other'
+check "counterapp output exact" "[ \"\$COUT\" = \"\$CEXPECTED\" ]"
+
+# The ABI invariants, read off the CONSUMER'S OWN IR. (Reading the linked
+# binary would not distinguish these: the library's archive contributes
+# __Counter_dtor to the final image, which is exactly as intended.)
+XTMP=$(mktemp -d)
+XLL="$XTMP/consumer.ll"
+"$(cd .. && pwd)/build/qcc" --combine counterapp/main.b counterlib/counterlib.bmod \
+	-o "$XLL" > /dev/null 2>&1
+check "consumer DECLARES the factory (never defines it)" \
+	"grep -q '^declare ptr @__Counter_new(' \"\$XLL\""
+check "consumer DECLARES imported methods (no empty 'define ... ret 0')" \
+	"grep -q '^declare i32 @Counter_bump(' \"\$XLL\""
+check "consumer never generates the imported struct's destructor" \
+	"! grep -q '@__Counter_dtor' \"\$XLL\""
+check "consumer never allocates the imported struct itself" \
+	"! grep -q 'call ptr @__blang_rc_alloc_dtor' \"\$XLL\""
+check "construction lowers to a factory call" \
+	"grep -q 'call ptr @__Counter_new(' \"\$XLL\""
+
+# Leak/ASan leg. This fixture is the language's first program whose destructor
+# is installed by one module (counterlib, via the factory) and invoked by
+# another (counterapp, via __blang_rc_release reading the allocation header).
+# Counter.label is a refcounted string, so a broken hand-off leaks or
+# double-frees. Requires ASan-instrumented runtime archives:
+#   cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined && make -C build-asan
+# Skips loudly (yellow) rather than silently passing when they are absent.
+ASAN_DIR="${ASAN_BUILD_DIR:-$(cd .. && pwd)/build-asan}"
+QCC="$(cd .. && pwd)/build/qcc"
+LLC="$(command -v llc-18 || command -v llc || true)"
+if [ -d "$ASAN_DIR" ] && ls "$ASAN_DIR"/libblang_*.a > /dev/null 2>&1 && [ -n "$LLC" ]; then
+	# No EXIT trap here: the git-dep leg below installs its own, which would
+	# replace ours. Cleaned up explicitly at the end of this block instead.
+	ATMP=$(mktemp -d)
+	"$QCC" --combine counterapp/main.b counterlib/counterlib.bmod \
+		-o "$ATMP/app.ll" > /dev/null 2>&1
+	"$QCC" counterlib/counter.b -o "$ATMP/lib.ll" > /dev/null 2>&1
+	"$LLC" -filetype=obj -relocation-model=pic "$ATMP/app.ll" -o "$ATMP/app.o" > /dev/null 2>&1
+	"$LLC" -filetype=obj -relocation-model=pic "$ATMP/lib.ll" -o "$ATMP/lib.o" > /dev/null 2>&1
+	cc -fsanitize=address,undefined -o "$ATMP/counterapp_asan" "$ATMP/app.o" "$ATMP/lib.o" \
+		-Wl,--start-group "$ASAN_DIR"/libblang_*.a -Wl,--end-group \
+		-lpthread -lm > /dev/null 2>&1
+	if [ -x "$ATMP/counterapp_asan" ]; then
+		ASAN_OUT=$(ASAN_OPTIONS=detect_leaks=1 "$ATMP/counterapp_asan" 2>&1)
+		ASAN_EXIT=$?
+		check "cross-module destructor is ASan/LSan clean" \
+			"[ $ASAN_EXIT -eq 0 ] && ! echo \"\$ASAN_OUT\" | grep -q 'LeakSanitizer\|AddressSanitizer\|runtime error'"
+		check "ASan build still produces correct output" \
+			"[ \"\$ASAN_OUT\" = \"\$CEXPECTED\" ]"
+	else
+		echo -e "  ${YELLOW}SKIP${NC}  cross-module ASan leg (link failed)"
+	fi
+	rm -rf "$ATMP"
+else
+	echo -e "  ${YELLOW}SKIP${NC}  cross-module ASan leg (no $ASAN_DIR archives or no llc)"
+fi
+rm -rf "$XTMP"
 
 ( cd timerapp && rm -f timerapp && "$BCC" build > /dev/null 2>&1 )
 check "timerapp builds (stdlib import)" "[ -x timerapp/timerapp ]"

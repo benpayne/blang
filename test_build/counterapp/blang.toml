@@ -1,0 +1,7 @@
+[project]
+name = "counterapp"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+counterlib = { path = "../counterlib" }

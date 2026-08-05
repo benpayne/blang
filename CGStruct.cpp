@@ -360,6 +360,227 @@ llvm::Function *CodeGen::getOrDeclareRcAllocDtor()
 		ft, llvm::Function::ExternalLinkage, "__blang_rc_alloc_dtor", mModule.get() );
 }
 
+// ---- Cross-module construction ABI: the library-emitted factory ----
+
+std::string CodeGen::mangleStructFactoryName( const std::string &structName,
+	const std::string &modulePrefix )
+{
+	// Reserved "__" family, alongside __<Struct>_dtor. A user cannot spell this
+	// (Sema rejects source identifiers that would mangle into the reserved
+	// family), so it can never collide with a method named `new`.
+	//
+	// The module prefix mirrors method mangling (CodeGen.cpp: "net__Socket_read"),
+	// so two namespaced modules that both define a `Socket` get distinct
+	// factories rather than silently sharing one symbol.
+	if ( modulePrefix.empty() )
+		return "__" + structName + "_new";
+	return "__" + modulePrefix + "__" + structName + "_new";
+}
+
+// The name a CONSUMER derives for an imported struct's factory.
+//
+// Deliberately prefix-free, and asymmetric with the emitting side above: a
+// consumer knows the struct's name but not the defining module's codegen prefix,
+// which is not carried in the .bmod. That is sound today because the only
+// producers of .bmod files are `bcc build` library projects, which run with no
+// module prefix — the namespaced stdlib modules that DO get a prefix are
+// combined into the consumer's own compilation, where construction takes the
+// inline path and no factory is involved.
+//
+// If a namespaced module ever ships a .bmod, this asymmetry becomes a link
+// error, not a miscompile (the consumer references a symbol the library never
+// emitted). Closing it means carrying the defining module's identity in the
+// interface — which is Epic B's canonical module identity, not this epic's.
+std::string CodeGen::mangleImportedStructFactoryName( const std::string &structName )
+{
+	return mangleStructFactoryName( structName, std::string() );
+}
+
+// Build the LLVM signature of a struct's factory: ptr(<init params...>).
+// Returns nullptr when the struct has no usable init.
+llvm::FunctionType *CodeGen::structFactoryType( StructDefinition *structDef )
+{
+	FunctionDefinition *initMethod = structDef->getInitMethod();
+	if ( initMethod == nullptr )
+		return nullptr;
+
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+	std::vector<llvm::Type*> paramTypes;
+	for ( auto &param : initMethod->mParameters )
+	{
+		// Skip the implicit self — the factory allocates it.
+		if ( param->getVariableType() != nullptr &&
+			 param->getVariableType()->getName() == "self" )
+			continue;
+		paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+	}
+	return llvm::FunctionType::get( ptrType, paramTypes, false );
+}
+
+void CodeGen::genStructFactory( StructDefinition *structDef )
+{
+	if ( structDef == nullptr || structDef->isGeneric() )
+		return;
+
+	// Only a module that owns the type — and therefore its init BODY — can emit
+	// the factory. A bodyless init means we are looking at an interface record.
+	FunctionDefinition *initMethod = structDef->getInitMethod();
+	if ( initMethod == nullptr || initMethod->mFuncBody == nullptr )
+		return;
+
+	std::string factoryName = mangleStructFactoryName( structDef->getName(), mModulePrefix );
+
+	// Already present. Two benign ways to get here:
+	//   - combine mode may walk the same module twice;
+	//   - a consumer declared the factory (declareInterfaceStructMembers) and
+	//     then compiled the defining module in the same LLVM module.
+	// In both cases the existing entry is the same symbol for the same type, so
+	// re-emitting would be a duplicate definition.
+	//
+	// It is keyed on the MANGLED name, so two same-named structs in DIFFERENT
+	// namespaced modules no longer meet here — they mangle apart now that the
+	// prefix is included (__a__Thing_new vs __b__Thing_new).
+	//
+	// But do NOT read this early return as a duplicate-type guard. Two
+	// same-named structs under the SAME prefix are not diagnosed anywhere in the
+	// pipeline: the second definition's addSymbol is silently dropped (design
+	// record P2) and both share ONE LLVM struct type, so
+	//   - with identical field layouts they silently merge, and
+	//   - with differing layouts the second init indexes past the first's type
+	//     and qcc dies on an LLVM assertion (StructType::getElementType,
+	//     "Element number out of range"), not on a diagnostic.
+	// That is a pre-existing flat-merge/type-identity defect (P2/P10), owned by
+	// Epic B's canonical module identity — this early return neither causes it
+	// nor protects against it.
+	if ( mModule->getFunction( factoryName ) != nullptr )
+		return;
+
+	// Everything below this point is a compiler invariant, not a user error: we
+	// have already established the struct is non-generic and has an init WITH A
+	// BODY. Bailing out silently would emit no factory while a consumer still
+	// emits `declare ptr @__X_new` — producing exactly the consumer-side link
+	// error against a generated symbol that this epic exists to eliminate.
+	llvm::FunctionType *ft = structFactoryType( structDef );
+	if ( ft == nullptr )
+	{
+		std::cerr << "internal compiler error: cannot build a factory signature "
+		             "for struct '" << structDef->getName()
+		          << "' — please report" << std::endl;
+		mHasError = true;
+		return;
+	}
+
+	auto initIt = mFunctionMap.find( initMethod );
+	if ( initIt == mFunctionMap.end() || initIt->second == nullptr )
+	{
+		std::cerr << "internal compiler error: no emitted symbol for the "
+		             "constructor of struct '" << structDef->getName()
+		          << "' — please report" << std::endl;
+		mHasError = true;
+		return;
+	}
+
+	llvm::Function *factory = llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, factoryName, mModule.get() );
+
+	// Save builder state — we may be called between other emissions.
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	llvm::BasicBlock::iterator savedPt;
+	bool hadInsertPoint = ( savedBB != nullptr );
+	if ( hadInsertPoint )
+		savedPt = mBuilder->GetInsertPoint();
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", factory );
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::StructType *structType = getOrCreateStructType( structDef );
+	llvm::DataLayout dl( mModule.get() );
+	llvm::Value *sizeVal = llvm::ConstantInt::get(
+		llvm::Type::getInt64Ty( *mContext ), dl.getTypeAllocSize( structType ) );
+
+	std::map<std::string, std::string> noSub;
+	llvm::Function *dtorFn = getOrGenStructDestructor( structDef, noSub );
+
+	// The builder may have been repointed while generating the destructor.
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::Value *heapPtr = nullptr;
+	if ( dtorFn != nullptr )
+		heapPtr = mBuilder->CreateCall( getOrDeclareRcAllocDtor(), { sizeVal, dtorFn }, "new.ptr" );
+	else
+		heapPtr = mBuilder->CreateCall( getOrDeclareRcAlloc(), { sizeVal }, "new.ptr" );
+
+	std::vector<llvm::Value*> args;
+	args.push_back( heapPtr );
+	for ( auto &arg : factory->args() )
+		args.push_back( &arg );
+	mBuilder->CreateCall( initIt->second, args );
+
+	mBuilder->CreateRet( heapPtr );
+
+	if ( hadInsertPoint )
+		mBuilder->SetInsertPoint( savedBB, savedPt );
+	else if ( savedBB != nullptr )
+		mBuilder->SetInsertPoint( savedBB );
+}
+
+void CodeGen::declareInterfaceStructMembers( StructDefinition *structDef )
+{
+	// Generic structs ship full layout and bodies in the .bmod; the consumer
+	// monomorphizes them locally, so there is nothing to declare here.
+	if ( structDef == nullptr || structDef->isGeneric() )
+		return;
+
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+
+	// The factory, if the interface declared an init.
+	if ( structDef->getInitMethod() != nullptr )
+	{
+		std::string factoryName = mangleImportedStructFactoryName( structDef->getName() );
+		if ( mModule->getFunction( factoryName ) == nullptr )
+		{
+			llvm::FunctionType *ft = structFactoryType( structDef );
+			if ( ft != nullptr )
+				llvm::Function::Create( ft, llvm::Function::ExternalLinkage,
+					factoryName, mModule.get() );
+		}
+	}
+
+	// Method signatures: declarations only, never definitions.
+	for ( auto &msp : structDef->mMethods )
+	{
+		FunctionDefinition *method = const_cast<FunctionDefinition*>(
+			(const FunctionDefinition*)msp );
+		if ( method->isGeneric() || method->isInit() )
+			continue;
+
+		std::string mangledName = structDef->getName() + "_" + method->getName();
+		if ( mModule->getFunction( mangledName ) != nullptr )
+			continue;
+
+		std::vector<llvm::Type*> paramTypes;
+		for ( auto &param : method->mParameters )
+		{
+			if ( param->getVariableType() != nullptr &&
+				 param->getVariableType()->getName() == "self" )
+			{
+				paramTypes.push_back( ptrType );
+				mSelfStructMap[param] = structDef;
+			}
+			else
+			{
+				paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+			}
+		}
+
+		llvm::FunctionType *ft = llvm::FunctionType::get(
+			getLLVMType( method->mReturnType ), paramTypes, method->isVariadic() );
+		llvm::Function *fn = llvm::Function::Create(
+			ft, llvm::Function::ExternalLinkage, mangledName, mModule.get() );
+		mFunctionMap[method] = fn;
+	}
+}
+
 llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 {
 	auto defIt = mStructDefMap.find( expr->mTypeName );
@@ -609,6 +830,56 @@ llvm::Value *CodeGen::genConstructExpression( ConstructExpression *expr )
 	string structName = structDef->getName();
 	llvm::StructType *structType = nullptr;
 
+	// Cross-module construction: a struct that arrived through a .bmod has no
+	// field layout here, so the caller-allocating path below cannot size it or
+	// build its destructor. Call the factory the defining module emitted.
+	// Generic structs are excluded by design — their bodies ship in the .bmod
+	// and the consumer monomorphizes them, so it does have their layout.
+	if ( structDef->isFromInterface() && !structDef->isGeneric() )
+	{
+		if ( structDef->getInitMethod() == nullptr )
+		{
+			reportError( expr, "type '" + structName +
+				"' has no constructor visible from this module" );
+			return nullptr;
+		}
+
+		std::string factoryName = mangleImportedStructFactoryName( structName );
+		llvm::Function *factory = mModule->getFunction( factoryName );
+		if ( factory == nullptr )
+		{
+			llvm::FunctionType *ft = structFactoryType( structDef );
+			if ( ft == nullptr )
+			{
+				reportError( expr, "cannot construct '" + structName +
+					"': its interface declares no usable constructor" );
+				return nullptr;
+			}
+			factory = llvm::Function::Create( ft, llvm::Function::ExternalLinkage,
+				factoryName, mModule.get() );
+		}
+
+		std::vector<llvm::Value*> args;
+		for ( auto &argExpr : expr->mArgs )
+		{
+			llvm::Value *argVal = genExpression( argExpr );
+			if ( argVal == nullptr )
+				return nullptr;
+			args.push_back( argVal );
+		}
+
+		if ( args.size() != factory->getFunctionType()->getNumParams() )
+		{
+			reportError( expr, "wrong number of arguments constructing '" +
+				structName + "'" );
+			return nullptr;
+		}
+
+		llvm::Value *heapPtr = mBuilder->CreateCall( factory, args, "ctor.ptr" );
+		trackTempStruct( heapPtr );
+		return heapPtr;
+	}
+
 	// Handle generic struct instantiation (written type args resolved through
 	// the active substitution — see genStructLiteral for the rationale)
 	std::map<std::string, Type*> savedSub = mTypeSubstitution;
@@ -697,19 +968,31 @@ llvm::Value *CodeGen::genConstructExpression( ConstructExpression *expr )
 		}
 	}
 
-	if ( initFn != nullptr )
+	if ( initFn == nullptr )
 	{
-		std::vector<llvm::Value*> args;
-		args.push_back( heapPtr ); // self
-		for ( auto &argExpr : expr->mArgs )
-		{
-			llvm::Value *argVal = genExpression( argExpr );
-			if ( argVal == nullptr )
-				return nullptr;
-			args.push_back( argVal );
-		}
-		mBuilder->CreateCall( initFn, args );
+		// Falling through here would hand back a heap block that no init ever
+		// wrote — and for a struct with no resolvable layout getTypeAllocSize
+		// yields 1 byte, so every later field access reads out of bounds.
+		// Refuse loudly instead (Principle III).
+		mTypeSubstitution = savedSub;
+		reportError( expr, "cannot construct '" + structName +
+			"': no constructor was found for this type" );
+		return nullptr;
 	}
+
+	std::vector<llvm::Value*> args;
+	args.push_back( heapPtr ); // self
+	for ( auto &argExpr : expr->mArgs )
+	{
+		llvm::Value *argVal = genExpression( argExpr );
+		if ( argVal == nullptr )
+		{
+			mTypeSubstitution = savedSub;
+			return nullptr;
+		}
+		args.push_back( argVal );
+	}
+	mBuilder->CreateCall( initFn, args );
 
 	mTypeSubstitution = savedSub;
 	trackTempStruct( heapPtr );
@@ -2012,7 +2295,14 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 	}
 
 	if ( llvmFunc == nullptr )
+	{
+		// Sema resolved this method, but no symbol was emitted or declared for
+		// it. Returning nullptr here used to drop the call on the floor without
+		// a word; say so instead (Principle III).
+		reportError( expr, "no symbol for method '" + expr->mMethodName +
+			"' on type '" + structName + "'" );
 		return nullptr;
+	}
 
 	// Build arguments: self first (pass by pointer), then explicit args
 	std::vector<llvm::Value*> args;

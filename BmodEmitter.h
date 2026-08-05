@@ -20,6 +20,13 @@ public:
 private:
 	static void emitFunction( FunctionDefinition *func, std::ostream &out );
 	static void emitStruct( StructDefinition *structDef, std::ostream &out );
+
+	// Non-generic structs ship an `impl` block of bodyless init/method
+	// SIGNATURES — the interface that makes an imported type constructible and
+	// callable (P8). The init signature doubles as the struct's factory record:
+	// its presence tells a consumer to construct through the library-emitted
+	// factory instead of allocating locally.
+	static void emitStructInterface( StructDefinition *structDef, std::ostream &out );
 	static void emitEnum( EnumDefinition *enumDef, std::ostream &out );
 	static void emitProtocol( ProtocolDefinition *protoDef, std::ostream &out );
 	static void emitAnnotations( const std::vector<AnnotationNode> &annotations, std::ostream &out );

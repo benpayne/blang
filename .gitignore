@@ -5,3 +5,4 @@ build-asan/
 *.ll
 docs/epics/*/launch-payload.json
 build-fuzz/
+docs/epics/*/launch-payload.json

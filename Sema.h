@@ -37,6 +37,22 @@ namespace QLang
 
 		void visitFunction( FunctionDefinition *func );
 		void visitStruct( StructDefinition *structDef );
+
+		// A declaration without a body is an INTERFACE form: it is what a .bmod
+		// carries so a consumer can resolve an imported type's constructor and
+		// methods. In ordinary source it would silently codegen an empty
+		// function returning zero, so it is rejected here, located, in all build
+		// modes. Protocol requirements are bodyless by design and never reach
+		// this check.
+		void checkBodylessMember( FunctionDefinition *func, const std::string &ownerName );
+
+		// The compiler reserves the "__" symbol family for names it synthesizes
+		// (__<Struct>_dtor, __<Struct>_new, __enum_<Name>_box_dtor, ...). A
+		// source declaration that mangles into that family could collide with
+		// one of them, so it is rejected. `extern fn` is exempt: it names a
+		// foreign C symbol rather than creating a BLang one.
+		void checkReservedName( const std::string &name, const SourceLocation &loc,
+			const std::string &kind );
 		void visitStmt( Statement *stmt );
 
 		// Resolve/annotate an expression bottom-up. Returns its resolved Type
