@@ -262,7 +262,84 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 			out << methods.str();
 			out << "}" << endl;
 		}
+		return;
 	}
+
+	// A NON-GENERIC struct ships its init and method SIGNATURES (no bodies) —
+	// this is what makes an imported type constructible and callable at all
+	// (design record P8). The bodies stay in the library archive and link from
+	// the .a; codegen turns each bodyless signature into an LLVM `declare`.
+	//
+	// The `init` signature is also the struct's factory record: a consumer that
+	// sees it constructs through the library-emitted factory symbol (derived
+	// from the struct name by mangleStructFactoryName) rather than allocating
+	// locally. The factory is deliberately NOT emitted as a free `pub fn` — it
+	// must not be nameable from source, or `Counter(5)` would gain a second
+	// spelling and the one-external-form rule (D9) would be broken.
+	//
+	// Interim semantics: every method ships until `pub` exists on impl members;
+	// the unit that adds `pub` flips this to pub-only.
+	if ( !structDef->getMethods().empty() )
+		emitStructInterface( structDef, out );
+}
+
+void BmodEmitter::emitStructInterface( StructDefinition *structDef, ostream &out )
+{
+	out << "impl " << structDef->getName() << " {" << endl;
+
+	for ( const auto &msp : structDef->getMethods() )
+	{
+		FunctionDefinition *method = const_cast<FunctionDefinition*>(
+			(const FunctionDefinition*)msp );
+
+		// Generic methods on a non-generic struct would need their body shipped
+		// to be monomorphized; that is out of this unit's scope, so skip them
+		// rather than emit an unusable signature.
+		if ( method->isGeneric() )
+			continue;
+
+		if ( method->isInit() )
+			out << "\tinit(";
+		else
+			out << "\tfn " << method->getName() << "(";
+
+		bool first = true;
+		for ( int i = 0; i < method->getNumberParams(); i++ )
+		{
+			VariableDefinition *param = method->getParam( i );
+			bool isSelf = ( param->getVariableType() != nullptr &&
+				param->getVariableType()->getName() == "self" );
+
+			// `init` carries an implicit self that is re-created on parse, so
+			// it must not appear in the emitted signature.
+			if ( isSelf && method->isInit() )
+				continue;
+
+			if ( !first )
+				out << ", ";
+			first = false;
+
+			if ( isSelf )
+				out << "self";
+			else
+			{
+				emitType( nc( param->getVariableType() ), out );
+				out << " " << param->getName();
+			}
+		}
+
+		out << ")";
+
+		if ( !method->isInit() && method->getReturnType() != nullptr )
+		{
+			out << " -> ";
+			emitType( method->getReturnType(), out );
+		}
+
+		out << ";" << endl;
+	}
+
+	out << "}" << endl;
 }
 
 void BmodEmitter::emitEnum( EnumDefinition *enumDef, ostream &out )

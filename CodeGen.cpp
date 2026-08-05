@@ -228,6 +228,14 @@ bool CodeGen::generate( Module *mod )
 				idx++;
 			}
 
+			// A bodyless method is a DECLARATION only — the definition lives in
+			// the module that owns the type and links from its archive. Without
+			// this the loop below would fabricate an entry block and an implicit
+			// `ret 0`, silently defining an empty function that collides at link
+			// time with the real one. Mirrors the extern-function seam above.
+			if ( method->mFuncBody == nullptr )
+				continue;
+
 			// Save state for method body generation
 			auto savedVarMap = mVariableMap;
 			auto savedCurrentFunc = mCurrentFunction;
@@ -300,6 +308,10 @@ bool CodeGen::generate( Module *mod )
 			mTempLambdaCtxs = savedTempLambdaCtxs;
 			mMovedVariables.clear();
 		}
+
+		// Emit the cross-module construction factory for this struct. It must
+		// come after the method loop so <Struct>_init is already defined.
+		genStructFactory( structDef );
 	}
 
 	// Generate to_json/from_json for @json annotated structs
@@ -390,6 +402,13 @@ void CodeGen::registerExternalTypes(
 			if ( !sd->isGeneric() )
 				getOrCreateStructType( sd );
 		}
+
+		// A struct that arrived through a .bmod is never in this module's
+		// mStructList, so the method-emission loop never sees it. Declare its
+		// factory and method signatures here so call sites resolve and the
+		// symbols link from the library archive.
+		if ( sd->isFromInterface() )
+			declareInterfaceStructMembers( sd );
 	}
 
 	for ( auto &enumDef : enums )

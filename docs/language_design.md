@@ -661,6 +661,71 @@ pub fn public_api() -> int {    // explicitly public
 
 This differs from languages like Go (uppercase = public) or Java (explicit `public`/`private`). In BLang, privacy is the default and publicity requires an explicit opt-in. This reduces accidental API surface and makes the module's public interface immediately apparent by scanning for `pub`.
 
+### Constructing and Calling an Imported Type
+
+A `pub struct` from another module is **constructible and callable** across the
+module boundary. The interface file carries the struct's `init` and method
+signatures, so a consumer writes exactly what it would write in the defining
+module:
+
+```
+// counter.b — the library
+pub struct Counter {
+	int count;
+}
+
+impl Counter {
+	init(int start) { self.count = start; }
+	fn bump(self) -> int { self.count = self.count + 1; return self.count; }
+}
+
+// main.b — the consumer
+import counter;
+
+fn main() -> int {
+	Counter c = Counter(5);    // constructed through the library
+	return c.bump();
+}
+```
+
+Construction of an imported type is performed **by the module that defines it**.
+The defining module emits a constructor entry point that allocates the value and
+runs its `init`; the consumer calls that entry point instead of allocating
+locally. This is invisible in source — it exists so a module's memory layout need
+not be part of its public interface — with one consequence worth knowing: a
+struct's internals can change without its consumers being rebuilt.
+
+Generic structs differ: their bodies travel in the interface file so a consumer
+can instantiate them for its own type arguments, and they are constructed by the
+consumer as before.
+
+### Declarations Must Have Bodies
+
+A method or `init` written without a body is a **declaration**, and declarations
+belong only in interface files (`.bmod`) and in `protocol` definitions. In
+ordinary source it is a compile error:
+
+```
+impl Counter {
+	fn bump(self) -> int;    // error: method 'bump' has no body
+}
+```
+
+This closes a hole where such a member silently compiled to an empty function
+returning zero.
+
+### Reserved Names
+
+Identifiers beginning with a double underscore (`__`) are reserved for symbols
+the compiler generates and cannot be declared in source:
+
+```
+fn __my_helper() { }          // error: name '__my_helper' is reserved
+```
+
+The one exception is `extern fn`, which names a symbol defined outside BLang (the
+runtime's `__blang_*` entry points) rather than creating a BLang declaration.
+
 ### Flat Module Namespace
 
 Modules are one level deep. There are no nested sub-modules and no deeply qualified paths.

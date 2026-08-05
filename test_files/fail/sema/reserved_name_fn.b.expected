@@ -1,0 +1,1 @@
+^[^:]+\.b:[0-9]+:[0-9]+: error: function name '__Counter_new' is reserved

@@ -2,3 +2,6 @@ myapp/myapp
 timerapp/timerapp
 *.ll
 *.o
+counterapp/counterapp
+counterlib/libcounterlib.a
+counterlib/counterlib.bmod

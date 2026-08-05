@@ -438,6 +438,15 @@ namespace QLang
 		const std::vector<GenericParam> &getGenericParams() const { return mGenericParams; }
 		void setIsTable( bool isTable ) { mIsTable = isTable; }
 
+		// Provenance: true when this definition arrived through a parsed .bmod
+		// interface rather than from .b source in the module being compiled.
+		// This is an ABI predicate only — it answers "must construction go
+		// through the library-emitted factory?", NOT "is this member visible
+		// here?". Visibility is a separate, module-origin question owned by a
+		// later unit; do not overload this flag for it.
+		bool isFromInterface() const { return mFromInterface; }
+		void setFromInterface( bool v ) { mFromInterface = v; }
+
 		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
 		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 
@@ -454,6 +463,7 @@ namespace QLang
 		std::vector<AnnotationNode> mAnnotations;
 		bool mIsPublic = false;
 		bool mIsTable = false;
+		bool mFromInterface = false;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class AstLocator;

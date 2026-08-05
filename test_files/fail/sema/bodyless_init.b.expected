@@ -1,0 +1,1 @@
+^[^:]+\.b:[0-9]+:[0-9]+: error: constructor of struct 'Counter' has no body

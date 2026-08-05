@@ -360,6 +360,161 @@ llvm::Function *CodeGen::getOrDeclareRcAllocDtor()
 		ft, llvm::Function::ExternalLinkage, "__blang_rc_alloc_dtor", mModule.get() );
 }
 
+// ---- Cross-module construction ABI: the library-emitted factory ----
+
+std::string CodeGen::mangleStructFactoryName( const std::string &structName )
+{
+	// Reserved "__" family, alongside __<Struct>_dtor. A user cannot spell this
+	// (Sema rejects source identifiers that would mangle into the reserved
+	// family), so it can never collide with a method named `new`.
+	return "__" + structName + "_new";
+}
+
+// Build the LLVM signature of a struct's factory: ptr(<init params...>).
+// Returns nullptr when the struct has no usable init.
+llvm::FunctionType *CodeGen::structFactoryType( StructDefinition *structDef )
+{
+	FunctionDefinition *initMethod = structDef->getInitMethod();
+	if ( initMethod == nullptr )
+		return nullptr;
+
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+	std::vector<llvm::Type*> paramTypes;
+	for ( auto &param : initMethod->mParameters )
+	{
+		// Skip the implicit self — the factory allocates it.
+		if ( param->getVariableType() != nullptr &&
+			 param->getVariableType()->getName() == "self" )
+			continue;
+		paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+	}
+	return llvm::FunctionType::get( ptrType, paramTypes, false );
+}
+
+void CodeGen::genStructFactory( StructDefinition *structDef )
+{
+	if ( structDef == nullptr || structDef->isGeneric() )
+		return;
+
+	// Only a module that owns the type — and therefore its init BODY — can emit
+	// the factory. A bodyless init means we are looking at an interface record.
+	FunctionDefinition *initMethod = structDef->getInitMethod();
+	if ( initMethod == nullptr || initMethod->mFuncBody == nullptr )
+		return;
+
+	std::string factoryName = mangleStructFactoryName( structDef->getName() );
+	if ( mModule->getFunction( factoryName ) != nullptr )
+		return; // already emitted (combine mode may visit a module twice)
+
+	llvm::FunctionType *ft = structFactoryType( structDef );
+	if ( ft == nullptr )
+		return;
+
+	auto initIt = mFunctionMap.find( initMethod );
+	if ( initIt == mFunctionMap.end() || initIt->second == nullptr )
+		return; // no init symbol to call — nothing coherent to emit
+
+	llvm::Function *factory = llvm::Function::Create(
+		ft, llvm::Function::ExternalLinkage, factoryName, mModule.get() );
+
+	// Save builder state — we may be called between other emissions.
+	llvm::BasicBlock *savedBB = mBuilder->GetInsertBlock();
+	llvm::BasicBlock::iterator savedPt;
+	bool hadInsertPoint = ( savedBB != nullptr );
+	if ( hadInsertPoint )
+		savedPt = mBuilder->GetInsertPoint();
+
+	llvm::BasicBlock *entryBB = llvm::BasicBlock::Create( *mContext, "entry", factory );
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::StructType *structType = getOrCreateStructType( structDef );
+	llvm::DataLayout dl( mModule.get() );
+	llvm::Value *sizeVal = llvm::ConstantInt::get(
+		llvm::Type::getInt64Ty( *mContext ), dl.getTypeAllocSize( structType ) );
+
+	std::map<std::string, std::string> noSub;
+	llvm::Function *dtorFn = getOrGenStructDestructor( structDef, noSub );
+
+	// The builder may have been repointed while generating the destructor.
+	mBuilder->SetInsertPoint( entryBB );
+
+	llvm::Value *heapPtr = nullptr;
+	if ( dtorFn != nullptr )
+		heapPtr = mBuilder->CreateCall( getOrDeclareRcAllocDtor(), { sizeVal, dtorFn }, "new.ptr" );
+	else
+		heapPtr = mBuilder->CreateCall( getOrDeclareRcAlloc(), { sizeVal }, "new.ptr" );
+
+	std::vector<llvm::Value*> args;
+	args.push_back( heapPtr );
+	for ( auto &arg : factory->args() )
+		args.push_back( &arg );
+	mBuilder->CreateCall( initIt->second, args );
+
+	mBuilder->CreateRet( heapPtr );
+
+	if ( hadInsertPoint )
+		mBuilder->SetInsertPoint( savedBB, savedPt );
+	else if ( savedBB != nullptr )
+		mBuilder->SetInsertPoint( savedBB );
+}
+
+void CodeGen::declareInterfaceStructMembers( StructDefinition *structDef )
+{
+	// Generic structs ship full layout and bodies in the .bmod; the consumer
+	// monomorphizes them locally, so there is nothing to declare here.
+	if ( structDef == nullptr || structDef->isGeneric() )
+		return;
+
+	llvm::Type *ptrType = llvm::PointerType::get( *mContext, 0 );
+
+	// The factory, if the interface declared an init.
+	if ( structDef->getInitMethod() != nullptr )
+	{
+		std::string factoryName = mangleStructFactoryName( structDef->getName() );
+		if ( mModule->getFunction( factoryName ) == nullptr )
+		{
+			llvm::FunctionType *ft = structFactoryType( structDef );
+			if ( ft != nullptr )
+				llvm::Function::Create( ft, llvm::Function::ExternalLinkage,
+					factoryName, mModule.get() );
+		}
+	}
+
+	// Method signatures: declarations only, never definitions.
+	for ( auto &msp : structDef->mMethods )
+	{
+		FunctionDefinition *method = const_cast<FunctionDefinition*>(
+			(const FunctionDefinition*)msp );
+		if ( method->isGeneric() || method->isInit() )
+			continue;
+
+		std::string mangledName = structDef->getName() + "_" + method->getName();
+		if ( mModule->getFunction( mangledName ) != nullptr )
+			continue;
+
+		std::vector<llvm::Type*> paramTypes;
+		for ( auto &param : method->mParameters )
+		{
+			if ( param->getVariableType() != nullptr &&
+				 param->getVariableType()->getName() == "self" )
+			{
+				paramTypes.push_back( ptrType );
+				mSelfStructMap[param] = structDef;
+			}
+			else
+			{
+				paramTypes.push_back( getLLVMType( param->getVariableType() ) );
+			}
+		}
+
+		llvm::FunctionType *ft = llvm::FunctionType::get(
+			getLLVMType( method->mReturnType ), paramTypes, method->isVariadic() );
+		llvm::Function *fn = llvm::Function::Create(
+			ft, llvm::Function::ExternalLinkage, mangledName, mModule.get() );
+		mFunctionMap[method] = fn;
+	}
+}
+
 llvm::Value *CodeGen::genStructLiteral( StructLiteralExpression *expr )
 {
 	auto defIt = mStructDefMap.find( expr->mTypeName );
@@ -609,6 +764,56 @@ llvm::Value *CodeGen::genConstructExpression( ConstructExpression *expr )
 	string structName = structDef->getName();
 	llvm::StructType *structType = nullptr;
 
+	// Cross-module construction: a struct that arrived through a .bmod has no
+	// field layout here, so the caller-allocating path below cannot size it or
+	// build its destructor. Call the factory the defining module emitted.
+	// Generic structs are excluded by design — their bodies ship in the .bmod
+	// and the consumer monomorphizes them, so it does have their layout.
+	if ( structDef->isFromInterface() && !structDef->isGeneric() )
+	{
+		if ( structDef->getInitMethod() == nullptr )
+		{
+			reportError( expr, "type '" + structName +
+				"' has no constructor visible from this module" );
+			return nullptr;
+		}
+
+		std::string factoryName = mangleStructFactoryName( structName );
+		llvm::Function *factory = mModule->getFunction( factoryName );
+		if ( factory == nullptr )
+		{
+			llvm::FunctionType *ft = structFactoryType( structDef );
+			if ( ft == nullptr )
+			{
+				reportError( expr, "cannot construct '" + structName +
+					"': its interface declares no usable constructor" );
+				return nullptr;
+			}
+			factory = llvm::Function::Create( ft, llvm::Function::ExternalLinkage,
+				factoryName, mModule.get() );
+		}
+
+		std::vector<llvm::Value*> args;
+		for ( auto &argExpr : expr->mArgs )
+		{
+			llvm::Value *argVal = genExpression( argExpr );
+			if ( argVal == nullptr )
+				return nullptr;
+			args.push_back( argVal );
+		}
+
+		if ( args.size() != factory->getFunctionType()->getNumParams() )
+		{
+			reportError( expr, "wrong number of arguments constructing '" +
+				structName + "'" );
+			return nullptr;
+		}
+
+		llvm::Value *heapPtr = mBuilder->CreateCall( factory, args, "ctor.ptr" );
+		trackTempStruct( heapPtr );
+		return heapPtr;
+	}
+
 	// Handle generic struct instantiation (written type args resolved through
 	// the active substitution — see genStructLiteral for the rationale)
 	std::map<std::string, Type*> savedSub = mTypeSubstitution;
@@ -697,19 +902,31 @@ llvm::Value *CodeGen::genConstructExpression( ConstructExpression *expr )
 		}
 	}
 
-	if ( initFn != nullptr )
+	if ( initFn == nullptr )
 	{
-		std::vector<llvm::Value*> args;
-		args.push_back( heapPtr ); // self
-		for ( auto &argExpr : expr->mArgs )
-		{
-			llvm::Value *argVal = genExpression( argExpr );
-			if ( argVal == nullptr )
-				return nullptr;
-			args.push_back( argVal );
-		}
-		mBuilder->CreateCall( initFn, args );
+		// Falling through here would hand back a heap block that no init ever
+		// wrote — and for a struct with no resolvable layout getTypeAllocSize
+		// yields 1 byte, so every later field access reads out of bounds.
+		// Refuse loudly instead (Principle III).
+		mTypeSubstitution = savedSub;
+		reportError( expr, "cannot construct '" + structName +
+			"': no constructor was found for this type" );
+		return nullptr;
 	}
+
+	std::vector<llvm::Value*> args;
+	args.push_back( heapPtr ); // self
+	for ( auto &argExpr : expr->mArgs )
+	{
+		llvm::Value *argVal = genExpression( argExpr );
+		if ( argVal == nullptr )
+		{
+			mTypeSubstitution = savedSub;
+			return nullptr;
+		}
+		args.push_back( argVal );
+	}
+	mBuilder->CreateCall( initFn, args );
 
 	mTypeSubstitution = savedSub;
 	trackTempStruct( heapPtr );
@@ -2012,7 +2229,14 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 	}
 
 	if ( llvmFunc == nullptr )
+	{
+		// Sema resolved this method, but no symbol was emitted or declared for
+		// it. Returning nullptr here used to drop the call on the floor without
+		// a word; say so instead (Principle III).
+		reportError( expr, "no symbol for method '" + expr->mMethodName +
+			"' on type '" + structName + "'" );
 		return nullptr;
+	}
 
 	// Build arguments: self first (pass by pointer), then explicit args
 	std::vector<llvm::Value*> args;

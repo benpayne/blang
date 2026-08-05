@@ -399,6 +399,20 @@ int main( int argc, char *argv[] )
 		{
 			mod->setExtern( true );
 
+			// Stamp ABI provenance on every struct this interface declares.
+			// Construction of a struct that arrived through a .bmod must go
+			// through the library-emitted factory (the consumer has no field
+			// layout to size or destroy it with); construction of a struct
+			// defined in this compilation keeps the inline path. This is
+			// deliberately NOT the flat-merge injection below — it only marks
+			// where a definition came from.
+			for ( const auto &sp : mod->getStructList() )
+			{
+				StructDefinition *s = const_cast<StructDefinition*>(
+					(const StructDefinition*)sp );
+				s->setFromInterface( true );
+			}
+
 			// Extract module name: "/path/to/foo.bmod" -> "foo"
 			std::string fname = inputFile;
 			size_t slash = fname.rfind( '/' );

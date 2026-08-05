@@ -133,7 +133,13 @@ bool Sema::analyze( Module *module, Scope *scope, DiagnosticEngine &diag )
 	for ( auto &s : module->mStructList )
 		sema.visitStruct( s );
 	for ( auto &f : module->mFunctionList )
+	{
+		// `extern fn` names a foreign C symbol (the runtime's __blang_* entry
+		// points), so it is exempt from the reserved-family rule.
+		if ( f != nullptr && !f->isExtern() )
+			sema.checkReservedName( f->getName(), f->getLocation(), "function" );
 		sema.visitFunction( f );
+	}
 
 	return !sema.mReported;
 }
@@ -169,10 +175,46 @@ void Sema::visitStruct( StructDefinition *structDef )
 		}
 	}
 
+	checkReservedName( structDef->getName(), structDef->getLocation(), "struct" );
+
 	for ( auto &method : structDef->mMethods )
+	{
+		checkBodylessMember( method, structDef->getName() );
+		if ( !method->isInit() )
+			checkReservedName( method->getName(), method->getLocation(), "method" );
 		visitFunction( method );
+	}
 	if ( structDef->mInitMethod != nullptr )
 		visitFunction( structDef->mInitMethod );
+}
+
+void Sema::checkBodylessMember( FunctionDefinition *func, const string &ownerName )
+{
+	if ( func == nullptr || func->isExtern() || func->mFuncBody != nullptr )
+		return;
+
+	if ( func->isInit() )
+		mDiag.error( func->getLocation(),
+			"constructor of struct '" + ownerName + "' has no body; "
+			"a bodyless 'init' is only valid in a .bmod interface file" );
+	else
+		mDiag.error( func->getLocation(),
+			"method '" + func->getName() + "' of struct '" + ownerName +
+			"' has no body; a bodyless method is only valid in a .bmod "
+			"interface file" );
+	mReported = true;
+}
+
+void Sema::checkReservedName( const string &name, const SourceLocation &loc,
+	const string &kind )
+{
+	if ( name.size() < 2 || name[0] != '_' || name[1] != '_' )
+		return;
+
+	mDiag.error( loc, kind + " name '" + name +
+		"' is reserved: names beginning with '__' belong to the compiler's "
+		"generated-symbol family" );
+	mReported = true;
 }
 
 void Sema::visitFunction( FunctionDefinition *func )
