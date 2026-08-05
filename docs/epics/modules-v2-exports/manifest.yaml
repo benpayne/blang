@@ -85,31 +85,31 @@ units:
     summary: Construction ABI — library-emitted factory (spike first)
     depends_on: []
     done: Spike lib+bin fixture in test_build/ constructs/calls/releases across a .bmod with zero consumer layout knowledge, ASan-clean; full gates green
-    speckit: 002-construction-abi-factory
+    speckit: 029-construction-abi-factory
   - id: U2
     reqs: [REQ-002, REQ-007, REQ-009, REQ-011]
     summary: .bmod true interface — method/init/factory signatures, conformance records, cache format-version salt
     depends_on: [U1]
     done: Overview done-conditions 1, 5, 7 pass; test_build suite green with new fixtures; full gates green
-    speckit: 003-bmod-true-interface
+    speckit: 030-bmod-true-interface
   - id: U3
     reqs: [REQ-003, REQ-006, REQ-011]
     summary: pub on methods/init; private-by-default; P9 enforcement; fail/xmodule harness + defining-origin marker
     depends_on: [U2]
     done: Overview done-conditions 3, 4 pass; fail/xmodule runner leg exists in run_tests.sh; new fail/sema + fail/xmodule fixtures match .expected in both build modes; cross-module generic tests stay green; full gates green
-    speckit: 004-pub-members-and-export-enforcement
+    speckit: 031-pub-members-and-export-enforcement
   - id: U4
     reqs: [REQ-010]
     summary: stdlib public-API redesign for opaque types (design-audited); Map/Set pub init + call-site migration
     depends_on: [U2]
     done: Approved design artifact committed before implementation; accessor surface + Map/Set pub init shipped with migrated goldens green; all examples/ integration scripts pass; tools/check_no_field_reachins.sh examples/ exits 0; full gates green
-    speckit: 005-stdlib-opaque-api
+    speckit: 032-stdlib-opaque-api
   - id: U5
     reqs: [REQ-004, REQ-005, REQ-008]
     summary: Fields become private; opaque .bmod with D15 metadata; corpus migration
     depends_on: [U3, U4]
     done: Overview done-conditions 2, 6, 8 pass and done-condition 9 gate list green; open question 1 resolved and recorded
-    speckit: 006-private-fields-opaque-bmod
+    speckit: 033-private-fields-opaque-bmod
 
 foldback:
   status_into: overview.md

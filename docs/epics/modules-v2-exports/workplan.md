@@ -43,7 +43,7 @@ migration target (review F1/F8 sequencing).
   ABI, dtor function pointers).
 - **Budget hint**: 8–12 turns (spike may burn several).
 - **Team hint**: single specialist hire (codegen); not parallelizable.
-- **Speckit**: `002-construction-abi-factory`
+- **Speckit**: `029-construction-abi-factory`
 
 ### U2 — `.bmod` true interface: method/init/factory signatures, conformance records, cache versioning
 
@@ -67,7 +67,7 @@ migration target (review F1/F8 sequencing).
   parsed input — emitter/parser round-trip fuzz-safety noted in review).
 - **Budget hint**: 10–14 turns.
 - **Team hint**: single hire; U3/U4 unblock in parallel when this merges.
-- **Speckit**: `003-bmod-true-interface`
+- **Speckit**: `030-bmod-true-interface`
 
 ### U3 — `pub` on methods/`init`; export-signature enforcement
 
@@ -105,7 +105,7 @@ migration target (review F1/F8 sequencing).
 - **Audit**: per constitution.
 - **Budget hint**: 8–12 turns.
 - **Team hint**: parallel with U4.
-- **Speckit**: `004-pub-members-and-export-enforcement`
+- **Speckit**: `031-pub-members-and-export-enforcement`
 
 ### U4 — stdlib public-API redesign for opaque types (design-audited)
 
@@ -142,7 +142,7 @@ migration target (review F1/F8 sequencing).
 - **Budget hint**: 10–14 turns.
 - **Team hint**: parallel with U3; different files (stdlib/*.b, examples/)
   than U3 (parser/Sema/emitter).
-- **Speckit**: `005-stdlib-opaque-api`
+- **Speckit**: `032-stdlib-opaque-api`
 
 ### U5 — Fields become private; opaque `.bmod`; data-contract metadata; corpus migration
 
@@ -177,7 +177,7 @@ migration target (review F1/F8 sequencing).
   flip + fixtures) and U5b (corpus migration) rather than cutting scope.
 - **Team hint**: single hire after U3+U4 merge; the migration sweep can use
   a second hire for the mechanical fixture updates.
-- **Speckit**: `006-private-fields-opaque-bmod`
+- **Speckit**: `033-private-fields-opaque-bmod`
 
 ## Sequencing notes for the manager
 

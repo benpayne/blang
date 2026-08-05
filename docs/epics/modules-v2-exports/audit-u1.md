@@ -1,63 +1,38 @@
 # Design audit — modules-v2-exports, pre-U1
 
 **Epic**: [overview.md](overview.md) · **Unit**: U1 (construction ABI — the crux)
-**Author**: `lead` (implementer/epic lead) · **Date**: 2026-08-05
+**Author**: `lead` (implementer/epic lead)
+**Rev 1**: 2026-08-05 (`1d06cc1`) · **Rev 2**: 2026-08-05 — folds in the `critic`
+APPROVE-WITH-CHANGES list (B1–B5, M1–M7, N4/N6/N7) and the manager's rulings on
+Q1–Q8.
 **Constitution**: `.specify/memory/constitution.md` v1.2.0 — Principle VI requires
-this artifact *before* implementation. **Status: awaiting `critic` review. No
-implementation has begun.**
+this artifact *before* implementation.
 
-Every "today" claim below was re-verified first-hand against the working tree at
-`ce485b2` (cites are `file:line` into that tree), not inherited from the planning
-documents.
+Every "today" claim was verified first-hand against the working tree at `ce485b2`;
+cites are `file:line` into that tree.
 
 ---
 
-## 0. Baseline (established before any change)
+## 0. Baseline
 
-### 0.1 Build environment — resolved, with a caveat to record
+### 0.1 Build environment
 
-The machine had **no C++ toolchain at all**: no `cmake`, no `gcc`/`g++`, no
-`llc-18`, no LLVM dev headers — only `/usr/lib/llvm-18/lib/libLLVM.so.18.1` (the
-runtime shared object). `sudo` requires a password that is not available.
+The machine had **no C++ toolchain**: no `cmake`, `gcc`/`g++`, `llc-18`, or LLVM
+dev headers — only `/usr/lib/llvm-18/lib/libLLVM.so.18.1`. `sudo` needs an
+unavailable password. Resolved without sudo by fetching the Ubuntu package closure
+(`apt-get download --print-uris` works unprivileged) and extracting it with
+`dpkg-deb -x` into `/home/ben/toolchain`, plus four fixups: a truncated `cmake`
+`.deb` (re-fetched); `libLLVM.so.1` symlinked from the installed runtime package;
+a dangling `libzstd.so` repointed at the system `libzstd.so.1`; and a `cc`
+symlink (a dpkg alternative, present in no `.deb`). `~/toolchain/env.sh` exports
+`PATH`/`CC`/`CXX`/`LLVM_CONFIG`/`LLVM_DIR` and the include/library paths.
 
-Resolved without sudo by fetching the Ubuntu package closure and extracting it
-into a private prefix:
+> **Manager ruling (Q6), binding on this epic:** the prefix is acceptable as a
+> local dev aid, but **CI is the authority — no claim in any PR may be gated on
+> the local prefix alone.** Every unit's PR quotes CI results; local gate output
+> is corroborating evidence only. Recorded in Known Issues.
 
-```
-apt-get download --print-uris <pkgs>      # works without sudo
-curl -O <uris> ; dpkg-deb -x <deb> /home/ben/toolchain
-```
-
-Packages: `build-essential` closure (gcc-13/g++-13/cpp-13/binutils/libc6-dev/
-linux-libc-dev/libstdc++-13-dev/libgcc-13-dev), `cmake`, `make`, `pkg-config`,
-`llvm-18-dev`, `llvm-18-tools`, `clang-18`, `libclang-rt-18-dev` (ASan runtime),
-`libsqlite3-dev`, `valgrind`, `libz3-dev`, `libedit-dev`, `libxml2-dev`,
-`zlib1g-dev`, `libzstd-dev`.
-
-Three fixups were required and are recorded so the environment is reproducible:
-
-1. `cmake_3.28.3-1build7_amd64.deb` downloaded truncated (16 KB); re-fetched.
-2. `LLVMExports.cmake` references `libLLVM.so.1`, which ships in the *runtime*
-   package already installed system-wide → symlinked
-   `~/toolchain/usr/lib/llvm-18/lib/libLLVM.so.1` → `/usr/lib/llvm-18/lib/libLLVM.so.1`.
-3. `zstd::libzstd_shared` is required by `LLVMSupport`'s link interface; the
-   extracted `libzstd.so` symlink was dangling → repointed at the system
-   `/usr/lib/x86_64-linux-gnu/libzstd.so.1`.
-4. `bcc`/`test_codegen.sh` invoke `cc`; gcc-defaults' `/usr/bin/cc` symlink is a
-   dpkg alternative, not a file in the .deb → added `~/toolchain/usr/bin/cc`.
-
-`~/toolchain/env.sh` exports `PATH`, `LD_LIBRARY_PATH`, `C_INCLUDE_PATH`,
-`CPLUS_INCLUDE_PATH`, `LIBRARY_PATH`, `CC`, `CXX`, `LLVM_CONFIG`, `LLVM_DIR`,
-`PKG_CONFIG_PATH`, `CMAKE_PREFIX_PATH`. Every gate below was run under it.
-
-> **Known Issue to record (Principle VI):** the toolchain is a hand-assembled,
-> non-standard prefix living outside the repo and outside version control. It is
-> *not* what CI uses. Gate results obtained locally are therefore indicative, and
-> **CI remains the authority** for this epic's merge decisions. If the devbot host
-> is supposed to have a provisioned toolchain, this is a host-configuration bug
-> worth fixing at the source rather than per-run.
-
-### 0.2 Regression baseline — fully green (evaluation.md requires this before U1)
+### 0.2 Regression baseline — fully green
 
 | Gate | Command | Result |
 |---|---|---|
@@ -69,18 +44,14 @@ Three fixups were required and are recorded so the environment is reproducible:
 | build system | `test_build/run_build_tests.sh` | **all checks passed** |
 | runtime units | `ctest --test-dir build` | **78/78 passed** |
 
-No pre-existing red to absorb. Both configurations build clean.
-
-**Doc drift noted (Principle I, pre-existing):** `CLAUDE.md` states 134
-`codegen_*.b` tests and "195 pass/fail tests"; the suites actually report **156**
-codegen tests and **217** parse/sema tests. Not caused by this epic; flagged so a
-unit that touches `CLAUDE.md` corrects it rather than propagating it.
+No pre-existing red. **Doc drift (Principle I, pre-existing):** `CLAUDE.md` says
+134 codegen tests / 195 pass-fail tests; the suites report **156** and **217**. Not
+caused by this epic; the first unit to touch `CLAUDE.md` corrects it.
 
 ### 0.3 Done-condition 8 baseline
 
-`tools/check_no_field_reachins.sh examples/ test_build/` **exits 1 today**, as the
-script's own header predicts (it is the U4/U5 target gate, not a current CI gate).
-Reach-in sites reported:
+`tools/check_no_field_reachins.sh examples/ test_build/` **exits 1 today**, as its
+own header predicts. Reach-in sites:
 
 | Site | Line | Reach-in |
 |---|---|---|
@@ -90,74 +61,86 @@ Reach-in sites reported:
 | `examples/todo_app/main.b` | 178 | `Todo_from_json(req.body)` |
 | `examples/wordfreq/main.b` | 39 | `for k in counts.keys` |
 
-Two observations for U4/U5, not for U1:
+`wordfreq:39` is a **false positive** (`counts` is a `Map`; matched by the
+`HttpParsedHeaders:keys` entry). The `[^(]` trailer also produces false negatives
+(`x.body(`). U4 owns tightening it — a green exit must mean something.
+`Todo_from_json(req.body)` is simultaneously a reach-in and the
+generated-function-spelling problem of open question #1.
 
-- The `wordfreq:39` hit is a **false positive**: `counts` is a `Map`, matched by
-  the `HttpParsedHeaders:keys` entry. The script keys on the bare field token with
-  no type awareness. It will also miss reach-ins written as `x.body(` (the
-  `[^(]` trailer) — i.e. it can produce both false positives and false negatives.
-  U4 owns tightening it; a green exit must mean something.
-- `Todo_from_json(req.body)` is simultaneously a field reach-in *and* the
-  generated-function-spelling problem behind **open question #1**. The two are
-  entangled at the same call site.
+### 0.4 Recon findings that change unit scoping
 
-### 0.4 Recon findings that change unit scoping (raise now, not at review time)
+**F-A — CI does not run the build-system suite. [Manager: APPROVED as in-scope.]**
+`.github/workflows/ci.yml` runs `run_tests.sh`, `test_codegen.sh`, `bcc test`,
+sanitizers, `ctest`, fuzz, demos and LSP — but never
+`test_build/run_build_tests.sh`. Done-conditions **1, 5 and 6** all rest on that
+suite, and the epic requires each condition to be backed by a test **CI runs**.
+**U2 adds a `build-system` CI job** invoking `test_build/run_build_tests.sh`, with
+the prerequisites the reviewer enumerated: `llvm-18-dev`, `llvm-18`,
+`libzstd-dev`, `libuv1-dev`, `pkg-config`, `libsqlite3-dev`, `git`, and `nm`
+(binutils — the suite's `linkonce_odr` assertions at
+`run_build_tests.sh:43-46` depend on it).
 
-**F-A (BLOCKER for the epic done condition as worded).**
-`test_build/run_build_tests.sh` is **not invoked by CI**. `.github/workflows/ci.yml`
-runs `run_tests.sh`, `test_codegen.sh`, `bcc test`, sanitizers, `ctest`, fuzz, demos
-and the LSP legs — there is no leg that runs the build-system suite. But
-done-conditions **1, 5 and 6** are *all* backed by `test_build/run_build_tests.sh`
-fixtures, and the epic's preamble requires each condition to be "backed by a
-committed test **that CI runs**". As things stand, three of the nine conditions
-would be satisfied by a suite nothing runs automatically. **Proposal: U2 adds a
-`build-system` job to `ci.yml` invoking `test_build/run_build_tests.sh`**, since
-U2 is the first unit to add fixtures there. Flagging rather than silently
-absorbing it, because it is a scope addition to a unit.
+**F-B — the generic-slice `pub` hazard (affects U3 ordering; justifies A2).**
+Generic structs ship methods as **verbatim source slices** inside an
+`impl Name { … }` block (`BmodEmitter.cpp:238-265`). The impl parser rejects
+anything but `fn`/`init`/`static fn` at **`QImplBlock.cpp:125`**. So the moment U3
+marks a generic method `pub`, the emitted slice contains `pub fn` and any consumer
+that has not learned to parse `pub` in impl blocks — including one reading a
+warm-cached `.bmod` written by a newer compiler — fails to parse the interface.
+Within U3 the parser change lands before or with the emission change. This is the
+concrete failure the format-version salt exists to prevent.
 
-**F-B (affects U3 ordering, and justifies the U2 cache salt).**
-Generic structs ship their methods as **verbatim source slices** wrapped in an
-`impl Name { … }` block (`BmodEmitter.cpp:238-265`). The impl-block parser rejects
-anything that is not `fn` / `init` / `static fn` with a single diagnostic at
-**`QImplBlock.cpp:125`** ("Expected 'fn', 'init', or 'static fn' in impl block").
-Therefore, the moment U3 marks any generic struct's method `pub` in source, the
-emitted slice contains `pub fn` and **every `.bmod` consumer that has not yet
-learned to parse `pub` in impl blocks fails to parse the interface** — including a
-warm-cached `.bmod` produced by a newer compiler and read by an older one. Two
-consequences: (i) within U3 the parser change must land before or with the
-emission change, never after; (ii) this is a concrete instance of the failure mode
-the U2 format-version salt exists to prevent, which strengthens A2's placement.
+**F-C / M1 — `table pub struct` is a real round-trip defect, owned by U2.**
+`emitStruct` (`BmodEmitter.cpp:216-266`) writes the annotation *before* `pub`
+(`table pub struct Name`), the inverse of source order. Reclassified from
+"drive-by nit" to **an owned U2 defect with a committed regression fixture**: a
+`table struct` in a library, its `.bmod` re-parsed by a consumer, asserted by a
+golden `.bmod` plus a build fixture. It survives today only through parser
+leniency, and U5's D15 metadata work makes `table` structs load-bearing across the
+boundary — so it must be correct before then, not after.
 
-**F-C (U2 emission detail).** `emitStruct` (`BmodEmitter.cpp:216-266`) writes
-`table pub struct Name` — annotation *before* `pub`, the opposite of source order
-(`pub` then `table`). It round-trips today only because the `.bmod` parser is
-lenient. U2/U5 touch this function; the ordering should be normalised as a
-drive-by, with a `.bmod` content assertion pinning it.
+**F-D / Q8 — `BuildCache::computeKey` weakness.** `BuildCache.cpp:121-144` hashes
+**file contents only**: no filenames, no separators between files, no compiler
+version, no format version. Renaming a source, or moving a line between two
+sources in the same project, does not change the key. **[Manager ruling: file in
+Known Issues; do not fix here.]** U2 adds only the format-version salt REQ-009
+asks for, and **DC7's test must bump the real version constant** — not a
+test-only stub — so the test proves the shipped mechanism.
 
-**F-D (U2 cache-salt detail).** `BuildCache::computeKey`
-(`BuildCache.cpp:121-144`) hashes **file contents only** — no filenames, no
-separators between files, no compiler version, no format version. Two
-consequences beyond the known missing format version: renaming a source file does
-not change the key, and moving a line between two sources in the same project does
-not either. The format-version salt is U2's REQ-009 job; the
-filename/separator weakness is adjacent and I will **raise it rather than
-opportunistically fix it**, since it is not in any REQ.
+**F-E — the `fail/xmodule/` harness is cheap.** `run_tests.sh` discovers `fail/`
+recursively (`:215`) and `run_test` is single-file by construction (`:107`,
+`:110`). So U3 needs: (i) `-not -path '*/fail/xmodule/*'` added to the `fail/`
+find — the precedent already set for `fail/warn/`; (ii) its own inline leg
+modelled on the `fail/warn/` loop (`:224-247`), reusing `resolve_expected_pattern`
+(`:79-93`) and the ERE matcher (`:166`) verbatim; (iii) **an arm added to the
+canonical `file:line:col` gate at `:146-153`**, which is keyed on a `fail/sema/`
+path glob — without it the located-error requirement of DC2/DC3 is not actually
+enforced.
 
-**F-E (U3 harness — cheaper than feared).** `run_tests.sh` discovers `fail/`
-recursively (`:215`), and `run_test` is single-file by construction (`:107`,
-`:110`). So `fail/xmodule/` needs (i) `-not -path '*/fail/xmodule/*'` added to the
-`fail/` find — exactly the precedent already set for `fail/warn/` — and (ii) its
-own inline leg modelled on the `fail/warn/` loop (`:224-247`), reusing
-`resolve_expected_pattern` (`:79-93`) and the ERE matcher (`:166`) verbatim. The
-`fail/sema/` canonical `file:line:col` gate at `:146-153` is keyed on a path glob
-and must gain an arm for `fail/xmodule/` or the located-error requirement of
-done-conditions 2/3 is not actually enforced.
+**F-F / N6 — golden `.bmod` files are a U2 requirement.** The only `.bmod`
+*content* coverage in the repo is three greps at
+`test_build/run_build_tests.sh:24-26`; there are no golden `.bmod` files. Since
+this epic's thesis is "the `.bmod` becomes a true interface", **U2 must introduce
+committed golden `.bmod` files** with an update flag, rather than accreting greps.
+U3 and U5 update those goldens as the format changes — which is also how each
+format bump becomes visible in review.
 
-**F-F (baseline for U2/U5 `.bmod` assertions).** The only existing `.bmod`
-*content* coverage in the entire repo is three greps at
-`test_build/run_build_tests.sh:24-26`. There are no golden `.bmod` files. Since
-this epic's whole thesis is "the `.bmod` becomes a true interface", U2 should
-introduce a golden-`.bmod` assertion rather than accreting more greps.
+**M4 — every format change bumps the version.** U2, U3 and U5 each change the
+`.bmod` shape (factory attribute; `pub` members; dropped layout + D15 metadata).
+**Each of the three bumps the format-version constant in its own PR**, and each
+updates the golden `.bmod`s. One bump for the whole epic is not acceptable: a
+warm cache written between two units would otherwise be silently misread.
+
+**N7 — the promoted-module exemption, restated where implementers will read it.**
+`buffer`, `collections` and `cli` are parsed into the **user's own scope**
+(`qcc.cpp:308-313`), so no module boundary exists to enforce against until Epic B.
+They are **exempt from module-private enforcement for this entire epic** (design
+A7). Enforcement applies to the *namespaced* stdlib modules (`net`, `fs`, `timer`,
+…), which do get their own `Scope` (`qcc.cpp:315-322`). This exemption is recorded
+in Known Issues, not silently applied.
+
+**M6 — tracked, not fixed here.** Recorded on the epic's issue list and revisited
+at U5; no U1 action.
 
 ---
 
@@ -165,116 +148,129 @@ introduce a golden-`.bmod` assertion rather than accreting more greps.
 
 ### Restatement
 
-BLang's module boundary currently exports exactly the wrong half of a type. A
-`pub struct` ships its **full field layout** into the `.bmod` and **none of its
-methods**, so a consumer can read and write an imported type's internals but
-cannot construct it or call anything on it — the interface publishes the
-implementation and hides the API. Worse, an exported declaration may reference a
-non-`pub` type; the emitter writes the reference without the declaration, the
-library build exits 0, and the failure surfaces as a *syntax error inside a
-generated file* at the *consumer's* build (P9). This epic inverts the model:
-methods and `init` become the API behind an explicit `pub` (private by default,
-D9), member variables become always-private so struct literals are automatically
-module-private and external construction has exactly one form `Counter(5)` (D9,
-D7), and the `.bmod` becomes a true interface — signatures plus
-protocol-conformance records (D16) plus enum variants/payloads (D17) plus a
-compiler-facing metadata section that only `table`/`@json` shapes need and that
-user source can never name (D15). The keystone constraint is that construction is
-caller-allocating today, so removing layout from the interface is impossible
-without first moving allocation to the library: hence U1, the factory ABI, leads.
+BLang's module boundary exports exactly the wrong half of a type. A `pub struct`
+ships its **full field layout** into the `.bmod` and **none of its methods**, so a
+consumer can read and write an imported type's internals but can neither construct
+it nor call anything on it — the interface publishes the implementation and hides
+the API. Worse, an exported declaration may reference a non-`pub` type; the
+emitter writes the reference without the declaration, the library build exits 0,
+and the failure surfaces as a *syntax error inside a generated file* at the
+*consumer's* build (P9). This epic inverts the model: methods and `init` become
+the API behind an explicit `pub` (private by default, D9); member variables become
+always-private, which makes struct literals module-private automatically and
+leaves exactly one external construction form, `Counter(5)` (D9, D7); and the
+`.bmod` becomes a true interface — signatures, protocol-conformance records
+(D16), enum variants and payloads (D17), and a compiler-facing metadata section
+that only `table`/`@json` shapes need and that user source can never name (D15).
+The keystone constraint is that construction is caller-allocating today, so
+removing layout from the interface is impossible without first moving allocation
+into the library: hence U1, the factory ABI, leads.
 
 ### Unit → done-condition mapping
 
 | DC | Done condition (abbrev.) | Owning unit | Supporting |
 |----|--------------------------|-------------|------------|
-| 1 | `test_build/` lib+bin: `Counter c = Counter(5);` + `c.bump()` builds and runs | **U2** | U1 (ABI it rides on) |
+| 1 | `test_build/` lib+bin: `Counter c = Counter(5);` + `c.bump()` builds and runs | **U2** | U1 (the ABI it rides on) |
 | 2 | Struct literal + field access on an imported type are located errors (`fail/xmodule/`) | **U5** | U3 (harness + origin marker) |
-| 3 | `pub` parses on methods/`init`; unmarked method unreachable cross-module, callable in-module | **U3** | — |
+| 3 | `pub` parses on methods/`init`; unmarked method unreachable cross-module, callable in-module | **U3** | U1 (bodyless-member rule) |
 | 4 | Non-`pub` type in an exported signature = located error at the **library** build (incl. enum payloads) | **U3** | — |
 | 5 | `print("{}", x)` on an imported `impl Printable` type works E2E | **U2** | U3 (`pub` filtering) |
-| 6 | Imported `@json table struct`: `query`/`to_json` work; naming the field is an error | **U5** | U2 (metadata section groundwork) |
-| 7 | `BuildCache` key incorporates a `.bmod` format version; bump invalidates warm cache | **U2** | U5 (second format change) |
+| 6 | Imported `@json table struct`: `query`/`to_json` work; naming the field is an error | **U5** | U2 (metadata groundwork, F-C fix) |
+| 7 | `BuildCache` key incorporates a `.bmod` format version; bump invalidates warm cache | **U2** | U3, U5 (each bumps it — M4) |
 | 8 | `check_no_field_reachins.sh examples/ test_build/` exits 0; examples pass | **U5** | U4 (accessor surface + `examples/`) |
 | 9 | All gates green in both build modes; `--leak-check`; LSP; build tests; docs updated | **all units** | verified at U5 |
 
-**U1 owns no done condition on its own.** It is a de-risking spike whose output is
-an ABI and a `test_build/` fixture; DC1 is credited to U2, which is where the
-emitted `.bmod` first makes `Counter(5)` parse in a consumer. That asymmetry is
-intentional and worth the reviewer's attention: if U1 is judged only by the epic
-done-condition list it looks like it produces nothing, when in fact it produces
-the precondition for DC1, DC2 and DC5.
-
-**Coverage check:** every DC has exactly one owning unit; no DC is orphaned; no
-unit is without a DC except U1 (by design, above).
+**U1 owns no done condition on its own.** It is a de-risking spike producing an
+ABI and a fixture; DC1 is credited to U2, where the emitted `.bmod` first makes
+`Counter(5)` parse in a consumer. Flagged because a manager scoring U1 against the
+DC list would otherwise conclude it produced nothing.
 
 ---
 
 ## (b) U1 — the factory ABI, concretely
 
-### b.0 What the code actually does today (verified, not quoted from the plan)
+### b.0 What the code does today (verified first-hand)
 
-- **Construction is caller-allocating.** `CodeGen::genConstructExpression`
-  (`CGStruct.cpp:603-717`): computes `dl.getTypeAllocSize(structType)`
+- **Construction is caller-allocating.** `genConstructExpression`
+  (`CGStruct.cpp:603-717`) computes `dl.getTypeAllocSize(structType)`
   (`:641-642`), generates the destructor from the field list via
   `getOrGenStructDestructor` (`:660`), calls `__blang_rc_alloc_dtor(size, dtor)`
-  (`:663`) — or `__blang_rc_alloc(size)` when the struct has **no** refcounted
-  field and `getOrGenStructDestructor` returns `nullptr` (`:664-665`) — then calls
+  (`:663`) — or `__blang_rc_alloc(size)` when the struct has no refcounted field
+  and the dtor is `nullptr` (`:249-253`, `:664-665`) — then
   `StructName_init(heapPtr, args...)` (`:667-711`).
 - **The destructor is `InternalLinkage`**, named `__StructName_dtor`
-  (`CGStruct.cpp:194-204`, `:264-265`), and walks `sd->getFields()` releasing
-  `string`/`Array`/`Buffer`/fn-typed/user-struct fields (`:230-247`, `:283-306`).
-  It returns `nullptr` outright when no field needs releasing (`:249-253`).
+  (`:194-204`, `:264-265`), walking `sd->getFields()` (`:230-247`, `:283-306`).
 - **Release is already layout-free.** `__blang_rc_release`
-  (`runtime/blang_runtime.c`) reads `hdr->destructor`, stored at allocation by
-  `__blang_rc_alloc_dtor`, and calls it at refcount zero. **No runtime change is
-  needed** — confirmed by reading both functions.
-- **Structs are always heap pointers.** Method ABI is
-  `StructName_method(ptr self, args...)`; `self` is the raw heap pointer, loaded
-  from the variable's alloca and passed directly (`CGStruct.cpp:2017-2031`).
-  Methods are declared `ExternalLinkage` with mangled name
+  (`runtime/blang_runtime.c:115-131`) reads `hdr->destructor`, stored at
+  allocation by `__blang_rc_alloc_dtor` (`:77-84`). **No runtime change needed.**
+- **Method ABI**: `StructName_method(ptr self, args...)`, `self` the raw heap
+  pointer (`CGStruct.cpp:2017-2031`); declared `ExternalLinkage` with mangled name
   `[modulePrefix__]StructName_methodName` (`CodeGen.cpp:184-219`).
-- **`Counter(5)` doesn't even parse for an imported type.** `QExpression.cpp:418-421`
-  only builds a `ConstructExpression` when `sd->hasInit()` is true. A `.bmod`
-  struct today carries no methods at all, so `hasInit()` is false and the parse
-  falls through — this is the exact mechanism of P8, and it means U2's emission of
-  an `init` signature is what makes the parse succeed. No parser change is needed
-  for construction.
+- **`Counter(5)` doesn't parse for an imported type.** `QExpression.cpp:418-421`
+  builds a `ConstructExpression` only when `sd->hasInit()`; a `.bmod` struct
+  carries no methods, so it is false and the parse falls through. This is P8's
+  exact mechanism — U2's `init` signature emission is what makes the parse
+  succeed. **No parser change is needed for construction itself.**
 
-### b.1 Consequences that shape the design (all first-hand)
+### b.1 Consequences that shape the design
 
-1. **No sret / no by-value struct ABI anywhere.** Every BLang struct value is a
-   refcounted heap pointer; a struct is never passed or returned by value, and
-   `getLLVMType` lowers a struct-typed field to `ptr`. The factory therefore
-   returns a plain `ptr` and needs **no** sret attribute, no ABI classification,
-   no alignment negotiation. The prompt asks for sret/by-value details: the honest
-   answer is that they do not arise, and *that* is why the factory is cheap. If
-   the spike discovers any by-value struct path, it is a wall (see b.6).
-2. **`.bmod` structs are injected into `gScope` but NOT into the consumer's
-   `mod->mStructList`** (`qcc.cpp:355-363`). The method-declaration loop at
-   `CodeGen.cpp:171-221` iterates `mod->mStructList`, so it never sees imported
-   structs. Consequence: a cross-module method call finds no LLVM function, and
-   `genMethodCall` **returns `nullptr` silently** at `CGStruct.cpp:2014-2015`.
-   That silent nullptr is a Principle III violation waiting to happen and must
-   become a located diagnostic as part of this work.
-3. **The clean seam already exists**: `CodeGen::registerExternalTypes`
-   (`CodeGen.cpp:380-401`), called from `qcc.cpp:533` and `:659`, already receives
-   the bmod structs/enums and is **outside** the flat-merge injection block. This
-   is where the consumer-side declarations for imported types belong. It keeps U1
-   entirely clear of the resolution path.
-4. **Non-generic pub functions from a `.bmod` are already marked extern**
-   (`qcc.cpp:350-351`, `f->setFunctionExtern(true)`) so codegen declares without
-   defining and the symbol links from the `.a`. **The factory should ride this
-   exact path**: if the factory is emitted into the `.bmod` as an ordinary
-   `pub fn`, it needs *zero* new consumer-side codegen. This is the single most
-   important design consequence in this audit.
+**1. By-value applies to *structs only* — payload-carrying enums are by value.
+[B3, corrected.]** Rev 1 claimed "no by-value struct ABI anywhere". That is right
+for **structs**: `getLLVMType` lowers a struct-typed value to `ptr`
+(`CGTypes.cpp:140-142`), so a struct is never passed or returned by value and the
+factory returns a plain `ptr` needing no sret attribute or ABI classification.
+It is **wrong as a general statement**: `getLLVMType` returns
+`getOrCreateEnumType(...)` — a real aggregate — for an enum **with** a payload,
+and `i32` for one without (`CGTypes.cpp:147-152`). Payload-carrying enums
+therefore cross function boundaries **by value**, and their layout
+(`{i32 tag, [N x i8] payload}`) is computed from the variant payload list.
 
-### b.2 The ABI
+> **ABI invariant this forces (U2/U5 must not break it):** an exported enum's
+> **variant and payload-type list must keep shipping in the `.bmod`** — it is not
+> merely API surface (D17), it is **layout information a consumer needs to pass
+> the value at all**, and to generate the recursive-enum helpers
+> (`__enum_<Name>_box_dtor`, `__enum_<Name>_payload_retain`) at use sites. D17
+> already requires this; b.1 records *why* it is non-negotiable, so a later unit
+> optimising "the `.bmod` should carry less" cannot remove it by accident.
 
-For every **non-generic** struct with an `init`, the **defining module** emits:
+**2. `.bmod` structs are injected into `gScope` but NOT into the consumer's
+`mod->mStructList`** (`qcc.cpp:355-363`). The method-declaration loop at
+`CodeGen.cpp:171-221` iterates `mod->mStructList`, so it never sees imported
+structs; a cross-module method call finds no LLVM function and `genMethodCall`
+**returns `nullptr` silently** (`CGStruct.cpp:2014-2015`) — a Principle III
+violation to fix, not inherit.
+
+**3. The declaration seam already exists, one line away.** For free functions,
+`CodeGen.cpp:546-547` is exactly the right shape:
+
+```cpp
+// Extern functions are declarations only — no body
+if ( func->isExtern() )
+    return llvmFunc;
+```
+
+The method loop has **no equivalent**: `CodeGen.cpp:257-283` unconditionally
+creates an entry block and an implicit return, so a bodyless method routed through
+it becomes a **defined empty function** (`define ... ret 0`) that collides at link
+with the library's real one. **U1 mirrors `:546-547` in the method loop**, keyed
+on "bodyless", so imported signatures become `declare`.
+
+**4. Non-generic pub functions from a `.bmod` are already marked extern**
+(`qcc.cpp:350-351`) so codegen declares without defining. The factory reuses this
+*lowering* behaviour — but **not** by being a source-nameable free function
+(see b.3).
+
+### b.2 The ABI and the factory symbol
+
+**[Manager ruling Q1: do NOT use `StructName_new`.]** `StructName_new` collides
+with the mangling of a user method named `new` (`CodeGen.cpp:188-190` produces the
+identical symbol). The factory therefore uses the **reserved, unspellable**
+`__`-prefixed family that already houses `__StructName_dtor` and
+`__enum_<Name>_box_dtor`:
 
 ```
-symbol:  <modulePrefix__>StructName_new
-type:    ptr (*)(<init parameter types...>)      ; C-level: void *StructName_new(...)
+symbol:  __<modulePrefix__>StructName_new
+type:    ptr (*)(<init parameter types...>)
 linkage: ExternalLinkage
 body:    %p = call ptr @__blang_rc_alloc_dtor(i64 <size>, ptr @__StructName_dtor)
          ; or @__blang_rc_alloc(i64 <size>) when the dtor is null
@@ -282,244 +278,287 @@ body:    %p = call ptr @__blang_rc_alloc_dtor(i64 <size>, ptr @__StructName_dtor
          ret ptr %p
 ```
 
-Naming: `StructName_new`, chosen to sit in the *existing* mangling family
-(`StructName_init`, `StructName_method`, `__StructName_dtor`) and to pick up the
-module prefix through the same code path. `_new` is not a BLang keyword and
-cannot collide with a user method, because `new` is not a legal method name today
-— **the spike must confirm this**, and if a user *can* write `fn new(...)`, the
-factory moves to the reserved `__`-prefixed family (`__StructName_new`) which
-already houses `__StructName_dtor` and `__enum_<Name>_box_dtor`.
+**Plus a Sema reserved-name check [B2]:** a user-declared identifier (function,
+method, or struct) whose mangled symbol would begin with `__` is a located
+`file:line:col: error:`, in all build modes. Without it the reservation is a
+convention, not a guarantee, and the collision returns the first time someone
+writes an unusual name. This ships in U1 with a `test_files/fail/sema/` fixture
+and an `.expected` pattern.
 
-Ownership contract: the factory returns a **+1 reference** — exactly what
-`genConstructExpression` produces today, so every downstream ARC decision
-(`trackTempStruct` at `CGStruct.cpp:715`, store-untracks-temp, scope-exit
-release) is unchanged by construction. Destruction stays `__blang_rc_release`,
-which reads the dtor pointer the *library* installed. **The consumer never
-computes a size and never generates a dtor for an imported type.**
+**Ownership contract:** the factory returns a **+1 reference** — exactly what
+`genConstructExpression` produces today — so every downstream ARC decision
+(`trackTempStruct` at `CGStruct.cpp:715`, store-untracks-temp, scope-exit release)
+is unchanged. Destruction stays `__blang_rc_release`, reading the dtor pointer the
+*library* installed. **The consumer never computes a size and never generates a
+dtor for an imported type.**
 
-### b.3 How the `.bmod` declares it (U1 spike hand-writes it; U2 emits it)
+### b.3 How the `.bmod` declares it — a struct attribute, not a free function
 
-The factory is declared as an ordinary exported function so it rides
-`qcc.cpp:350-351` (non-generic pub fns are marked extern → declared, not defined,
-and linked from the `.a`). The emitted form matches `emitFunction`'s existing
-signature-only shape (`BmodEmitter.cpp:185-213`), so U2 needs no new syntax:
+**[Manager ruling Q2: settle in U1, not U2. The factory is NOT a source-nameable
+free `pub fn` injected into `gScope`.]** Rev 1 proposed emitting
+`pub fn Counter_new(int start) -> Counter;` because it rides `qcc.cpp:350-351`
+for free. That is rejected, and correctly: injecting the factory as an ordinary
+public symbol makes it **callable from source**, which hands every consumer a
+second construction form and contradicts D9's "exactly one external form". It
+would also collide in the flat namespace and appear in completion.
 
-```
-// today, mathlib.bmod:            pub fn add(int a, int b) -> int;
-// the factory is the same shape:  pub fn Counter_new(int start) -> Counter;
-```
+The factory is instead recorded as an **attribute of the struct** in the `.bmod` —
+part of the struct's interface record, not a free symbol — carrying the `init`
+parameter signature and the factory's reserved symbol name. Consumers read it to
+emit the call; **no name enters `gScope`**.
 
-The spike hand-writes this line into a `.bmod` to prove the ABI **before** any
-emitter change. That is the whole point of spiking first: if the declaration form
-is wrong, we learn it with zero `BmodEmitter.cpp` churn.
+**[Manager ruling Q3.]** The record also states **whether the `init` is private**,
+so a consumer's `Counter(5)` against a private `init` produces
+"constructor of 'Counter' is private" rather than "type 'Counter' has no
+constructor". Distinguishing the two is worth the byte: an LLM consumer
+self-corrects from the first and cannot from the second (Principle VI).
 
-Open design point deferred to U2, not guessed here: whether the factory is
-*additionally* marked in the `.bmod` as belonging to `Counter` (so U3 can filter
-it by the `pub init`'s visibility rather than treating it as a free function).
-A free-function spelling is the minimum that works; an attributed spelling is
-cleaner. U1 does not need to decide.
+U1 hand-writes the `.bmod` record to prove the ABI; U2 makes `BmodEmitter` emit
+it. The exact surface syntax is settled in U1's speckit spec, with a golden
+`.bmod` (F-F) pinning it from the first commit.
 
 ### b.4 How the consumer lowers the two statements
 
 **`Counter c = Counter(5);`**
 
-1. Parse: `QExpression.cpp:418-421` requires `sd->hasInit()`. With the `.bmod`
-   carrying an `init` signature (U2; hand-written in the U1 spike), this is true
-   and a `ConstructExpression` is built. **No parser change.**
-2. Sema: unchanged — the `ConstructExpression` resolves against the injected
-   `StructDefinition`; arity/arg-type checks already run over the `init`
-   signature.
-3. CodeGen: `genConstructExpression` gains an early branch — *if* the struct's
-   defining origin is not this module (b.5) *and* it is non-generic, emit
-   `call ptr @Counter_new(i32 5)` and skip lines `CGStruct.cpp:640-712` entirely
-   (no `getTypeAllocSize`, no `getOrGenStructDestructor`, no `_init` lookup).
-   Then `trackTempStruct(heapPtr)` exactly as today, so ARC is untouched.
-4. Scope exit: unchanged `__blang_rc_release`.
+1. **Parse** — unchanged, once the `.bmod` supplies an `init` signature.
+2. **Sema** — resolves against the injected `StructDefinition`; arity/arg-type
+   checks already run over the `init` signature. New: if the struct is
+   foreign-marked and its `init` is recorded private → located error (b.3).
+3. **CodeGen** — `genConstructExpression` branches: if the struct is
+   foreign-marked **and non-generic**, emit `call ptr @__Counter_new(i32 5)` and
+   skip `CGStruct.cpp:640-712` entirely. Then `trackTempStruct` as today.
+4. **Scope exit** — unchanged `__blang_rc_release`.
+
+**Fail-open paths must become loud [B4].** Two exist today and both silently
+produce wrong code:
+
+- `genConstructExpression` continues past a missing `init` (`:688-712` simply
+  skips the call), and `getTypeAllocSize` of an **opaque/empty** struct type
+  yields **1 byte** — so a foreign construction that slips through the inline path
+  today allocates a 1-byte block, never initialises it, and hands back a pointer
+  every subsequent field access reads out of bounds. `genConstructExpression`
+  must **report a located error** instead of returning that allocation.
+- **The inline construction path must explicitly reject a foreign-marked struct**
+  rather than fall through to layout computation. Belt and braces with the branch
+  in step 3: if the factory branch is ever not taken for a foreign struct, that is
+  a compiler bug and must surface as a diagnostic, not as a 1-byte allocation.
+
+The same applies to `genMethodCall`'s silent `nullptr` (`CGStruct.cpp:2014-2015`).
 
 **`c.bump()`**
 
-1. Parse/Sema: resolves against the method list the `.bmod` supplies (U2).
-2. CodeGen: `genMethodCall` looks up `Counter_bump` by mangled name
-   (`CGStruct.cpp:1985-1986`). For an imported struct nothing has declared it, so
-   U1/U2 adds a declaration step hanging off `registerExternalTypes`: for each
-   non-generic imported struct, for each method the `.bmod` provided **without a
-   body**, create an `ExternalLinkage` declaration with the
-   `(ptr self, params...)` type and **no entry block**.
-   The "no entry block" is load-bearing: `CodeGen.cpp:257-283` unconditionally
-   creates an entry block and an implicit return for anything it processes, so a
-   bodyless method routed through that loop would become a **defined empty
-   function** in the consumer — a silent miscompile (empty `Counter_bump`
-   returning 0, colliding at link with the library's real one). The declaration
-   step must therefore be separate from that loop, and the spike must assert on
-   the emitted IR that `Counter_bump` is a `declare`, not a `define`.
-3. Call: `self` = the loaded heap pointer, unchanged (`CGStruct.cpp:2021-2031`).
+1. Parse/Sema — resolves against the method list the `.bmod` supplies.
+2. CodeGen — `genMethodCall` looks up `Counter_bump` by mangled name
+   (`:1985-1986`). For an imported struct, U1 adds a declaration step so the
+   symbol exists as a `declare`, mirroring `CodeGen.cpp:546-547` (b.1 item 3).
+   The spike asserts on the emitted IR that `Counter_bump` is a `declare`, not a
+   `define`.
+3. Call — `self` = the loaded heap pointer, unchanged.
 
-### b.5 The "is this type foreign?" predicate
+### b.4a Bodyless members: the parser prerequisite and the hole it opens [B1]
 
-U1 needs a minimal answer; U3 ships the real one (the workplan's lightweight
-defining-origin marker, explicitly *not* Epic B's canonical identity). For U1 the
-predicate is: **the `StructDefinition` came from a parsed `.bmod`**. There is no
-such flag today — verified: `Type.h` carries `mIsPublic` on struct/enum/protocol/
-function and `mIsExtern` on functions only; nothing records bmod provenance for a
-struct. U1 adds one boolean (`mFromInterface`) set where `.bmod` modules are
-parsed, and consumed in `genConstructExpression`. It is deliberately a flag, not a
-graph node.
+**Prerequisite.** `FunctionDefinition::Parse` **already** accepts a bodyless
+member: if the next token is `;` it sets `mFuncBody = nullptr`
+(`QFunctionDefinition.cpp:220-226`, the path protocol methods use). So
+`fn bump(self) -> int;` inside an `impl` block parses today. **`init` does not** —
+`ParseInit` unconditionally calls `Block::Parse` (`QFunctionDefinition.cpp:332`).
+U1 must relax `ParseInit` to accept `;` → `mFuncBody = nullptr`, or the `.bmod`
+cannot carry an `init` signature at all and DC1 is unreachable.
 
-What exists today and is **not** sufficient, so the reviewer can check I am not
-adding redundant state: `Module::isExtern()` (`Type.h:282-283`) is set once per
-`.bmod` input (`qcc.cpp:400`) and is used only to skip Sema/location-dump/re-emit
-— it never reaches individual definitions. `FunctionDefinition::mIsExtern`
-(`Type.h:341-342`) is the `extern fn` **FFI keyword** flag that `qcc.cpp:350-351`
-*overloads* to mean "declared-only", so a source `extern fn` and an imported
-non-generic function are already indistinguishable — I will not overload it
-further. `Scope::mImportedModules` (`Type.h:208-221`) tracks import *statements*,
-not symbol provenance. `StructDefinition`/`EnumDefinition`/`ProtocolDefinition`
-have **no** external/imported field of any kind.
+**The hole this exposes (pre-existing, widened by the above).** Because bodyless
+`fn` already parses in ordinary `.b` source, a user can write `fn bump(self);`
+today and get a silently-defined empty function returning 0 — Principle III
+exactly backwards. Relaxing `init` would extend that to constructors.
 
-### b.6 What "hitting a wall" looks like, and the fallback
+**Rule U1 ships:** a bodyless method or `init` is legal **only** in an interface
+module (`Module::isExtern()`, i.e. a parsed `.bmod`) and in `protocol`
+declarations. In ordinary `.b` source it is a located
+`file:line:col: error:` in all build modes, with a `test_files/fail/sema/`
+fixture and `.expected` pattern for both the `fn` and the `init` form. This closes
+a pre-existing hole rather than opening a new one, and it is the check that makes
+the "declare, not define" seam safe.
 
-The spike stops and raises a question — rather than widening scope — if any of:
+### b.5 Provenance: two predicates, not one [B5, M5]
 
-- **W1.** A struct is ever passed or returned **by value** anywhere in codegen
-  (would reintroduce a real ABI-classification problem the factory does not
-  solve).
-- **W2.** The `+1` returned by the factory cannot be reconciled with an existing
-  ARC decision site without changing ARC semantics (an explicit epic non-goal).
-- **W3.** `getOrGenStructDestructor` returning `nullptr` for field-free structs
-  cannot be encapsulated (it can — the factory just calls `__blang_rc_alloc`).
+**These are different questions and must not share a flag:**
+
+| Predicate | Question | Type | Set where | Consumed by |
+|---|---|---|---|---|
+| `mFromInterface` | "did this definition arrive through a `.bmod`?" — an **ABI** question | `bool` on `StructDefinition` | `qcc.cpp:398-400` | U1: factory vs inline construction; declare-not-define |
+| module origin | "which module defines this?" — a **visibility** question | origin string on the definition | U3 | U3/U5: is this member reachable from here? |
+
+Conflating them breaks `--combine`: namespaced stdlib modules (`net`, `fs`, …)
+have a real module boundary that U3 must enforce, but they arrive as **parsed
+`.b` source**, not `.bmod`s, so `mFromInterface` is false for them. A single flag
+would silently exempt the entire stdlib from visibility enforcement — which is
+also why the `buffer`/`collections`/`cli` exemption (N7) must be an explicit,
+recorded decision rather than an emergent property of the flag.
+
+**[B5: the `registerExternalTypes`-derived option is struck.]** Rev 1 offered
+deriving provenance from arrival through `registerExternalTypes`
+(`CodeGen.cpp:380-401`). That is rejected: it is LLVM-side only, so it cannot
+inform Sema in parse-only builds (Principle III), and it infers a fact that should
+be stated. **`mFromInterface` is stamped at `qcc.cpp:398-400`**, inside the
+existing `if (isBmod)` block where `mod->setExtern(true)` already lives — the
+natural home, and **outside** the flat-merge injection block.
+
+What exists today and is **not** sufficient, so the reviewer can confirm I am not
+adding redundant state: `Module::isExtern()` (`Type.h:282-283`, `:299`) is
+per-module and never reaches individual definitions;
+`FunctionDefinition::mIsExtern` (`Type.h:341-342`) is the `extern fn` **FFI**
+flag that `qcc.cpp:350-351` already overloads to mean "declared-only", so a source
+`extern fn` and an imported function are indistinguishable — I will not overload
+it further; `Scope::mImportedModules` (`Type.h:208-221`) tracks import
+*statements*. `StructDefinition`/`EnumDefinition`/`ProtocolDefinition` have **no**
+provenance field of any kind.
+
+### b.5a Visibility follows the defining module of the enclosing declaration [M3]
+
+Stated now because U1's provenance work is where it would first be got wrong, and
+because getting it wrong breaks cross-module generics **silently**:
+
+> A member reference is checked against the module that defines the **enclosing
+> declaration**, not the module that is currently compiling.
+
+A generic struct's method body ships verbatim into the `.bmod`
+(`BmodEmitter.cpp:238-265`) and is compiled **inside the consumer**, but it is
+still `Pair`'s own code: `self.first` and `Pair<T> { first: …, second: … }`
+(both present in `test_build/mathlib/mathlib.bmod` today) are private-field and
+struct-literal uses that **must keep working** once U5 makes fields private and
+literals module-private. Under the rule above they do, because the enclosing
+declaration is defined by `mathlib`. Under a naive "is the current module the
+defining module?" check they would all become errors and every cross-module
+generic would break. U3/U5 own the enforcement; U1 owns not designing a predicate
+that makes the correct rule unexpressible.
+
+### b.6 Walls, and the fallback
+
+The spike stops and raises a question rather than widening scope if:
+
+- **W1 (structs).** A struct is ever passed or returned by value.
+- **W1′ (enums) [B3].** A payload-carrying enum crosses a module boundary in a
+  way that needs layout the `.bmod` does not carry. Mitigation is stated in b.1:
+  variant/payload lists keep shipping (D17). If some path needs *more* than that,
+  it is a wall — payload-carrying enums are genuinely by value
+  (`CGTypes.cpp:147-152`) and the factory does not help them.
+- **W2.** The `+1` cannot be reconciled with an existing ARC site without changing
+  ARC semantics (an explicit non-goal).
+- **W3.** The `nullptr`-dtor case cannot be encapsulated (it can — the factory
+  calls `__blang_rc_alloc`).
 - **W4.** Generic construction cannot be left alone. The generic path
-  (`CGStruct.cpp:625-634`, `:647-658`) is consumer-side by design and the factory
-  must not touch it; the spike's generic case is a **regression guard only**, per
-  workplan/A6. If a generic factory looks necessary, that is a wall.
+  (`CGStruct.cpp:625-634`, `:647-658`) is consumer-side by design; the spike's
+  generic case is a **regression guard only** (A6). A generic factory is a wall.
 
-**Fallback if the ABI genuinely fails** (in preference order, all recorded rather
-than silently chosen):
+**Fallback, in preference order:** (1) layout as compiler-facing ABI metadata in
+the D15 section — costs the rebuild-avoidance win, preserves every visibility
+done condition, and is the design record's own named alternative (F1 / design A1);
+(2) a library-emitted `size`+`dtor` accessor pair — strictly worse, only if the
+wall is specifically in the *call* form; (3) stop and escalate.
 
-1. **Layout as compiler-facing ABI metadata** — the `.bmod` carries field
-   count/kinds in the D15 metadata section (never source-nameable), and the
-   consumer keeps allocating. Costs the rebuild-avoidance win but preserves every
-   *visibility* done condition (DC2–DC6, DC8). This is the design-record's own
-   named alternative (F1, design.md A1 "rejected") and is the fallback precisely
-   because it is already understood.
-2. **Library-emitted `size`+`dtor` accessor pair** (`StructName_size()`,
-   `StructName_dtor_ptr()`) — keeps allocation consumer-side but layout private.
-   Strictly worse than the factory (two calls, no init encapsulation) and only
-   worth it if the wall is specifically in the *call* form.
-3. **Stop and escalate.** If neither holds, the export model needs redesign and
-   the epic pauses — the workplan's own instruction.
+### b.7 The layout residue U1 does not remove [M7]
 
-### b.7 U1 exit criteria
+`genConstructExpression` is **not** the only consumer-side site that needs a
+foreign struct's layout. Query-row materialisation
+(`CGRuntime.cpp:1134-1145`) independently calls `getOrCreateStructType`,
+`dl.getTypeAllocSize(structType)` and `getOrGenStructDestructor(structDef, …)` to
+build one heap struct per result row. `@json` generation
+(`CGRuntime.cpp:1519-1651`) walks fields the same way.
 
-- A hand-wired `test_build/` lib+bin pair constructs, calls, and releases an
-  imported non-generic struct across a `.bmod` with **zero** consumer layout
-  knowledge, asserted by inspecting the consumer's `.ll`: no
-  `__blang_rc_alloc_dtor` for the foreign type, no `__Counter_dtor` definition,
-  `Counter_bump` present as `declare`.
-- ASan/`--leak-check` clean; `ctest` green.
-- A generic cross-module case still works, unchanged (regression guard).
-- Full gate list green in both build modes.
-- Spike write-up committed under the unit's speckit dir (evaluation.md evidence).
+So the factory alone does **not** make an imported struct fully opaque:
+**U5 cannot drop field layout from the `.bmod` until these paths are handled**
+(via the D15 metadata section, or by routing them through the same
+library-emitted-factory idea). Recorded here as an explicit **U1 → U5
+dependency** so U5 discovers it in its plan rather than in its implementation.
+
+### b.8 Blast-radius sweep owed before U4/U5 planning [M2]
+
+Before U4/U5 are planned, I will run and commit a **struct-literal-aware** sweep —
+not just field reach-ins — across `examples/`, `test_build/`, `test_files/` and
+`stdlib/`, counting: struct literals for types that become foreign; field
+accesses on imported types; and generated-function calls by name
+(`Todo_from_json`). `tools/check_no_field_reachins.sh` finds none of the literal
+forms today (it greps `.field` only), so the current exit-1 output understates the
+migration. The sweep's output sizes U5 and feeds U4's accessor design.
+
+### b.9 U1 exit criteria
+
+- A `test_build/` lib+bin pair constructs, calls and releases an imported
+  non-generic struct across a `.bmod` with zero consumer layout knowledge,
+  asserted on the consumer's `.ll`: no `__blang_rc_alloc_dtor` for the foreign
+  type, no `__Counter_dtor` definition, `Counter_bump` present as `declare`.
+- Bodyless-member rule enforced with `fail/sema` fixtures (both `fn` and `init`).
+- Reserved-`__`-name Sema check with a `fail/sema` fixture.
+- Fail-open paths produce located errors, each with a fixture.
+- ASan/`--leak-check` clean; `ctest` green; a generic cross-module case unchanged.
+- Full gate list green in **both** build modes, **quoted from CI** (Q6).
+- Spike write-up committed under `specs/029-construction-abi-factory/`.
 
 ---
 
 ## (c) Files and subsystems expected to change
 
-**U1 (this unit) — narrow by construction:**
+**U1:**
 
 | File | Change |
 |---|---|
-| `CGStruct.cpp` | `genConstructExpression`: foreign-struct branch calling the factory |
-| `CodeGen.cpp` | factory emission for non-generic structs with `init`; declaration step for imported methods, hung off `registerExternalTypes` (`:380-401`) — **separate from** the body-emitting loop at `:171-283` |
+| `QFunctionDefinition.cpp` | `ParseInit` accepts a bodyless `;` form (b.4a) |
+| `Sema.cpp` | bodyless-member-outside-interface error; reserved `__` name check; private-`init` construction error |
+| `CGStruct.cpp` | `genConstructExpression`: foreign branch → factory; reject foreign struct on the inline path; loud error instead of the 1-byte allocation; loud error for the `genMethodCall` nullptr |
+| `CodeGen.cpp` | factory emission for non-generic structs with `init`; bodyless-method declaration seam mirroring `:546-547`; declaration step for imported structs' methods |
 | `CodeGen.h` | declarations for the above |
-| `Type.h` | one `mFromInterface` bool on `StructDefinition` + accessors |
-| `qcc.cpp` | **set that flag only**, where `.bmod` modules are parsed — see the confirmation below |
-| `test_build/` | new lib+bin spike fixture + `run_build_tests.sh` assertions |
-| `specs/0NN-construction-abi-factory/` | spec/plan + spike write-up |
+| `Type.h` | `mFromInterface` bool + accessors on `StructDefinition` |
+| `qcc.cpp` | **stamp `mFromInterface` at `:398-400` only** — see the confirmation below |
+| `BmodEmitter.cpp` | hand-written record in the spike; emitter change is U2's |
+| `test_build/`, `test_files/fail/sema/` | fixtures |
+| `specs/029-construction-abi-factory/` | spec/plan + spike write-up |
+| `manifest.yaml` | speckit renumbering (below) |
 
-**Later units (declared for the reviewer's scope check, not touched in U1):**
-`BmodEmitter.{h,cpp}` (U2, U5), `BuildCache.cpp` (U2), `QImplBlock.cpp` (U3),
-`Sema.cpp` (U3 P9 enforcement, U5 field/literal visibility), `SQLGen.cpp` +
-`CGRuntime.cpp` `@json` generation (U5, D15 metadata), `stdlib/net.b`,
-`stdlib/fs.b`, `stdlib/collections.b` (U4), `examples/` (U4/U5),
-`test_files/fail/xmodule/` + `run_tests.sh` (U3), `tools/check_no_field_reachins.sh`
-(U4/U5), `docs/language_design.md` §"Modules and Imports" (lines 581-707, which
-currently documents `pub` on exactly four kinds and says nothing about members)
-and `CLAUDE.md` (Principle I, in the same PR as each behavior change).
+**Later units** (declared for scope checking, untouched in U1):
+`BmodEmitter.{h,cpp}` (U2, U5), `BuildCache.cpp` + `.github/workflows/ci.yml`
+(U2), `QImplBlock.cpp` (U3), `Sema.cpp` visibility (U3/U5), `SQLGen.cpp` +
+`CGRuntime.cpp` (U5, per b.7), `stdlib/*.b` (U4), `examples/` (U4/U5),
+`test_files/fail/xmodule/` + `run_tests.sh` (U3),
+`tools/check_no_field_reachins.sh` (U4/U5), `docs/language_design.md`
+§"Modules and Imports" (581-707) and `CLAUDE.md` (Principle I, same PR as each
+behavior change).
+
+**Speckit renumbering [Q5, manager APPROVED]:** `specs/` already runs to
+`028-integration`, so the workplan's `002`–`006` names collide. U1–U5 use
+**`029-construction-abi-factory`, `030-bmod-true-interface`,
+`031-pub-members-and-export-enforcement`, `032-stdlib-opaque-api`,
+`033-private-fields-opaque-bmod`**, and `manifest.yaml` is updated in the same
+commit as this revision.
 
 ### Explicit confirmation — the flat-merge resolution path
 
-**I will not modify the flat-merge resolution path in `qcc.cpp`.** Concretely, the
-injection block at **`qcc.cpp:330-381`** — the loop that walks `bmodMap` and calls
-`gScope->addSymbol()` / `gScope->addType()` for every public function, struct,
-enum and protocol, with the `// This implements the flat merge.` comment at
-`:333` — is **Epic B's seam and stays exactly as it is**. Its symbol-injection
-semantics, its ordering, and its `bmodMap.clear()` at `:380` will not change.
-
-The one thing U1 needs from `qcc.cpp` is to *stamp the provenance flag* on
-structs parsed from a `.bmod`. I will do that at the **`.bmod` parse** site
-(Phase 1, around `qcc.cpp:221-270`), **not** inside the injection loop, so the
-merge code is untouched. If review judges even that to be too close to the seam,
-the flag can instead be set inside `Module::Parse` for `.bmod` inputs, or derived
-in `registerExternalTypes` from the fact that the struct arrived through that
-call — I will take the reviewer's preference rather than defend the cheapest
-option. Everything else U1 needs lives in `CodeGen`.
+**I will not modify the flat-merge resolution path in `qcc.cpp`.** The injection
+block at **`qcc.cpp:330-381`** — the loop walking `bmodMap` and calling
+`gScope->addSymbol()` / `gScope->addType()`, with the
+`// This implements the flat merge.` comment at `:333` and `bmodMap.clear()` at
+`:380` — is **Epic B's seam and stays exactly as it is**. U1's only `qcc.cpp`
+change is stamping `mFromInterface` inside the pre-existing `if (isBmod)` block at
+**`:398-400`**, alongside `mod->setExtern(true)` — a different block, after the
+merge, per B5.
 
 ---
 
-## (d) Open questions — escalating rather than guessing
+## (d) Open questions
 
-**Q1 (BLOCKING U1) — is `_new` a safe symbol suffix?**
-`StructName_new` collides if a user can define `fn new(...)` in an `impl` block
-(the method mangling is `StructName_new` too, `CodeGen.cpp:188-190`). I will
-*verify* this in the spike rather than assume; if it collides I will use the
-reserved `__StructName_new` family. Raising it because the answer changes the
-`.bmod` spelling that U2 then has to emit, and I would rather not churn it.
+**Resolved by manager ruling — recorded, not re-escalated:** Q1 (reserved `__`
+symbol + Sema check), Q2 (struct attribute, settled in U1), Q3 (record private
+`init`), Q5 (029–033 + manifest), Q6 (CI is the authority), Q7 (`build-system` CI
+job in U2, with the listed prerequisites), Q8 (Known Issues; DC7 bumps the real
+constant).
 
-**Q2 (BLOCKING U2, surfaced by U1) — how should the factory appear in the
-`.bmod`: a free `pub fn`, or a member of the struct?**
-The free-function form costs zero new consumer codegen (it rides
-`qcc.cpp:350-351`). The member form is cleaner for U3's `pub init` filtering. I
-propose free-function for U1's spike and defer the decision to U2's spec, but
-flagging it now because it is a `.bmod` **format** commitment and format changes
-are what the U2 cache-version salt exists to protect.
+**Q4 — open question #1 in `overview.md`** (cross-module spelling of generated
+data-contract functions, e.g. `Todo_from_json`): no action, already owned by U5.
+Noted only that `examples/todo_app/main.b:160` couples it to a field reach-in, so
+U4's migration and U5's answer touch the same line.
 
-**Q3 (non-blocking, needs a ruling before U2) — what happens when an imported
-struct's `init` is private?**
-Per D9/the design record a `pub struct` with a private `init` is
-"constructible only inside its module." So the library should emit **no factory**
-for it, and a consumer's `Counter(5)` must be a *located error*, not a link
-failure. I will implement that as the intent, but the diagnostic wording and
-whether the `.bmod` records "has a private init" (to tell "no such constructor"
-from "constructor is private" — materially better for an LLM consumer per
-Principle VI) is a design choice I would like reviewed rather than invented.
-
-**Q4 (non-blocking now, blocks U5) — open question #1 from `overview.md`, the
-cross-module spelling of generated data-contract functions
-(`Todo_from_json`).** Already recorded as U5-owned. Noting only that
-`examples/todo_app/main.b:160` couples it to a field reach-in, so U4's migration
-of `req.body` and U5's answer to Q4 touch the same line — they should be
-sequenced deliberately, not merged by accident.
-
-**Q5 (process, for the manager) — speckit directory numbering.**
-The workplan names U1's speckit dir `002-construction-abi-factory`, but
-`specs/002-diagnostics-engine` already exists and `specs/` runs through
-`028-integration`. I propose `029-construction-abi-factory` … `033-private-fields-opaque-bmod`
-and will not create directories until this is confirmed, to avoid a rename later.
-
-**Q7 (BLOCKING the epic done condition, for the manager) — CI does not run
-`test_build/run_build_tests.sh`; see F-A in §0.4.** Done-conditions 1, 5 and 6 are
-all backed by that suite. I propose U2 adds a `build-system` CI job. This is a
-scope addition to U2 and I want it approved rather than assumed.
-
-**Q8 (for the reviewer) — `BuildCache::computeKey` hashes content with no
-filenames or separators (F-D).** In scope for this epic I will add only the
-format-version salt REQ-009 asks for. Confirm you want the
-filename/separator weakness left alone (I believe it should be filed, not fixed
-here, to keep U2 reviewable).
-
-**Q6 (environment, for the human) — see §0.1.** The toolchain is hand-assembled
-and unversioned; CI must remain the authority for gate results. If the host is
-meant to be provisioned, that should be fixed at the source.
+**Still open, U1 will answer with evidence rather than argument:** whether any
+path needs a payload-carrying enum's layout beyond the variant list the `.bmod`
+already ships (W1′). If one does, that is a wall and I stop.
 
 ---
 
@@ -527,10 +566,10 @@ meant to be provisioned, that should be fixed at the source.
 
 | Requirement | Status |
 |---|---|
-| VI — design artifact before implementation | this document; **no code written** |
-| VI — security dimension mandatory for U1 | allocation ABI + dtor function pointers analysed in b.2/b.4; factory installs the dtor in the library, narrowing (not widening) consumer trust in foreign layout |
-| III — reject, don't coerce | the silent `nullptr` at `CGStruct.cpp:2014` is called out as a defect to fix, not to inherit |
-| II — tests | U1 exit criteria name the fixture and the IR assertions (b.7) |
-| IV — ARC/runtime verified | no runtime change; `--leak-check` in U1's exit criteria |
-| I — docs | `docs/language_design.md:581-707` + `CLAUDE.md` listed in (c); pre-existing count drift flagged in §0.2 |
-| Audit pattern | handing to `critic` now; BLOCKER findings addressed before any implementation |
+| VI — design artifact before implementation | this document, rev 2; no code written before it |
+| VI — security dimension mandatory for U1 | allocation ABI and dtor function pointers analysed (b.2, b.4); the factory installs the dtor in the *library*, narrowing consumer trust in foreign layout; reserved-name check prevents symbol capture of the `__` family |
+| III — reject, don't coerce | three fail-open paths converted to located errors (b.4, b.4a); bodyless-member hole closed |
+| II — tests | exit criteria name every fixture (b.9) |
+| IV — ARC/runtime verified | no runtime change; `--leak-check` in exit criteria |
+| I — docs | `docs/language_design.md:581-707` + `CLAUDE.md` listed; pre-existing count drift flagged (§0.2) |
+| Audit pattern | rev 2 addresses all `critic` B/M/N findings; PR carries per-dimension verdicts |
