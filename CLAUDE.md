@@ -627,7 +627,7 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
   - `modules-v2-exports` (`docs/epics/modules-v2-exports/`) — status:
-    **ready** (review passed 2026-08-05). Epic A of the modules-v2 split: opaque exports — cross-module
+    **launched** (run `370bedc3-7619-4e21-bdcd-af18b007c893`, 2026-08-05). Epic A of the modules-v2 split: opaque exports — cross-module
     construction via library-emitted factory, `pub` methods/`init`
     (private-by-default), always-private fields, `.bmod` as true interface
     (signatures + protocol-conformance records + compiler-facing `table`/`@json`
