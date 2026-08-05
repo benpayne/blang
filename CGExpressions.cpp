@@ -1299,7 +1299,6 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 			// segfault for `shared`/`sync` receivers.
 			bool isStructArg = false;
 			std::string structTypeName;
-			VariableDefinition *structVarDef = nullptr;
 			if ( auto *ve = dynamic_cast<VariableExpression*>( argExpr ) )
 			{
 				if ( ve->mVariable && ve->mVariable->getVariableType() )
@@ -1315,7 +1314,6 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 						if ( sIt != mStructDefMap.end() )
 						{
 							isStructArg = true;
-							structVarDef = ve->mVariable;
 						}
 					}
 				}

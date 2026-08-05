@@ -24,6 +24,12 @@ check "mathlib builds (lib)" "[ -f mathlib/libmathlib.a ] && [ -f mathlib/mathli
 check "bmod ships generic fn body" "grep -q 'pub fn largest<T>(T a, T b) -> T {' mathlib/mathlib.bmod"
 check "bmod ships generic struct impl" "grep -q 'impl Pair {' mathlib/mathlib.bmod"
 check "bmod keeps non-generics signature-only" "grep -q 'pub fn add(int a, int b) -> int;' mathlib/mathlib.bmod"
+# A GENERIC struct's conformance record (M-1). Without this the "+ conformances"
+# claim on the golden check below guarded a file containing none.
+check "bmod ships a generic struct's conformance record" \
+	"grep -q '^impl Summable for Pair {' mathlib/mathlib.bmod"
+check "generic conformance names a protocol declared earlier in the file" \
+	"[ \"\$(grep -n 'pub protocol Summable' mathlib/mathlib.bmod | cut -d: -f1)\" -lt \"\$(grep -n 'impl Summable for Pair' mathlib/mathlib.bmod | cut -d: -f1)\" ]"
 
 ( cd myapp && rm -f myapp && "$BCC" build > /dev/null 2>&1 )
 check "myapp builds (bin)" "[ -x myapp/myapp ]"
@@ -199,7 +205,7 @@ check "printlib.bmod matches its golden" \
 	"diff -u \"$GOLDEN_DIR/printlib.bmod\" printlib/printlib.bmod"
 check "counterlib.bmod matches its golden" \
 	"diff -u \"$GOLDEN_DIR/counterlib.bmod\" counterlib/counterlib.bmod"
-check "mathlib.bmod matches its golden (generic bodies + conformances)" \
+check "mathlib.bmod matches its golden (generic bodies + generic conformance record)" \
 	"diff -u \"$GOLDEN_DIR/mathlib.bmod\" mathlib/mathlib.bmod"
 
 ( cd printapp && rm -f printapp && "$BCC" build > /dev/null 2>&1 )
@@ -236,6 +242,30 @@ check "consumer REJECTS an imported Printable with no conformance record" \
 check "the rejection is a located diagnostic naming the conformance" \
 	"echo \"\$NEG_OUT\" | grep -Eq '^[^:]+\.b:[0-9]+:[0-9]+: error: .*not printable.*impl Printable for Point'"
 rm -rf "$NTMP"
+
+# A conformance record naming a USER-DEFINED protocol. Every other fixture
+# conforms only to `Printable` — a builtin pre-registered in every scope, so its
+# record resolved wherever it appeared. A user-defined protocol does not, and
+# emitting structs before protocols made every such record a forward reference
+# that the consumer's parser rejected ("Unknown protocol 'Sizeable' in impl
+# block") -- an interface no consumer could read, the same defect class as the
+# `table pub struct` break. Without this fixture the whole class is untested.
+( cd sizelib && rm -f libsizelib.a sizelib.bmod && "$BCC" build > /dev/null 2>&1 )
+check "sizelib builds (user-defined pub protocol)" \
+	"[ -f sizelib/libsizelib.a ] && [ -f sizelib/sizelib.bmod ]"
+check "protocol is declared BEFORE the conformance record that names it" \
+	"[ \"\$(grep -n 'pub protocol Sizeable' sizelib/sizelib.bmod | cut -d: -f1)\" -lt \"\$(grep -n 'impl Sizeable for Box' sizelib/sizelib.bmod | cut -d: -f1)\" ]"
+check "no record is emitted for a NON-exported protocol" \
+	"! grep -q 'impl Hidden for Box' sizelib/sizelib.bmod"
+check "the .bmod re-parses standalone" \
+	"\"\$QCC\" --parse-only sizelib/sizelib.bmod > /dev/null 2>&1"
+
+( cd sizeapp && rm -f sizeapp && "$BCC" build > /dev/null 2>&1 )
+check "sizeapp builds against a user-defined-protocol interface" "[ -x sizeapp/sizeapp ]"
+SOUT=$(cd sizeapp && ./sizeapp)
+SEXPECTED='size = 11
+secret = 0'
+check "sizeapp output exact" "[ \"\$SOUT\" = \"\$SEXPECTED\" ]"
 
 # Prefix-aware factory mangling (known-issues KI-5 action 2). The factory symbol
 # carries the defining module's codegen prefix, mirroring method mangling, so two

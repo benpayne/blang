@@ -150,6 +150,20 @@ migration target (review F1/F8 sequencing).
   change. Existing field access keeps working until U5 flips the rule — this
   unit ships the *target* surface and migrates `examples/` onto it ahead of
   the flip.
+- **Added after U2's review (manager ruling 2026-08-05)**: U4 also owns
+  **KI-8 and KI-10** — the print/interpolation renderer defects. They are one
+  defect at two sites (*which expressions can this renderer actually render?*)
+  and U4 owns the question they answer: once fields are private and the stdlib
+  exposes accessors, a method call and `Printable` are the only ways to read data
+  out of an opaque type, and these bugs break exactly those spellings.
+  Two indirect exposures make this load-bearing: (a) DC8 pushes authors from
+  `p.x` toward `"{obj.field()}"`, which silently prints its own source text while
+  an exit-code-only integration script still passes; (b) `CLAUDE.md` claims
+  Printable structs work in `{}` placeholders, which is false inside interpolated
+  literals and false for `self` — the exact shape of KI-9, which survived for
+  years for that reason. **Hard constraint: fixed BEFORE U5's corpus migration**,
+  or the migration bakes the defect into every example and locks the wrong output
+  into the goldens.
 - **Done condition**: design artifact committed under the unit's speckit dir
   and marked approved in its PR; new accessor surface implemented; `Map`/
   `Set` `pub init` shipped with migrated call sites and goldens green; all

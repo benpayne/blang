@@ -213,7 +213,8 @@ void BmodEmitter::emitFunction( FunctionDefinition *func, ostream &out )
 	out << ";" << endl;
 }
 
-void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
+void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out,
+	const std::set<std::string> &exportedProtocols )
 {
 	if ( !structDef->isPublic() )
 		return;
@@ -272,7 +273,7 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 		// CONSTRAINT checking (`sort<T: Comparable>` with a foreign T) as one of
 		// the things that needs them, so returning early here would leave exactly
 		// that case unserved.
-		emitConformances( structDef, out );
+		emitConformances( structDef, out, exportedProtocols );
 		return;
 	}
 
@@ -293,10 +294,11 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out )
 	if ( !structDef->getMethods().empty() )
 		emitStructInterface( structDef, out );
 
-	emitConformances( structDef, out );
+	emitConformances( structDef, out, exportedProtocols );
 }
 
-void BmodEmitter::emitConformances( StructDefinition *structDef, ostream &out )
+void BmodEmitter::emitConformances( StructDefinition *structDef, ostream &out,
+	const std::set<std::string> &exportedProtocols )
 {
 	// Protocol conformance records (design record D16). Emitted as EMPTY impl
 	// blocks: the method signatures are already in the struct's interface block
@@ -310,8 +312,17 @@ void BmodEmitter::emitConformances( StructDefinition *structDef, ostream &out )
 	// Printable on an imported type, and a foreign type cannot satisfy a generic
 	// constraint.
 	for ( const auto &proto : structDef->getConformedProtocols() )
+	{
+		// Only emit a record a consumer can actually resolve. A non-`pub`
+		// protocol is not emitted into this .bmod, so a record naming it would
+		// dangle and take the whole interface down with it. (Rejecting that
+		// combination at the LIBRARY build is P9 enforcement, which U3 owns —
+		// until then U2's job is simply not to emit an unreadable file.)
+		if ( exportedProtocols.count( proto ) == 0 )
+			continue;
 		out << "impl " << proto << " for " << structDef->getName() << " {" << endl
 		    << "}" << endl;
+	}
 }
 
 void BmodEmitter::emitStructInterface( StructDefinition *structDef, ostream &out )
@@ -473,13 +484,46 @@ void BmodEmitter::emit( const vector<Module*> &modules, ostream &out )
 	out << "// blang-bmod-format: " << kFormatVersion << endl;
 	out << endl;
 
+	// Names a consumer of this file will be able to resolve: the protocols this
+	// .bmod declares, plus the builtins that are in scope everywhere.
+	std::set<std::string> exportedProtocols;
+	exportedProtocols.insert( "Printable" );
+	for ( auto *mod : modules )
+		for ( const auto &sp : mod->getProtocolList() )
+		{
+			ProtocolDefinition *p = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
+			if ( p->isPublic() )
+				exportedProtocols.insert( p->getName() );
+		}
+
 	for ( auto *mod : modules )
 	{
+		// PROTOCOLS FIRST. A struct's conformance record (`impl P for S { }`)
+		// names a protocol, and the impl-block parser resolves that name at the
+		// point of use — so emitting protocols after structs makes every record a
+		// forward reference and the whole interface unparseable:
+		//
+		//     t.bmod:11:23: error: Unknown protocol 'Sizeable' in impl block
+		//
+		// It went unnoticed at first because the only conformance in the corpus
+		// was to `Printable`, the one builtin protocol pre-registered in every
+		// scope. Any user-defined `pub protocol` broke its library's interface.
+		//
+		// The "a record must follow its struct's interface block" constraint
+		// (conformance checking reads the struct's accumulated methods) concerns
+		// the STRUCT, not the protocol, so both orderings satisfy it.
+		for ( const auto &sp : mod->getProtocolList() )
+		{
+			ProtocolDefinition *protoDef = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
+			emitProtocol( protoDef, out );
+			out << endl;
+		}
+
 		// Emit structs
 		for ( const auto &sp : mod->getStructList() )
 		{
 			StructDefinition *structDef = const_cast<StructDefinition*>( (const StructDefinition*)sp );
-			emitStruct( structDef, out );
+			emitStruct( structDef, out, exportedProtocols );
 			out << endl;
 		}
 
@@ -488,14 +532,6 @@ void BmodEmitter::emit( const vector<Module*> &modules, ostream &out )
 		{
 			EnumDefinition *enumDef = const_cast<EnumDefinition*>( (const EnumDefinition*)sp );
 			emitEnum( enumDef, out );
-			out << endl;
-		}
-
-		// Emit protocols
-		for ( const auto &sp : mod->getProtocolList() )
-		{
-			ProtocolDefinition *protoDef = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
-			emitProtocol( protoDef, out );
 			out << endl;
 		}
 

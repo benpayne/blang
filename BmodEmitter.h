@@ -2,6 +2,7 @@
 #define BLANG_BMOD_EMITTER_H_
 
 #include "BmodFormat.h"
+#include <set>
 #include <string>
 #include <vector>
 #include <ostream>
@@ -24,7 +25,8 @@ public:
 
 private:
 	static void emitFunction( FunctionDefinition *func, std::ostream &out );
-	static void emitStruct( StructDefinition *structDef, std::ostream &out );
+	static void emitStruct( StructDefinition *structDef, std::ostream &out,
+		const std::set<std::string> &exportedProtocols );
 
 	// Non-generic structs ship an `impl` block of bodyless init/method
 	// SIGNATURES — the interface that makes an imported type constructible and
@@ -35,7 +37,13 @@ private:
 
 	// Protocol conformance records (`impl Protocol for Type { }`, D16), emitted
 	// after the interface block so the conformance check sees the methods.
-	static void emitConformances( StructDefinition *structDef, std::ostream &out );
+	//
+	// `exportedProtocols` is the set of protocol names a consumer will be able to
+	// resolve from this file: the protocols this .bmod itself declares, plus the
+	// always-in-scope builtins. A record naming anything else would be a dangling
+	// reference that makes the whole interface unparseable, so it is skipped.
+	static void emitConformances( StructDefinition *structDef, std::ostream &out,
+		const std::set<std::string> &exportedProtocols );
 	static void emitEnum( EnumDefinition *enumDef, std::ostream &out );
 	static void emitProtocol( ProtocolDefinition *protoDef, std::ostream &out );
 	static void emitAnnotations( const std::vector<AnnotationNode> &annotations, std::ostream &out );

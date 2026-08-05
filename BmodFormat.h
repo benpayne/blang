@@ -21,6 +21,15 @@
 //
 // Later units in this epic each bump it again: U3 when `pub` filters impl
 // members, U5 when field layout is dropped in favour of D15 metadata.
+//
+// NOT every emission fix is a format change. Within U2, protocol declarations
+// were reordered ahead of structs so a conformance record naming a user-defined
+// protocol is no longer a forward reference. That reorder does not change the
+// emitted shape for any case that previously WORKED — files that parsed before
+// still parse, byte-for-byte, and the only files whose bytes moved are ones no
+// consumer could read at all. The version therefore stays at 2 rather than
+// moving to 3 mid-PR (manager ruling, 2026-08-05). Bump when the shape a working
+// consumer sees changes; not when a broken emission is repaired.
 namespace BlangBmod
 {
 	static const int kFormatVersion = 2;
