@@ -100,6 +100,14 @@ jobs:
         run: |
           cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
           cmake --build build -j"$(nproc)"
+      - name: Provision ASan-instrumented runtime (build-asan) for --leak-check
+        # modules-v2-graph U2: test_codegen.sh --leak-check hard-fails under CI when
+        # build-asan is absent (fail-not-skip, so an unrun UAF check can't report
+        # green). This job runs --leak-check below, so it must provision the
+        # instrumented archives — the same two lines the sanitizers job uses.
+        run: |
+          cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build-asan -j"$(nproc)"
       - name: Codegen suite at -O2 (correctness under optimization)
         run: OPT_LEVEL=2 ./test_codegen.sh
       - name: ARC survives optimization (--leak-check at -O2)
@@ -131,6 +139,13 @@ jobs:
         run: |
           cmake -S . -B build -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
           cmake --build build -j"$(nproc)"
+      - name: Provision ASan-instrumented runtime (build-asan) for --leak-check
+        # modules-v2-graph U2: --leak-check is fail-not-skip under CI without
+        # build-asan; this job runs it below, so provision the instrumented
+        # archives (same two lines as the sanitizers job).
+        run: |
+          cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build-asan -j"$(nproc)"
       - name: Codegen suite with -g (correctness with debug info)
         run: DEBUG_INFO=1 ./test_codegen.sh
       - name: ARC survives debug info (--leak-check with -g)

@@ -127,6 +127,22 @@ if [ "$LEAK_CHECK" -eq 1 ] && [ -f "${ASAN_BUILD_DIR}/libblang_runtime.a" ]; the
 		fi
 	done
 	echo "--leak-check: using ASan-instrumented runtime archives from ${ASAN_BUILD_DIR}"
+elif [ "$LEAK_CHECK" -eq 1 ]; then
+	# The ASan-instrumented archives are absent. Linking the PLAIN archives with
+	# -fsanitize only intercepts malloc/free, so a use-after-free READ inside
+	# uninstrumented runtime code (e.g. __blang_rc_release) goes undetected — the
+	# blind spot the U2 (modules-v2-graph) string-ARC regression lock exists to
+	# guard. Under CI a silent fallback would report green over an unrun check, so
+	# it is a HARD FAILURE (KI-5 action 3 precedent, test_build/run_build_tests.sh).
+	# Locally it degrades to a loud warning so a dev without build-asan can still run.
+	if [ "${CI:-}" = "true" ]; then
+		echo -e "${RED}Error: --leak-check requires the ASan-instrumented runtime archives, absent at ${ASAN_BUILD_DIR}${NC}"
+		echo "  CI must provision them before the leak-check leg:"
+		echo "    cmake -S . -B build-asan -DBLANG_SANITIZE=address,undefined"
+		echo "    cmake --build build-asan --parallel"
+		exit 1
+	fi
+	echo -e "${YELLOW}--leak-check WARNING: ASan-instrumented archives absent at ${ASAN_BUILD_DIR}; using plain archives (UAF reads inside runtime code will NOT be trapped). Build build-asan for full coverage.${NC}"
 fi
 
 if [ "$VALGRIND" -eq 1 ]; then
@@ -320,6 +336,21 @@ run_one_test() {
 			need_combine=1
 		fi
 	fi
+	# nsarc.b (U2, modules-v2-graph): the module-prefix string-ARC regression-lock
+	# module. Combined as a NAMESPACED module (kept out of every promotion list) so
+	# it gets a module prefix — the config the retired qcc.cpp:303-307 rationale
+	# claimed double-freed. Content-gated on `import nsarc;`. The `@nsarc__`-mangled
+	# internal callee is asserted below (need_nsarc) to guarantee the prefixed
+	# config, and the binary is exercised under --leak-check against the
+	# ASan-instrumented runtime.
+	local need_nsarc=0
+	if grep -qE '^[[:space:]]*import[[:space:]]+nsarc[[:space:]]*;' "${test_file}" 2>/dev/null; then
+		if [ -f "${SCRIPT_DIR}/test_files/nsarc.b" ]; then
+			stdlib_files+=("${SCRIPT_DIR}/test_files/nsarc.b")
+			need_combine=1
+			need_nsarc=1
+		fi
+	fi
 	# Native stdlib modules (U4): content-gated on `import <m>;`, mirroring bcc's
 	# kKnownOrder resolution — combined only when the test imports the module.
 	local _mod _modfile
@@ -372,6 +403,18 @@ run_one_test() {
 		echo "--- IR for ${base_name} ---"
 		cat "${ir_file}"
 		echo ""
+	fi
+
+	# U2 (modules-v2-graph) teeth: the nsarc regression-lock fixture MUST run the
+	# PREFIXED namespace config. If `@nsarc__`-mangled internal callees are absent,
+	# the module was taken through the promoted (prefix-free) path — the wrong
+	# config — and the test would pass vacuously. Fail loudly instead.
+	if [ "${need_nsarc:-0}" -eq 1 ]; then
+		if ! grep -q '@nsarc__' "${ir_file}"; then
+			echo -e "  ${RED}FAIL${NC}  ${test_file}  (nsarc not module-prefixed — expected @nsarc__ callees in IR; wrong config for the string-ARC regression lock)"
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+			return 1
+		fi
 	fi
 
 	# Step 2: Compile IR to object file
