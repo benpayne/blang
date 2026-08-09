@@ -1,6 +1,7 @@
 build/
 build-parse/
 build-nollvm/
+build-noLLVM/
 build-asan/
 *.ll
 docs/epics/*/launch-payload.json

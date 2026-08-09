@@ -727,6 +727,19 @@ detection logic — clean up in the same pass).
 
 ## KI-22 — `for x in <generic-struct-method-call>()` mis-resolves the loop-var element type
 
+**Status: RESOLVED (U5b, run `aeba092e`, commit `22ee5f7`).** Fixed as its own commit
+within the U5 phase per the product-owner ruling (OQ#2). Two coupled fixes in
+`CGStatements::genForInStatement` (+ a `CGTypes::methodReturnElementType` helper): (1)
+the for-in element-type inference now handles the `MethodCallExpression` case, resolving
+the method's `Array<K>` return element type through the receiver's type-argument
+substitution (`K -> string` for a `Map<string,int>`); (2) the iterable, when it is a
+fresh owning array temp (method/call result), is untracked before the loop body so the
+body's block-scope cleanup cannot release it mid-loop (the actual use-after-free), and is
+released once after the loop instead. `for k in m.keys()` now needs no
+intermediate-typed-var workaround. Fixture `codegen_forin_generic_method.b` (+golden,
+`--leak-check` clean). The scoped fix stayed within the described `methodReturnTypeName`
+family — the escape hatch was not needed. Original report retained below.
+
 **Filed**: U4-remainder (run `aeba092e`), discovered while migrating `examples/wordfreq`
 onto the `Map.keys()` accessor. **Owner: U5** (raise for a ruling — a codegen change
 outside U4's file set). **BLOCKING for the "just add `()`" migration promise on
