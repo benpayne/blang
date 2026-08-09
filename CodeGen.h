@@ -250,6 +250,19 @@ private:
 	// String interpolation codegen
 	llvm::Value *genStringInterpolation( StringInterpolation *interp );
 
+	// The struct a receiver/argument expression denotes, resolving the implicit
+	// `self` parameter (whose declared type name is the literal "self"). The
+	// single place that answers "which struct is this?" for a receiver —
+	// see the comment on the definition (known-issues KI-8, KI-10).
+	StructDefinition *receiverStructDef( Expression *obj );
+
+	// Interpolation parts that denote a struct must render through Printable,
+	// not be handed to the string runtime as a BlangString (known-issues KI-8).
+	StructDefinition *structDefForInterpolationPart( Expression *part );
+	llvm::Function *lookupToStringFn( StructDefinition *sd );
+	llvm::Value *genPrintableToString( StructDefinition *sd, Expression *node,
+		llvm::Value *selfPtr );
+
 	// Pipeline expression codegen
 	llvm::Value *genPipelineExpression( PipelineExpression *pipeline );
 

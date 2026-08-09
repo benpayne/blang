@@ -2126,6 +2126,43 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 		}
 	}
 
+	// Field receiver: `h.inner.num()` and `self.inner.num()`. There was no branch
+	// for this at all, so structDef stayed null and genMethodCall returned
+	// nullptr — the call was DROPPED ON THE FLOOR with no diagnostic. A method
+	// whose body was `return self.inner.describe();` compiled to `ret ptr null`,
+	// and `println("{}", h.inner.num())` printed nothing. Composition — an object
+	// delegating to a field — is exactly the shape the opaque-accessor API
+	// pushes code towards, so this silently broke the idiom the epic promotes.
+	if ( structDef == nullptr )
+	{
+		if ( auto *fa = dynamic_cast<FieldAccessExpression*>( (Expression*)expr->mObject ) )
+		{
+			structDef = receiverStructDef( fa );
+			if ( structDef != nullptr )
+			{
+				structName = structDef->getName();
+
+				// A generic-instance field (Box<int> inner) dispatches to the
+				// monomorphized definition, mirroring the variable branch above.
+				Type *fieldType = getFieldType( fa );
+				if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
+				{
+					std::vector<SmartPtr<Type>> typeArgs;
+					for ( int i = 0; i < fieldType->getNumTypeParams(); i++ )
+						typeArgs.push_back( fieldType->getTypeParam( i ) );
+					string mangled = mangleGenericName(
+						fieldType->getName(), typeArgs );
+					auto defIt = mStructDefMap.find( mangled );
+					if ( defIt != mStructDefMap.end() && defIt->second != nullptr )
+					{
+						structDef = defIt->second;
+						structName = mangled;
+					}
+				}
+			}
+		}
+	}
+
 	// If structDef is still null, try to resolve from expression's return type
 	// (e.g., CallExpression receiver: info(path).exists())
 	if ( structDef == nullptr )

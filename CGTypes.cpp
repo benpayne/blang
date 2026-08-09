@@ -1198,13 +1198,74 @@ std::string CodeGen::callReturnTypeName( CallExpression *call )
 	return resolvedTypeName( rt );
 }
 
+// The struct a RECEIVER expression denotes.
+//
+// The implicit `self` parameter's declared type name is the literal string
+// "self" — it does not name the enclosing struct — so every predicate that
+// resolves a receiver by looking its declared TYPE NAME up in mStructDefMap
+// silently misses on a self receiver and reports "not a struct". That single
+// fact produced two separate silent wrong answers (known-issues KI-10: `self`
+// as a print argument reached the string runtime as a raw struct pointer;
+// KI-8(b): `return self.describe()` was not recognised as a string return, so
+// the returned string was released before it was returned). Resolving it in one
+// place is what stops a third: mSelfStructMap holds the binding the parameter
+// actually carries, including the definition a monomorphized generic method is
+// being generated for.
+StructDefinition *CodeGen::receiverStructDef( Expression *obj )
+{
+	if ( obj == nullptr )
+		return nullptr;
+
+	std::string typeName;
+	if ( auto *ve = dynamic_cast<VariableExpression*>( obj ) )
+	{
+		auto selfIt = mSelfStructMap.find( ve->getVariable() );
+		if ( selfIt != mSelfStructMap.end() && selfIt->second != nullptr )
+			return selfIt->second;
+		if ( ve->getVariable() != nullptr &&
+			 ve->getVariable()->getVariableType() != nullptr )
+			typeName = ve->getVariable()->getVariableType()->getName();
+	}
+	else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( obj ) )
+	{
+		// getFieldTypeName, not getResolvedType: Sema records only CONCRETE
+		// field types and leaves a SELF-based access unannotated, so
+		// `self.inner.describe()` and `"{self.inner}"` would otherwise resolve
+		// to nothing — the same self-shaped hole one level down.
+		typeName = getFieldTypeName( fa );
+	}
+	if ( typeName.empty() )
+	{
+		if ( Type *rt = obj->getResolvedType() )
+			typeName = rt->getName();
+	}
+	if ( typeName.empty() )
+		return nullptr;
+
+	// A generic parameter (T) resolves through the active monomorphization
+	// substitution before it can name a struct.
+	auto subIt = mTypeSubstitution.find( typeName );
+	if ( subIt != mTypeSubstitution.end() && subIt->second != nullptr )
+		typeName = subIt->second->getName();
+
+	// isUserStructType, not a bare map lookup: it is the single place that
+	// excludes the builtin names a struct map may also carry.
+	if ( !isUserStructType( typeName ) )
+		return nullptr;
+	auto it = mStructDefMap.find( typeName );
+	return ( it != mStructDefMap.end() ) ? it->second : nullptr;
+}
+
 std::string CodeGen::methodReturnTypeName( MethodCallExpression *mc )
 {
 	if ( mc == nullptr )
 		return "";
 
 	// The object's declared/resolved type carries the instance's type args
-	// (e.g. Map<string, Array<int>>).
+	// (e.g. Map<string, Array<int>>). It is absent for a `self` receiver, whose
+	// declared type is the placeholder "self" and carries no type arguments —
+	// there the generic mapping below is skipped and the active substitution
+	// (applied by resolvedTypeName) does the work instead.
 	Type *objType = nullptr;
 	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)mc->mObject ) )
 	{
@@ -1213,14 +1274,12 @@ std::string CodeGen::methodReturnTypeName( MethodCallExpression *mc )
 	}
 	if ( objType == nullptr )
 		objType = ( (Expression*)mc->mObject )->getResolvedType();
-	if ( objType == nullptr )
-		return "";
 
-	// Find the GENERIC (base-name) struct definition and the method.
-	auto sIt = mStructDefMap.find( objType->getName() );
-	if ( sIt == mStructDefMap.end() || sIt->second == nullptr )
+	// Find the GENERIC (base-name) struct definition and the method. Routed
+	// through receiverStructDef so a `self` receiver resolves at all.
+	StructDefinition *sd = receiverStructDef( (Expression*)mc->mObject );
+	if ( sd == nullptr )
 		return "";
-	StructDefinition *sd = sIt->second;
 
 	FunctionDefinition *methodDef = nullptr;
 	for ( auto &m : sd->mMethods )
@@ -1239,7 +1298,7 @@ std::string CodeGen::methodReturnTypeName( MethodCallExpression *mc )
 	// Map the struct's generic params through the object's type arguments:
 	// Map<K,V>.get declared V, object Map<string,int> -> "int".
 	const auto &gps = sd->getGenericParams();
-	for ( size_t i = 0; i < gps.size() &&
+	for ( size_t i = 0; objType != nullptr && i < gps.size() &&
 		  (int)i < objType->getNumTypeParams(); i++ )
 	{
 		if ( gps[i].mName == name )

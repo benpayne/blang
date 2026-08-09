@@ -1,5 +1,6 @@
 #include <assert.h>
 
+#include <cctype>
 #include <iostream>
 #include "FileLexer.h"
 #include "Type.h"
@@ -1105,28 +1106,95 @@ StringInterpolation *StringInterpolation::Parse( Lexer &l, Scope *scope, const s
 			break;
 		}
 
-		// Extract variable name
+		// Extract the placeholder text: a variable name, or a dotted field path
+		// such as `self.count` or `req.path`.
 		string varName = rawString.substr( braceStart + 1, braceEnd - braceStart - 1 );
 
-		// Look up variable in scope
-		SmartPtr<Symbol> sym = scope->findSymbol( varName );
-		if ( sym != nullptr )
+		// Split on '.' so a field path becomes a FieldAccessExpression chain.
+		// Before this, ANY placeholder that was not a bare variable name was
+		// silently copied to the output as literal text — so a program printed
+		// its own source ("{self.x}") with no diagnostic. The rule now is:
+		// resolve it, or reject it; never emit it as text (Principle III).
+		std::vector<string> segs;
 		{
-			VariableDefinition *varDef = dynamic_cast<VariableDefinition*>( (Symbol*)sym );
-			if ( varDef != nullptr )
+			size_t segStart = 0;
+			while ( true )
 			{
-				interp->addPart( new VariableExpression( varDef ) );
+				size_t dot = varName.find( '.', segStart );
+				if ( dot == string::npos )
+				{
+					segs.push_back( varName.substr( segStart ) );
+					break;
+				}
+				segs.push_back( varName.substr( segStart, dot - segStart ) );
+				segStart = dot + 1;
 			}
-			else
+		}
+
+		// A placeholder that is NOT an identifier path is left alone: `{}` and
+		// `{:.2f}` are print FORMAT placeholders handled by FormatString, and a
+		// literal brace run is just text. Only something shaped like a name (or a
+		// dotted name) is resolved — and only that shape is rejected when it does
+		// not resolve. Each segment must obey the identifier rule (leading letter
+		// or underscore), so a positional/format placeholder like `{0}` and an
+		// embedded JSON/template brace stay literal rather than becoming an
+		// error about a variable nobody wrote.
+		bool looksLikePath = !varName.empty();
+		for ( const string &seg : segs )
+		{
+			if ( seg.empty() ||
+				 !( isalpha( (unsigned char)seg[0] ) || seg[0] == '_' ) )
 			{
-				// Not a variable, treat as literal
-				interp->addPart( new ConstString( rawString.substr( braceStart, braceEnd - braceStart + 1 ) ) );
+				looksLikePath = false;
+				break;
 			}
+			for ( char c : seg )
+			{
+				if ( !( isalnum( (unsigned char)c ) || c == '_' ) )
+				{
+					looksLikePath = false;
+					break;
+				}
+			}
+			if ( !looksLikePath )
+				break;
+		}
+		if ( !looksLikePath )
+		{
+			interp->addPart( new ConstString(
+				rawString.substr( braceStart, braceEnd - braceStart + 1 ) ) );
+			pos = braceEnd + 1;
+			continue;
+		}
+
+		// Every segment is a well-formed identifier by the check above, so the
+		// only way this fails is that the BASE names nothing (or names a
+		// non-variable such as a function). Field names are resolved later, by
+		// Sema, which reports its own located "no field" diagnostic.
+		SmartPtr<Symbol> sym = scope->findSymbol( segs[0] );
+		VariableDefinition *varDef = ( sym != nullptr )
+			? dynamic_cast<VariableDefinition*>( (Symbol*)sym ) : nullptr;
+		if ( varDef != nullptr )
+		{
+			Expression *base = new VariableExpression( varDef );
+			base->setLocation( loc );
+			for ( size_t si = 1; si < segs.size(); si++ )
+			{
+				Expression *fa = new FieldAccessExpression( base, segs[si] );
+				fa->setLocation( loc );
+				base = fa;
+			}
+			interp->addPart( base );
 		}
 		else
 		{
-			// Unknown symbol, treat as literal (might be used before declaration)
-			interp->addPart( new ConstString( rawString.substr( braceStart, braceEnd - braceStart + 1 ) ) );
+			// Not resolvable here. Emitting it as literal text is what made this
+			// a silent wrong answer; say so instead. (Sema resolves the FIELD
+			// names above — this only rejects a placeholder whose base is not a
+			// variable in scope at all.)
+			COMPILE_ERROR( l, "cannot interpolate '{" + varName +
+				"}': '" + ( segs.empty() ? varName : segs[0] ) +
+				"' is not a variable in scope" );
 		}
 
 		pos = braceEnd + 1;

@@ -1,2 +1,2 @@
-point: ({self.x}, {self.y})
+point: (10, 20)
 print printable codegen test passed!
