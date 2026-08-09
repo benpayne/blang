@@ -47,7 +47,7 @@ impl Room {
 	fn broadcast(self, int sender_fd, string line) {
 		for f in self.fds {
 			if f != sender_fd {
-				net.Socket out = net.Socket { fd: f };
+				net.Socket out = net.socket_from_fd(f);
 				out.write(line);
 			}
 		}
@@ -90,7 +90,7 @@ fn run_server(int port) -> int {
 	chan<int> done;
 
 	sel.on_accept(server, fn(net.Socket conn) {
-		room.join(conn.fd);
+		room.join(conn.get_fd());
 		println("client joined ({} connected)", room.fds.length);
 
 		sel.on_data(conn, fn(net.Socket c) {
@@ -98,13 +98,13 @@ fn run_server(int port) -> int {
 			if line.length == 0 {
 				// Peer closed: unregister and drop from the room.
 				sel.remove(c);
-				room.leave(c.fd);
+				room.leave(c.get_fd());
 				c.close();
 				println("client left ({} connected)", room.fds.length);
 			} else if line == "/quit" {
 				done.send(1);
 			} else {
-				room.broadcast(c.fd, line);
+				room.broadcast(c.get_fd(), line);
 				println("relayed: {}", line);
 			}
 		});

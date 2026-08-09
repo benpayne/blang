@@ -47,10 +47,10 @@ pub struct FileInfo {
 }
 
 impl FileInfo {
-	fn exists(self) -> bool { return self.type >= 0; }
-	fn is_dir(self) -> bool { return self.type == 1; }
-	fn is_file(self) -> bool { return self.type == 0; }
-	fn get_size(self) -> long { return self.size; }
+	pub fn exists(self) -> bool { return self.type >= 0; }
+	pub fn is_dir(self) -> bool { return self.type == 1; }
+	pub fn is_file(self) -> bool { return self.type == 0; }
+	pub fn get_size(self) -> long { return self.size; }
 }
 
 // --- File struct ---

@@ -148,11 +148,15 @@ impl Map {
         return true;
     }
 
-    fn keys_list(self) -> Array<K> {
+    // Accessor surface (modules-v2-exports): the accessor takes the field's own
+    // name, so a consumer migrates by adding `()`. `collections` is promoted into
+    // the user's scope this epic (exempt from module-private enforcement, A7),
+    // so these follow the module's unmarked-`fn` style.
+    fn keys(self) -> Array<K> {
         return self.keys;
     }
 
-    fn values_list(self) -> Array<V> {
+    fn values(self) -> Array<V> {
         return self.values;
     }
 }
@@ -246,6 +250,11 @@ impl Set {
         self.items.pop();
         self.rehash(self.buckets.length);
         return true;
+    }
+
+    // Accessor surface (modules-v2-exports): takes the field's own name.
+    fn items(self) -> Array<K> {
+        return self.items;
     }
 }
 

@@ -668,6 +668,12 @@ it will meet the parser limitation first — and must not read "no P9 error" as
 
 ## KI-20 — a `shared`/`sync` struct as a string-interpolation part passes the wrong self pointer
 
+**Status: RESOLVED** (U4-remainder, PR #1). The interpolation-part self pointer now
+routes through a shared `structSelfPointer()` helper (taken from the receiver's
+ADDRESS, exactly as `genPrintCall` already did), so a `shared`/`sync` struct part
+renders correctly instead of passing its first 8 bytes as a pointer. Regression
+fixture `test_files/codegen_interp_struct_qualified.b` **segfaults without the fix**.
+
 **Filed**: U4 salvage-merge (independent review, MINOR-1). **Owner: U4 remainder**
 (same renderer the unit owns).
 
@@ -691,6 +697,15 @@ interpolation fixture.
 
 ## KI-21 — `println("{}", h.inner)` on a field-access struct arg still hits the KI-10 raw-pointer path
 
+**Status: RESOLVED** (U4-remainder, PR #1). `genPrintCall`'s struct-arg detection now
+resolves a FIELD-access receiver via `receiverStructDef` (not just a
+`VariableExpression`), so `println("{}", h.inner)` renders through Printable. The
+duplicated `hasPrintable` detection is unified into `structIsPrintable()` (shared with
+`genPrintableToString`), the self-pointer logic into `structSelfPointer()`, and the
+dead `fnName` local is gone. Regression fixture:
+`test_files/codegen_print_field_struct.b` (prints empty for the field-access
+direct-print without the fix).
+
 **Filed**: U4 salvage-merge (independent review, MINOR-2). **Owner: U4 remainder**.
 
 The KI-10 fix covers the *interpolation* path (a field-access struct part renders
@@ -707,3 +722,56 @@ U4-remainder run with a field-access direct-print fixture; unify the `hasPrintab
 struct-arg detection between `genPrintCall` and `genPrintableToString` (the review
 also flagged a dead `fnName` local at `CGExpressions.cpp:1484` and the duplicated
 detection logic — clean up in the same pass).
+
+---
+
+## KI-22 — `for x in <generic-struct-method-call>()` mis-resolves the loop-var element type
+
+**Filed**: U4-remainder (run `aeba092e`), discovered while migrating `examples/wordfreq`
+onto the `Map.keys()` accessor. **Owner: U5** (raise for a ruling — a codegen change
+outside U4's file set). **BLOCKING for the "just add `()`" migration promise on
+generic collections.**
+
+A for-in loop whose iterable is a **method call on a generic struct** returning
+`Array<K>` binds the loop variable with the WRONG element type — the receiver's
+type arguments are not substituted into the method's return element type, so the
+loop variable defaults to `int` and a `string` element is read as an integer
+(garbage), then dereferenced (segfault). Minimal reproduction:
+
+```blang
+Map<string, int> m = Map<string, int> { keys: [], values: [], buckets: [] };
+m.set("a", 1);
+for k in m.keys() { println("{}", k); }   // k bound as int → garbage, then segfault
+```
+
+Confirmed **independent of the method↔field name collision** (a distinctly-named
+`keys_probe()` fails identically) and **specific to the direct for-in-over-method-call
+source**: two forms work today —
+
+- an **intermediate typed var**: `Array<string> ks = m.keys(); for k in ks { ... }`
+  (Sema/codegen resolve the element type from the declared `Array<string>`); and
+- the **field-access** form `for k in m.keys` (a plain field, element type resolved).
+
+So the element-type resolution for a for-in source is missing the
+`callReturn/methodReturn`-through-substitution path that the assignment path already
+has. Likely `CGStatements.cpp` for-in element-type inference + `methodReturnTypeName`
+substitution (the same family the KI-8(b) `receiverStructDef` work touched, one rung
+over).
+
+**Why it matters now**: the whole opaque-exports thesis pushes iteration from
+`for k in counts.keys` (field, works) toward `for k in counts.keys()` (method, broken)
+— exactly the KI-8/KI-10/KI-20/KI-21 pattern ("once types are opaque, method reads are
+the only spelling, and this shape breaks it"). It is **load-bearing for U5's corpus
+migration**, where `Map`/`Set` iteration is pervasive, and it partially contradicts
+spec `032`'s naming-rule promise that migration is "purely adding `()`" for the
+generic-collection iteration case (spike S5 validated the promise only for a
+non-generic `HttpRequest.method()`).
+
+**Disposition in U4-remainder (this PR)**: NOT fixed here — a codegen change is outside
+U4's stated file set (`stdlib/*.b`, `examples/`) and the "stop and raise, don't widen
+scope" execution rule applies. `examples/wordfreq` is migrated with the **intermediate
+typed-var form** (correct, idiomatic, DC8 gate green) so U4 ships unblocked. Raised to
+the manager for a ruling: fold a scoped codegen fix into U5, or handle as its own unit.
+Until fixed, the `check_no_field_reachins.sh` migration guidance for a generic
+collection is "bind to a typed `Array<...>` local, then iterate," not "add `()` in
+place."

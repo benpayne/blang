@@ -36,7 +36,8 @@ fn main() -> int {
 	// sort them alphabetically — a lambda comparator over strings, with the
 	// element type inferred from the array.
 	Array<string> names = [];
-	for k in counts.keys {
+	Array<string> keys = counts.keys();
+	for k in keys {
 		names.push(k);
 	}
 	sort(names, fn(string a, string b) -> bool { return a < b; });
