@@ -1,8 +1,11 @@
 #include <assert.h>
+#include <climits>
+#include <cstdlib>
 
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <map>
 
 #include "FileLexer.h"
 #include "Type.h"
@@ -75,6 +78,16 @@ int main( int argc, char *argv[] )
 	std::string dbUrl;
 	struct DbConnArg { std::string name, driver, url; };
 	std::vector<DbConnArg> dbNamedConns;
+	// modules-v2-graph U1 (D5/D10): canonical module identity, supplied by the
+	// driver (bcc). --module-origin is the canonical origin (realpath of the
+	// project dir) of the module being compiled; --bmod-origin <bmodpath>=<origin>
+	// gives a directly-imported dep's canonical origin so its .bmod definitions are
+	// stamped with the DEP's identity (clarity-note source (a)), keeping the
+	// consumer's mangled generic symbols identical to the dep's own — so
+	// linkonce_odr dedup holds across the module boundary. Absent (single-file /
+	// combine, no bcc) => each input defaults to realpath(inputFile).
+	std::string moduleOrigin;
+	std::map<std::string, std::string> bmodOrigins;
 
 	for ( int i = 1; i < argc; i++ )
 	{
@@ -174,6 +187,36 @@ int main( int argc, char *argv[] )
 			else
 			{
 				std::cerr << "Error: --db-conn requires <name> <driver> <url>" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--module-origin" )
+		{
+			if ( i + 1 < argc )
+				moduleOrigin = argv[++i];
+			else
+			{
+				std::cerr << "Error: --module-origin requires an argument" << std::endl;
+				return -1;
+			}
+		}
+		else if ( arg == "--bmod-origin" )
+		{
+			// --bmod-origin <bmodpath>=<canonical-origin>
+			if ( i + 1 < argc )
+			{
+				std::string spec = argv[++i];
+				size_t eq = spec.rfind( '=' );
+				if ( eq == std::string::npos )
+				{
+					std::cerr << "Error: --bmod-origin expects <bmodpath>=<origin>" << std::endl;
+					return -1;
+				}
+				bmodOrigins[spec.substr( 0, eq )] = spec.substr( eq + 1 );
+			}
+			else
+			{
+				std::cerr << "Error: --bmod-origin requires an argument" << std::endl;
 				return -1;
 			}
 		}
@@ -403,6 +446,51 @@ int main( int argc, char *argv[] )
 		// Populated here, enforced by a later unit. Nothing reads it yet — and
 		// nothing may, until the file -> module mapping exists (M-3).
 		stampDefiningOrigin( (Module *)mod, inputFile );
+
+		// modules-v2-graph U1: stamp each struct with its DEFINING module's
+		// canonical-identity digest (D5/D10) so generic mangling can key on it.
+		// Origin source (clarity-note source (a), driver-side):
+		//   - a dependency's .bmod: the dep's origin passed via --bmod-origin
+		//     (so its generics mangle identically to the dep's own build => dedup);
+		//   - a compiled .b module: --module-origin when bcc supplies it, else
+		//     realpath(inputFile) in single-file/combine mode (self-consistent —
+		//     no cross-.bmod reference exists there to disagree with).
+		{
+			std::string origin;
+			if ( isBmod )
+			{
+				auto oit = bmodOrigins.find( inputFile );
+				if ( oit != bmodOrigins.end() )
+					origin = oit->second;
+			}
+			else if ( !moduleOrigin.empty() )
+			{
+				origin = moduleOrigin;
+			}
+			if ( origin.empty() )
+			{
+				char resolved[PATH_MAX];
+				if ( realpath( inputFile.c_str(), resolved ) )
+					origin = resolved;
+				else
+				{
+					// realpath failure is a located hard error, NEVER an empty
+					// identity (design-audit-U1 §2.1): an empty/degenerate digest
+					// would collapse distinct modules onto one symbol (a P10-class
+					// miscompile through the back door).
+					SourceLocation oloc;
+					oloc.file = inputFile;
+					oloc.line = 1;
+					oloc.col = 1;
+					gDiag->error( oloc,
+						"cannot resolve a canonical origin for module identity "
+						"(realpath failed for '" + inputFile + "')" );
+					hadError = true;
+					continue;
+				}
+			}
+			stampModuleDigest( (Module *)mod, blangModuleDigest( origin ) );
+		}
 
 		if ( isBmod )
 		{

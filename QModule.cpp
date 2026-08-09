@@ -23,6 +23,9 @@
 
 #include "DiagnosticEngine.h"
 #include "Frontend.h"
+#include "sha256.h"
+
+#include <iomanip>
 
 using namespace QLang;
 using namespace std;
@@ -652,5 +655,39 @@ void stampDefiningOrigin( QLang::Module *mod, const std::string &path )
 			(const QLang::StructDefinition *)sp );
 		if ( s->getDefiningFile().empty() )
 			s->setDefiningFile( origin );
+	}
+}
+
+// See Frontend.h. Canonical module-identity digest (U1, D5/D10).
+std::string blangModuleDigest( const std::string &canonicalOrigin )
+{
+	if ( canonicalOrigin.empty() )
+		return "";
+	SHA256_CTX ctx;
+	sha256_init( &ctx );
+	sha256_update( &ctx, (const uint8_t *)canonicalOrigin.data(),
+		canonicalOrigin.size() );
+	uint8_t hash[32];
+	sha256_final( &ctx, hash );
+	// 12 hex nibbles = 48 bits (design-audit-U1 B2): sized for the shared
+	// cross-build/.bmod symbol namespace, not a single build. The within-build
+	// collision backstop is separate and does not substitute for this width.
+	std::ostringstream ss;
+	for ( int i = 0; i < 6; i++ )
+		ss << std::hex << std::setfill( '0' ) << std::setw( 2 ) << (int)hash[i];
+	return ss.str();
+}
+
+// See Frontend.h. Stamp each struct with its defining module's identity digest.
+void stampModuleDigest( QLang::Module *mod, const std::string &digest )
+{
+	if ( mod == nullptr || digest.empty() )
+		return;
+	for ( const auto &sp : mod->getStructList() )
+	{
+		QLang::StructDefinition *s = const_cast<QLang::StructDefinition *>(
+			(const QLang::StructDefinition *)sp );
+		if ( s->getModuleDigest().empty() )
+			s->setModuleDigest( digest );
 	}
 }

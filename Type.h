@@ -495,6 +495,20 @@ namespace QLang
 		const std::string &getDefiningFile() const { return mDefiningFile; }
 		void setDefiningFile( const std::string &f ) { mDefiningFile = f; }
 
+		// Canonical module-identity digest (modules-v2-graph U1, D5/D10): a short
+		// SHA-256 (12 hex / 48 bits) of the DEFINING module's canonical origin
+		// (realpath of its project dir; url@pin for git). Empty for builtins and
+		// for definitions whose origin the driver did not supply. Generic symbol
+		// mangling (mangleGenericName) incorporates it so two same-named exported
+		// generic types get DISTINCT mangled symbols instead of collapsing onto one
+		// linkonce_odr symbol (P10). Unlike mDefiningFile (a bare file base name)
+		// this is a real cross-module identity, stamped by the driver from the
+		// module's resolved origin — own module and each directly-imported dep alike
+		// (clarity-note source (a)); a foreign type reached only transitively gets
+		// its digest from the .bmod carrier in U5 (source (b)).
+		const std::string &getModuleDigest() const { return mModuleDigest; }
+		void setModuleDigest( const std::string &d ) { mModuleDigest = d; }
+
 		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
 		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 
@@ -514,6 +528,7 @@ namespace QLang
 		bool mFromInterface = false;
 		std::vector<std::string> mConformedProtocols;
 		std::string mDefiningFile;
+		std::string mModuleDigest;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class AstLocator;

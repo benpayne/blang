@@ -110,6 +110,9 @@ add_executable(blangd
 	lsp/blangd_main.cpp)
 set_target_properties(blangd PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(blangd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# modules-v2-graph U1: the frontend (QModule.cpp) computes a module-identity
+# digest via SHA-256, so every frontend consumer links blang_sha256.
+target_link_libraries(blangd blang_sha256)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
@@ -129,6 +132,8 @@ set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 # blang_sqlgen (SQLGen + SchemaMigration) is always needed: codegen uses SQLGen
 # and --emit-schema uses SchemaMigration even in parse-only builds.
 target_link_libraries(qcc blang_sqlgen)
+# modules-v2-graph U1: module-identity digest (SHA-256) in the frontend.
+target_link_libraries(qcc blang_sha256)
 
 if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)
@@ -156,6 +161,11 @@ if(BLANG_FUZZ)
 	target_include_directories(fuzz_parse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	target_compile_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address -fno-omit-frame-pointer -g)
 	target_link_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address)
+	# modules-v2-graph U1: the frontend (QModule.cpp) computes a module-identity
+	# digest via SHA-256, so fuzz_parse — built from BLANG_FRONTEND_SOURCES — must
+	# link blang_sha256, exactly as qcc and blangd do. Unconditional: needed in the
+	# parse-only fuzz config (BLANG_ENABLE_LLVM=OFF) too.
+	target_link_libraries(fuzz_parse blang_sha256)
 	if(LLVM_FOUND)
 		# The parser needs no LLVM; keep fuzz_parse lean. (Normally the fuzz build
 		# is configured BLANG_ENABLE_LLVM=OFF so this branch is not taken.)

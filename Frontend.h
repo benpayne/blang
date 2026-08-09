@@ -38,6 +38,21 @@ QLang::Scope *createGlobalScope();
 // directly, or it will reject legal intra-library access.
 void stampDefiningOrigin( QLang::Module *mod, const std::string &path );
 
+// Canonical module-identity digest (modules-v2-graph U1, D5/D10). Returns a short
+// SHA-256 digest (12 hex nibbles / 48 bits) of a module's canonical origin string
+// (realpath of its project dir for path deps; url@pin for git). SHARED by qcc and
+// blangd (via the same plumbing) so the compiler and editor derive an identical
+// digest from identical inputs — the KI-16 obligation-2 discipline. An empty
+// origin yields an empty digest (no identity to mangle).
+std::string blangModuleDigest( const std::string &canonicalOrigin );
+
+// Stamp every struct a just-parsed module declares with its DEFINING module's
+// identity digest (from blangModuleDigest). Applied by the driver: the module
+// being compiled gets its own origin's digest; a dependency parsed from its .bmod
+// gets that dependency's origin digest (clarity-note source (a), driver-side). An
+// empty digest is a no-op, so builtins and origin-less compiles are unchanged.
+void stampModuleDigest( QLang::Module *mod, const std::string &digest );
+
 // Parse-progress trace. OFF by default; `qcc -v` enables it. Writes to STDERR
 // so stdout stays clean for machine output (IR, --dump-locations, LSP frames)
 // — no driver ever needs to redirect std::cout to hide compiler chatter.

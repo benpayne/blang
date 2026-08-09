@@ -71,6 +71,51 @@ check "no unresolved-param instantiation (largest_T absent)" \
 	"! nm myapp/myapp | grep -q 'largest_T'"
 
 # ---------------------------------------------------------------------------
+# Canonical module identity (modules-v2-graph U1, D5/D10) — done-condition 1.
+#
+# Two libraries (boxa, boxb) each export a same-named generic Box<T> and
+# instantiate Box<int> INTERNALLY, so each library's .a carries its own Box<int>
+# symbols. One binary (boxapp) links both. Without identity-in-mangling both
+# Box<int> instances mangle to `Box_int` and the linker collapses them onto one
+# linkonce_odr symbol (P10, a silent miscompile). With U1 each carries its
+# defining module's 12-hex identity digest, so the two are DISTINCT symbols.
+( cd boxa   && rm -f libboxa.a boxa.bmod     && "$BCC" build > /dev/null 2>&1 )
+( cd boxb   && rm -f libboxb.a boxb.bmod     && "$BCC" build > /dev/null 2>&1 )
+( cd boxapp && rm -f boxapp                  && "$BCC" build > /dev/null 2>&1 )
+check "boxa builds (lib)"   "[ -f boxa/libboxa.a ] && [ -f boxa/boxa.bmod ]"
+check "boxb builds (lib)"   "[ -f boxb/libboxb.a ] && [ -f boxb/boxb.bmod ]"
+check "boxapp builds (bin, two same-named generic deps)" "[ -x boxapp/boxapp ]"
+bmod_parses boxa/boxa.bmod
+bmod_parses boxb/boxb.bmod
+BOXOUT=$(cd boxapp && ./boxapp)
+check "boxapp output exact (per-library behavior distinct)" \
+	"[ \"\$BOXOUT\" = '105
+207
+42' ]"
+# The keystone assertion: exactly TWO distinct module-identity digests attached to
+# a Box<int> symbol in the linked binary — the two libraries' types did NOT
+# collapse onto one linkonce_odr symbol (P10 eliminated).
+check "two same-named generic types get DISTINCT mangled symbols (P10 gone)" \
+	"[ \"\$(nm boxapp/boxapp | grep -oE 'm[0-9a-f]{12}_int' | sort -u | wc -l)\" = '2' ]"
+check "the digested mangling is present (not the bare Box_int form)" \
+	"nm boxapp/boxapp | grep -qE 'Box_m[0-9a-f]{12}_int'"
+# Same-origin dedup companion: boxa uses Box<int> in TWO functions, yet its
+# Box<int> get symbol is monomorphized ONCE (linkonce_odr dedup within one origin).
+check "same-origin dedup: boxa's Box<int> instance is not duplicated" \
+	"[ \"\$(nm boxapp/boxapp | grep -E ' [TtWw] .*Box_m[0-9a-f]{12}_int_get\$' | wc -l)\" = '2' ]"
+# Warm-cache guard documenting the U1<->U5 co-ship window (design-audit-U1 B1):
+# between U1 and U5 on master a `bcc clean` is required; a full clean rebuild links
+# correctly (proves nothing depends on a stale pre-mangling cache entry).
+"$BCC" clean > /dev/null 2>&1
+( cd boxa && rm -f libboxa.a boxa.bmod && "$BCC" build > /dev/null 2>&1 )
+( cd boxb && rm -f libboxb.a boxb.bmod && "$BCC" build > /dev/null 2>&1 )
+( cd boxapp && rm -f boxapp && "$BCC" build > /dev/null 2>&1 )
+check "clean rebuild links and runs (warm-cache/co-ship guard)" \
+	"[ -x boxapp/boxapp ] && [ \"\$(cd boxapp && ./boxapp)\" = '105
+207
+42' ]"
+
+# ---------------------------------------------------------------------------
 # Cross-module construction ABI (modules-v2-exports U1)
 #
 # Before the library-emitted factory, a consumer of a .bmod could reach into an
