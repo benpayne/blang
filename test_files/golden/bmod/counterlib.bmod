@@ -1,5 +1,5 @@
 // auto-generated .bmod interface file — do not edit
-// blang-bmod-format: 4
+// blang-bmod-format: 5
 
 pub struct Counter {
 }
