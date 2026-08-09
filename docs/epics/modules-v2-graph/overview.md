@@ -3,7 +3,7 @@
 **Archetype**: evolve (replaces the resolution model under the existing module
 surface; **Epic B** of the modules-v2 split)
 
-**Status**: planning
+**Status**: ready — readiness review passed 2026-08-09 (fresh-context audit; F1–F9 applied)
 
 **Owner**: Ben Payne
 
@@ -86,60 +86,73 @@ a committed test that CI runs:
    (`QModule.cpp:582-584`) are **deleted** (a program using such a name with no
    backing definition now fails at the *type*, proven by a `fail/sema` fixture
    asserting the located error is at the type, not a later symbol lookup); and
-   `cli` is an ordinary qualified library module (`cli.sort`-style access), not
-   promoted. `run_tests.sh`/`test_codegen.sh` green in both modes.
+   `cli` is an ordinary qualified library module (`cli.has_flag`-style access),
+   not promoted. Because `stdlib/collections.b` is a **mixed module** — it defines
+   the prelude types `Map`/`Set` *and* the free function `sort` — the manifest
+   assigns tiers **per name** (types → prelude; `sort` → qualified
+   `collections.sort`), and the bare `sort(...)` call sites (e.g.
+   `examples/wordfreq/main.b`) are migrated to `collections.sort(...)` with their
+   goldens. `run_tests.sh`/`test_codegen.sh` green in both modes.
 3. **Module-prefix codegen fixed; special cases retired; `--leak-check` clean.**
    The string-ARC double-free under namespaced-module codegen
    (`qcc.cpp:303-307` rationale) is fixed; the `buffer`/`collections`/`cli`
    global-scope promotions are removed and namespacing is uniform; a
    `test_codegen`/`test_build` fixture exercises a namespaced module's internal
    string-returning call path and is `--leak-check` clean (**KI-3 closed**).
-4. **Per-module graph; global injection gone.** Resolution runs through
-   per-module export scopes connected by import edges, implemented as a
-   **standalone resolver component** (not inline in `qcc.cpp` `main()`), exercised
-   by a dedicated unit test (`ctest`) independent of the driver; the up-front
-   global-symbol injection block (`qcc.cpp:330-381`) is removed.
-4b. **The resolver is reusable by blangd (Epic C seam).** `lsp/Compile.cpp`
-   constructs the same resolver component (even if still single-file this epic) —
-   proven by a build/link dependency and a smoke test — so Epic C wires
-   cross-module resolution without re-plumbing.
-5. **Imports are enforced; use vs. name capability (D7).** Using a symbol
-   whose module is not imported is a located `file:line:col: error:`
-   (`fail/sema` fixtures, both build modes); imported names are written
+4. **Per-module graph via a standalone resolver (behavior-neutral).** Resolution
+   runs through per-module export scopes connected by import edges, implemented as
+   a **standalone resolver component** (a named class, not inline in `qcc.cpp`
+   `main()`), exercised by a dedicated `ctest` independent of the driver. This
+   unit keeps the global fallback so it is **behavior-neutral** — all prior gates
+   stay green with no behavior change. (Removal of the global injection block is
+   done-condition 6, at import enforcement.)
+5. **The resolver is the single shared entry point (Epic C seam).** One resolver
+   entry point is invoked from **both** `qcc.cpp` and `lsp/Compile.cpp` (both call
+   sites grep-verifiable), and a `ResolverReuseTest` `ctest` constructs the
+   resolver exactly as `lsp/Compile.cpp` does and asserts a fixture resolves
+   identically to the `qcc` path — so Epic C wires cross-module resolution without
+   re-plumbing. (blangd stays single-file this epic.)
+6. **Imports are enforced; use vs. name capability (D7); injection removed.**
+   Using a symbol whose module is not imported is a located `file:line:col:
+   error:` (`fail/sema` fixtures, both build modes); imported names are written
    qualified (`module.name`, D1); **use-capability** (receiving/holding/passing/
    returning a foreign type and calling its `pub` methods) needs no import, while
    **name-capability** (declaring a variable of it, annotating a param, storing
    it in a struct, constructing one) requires the import — each direction has a
-   positive and a negative fixture.
-6. **Foreign type references in `.bmod`; transitive build graph.** The `.bmod`
-   format references a type owned by another module **by identity, rendered
-   through the reading module's qualifier** (it has no such mechanism today), and
-   carries each module's human-facing name for diagnostics; the transitive
-   `.bmod` closure is assembled so use-capability holds for indirectly-reached
-   types; a `test_build/` fixture with a transitive dependency
-   (`A → X → Q`, `A` uses a `Q` type via `X` without importing `Q`) builds and
-   runs. Cross-module generics still build and link (format bump; cache
-   invalidation proven).
-7. **Collision & import diagnostics.** Duplicate exported names across imported
+   positive and a negative fixture. The up-front global-symbol injection block
+   (`qcc.cpp:330-381`) is **removed** — resolution now goes through the graph.
+7. **Foreign type references in `.bmod`; transitive build graph; the un-named
+   generic path.** The `.bmod` format references a type owned by another module
+   **by identity, rendered through the reading module's qualifier** (it has no
+   such mechanism today), and carries each module's human-facing name for
+   diagnostics; the transitive `.bmod` closure is assembled so use-capability
+   holds for indirectly-reached types. Two `test_build/` fixtures: (a) a
+   transitive dependency (`A → X → Q`, `A` uses a `Q` type via `X` without
+   importing `Q`) builds and runs; **(b) the sharpest corner — a binary calls a
+   `pub` method returning a foreign generic (`Box<T>`) from a module it does NOT
+   `import`, monomorphizes the body shipped in the `.bmod`, links, and runs**
+   (D7 use-capability across an un-named module). Cross-module generics still
+   build and link (format bump 4→5; cache invalidation proven).
+8. **Collision & import diagnostics.** Duplicate exported names across imported
    modules, unknown-module imports, and unused imports each emit a located
    diagnostic through the `DiagnosticEngine` (unused-import is a warning);
    `fail/sema` fixtures with `.expected` patterns, deterministic display-name
    rendering (D3).
-8. **Combine-mode field privacy is Sema-enforced (KI-23 closed).** A consumer
+9. **Combine-mode field privacy is Sema-enforced (KI-23 closed).** A consumer
    reaching into a namespaced-stdlib struct's private field in combine mode is a
    located Sema error (the rule keys on "defined in a different module than the
    use site," using module identity — not the `.bmod`-arrival-only
    `isFromInterface()` heuristic), proven by a `fail/xmodule` or `fail/sema`
    fixture; the reach-in grep gate stops being the only guard.
-9. **Import aliasing (stretch).** `import x as y;` binds the module to the local
+10. **Import aliasing (stretch).** `import x as y;` binds the module to the local
    qualifier `y`; a positive `test_build`/codegen fixture and a `fail/sema`
    negative (re-export still unavailable, D8).
-10. **Module search path / std separation (stretch).** The hardcoded
+11. **Module search path / std separation (stretch).** The hardcoded
     `stdlib/<name>.b` mapping is replaced by configurable resolution roots so a
     user module can shadow/replace a stdlib name deterministically; a
     `test_build` fixture with a custom resolution root resolves a user `timer`
     over stdlib `timer` (P7).
-11. **No regressions; docs updated.** `./run_tests.sh` and `./test_codegen.sh`
+12. **No regressions; docs updated.** `./run_tests.sh` and `./test_codegen.sh`
     fully green in both build modes; `./test_codegen.sh --leak-check` clean;
     `./test_lsp.sh` green (blangd untouched beyond keeping it building against the
     extracted resolver); `test_build/run_build_tests.sh` green; `.bmod` +
@@ -156,15 +169,15 @@ a committed test that CI runs:
 | REQ-003 | Three type tiers core/prelude/library with a declared, fixed, compiler-shipped prelude manifest `{Map, Set, Buffer}` (types only), users/libraries cannot extend it (D12/D13); `cli` demoted to a qualified library module | P1 | Done cond. 2 |
 | REQ-004 | Every name in scope has a definition behind it; bare-name `addType` registration deleted (D14) — undefined names fail at the type with a better diagnostic | P1 | Done cond. 2 fixture |
 | REQ-005 | The module-prefix string-ARC double-free is fixed; the `buffer`/`collections`/`cli` global-scope promotions are retired; namespacing is uniform; `--leak-check` clean (P3; closes KI-3) | P1 | Done cond. 3 |
-| REQ-006 | Resolution runs through a per-module export-scope graph with import edges, implemented as a standalone reusable resolver component; the up-front global-symbol injection is removed (P1/P5) | P1 | Done cond. 4 + unit test |
-| REQ-007 | The resolver component is constructed by both `qcc` and `blangd` (the Epic C seam) without driver-only coupling | P2 | Done cond. 4b |
-| REQ-008 | Using a symbol whose module is not imported is a located error; imported names are qualified (D1); use-capability vs name-capability split enforced (D7) | P1 | Done cond. 5 fixtures |
-| REQ-009 | `.bmod` references foreign types by identity rendered through the reader's qualifier and carries each module's human name; the transitive build graph grants use-capability for indirectly-reached types; cross-module generics still link (format bump + cache-invalidation test) | P1 | Done cond. 6 |
-| REQ-010 | Located diagnostics for duplicate exported names, unknown-module imports, and unused imports (warning); deterministic display names (D3, P2) | P1 | Done cond. 7 fixtures |
-| REQ-011 | Combine-mode namespaced-stdlib field/literal privacy is Sema-enforced via module identity, not grep-gated (closes KI-23) | P2 | Done cond. 8 fixture |
-| REQ-012 | Import aliasing `import x as y` (stretch); re-export remains excluded (D8) | P3 | Done cond. 9 |
-| REQ-013 | Configurable module search path / std separation replacing hardcoded `stdlib/<name>.b` (stretch, P7) | P3 | Done cond. 10 |
-| REQ-014 | No regressions across all prior gates; `.bmod`/deps/cross-module generics build & link; docs updated (Principle I); CI green | P1 | Done cond. 11 |
+| REQ-006 | Resolution runs through a per-module export-scope graph with import edges, implemented as a standalone reusable resolver component (behavior-neutral, global fallback retained at U4) (P1/P5) | P1 | Done cond. 4 + unit test |
+| REQ-007 | The resolver component is constructed by both `qcc` and `blangd` (the Epic C seam) without driver-only coupling, proven by a `ResolverReuseTest` | P2 | Done cond. 5 |
+| REQ-008 | Using a symbol whose module is not imported is a located error; imported names are qualified (D1); use-capability vs name-capability split enforced (D7); the up-front global-symbol injection is removed | P1 | Done cond. 6 fixtures |
+| REQ-009 | `.bmod` references foreign types by identity rendered through the reader's qualifier and carries each module's human name; the transitive build graph grants use-capability for indirectly-reached types, incl. the un-named foreign-generic instantiation path; cross-module generics still link (format bump + cache-invalidation test) | P1 | Done cond. 7 |
+| REQ-010 | Located diagnostics for duplicate exported names, unknown-module imports, and unused imports (warning); deterministic display names (D3, P2) | P1 | Done cond. 8 fixtures |
+| REQ-011 | Combine-mode namespaced-stdlib field/literal privacy is Sema-enforced via module identity, not grep-gated (closes KI-23) | P2 | Done cond. 9 fixture |
+| REQ-012 | Import aliasing `import x as y` (stretch); re-export remains excluded (D8) | P3 | Done cond. 10 |
+| REQ-013 | Configurable module search path / std separation replacing hardcoded `stdlib/<name>.b` (stretch, P7) | P3 | Done cond. 11 |
+| REQ-014 | No regressions across all prior gates; `.bmod`/deps/cross-module generics build & link; docs updated (Principle I); CI green | P1 | Done cond. 12 |
 
 ## Non-goals
 
@@ -248,4 +261,5 @@ a committed test that CI runs:
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
+| 2026-08-09 | — | review passed | `/devbot-review` + fresh-context audit (no blockers). Applied F1–F9: `sort`/`collections.b` mixed-file split + call-site migration owned by U3 (F1); injection-removal moved from done-cond 4 to done-cond 6/U6 (F2); un-named foreign-generic spike + fixture added to U5 — the design record's "sharpest corner" (F3); done-cond 5 concretized to a `ResolverReuseTest` + both-call-sites grep (F4); `cli.has_flag` example fix (F5); budget-hint denomination clarified (F6); U6a/U6b downstream deps stated (F7); U5 design-audit gate added (F8); done conditions renumbered 1–12, `4b` promoted to `5` (F9). Done-condition sync verbatim; traceability REQ-001..014 complete. Status → ready. Next: `/devbot-launch modules-v2-graph`. |
 | 2026-08-09 | — | epic planned | Planned after Epic A (`modules-v2-exports`) completed + CI-green. Owner decisions: LSP split to Epic C; both stretch units in scope; fully-autonomous/generous. Recon verified current seams at `master` `125fb0f`. Next: `/devbot-review modules-v2-graph`. |

@@ -671,7 +671,8 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     `modules-v2-graph` Epic B — module identity, per-module scopes, import
     enforcement, type tiers, module-prefix ARC fix, cross-module LSP — to be
     planned after Epic A completes).
-  - `modules-v2-graph` (`docs/epics/modules-v2-graph/`) — status: **planning**.
+  - `modules-v2-graph` (`docs/epics/modules-v2-graph/`) — status: **ready**
+    (review passed 2026-08-09; fresh-context audit, F1–F9 applied).
     Epic B of the modules-v2 split (the resolution half): canonical module
     identity (fixes P10 generic-mangling collapse), three type tiers
     core/prelude/library (prelude = `{Map,Set,Buffer}`, delete bare-name

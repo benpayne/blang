@@ -13,7 +13,8 @@
 | leak check | `./test_codegen.sh --leak-check` | `Leaks: 0`, fatal on any leak | U2 (mandatory), U5, U6; others on any runtime-adjacent touch |
 | build-system fixtures | `test_build/run_build_tests.sh` | green, incl. this epic's new lib+bin pairs (identity/collision, transitive dep, search-path) | U1, U3, U5, U6, U9 |
 | LSP goldens | `./test_lsp.sh` | green (blangd keeps building against the extracted resolver; no functional change) | every unit (regression); U4 (links resolver) |
-| runtime/unit tests | `ctest --test-dir build` | all pass, incl. the new **resolver component** unit test | U4 |
+| runtime/unit tests | `ctest --test-dir build` | all pass, incl. the new **resolver component** unit test and **`ResolverReuseTest`** (constructs the resolver as `lsp/Compile.cpp` does; asserts a fixture resolves identically to the `qcc` path) | U4 |
+| resolver call-site check | `grep -n <resolver-entry> qcc.cpp lsp/Compile.cpp` | both files call the single resolver entry point | U4 |
 | identity/mangling regression | `nm`/IR assertion inside the U1 `test_build/` fixture script (two same-named exported generic types → distinct symbols) | distinct mangled symbols; no `linkonce_odr` collapse | U1 |
 | cache invalidation | dedicated test: bump `.bmod` format (4→5) → warm cache entry misses (`BuildCacheTest`) | pass | U5 |
 | reach-in / field privacy | `tools/check_no_field_reachins.sh` **and** a Sema `fail/*` fixture (KI-23) | grep gate exits 0; the Sema fixture makes a combine-mode reach-in a located error | U6 |
@@ -23,7 +24,7 @@
 
 | Audit | When | Rubric | Gates? |
 |-------|------|--------|--------|
-| design audit | before implementation of **U1** (canonical identity — the keystone) and **U2** (the codegen crux); via `/speckit-clarify` + `/speckit-analyze` | model handles the general case + failure modes (un-named generic instantiation; portable-vs-realpath identity; double-free root cause); no ARC-semantics change beyond the fix; conforms to D1–D17 | gates |
+| design audit | before implementation of **U1** (canonical identity — the keystone), **U2** (the codegen crux), and **U5** (the `.bmod` foreign-ref format + transitive-closure model — changes the interface format and parses untrusted input); via `/speckit-clarify` + `/speckit-analyze` | model handles the general case + failure modes (un-named foreign-generic instantiation; portable-vs-realpath identity; double-free root cause; malformed `.bmod` foreign refs); no ARC-semantics change beyond the fix; conforms to D1–D17 | gates |
 | spec audit | after each unit's speckit spec | spec covers the unit's REQ IDs; done conditions testable; no scope creep into Epic C (LSP), a package manager, re-export, or aliases beyond D8/D11 | gates |
 | code review | before each unit's PR merges | constitution's five dimensions (correctness, tests/diagnostics, security, maintainability/robustness, style/spec-fidelity), each an explicit pass/finding by the distinct reviewer hire | gates |
 | security review | **U2** (ARC/double-free/dtor), **U5** (`.bmod` is parsed input — foreign-ref/malformed-interface handling; no consumer-side crash on a corrupt `.bmod`) | untrusted-input rubric (constitution Quality Gate 7); findings recorded in the PR | gates |

@@ -86,14 +86,25 @@ green, docs updated in the same PR as the behavior (Principle I).
   them (`QModule.cpp:582-584` — `Task`/`Array`/`Buffer` as bare names; D14) so an
   undefined name fails at the *type* with a better diagnostic. **Demote `cli`**
   from the promoted set to an ordinary qualified library module (it is free
-  functions, not types — `cli.parse`-style) — safe now that U2 fixed the
-  double-free. Retire the `buffer`/`collections` promotions into prelude/library
-  as the manifest dictates. Mind the KEEP-IN-SYNC contract with `BmodEmitter`
-  (`QModule.cpp:607-613`).
+  functions, not types — `cli.has_flag`-style, matching its real exports in
+  `stdlib/cli.b:53-95`) — safe now that U2 fixed the double-free. Retire the
+  `buffer`/`collections` promotions as the manifest dictates. **Mixed-module
+  handling**: `stdlib/collections.b` defines the prelude types `Map`/`Set`
+  (`:18`, `:175`) **and** the free function `sort` (`:287`); the prelude manifest
+  therefore assigns tiers **per name** — the two types go to prelude, `sort`
+  becomes a qualified library export `collections.sort`. **Own the `sort(...)`
+  call-site migration**: every bare `sort(...)` (e.g. `examples/wordfreq/main.b`,
+  and any `Map`/`Set`-literal or codegen fixtures that call it) becomes
+  `collections.sort(...)` with goldens updated (or explicitly hand this migration
+  to U6's corpus sweep — state which in the U3 PR). Mind the KEEP-IN-SYNC
+  contract with `BmodEmitter` (`QModule.cpp:607-613`).
 - **Done condition**: prelude manifest is the single source of truth (no string
   list in the driver); a `fail/sema` fixture proves an undefined type name errors
-  at the type; `cli` used qualified in a fixture; full gates green in both modes;
-  `--leak-check` clean.
+  at the type; `cli` and `collections.sort` used qualified in a fixture; every
+  bare `sort(` call site migrated (grep for bare `sort(` in `examples/`/
+  `test_files/`/`stdlib/` returns only qualified forms, or the residue is
+  explicitly deferred to U6); full gates green in both modes; `--leak-check`
+  clean.
 - **Audit**: per constitution.
 - **Budget hint**: 10–16 turns.
 - **Speckit**: `036-type-tiers`
@@ -107,12 +118,18 @@ green, docs updated in the same PR as the behavior (Principle I).
   out of the `qcc.cpp` driver loop into a **standalone resolver component** (a
   named class, e.g. `ModuleGraph`/`Resolver`) with its own unit test — the clean
   seam Epic C consumes. Resolve through the graph **while keeping the global
-  fallback** so this unit is behavior-neutral (open-question #2 default). Have
-  `lsp/Compile.cpp` construct the same component (REQ-007) so the seam is proven,
-  even though blangd stays single-file this epic.
-- **Done condition**: a `ctest` exercises the resolver independent of the driver;
-  `qcc` and `blangd` both link it; behavior unchanged (all prior gates green);
-  the removal of the up-front injection is staged so nothing regresses.
+  fallback** so this unit is behavior-neutral (open-question #2 default). Make the
+  resolver **one shared entry point invoked from both `qcc.cpp` and
+  `lsp/Compile.cpp`** (REQ-007) — not two parallel constructions — so the Epic C
+  seam is real; blangd stays single-file this epic but goes through the same
+  component.
+- **Done condition**: a `ctest` (the resolver's own unit test) exercises the
+  resolver independent of the driver; a **`ResolverReuseTest` `ctest` constructs
+  the resolver exactly as `lsp/Compile.cpp` does and asserts a fixture resolves
+  identically to the `qcc` path**; both `qcc.cpp` and `lsp/Compile.cpp` call the
+  single resolver entry point (grep-verifiable at both call sites); behavior
+  unchanged (all prior gates green, `test_lsp.sh` green); the global fallback is
+  retained (its removal is U6, not here).
 - **Audit**: per constitution.
 - **Budget hint**: 14–20 turns.
 - **Speckit**: `037-module-graph-and-resolver`
@@ -129,12 +146,24 @@ green, docs updated in the same PR as the behavior (Principle I).
   `.bmod` closure** (the build graph — every `.bmod` needed to typecheck a
   dependency, whether named or not) distinct from the direct **name graph**, so
   D7 use-capability holds for indirectly-reached types. Closes KI-5 (identity now
-  carried in the interface).
+  carried in the interface). **Spike the sharpest corner first** (design record
+  §Risks; design.md): a consumer calling a `pub` method that returns a **foreign
+  generic** (`Box<T>`) from a module it **never imported** must monomorphize the
+  body shipped in the `.bmod` and mangle the instance so U1's identity keeps it
+  distinct without breaking the un-named instantiation. Identity (U1), mangling,
+  and the build graph meet here — prove it with a fixture before generalizing.
 - **Done condition**: a `test_build/` transitive fixture (`A → X → Q`; `A` uses a
-  `Q` type via `X` without importing `Q`) builds and runs; cross-module generics
-  still link; a cache-invalidation test proves the format bump invalidates warm
-  entries; `.bmod` foreign refs parse standalone (SC-1 style).
-- **Audit**: per constitution; security dimension (the `.bmod` is parsed input).
+  `Q` type via `X` without importing `Q`) builds and runs; **the un-named
+  foreign-generic fixture — a binary calls a `pub` method returning `Box<T>` from
+  a module it does NOT `import`, monomorphizes, links, and runs** — passes;
+  cross-module generics still link; a cache-invalidation test proves the format
+  bump invalidates warm entries; `.bmod` foreign refs parse standalone (SC-1
+  style).
+- **Audit**: per constitution; **security dimension mandatory** (the `.bmod` is
+  parsed input — foreign-ref/malformed-interface handling) **and a Principle VI
+  design-audit gate** on the `.bmod` foreign-ref format + transitive-closure model
+  before implementation (it changes the interface format and parses untrusted
+  input).
 - **Budget hint**: 14–20 turns.
 - **Speckit**: `038-bmod-foreign-refs-transitive-graph`
 
@@ -218,7 +247,10 @@ green, docs updated in the same PR as the behavior (Principle I).
 - **U4 keeps the global fallback** so it's behavior-neutral; **U6 removes it**
   atomically with import enforcement (open-question #2).
 - **U6 is the churn unit** — split U6a (enforcement + fixtures) / U6b (corpus
-  migration) if its budget runs short rather than cutting fixtures.
+  migration) if its budget runs short rather than cutting fixtures. **If split,
+  U7/U8/U9 depend on U6a (the enforcement mechanism), not U6b (the corpus
+  sweep)** — diagnostics and the stretch features need enforcement in place, not
+  every fixture migrated. U6b may land after them.
 - **U8/U9 are stretch** — if the epic's budget is exhausted after U7, they may be
   deferred to a follow-on without failing the epic's core done-condition (the
   core is done conditions 1–8 + 11; 9–10 are the stretch bullets). Record any
