@@ -519,6 +519,22 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 								break;
 							}
 						}
+						// Type-directed builtin deserializer: `Todo.from_json(str)`
+						// (modules-v2-exports OQ#1). Symmetric with `to_json(value)`
+						// — value-directed out, type-directed in — so neither
+						// spelling is a hand-written mangled symbol (D15: one
+						// canonical spelling). A @json struct registers a
+						// `<Struct>_from_json(string) -> Struct` extern at parse
+						// (QModule.cpp); resolve to it so all existing Sema
+						// arg-checking and codegen dispatch apply unchanged. The old
+						// bare `Todo_from_json(str)` still resolves the same symbol.
+						if ( staticMethod == nullptr && methodName == "from_json" )
+						{
+							SmartPtr<Symbol> fjSym =
+								scope->findSymbol( sd->getName() + "_from_json" );
+							staticMethod = dynamic_cast<FunctionDefinition*>(
+								(Symbol*)fjSym );
+						}
 						if ( staticMethod != nullptr && l.peekSymbol() == '(' )
 						{
 							l.getSymbol(); // consume '('
