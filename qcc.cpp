@@ -21,6 +21,7 @@
 #include "DiagnosticEngine.h"
 #include "Sema.h"
 #include "Frontend.h"
+#include "Resolver.h"
 #include "SchemaMigration.h"
 
 #ifdef BLANG_HAS_LLVM
@@ -251,11 +252,14 @@ int main( int argc, char *argv[] )
 	diagnostics.setWerror( werror );
 	gDiag = &diagnostics;
 
-	// Build the global scope of compiler builtins. main() OWNS it via the
-	// SmartPtr; gScope is a non-owning alias for the parser (see Frontend.h —
-	// without an owner, the first file scope's parent release would free it).
-	SmartPtr<Scope> globalScopeOwner = createGlobalScope();
-	gScope = (Scope *)globalScopeOwner;
+	// modules-v2-graph U4: resolution runs through the standalone Resolver
+	// component (Resolver.h) — the same class lsp/Compile.cpp constructs (the
+	// Epic C seam). It OWNS the global builtin scope and installs the `gScope`
+	// alias the parser/sema read (replacing the inline createGlobalScope() +
+	// SmartPtr owner). Behavior-neutral: the same builtin scope, the same alias.
+	// The combine routing policy and the .bmod flat-merge injection stay in this
+	// driver (their removal is done-condition 6 / U6).
+	Resolver resolver;
 
 	// Parse each input file into its own Module. Each module gets its own
 	// module-level scope parented to the shared global scope so that built-in
@@ -317,10 +321,9 @@ int main( int argc, char *argv[] )
 	Scope *preludeScope = nullptr;
 	if ( combineMode )
 	{
-		preludeScope = new Scope( Scope::kScope_Module );
-		preludeScope->setParent( gScope );
-		combineScope = new Scope( Scope::kScope_Module );
-		combineScope->setParent( preludeScope );
+		// U4: module scopes come from the resolver (parented into its environment).
+		preludeScope = resolver.newModuleScope();               // parent = global
+		combineScope = resolver.newModuleScope( preludeScope );
 	}
 
 	// Quiet by default (FR-007): parser progress is a gated trace on STDERR
@@ -413,8 +416,8 @@ int main( int argc, char *argv[] )
 		}
 		else
 		{
-			fileScope = new Scope( Scope::kScope_Module );
-			fileScope->setParent( gScope );
+			// U4: non-combine module scope from the resolver (parent = global).
+			fileScope = resolver.newModuleScope();
 		}
 
 		// For .b files: inject symbols from any .bmod modules that match imports.

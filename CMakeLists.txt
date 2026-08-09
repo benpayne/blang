@@ -92,6 +92,7 @@ set(BLANG_FRONTEND_SOURCES
 	LocationDumper.cpp
 	DiagnosticEngine.cpp
 	Sema.cpp
+	Resolver.cpp
 	FormatString.cpp)
 
 # The qcc driver = frontend + the CLI main.
@@ -392,6 +393,23 @@ endif()
 # runs them under ASan/UBSan automatically.
 # ---------------------------------------------------------------------------
 enable_testing()
+
+# modules-v2-graph U4: the standalone Resolver component's tests (no LLVM).
+#   ResolverTest       — exercises the resolver INDEPENDENT of any driver (DC4).
+#   ResolverReuseTest  — builds the resolver as lsp/Compile.cpp does and asserts a
+#                        fixture resolves identically to the qcc path (DC5); also
+#                        calls the real lsp::compileDocument entry point.
+add_executable(resolverTest ResolverTest.cpp ${BLANG_FRONTEND_SOURCES})
+set_target_properties(resolverTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(resolverTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(resolverTest blang_sqlgen blang_sha256)
+add_test(NAME resolver_component COMMAND resolverTest)
+
+add_executable(resolverReuseTest ResolverReuseTest.cpp lsp/Compile.cpp ${BLANG_FRONTEND_SOURCES})
+set_target_properties(resolverReuseTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(resolverReuseTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(resolverReuseTest blang_sqlgen blang_sha256)
+add_test(NAME resolver_reuse COMMAND resolverReuseTest)
 
 add_executable(test_array runtime/tests/test_array.c)
 target_link_libraries(test_array blang_array blang_string)

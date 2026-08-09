@@ -71,6 +71,43 @@ co-ship invariant (design-audit-U1 B1) — a `bcc clean` between U1 and U5 on
 
 ---
 
+## KG-7 — the parser leaks its internal body scopes/AST under ASan (compiler-process leak)
+
+**Filed**: U4 (surfaced by the resolver ctests — the first to run the C++ parser
+under ASan/LSan). **Owner**: not this epic — pre-existing, file only.
+
+Parsing a function **body** (or an `extern fn` parameter list) leaks the parser's
+internal AST/scope allocations: under ASan/LSan the freshly-built module's global
+scope shows as indirectly leaked (~11.8 KB / 108 allocs), pinned by parser-created
+block/parameter scopes that are raw-allocated and never freed. Reproduced by
+parsing `fn add(int,int) -> int { return a+b; }` through `Module::Parse`; a
+**struct-only** fixture is clean.
+
+**Why it was never caught.** The compiler's OWN process memory is not leak-checked:
+`test_codegen.sh --leak-check` checks the compiled BINARY's runtime, `run_tests.sh`
+does not use ASan, and blangd is not ASan-tested. The U4 resolver ctests
+(`resolver_component`, `resolver_reuse`) are the first to run the parser under
+`ctest`'s ASan build (`build-asan`), so they surfaced it.
+
+**Consequence for U4 (test-local mitigation).** `ResolverReuseTest` uses a
+**struct-only** fixture (a struct is registered as both a type and a symbol, so it
+proves type AND symbol resolution) so the DC5 test is LSan-clean without depending
+on the leaky body path. The resolver itself does not leak (its module scopes are
+freed via the parent-chain refcount once released; `ResolverTest` holds them in
+`SmartPtr` locals). Fixing the parser leak (own body scopes/AST via `SmartPtr`, or
+an arena freed with the Module) is a compiler-wide change orthogonal to U4; a
+regression test would parse a function body under ASan and expect clean.
+
+**Reviewer optional suggestion — SKIPPED (noted).** The reviewer suggested
+`newModuleScope` could hand back an owning handle to make caller-side scope leaks
+impossible. Skipped per its own guidance ("do NOT let it expand scope"): it changes
+the return type at both production call sites (qcc, lsp/Compile.cpp), which already
+own their scopes (via the parent chain / the `CompileResult` `SmartPtr`), so it is
+neither trivial nor clearly non-behavior-changing. The test-local `SmartPtr` fix is
+sufficient and behavior-neutral.
+
+---
+
 ## KG-6 — `cli` demotion deferred out of U3 (done-condition 2 partial on the cli item)
 
 **Filed**: U3 (owner decision). **Owner**: a later unit — **U6 (import enforcement)**
