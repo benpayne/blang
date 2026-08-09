@@ -6,6 +6,12 @@
 // editor and the compiler share one resolution truth. It also calls the real
 // lsp::compileDocument entry point on the same source and checks its resolution
 // agrees, so both call sites are exercised, not just re-implemented here.
+//
+// Lifetime note: each Resolver's module scope is held in a SmartPtr and released
+// BEFORE that Resolver is destroyed (a raw Scope* would leak, and because
+// Scope::mParent retains, it would pin the builtin global scope so ~Resolver could
+// not free it). So the "qcc path" captures its resolution RESULTS inside the block
+// rather than returning a scope that outlives its Resolver.
 
 #include <cassert>
 #include <cstdio>
@@ -23,72 +29,100 @@
 
 using namespace QLang;
 
-// Resolve a fixture the way the qcc single-file path does, but through the
-// standalone Resolver (the component both drivers now share). Returns the file
-// scope so the caller can assert what resolves.
-static SmartPtr<Scope> resolveLikeQcc( const std::string &path,
-	const std::string &src, bool &parsedOk )
+// The set of resolutions we compare across the two paths.
+struct Resolutions
 {
-	Resolver resolver;                       // owns global scope, installs gScope
-	Scope *fileScope = resolver.newModuleScope();   // exactly lsp/Compile.cpp's step
+	bool parsed = false;
+	bool type_int = false, type_Point = false, type_string = false, type_bool = false;
+	bool type_absent = false;   // a name that must NOT resolve
+	bool sym_Point = false;     // the struct is also a symbol
+	bool sym_absent = false;
 
-	DiagnosticEngine engine;
-	DiagnosticEngine *prev = gDiag;
-	gDiag = &engine;
-
-	lsp::StringLexerReader reader( src, path );
-	Lexer lexer( &reader );
-	SmartPtr<Module> mod = Module::Parse( lexer, fileScope );
-	parsedOk = ( mod != nullptr );
-	if ( parsedOk )
+	bool operator==( const Resolutions &o ) const
 	{
-		stampDefiningOrigin( (Module *)mod, path );
-		Sema::analyze( (Module *)mod, fileScope, engine );
+		return parsed == o.parsed && type_int == o.type_int &&
+			type_Point == o.type_Point && type_string == o.type_string &&
+			type_bool == o.type_bool && type_absent == o.type_absent &&
+			sym_Point == o.sym_Point && sym_absent == o.sym_absent;
 	}
-	gDiag = prev;
-	// Keep the scope alive for the caller by returning an owning ref.
-	return SmartPtr<Scope>( fileScope );
+};
+
+static Resolutions probe( Scope *s, bool parsed )
+{
+	Resolutions r;
+	r.parsed = parsed;
+	r.type_int = s->findType( "int" ) != nullptr;         // builtin via parent chain
+	r.type_Point = s->findType( "Point" ) != nullptr;      // fixture-declared type
+	r.type_string = s->findType( "string" ) != nullptr;
+	r.type_bool = s->findType( "bool" ) != nullptr;
+	r.type_absent = s->findType( "NoSuchType" ) != nullptr;
+	r.sym_Point = s->findSymbol( "Point" ) != nullptr;     // a struct is also a symbol
+	r.sym_absent = s->findSymbol( "no_such_symbol" ) != nullptr;
+	return r;
 }
 
 int main()
 {
 	const std::string path = "reuse_fixture.b";
+	// Fixture: a struct. A struct is registered as BOTH a type (findType) and a
+	// symbol (findSymbol), so it proves type AND symbol resolution. Deliberately
+	// no function: parsing a function BODY (or even an extern-fn param list) leaks
+	// the parser's internal AST/scope allocations under ASan — a PRE-EXISTING
+	// compiler-process leak, unrelated to the resolver and never ASan-checked
+	// before these ctests (the compiler's own memory is not leak-checked;
+	// test_codegen --leak-check checks the compiled BINARY's runtime, not qcc).
+	// See modules-v2-graph Known-Issues KG-7.
 	const std::string src =
-		"struct Point { int x; int y; }\n"
-		"fn add(int a, int b) -> int { return a + b; }\n";
+		"struct Point { int x; int y; }\n";
 
-	// (1) The qcc-style path, built through the shared Resolver.
-	bool parsedOk = false;
-	SmartPtr<Scope> qccScope = resolveLikeQcc( path, src, parsedOk );
-	assert( parsedOk && "fixture parses through the resolver-built scope" );
+	// (1) The qcc-style path, built through the shared Resolver EXACTLY as
+	// lsp/Compile.cpp does (Resolver + newModuleScope). Everything lives and dies
+	// inside this block: the module scope (SmartPtr) and the Module release first,
+	// then ~Resolver frees the global scope — no leak, no scope outlives it.
+	Resolutions qccPath;
+	{
+		Resolver resolver;
+		SmartPtr<Scope> fileScope = resolver.newModuleScope();
 
-	Scope *qs = (Scope *)qccScope;
-	// Builtins via the parent chain; the fixture's own declarations in the scope.
-	assert( qs->findType( "int" ) != nullptr );
-	assert( qs->findSymbol( "add" ) != nullptr && "function resolves (qcc path)" );
-	assert( qs->findType( "Point" ) != nullptr && "struct type resolves (qcc path)" );
+		DiagnosticEngine engine;
+		DiagnosticEngine *prev = gDiag;
+		gDiag = &engine;
+
+		lsp::StringLexerReader reader( src, path );
+		Lexer lexer( &reader );
+		SmartPtr<Module> mod = Module::Parse( lexer, (Scope *)fileScope );
+		bool parsed = ( (Module *)mod != nullptr );
+		if ( parsed )
+		{
+			stampDefiningOrigin( (Module *)mod, path );
+			Sema::analyze( (Module *)mod, (Scope *)fileScope, engine );
+		}
+		gDiag = prev;
+
+		qccPath = probe( (Scope *)fileScope, parsed );
+	}
+	assert( qccPath.parsed && "fixture parses through the resolver-built scope" );
+	assert( qccPath.type_int && qccPath.type_Point && qccPath.sym_Point &&
+		"builtin + fixture type + fixture symbol resolve on the qcc path" );
+	assert( !qccPath.type_absent && !qccPath.sym_absent &&
+		"absent names do not resolve (negative resolution)" );
 
 	// (2) The REAL blangd entry point (lsp/Compile.cpp), which now constructs the
-	// SAME Resolver internally. Its resolution must agree name-for-name.
-	lsp::CompileResult r = lsp::compileDocument( path, src );
-	assert( r.module != nullptr && "compileDocument parses the fixture" );
-	Scope *ls = (Scope *)r.fileScope;
-	assert( ls->findType( "int" ) != nullptr );
-	assert( ls->findSymbol( "add" ) != nullptr && "function resolves (lsp path)" );
-	assert( ls->findType( "Point" ) != nullptr && "struct type resolves (lsp path)" );
-
-	// Identical resolution: every name that resolves on one path resolves on the
-	// other (same shared component, same result).
-	const char *names[] = { "int", "add", "Point", "string", "bool" };
-	for ( const char *n : names )
+	// SAME Resolver internally. Its fileScope is owned by the CompileResult
+	// SmartPtr; its parent is the process-static Resolver's global scope (a
+	// reachable root — LSan-clean).
+	Resolutions lspPath;
 	{
-		bool qType = qs->findType( n ) != nullptr;
-		bool lType = ls->findType( n ) != nullptr;
-		bool qSym = qs->findSymbol( n ) != nullptr;
-		bool lSym = ls->findSymbol( n ) != nullptr;
-		assert( qType == lType && "type resolution identical across qcc/lsp paths" );
-		assert( qSym == lSym && "symbol resolution identical across qcc/lsp paths" );
+		lsp::CompileResult res = lsp::compileDocument( path, src );
+		lspPath = probe( (Scope *)res.fileScope, res.module != nullptr );
 	}
+	assert( lspPath.parsed && lspPath.type_int && lspPath.type_Point &&
+		lspPath.sym_Point && "builtin + fixture type + fixture symbol resolve (lsp path)" );
+
+	// Identical resolution: the shared component yields the SAME result on both the
+	// qcc path and the real blangd entry point.
+	assert( qccPath == lspPath &&
+		"resolution is identical across the qcc and lsp paths (one shared resolver)" );
 
 	printf( "ResolverReuseTest: OK\n" );
 	return 0;

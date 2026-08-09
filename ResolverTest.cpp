@@ -27,23 +27,29 @@ int main()
 
 		// A fresh module scope parents into the environment: builtins are visible
 		// via the parent chain, but the module scope is its own symbol table.
-		Scope *m = r.newModuleScope();
-		assert( m != nullptr );
+		// NOTE: hold module scopes in SmartPtr locals so they RELEASE at end of this
+		// block — before ~Resolver. A raw Scope* would leak, and (because
+		// Scope::mParent retains) each leaked module scope would pin the builtin
+		// global scope alive so ~Resolver could not free it (LSan). The production
+		// LSP caller already owns its scope via SmartPtr; this is a test-local
+		// lifetime concern only.
+		SmartPtr<Scope> m = r.newModuleScope();
+		assert( (Scope *)m != nullptr );
 		assert( m->findType( "int" ) != nullptr && "builtins visible via parent" );
 
 		// Two module scopes are isolated from each other (a symbol in one is not
 		// visible in the other) — the per-module-scope property U4 provides.
-		Scope *a = r.newModuleScope();
-		Scope *b = r.newModuleScope();
+		SmartPtr<Scope> a = r.newModuleScope();
+		SmartPtr<Scope> b = r.newModuleScope();
 		a->addType( new Type( "OnlyInA" ) );
 		assert( a->findType( "OnlyInA" ) != nullptr );
 		assert( b->findType( "OnlyInA" ) == nullptr && "module scopes are isolated" );
 
 		// Module-graph namespace registry (present for both drivers; dormant in
 		// blangd until Epic C).
-		Scope *ns = r.newModuleScope();
-		r.registerNamespace( "mymod", ns );
-		assert( r.resolveNamespace( "mymod" ) == ns );
+		SmartPtr<Scope> ns = r.newModuleScope();
+		r.registerNamespace( "mymod", (Scope *)ns );
+		assert( r.resolveNamespace( "mymod" ) == (Scope *)ns );
 		assert( r.resolveNamespace( "absent" ) == nullptr );
 	}
 
