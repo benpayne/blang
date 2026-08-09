@@ -1,0 +1,6 @@
+name = alice
+has verbose = true
+count = 3
+missing = default
+has missing = false
+hits = 25
