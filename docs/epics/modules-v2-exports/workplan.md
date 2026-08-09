@@ -176,10 +176,18 @@ migration target (review F1/F8 sequencing).
   years for that reason. **Hard constraint: fixed BEFORE U5's corpus migration**,
   or the migration bakes the defect into every example and locks the wrong output
   into the goldens.
+- **Status (2026-08-08 continuation)**: PARTIAL — landed on `master` at
+  `58a240a`: the **design artifact** (`specs/032-stdlib-opaque-api/`, design-audited
+  per Principle VI — so the pre-implementation gate is already satisfied) and the
+  **print/interpolation-renderer** fixes (KI-8 / KI-8b / KI-9 / KI-10). **Still
+  owed by the redo**: the accessor/method surface itself, `Map`/`Set` `pub init` +
+  call-site + golden migration, the `examples/` migration, and the newly-filed
+  KI-20 / KI-21 renderer follow-ups (+ the review's two nits — dead `fnName` local
+  at `CGExpressions.cpp:1484`, duplicated `hasPrintable` detection).
 - **Done condition**: design artifact committed under the unit's speckit dir
-  and marked approved in its PR; new accessor surface implemented; `Map`/
-  `Set` `pub init` shipped with migrated call sites and goldens green; all
-  `examples/` integration scripts pass;
+  and marked approved in its PR (DONE); new accessor surface implemented; `Map`/
+  `Set` `pub init` shipped with migrated call sites and goldens green; KI-20/KI-21
+  resolved with fixtures; all `examples/` integration scripts pass;
   `tools/check_no_field_reachins.sh examples/` exits 0 (script committed in
   the epic; U5 extends its field list as more types go opaque); full gates
   green.

@@ -3,7 +3,8 @@
 **Archetype**: evolve (inverts the export model under the existing module
 surface; Epic A of the modules-v2 split)
 
-**Status**: launched
+**Status**: redo — U1–U3 + U4-renderer landed on `master`; continuation scoped to
+**U4 remainder + U5** (see "Continuation scope" below)
 
 **Owner**: Ben Payne
 
@@ -122,6 +123,58 @@ by a committed test that CI runs:
   name a private field/method); emission is unchanged. The U1 factory
   applies **only to non-generic structs**.
 
+## Continuation scope — 2026-08-08 redo (U4 remainder + U5)
+
+The first run line (`92b1f2a0`, relaunch of `370bedc3`) landed the epic's
+machinery but **halted mid-U4**; U5 never started. State verified on `master`
+before this redo:
+
+- **U1, U2, U3 — fully merged** (PRs #139 / #140 / #141): construction-ABI
+  factory, `.bmod` true interface (method/init/factory signatures, conformance
+  records, cache format-version salt), `pub` on impl members with
+  private-by-default and P9 export-signature enforcement. Baseline re-verified
+  green (`run_tests.sh` 233/0, `test_codegen.sh` 157/0, `test_build` suite
+  green).
+- **U4 — partially landed.** The interpolation/print-**renderer** half
+  (KI-8 / KI-8b / KI-9 / KI-10) plus the stdlib-opaque-API **design artifact**
+  (speckit `032-stdlib-opaque-api`, design-audited per Principle VI) were
+  salvage-merged at commit `58a240a` — independently reviewed (no blockers),
+  suites green, `--leak-check` clean on the ARC-sensitive paths. This means the
+  **U4 Principle VI design gate is already satisfied**: proceed straight to
+  implementation.
+- **U5 — not started.**
+
+**This redo must NOT re-do U1–U3 or the U4 renderer work already on `master`.**
+It covers exactly:
+
+1. **U4 remainder (REQ-010).** Implement the accessor/method surface designed in
+   speckit `032` for the field-consumed stdlib types (`HttpRequest`,
+   `HttpRequestLine`, `HttpParsedHeaders`, `HttpResponse`, `FileInfo`, and any
+   other found by a sweep of `examples/`/`test_build/`/`test_files/`); add
+   `pub init` to `Map`/`Set` and migrate the struct-literal call sites + their
+   goldens; migrate `examples/` onto the accessor surface until
+   `tools/check_no_field_reachins.sh examples/` exits 0. Also resolve **KI-20 and
+   KI-21** (renderer follow-ups filed from the salvage review — the
+   `shared`/`sync` interpolation self-pointer and the field-access direct-print
+   shape) and the review's two nits in the same pass.
+2. **U5 (REQ-004 / REQ-005 / REQ-008) — the flip.** Member variables
+   always-private; struct literals module-private; field access on an imported
+   type a located error; `BmodEmitter` stops emitting source-resolvable field
+   layout for non-generic structs (generics exempt — full layout + bodies keep
+   shipping, visibility Sema-only); D15 compiler-facing metadata for
+   `table`/`@json`; query codegen / Sema `.field` validation / `@json` generation
+   read D15 metadata for imported types; resolve open question #1
+   (generated-function spelling); sqlite-backed lib+bin fixture (done-cond. 6);
+   corpus migration off field reach-ins; wire `check_no_field_reachins.sh` into
+   CI. Split into U5a (enforcement flip) / U5b (corpus migration) if the budget
+   runs short — prefer that over cutting fixtures.
+
+The **epic-level done condition is unchanged** (all 9 items must hold on
+`master`) — it is the acceptance bar for this redo. Sequencing: U4 remainder
+first (its U2 dep and design gate are already satisfied), then U5 (needs
+U3 + U4). Budgets in `manifest.yaml` are re-scoped for the two remaining units
+(see the run-limits note there).
+
 ## Companion documents
 
 | File | Purpose |
@@ -201,6 +254,9 @@ about user code.
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
+| 2026-08-08 | — | continuation planned | Pulled origin/master (U1–U3 + supporting work). Reviewed epic state: U1–U3 merged, U4 partial, U5 not started. Baseline re-verified green. Scoped this redo to **U4 remainder + U5**; overview "Continuation scope" + manifest limits updated. Next: `/devbot-review` → `/devbot-launch` (devbot server currently offline). |
+| 2026-08-08 | — | U4 renderer salvaged | Merged `origin/epic/modules-v2-exports-u4` (KI-8/8b/9/10 renderer fixes + speckit `032` design artifact) to `master` at `58a240a` via an independently-reviewed merge (no blockers; green; `--leak-check` clean). Filed KI-20/KI-21 (renderer follow-ups) for the U4-remainder run. U4 design gate (Principle VI) now satisfied. |
+| 2026-08-05 | 92b1f2a0-c643-4fa9-a60a-fbdc6c305783 | halted mid-U4 | Landed U1–U3 (PRs #139/#140/#141) and U4's renderer work on a branch; halted before the U4 stdlib-API surface and all of U5. Never folded back (outcome had stayed `pending`); resolved to `halted` during the 2026-08-08 continuation review. |
 | 2026-08-05 | 92b1f2a0-c643-4fa9-a60a-fbdc6c305783 | relaunched (redo) | root cause of turn-0 pauses fixed in devbot: claude-opus-5 runs adaptive thinking when `thinking` is omitted and it shares the max_tokens budget — team-plan JSON truncated mid-string every retry; provider now pins thinking disabled + 16k cap; prior run left `interrupted` at 0 turns/0 tokens by the backend restart |
 | 2026-08-05 | 370bedc3-7619-4e21-bdcd-af18b007c893 | paused → resumed | auto-paused at turn 0 (alert: controller `plan_team` returned invalid output after retry — transient); resumed, status running |
 | 2026-08-05 | 370bedc3-7619-4e21-bdcd-af18b007c893 | launched | fully_autonomous; limits 120 turns / 16h / 5M tokens; planning docs committed at d980c37 |
