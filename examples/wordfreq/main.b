@@ -18,13 +18,13 @@ fn main() -> int {
 		+ "the dog barks and the fox runs over the hill";
 
 	// Stop words to exclude from the count.
-	Set<string> stop = Set<string> { items: [], buckets: [] };
+	Set<string> stop = Set<string>();
 	stop.add("the");
 	stop.add("and");
 	stop.add("over");
 
 	// Count every non-stop word.
-	Map<string, int> counts = Map<string, int> { keys: [], values: [], buckets: [] };
+	Map<string, int> counts = Map<string, int>();
 	Array<string> words = tokenize(text);
 	for w in words {
 		if !stop.has(w) {
@@ -84,7 +84,7 @@ test "tokenize collapses repeated spaces" {
 }
 
 test "map counts occurrences" {
-	Map<string, int> counts = Map<string, int> { keys: [], values: [], buckets: [] };
+	Map<string, int> counts = Map<string, int>();
 	Array<string> w = tokenize("a b a c a b");
 	for x in w {
 		counts.set(x, counts.get_or(x, 0) + 1);
@@ -96,7 +96,7 @@ test "map counts occurrences" {
 }
 
 test "set membership filters" {
-	Set<string> s = Set<string> { items: [], buckets: [] };
+	Set<string> s = Set<string>();
 	s.add("x");
 	s.add("y");
 	assert s.has("x");

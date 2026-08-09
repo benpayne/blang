@@ -12,7 +12,7 @@
 import collections;
 
 fn main() -> int {
-	Map<string, int> m = Map<string, int> { keys: [], values: [], buckets: [] };
+	Map<string, int> m = Map<string, int>();
 	m.set("alpha", 1);
 	m.set("beta", 2);
 	m.set("gamma", 3);
@@ -30,7 +30,7 @@ fn main() -> int {
 	println("total={}", total);
 
 	// Set<K>.items() — the same shape on Set.
-	Set<string> s = Set<string> { items: [], buckets: [] };
+	Set<string> s = Set<string>();
 	s.add("x");
 	s.add("y");
 	for it in s.items() {

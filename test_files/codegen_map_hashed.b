@@ -10,7 +10,7 @@ fn key_for(int i) -> string {
 }
 
 fn main() -> int {
-    Map<string, int> m = Map<string, int> { keys: [], values: [], buckets: [] };
+    Map<string, int> m = Map<string, int>();
 
     int N = 500;
     // Insert N distinct keys, each mapped to i*7.

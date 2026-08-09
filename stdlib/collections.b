@@ -8,8 +8,10 @@
 // (keyIndex + 1); 0 means empty. The table grows (doubling + rehash) when the
 // load factor exceeds 0.7, so `has`/`get`/`set` are O(1) average.
 //
-// Construction: Map<string,int> { keys: [], values: [], buckets: [] }
-// (buckets is lazily sized on the first set()).
+// Construction: Map<string,int>()  (via `pub init`; buckets is lazily sized on
+// the first set()). The struct-literal form is no longer the construction
+// surface — `Map<K,V>()` is symmetric with a non-generic Counter(5) and does
+// not name the internal fields.
 
 extern fn __blang_hash_string(string s) -> int;
 
@@ -20,6 +22,14 @@ pub struct Map<K, V> {
 }
 
 impl Map {
+    // Construct an empty Map. `buckets` stays empty until the first set()
+    // (ensure_buckets lazily sizes it), matching the former literal form.
+    pub init() {
+        self.keys = [];
+        self.values = [];
+        self.buckets = [];
+    }
+
     fn length(self) -> int {
         return self.keys.length;
     }
@@ -168,6 +178,13 @@ pub struct Set<K> {
 }
 
 impl Set {
+    // Construct an empty Set. `buckets` stays empty until the first add()
+    // (ensure_buckets lazily sizes it).
+    pub init() {
+        self.items = [];
+        self.buckets = [];
+    }
+
     fn length(self) -> int {
         return self.items.length;
     }

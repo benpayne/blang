@@ -1,7 +1,7 @@
 // U6: hashed Map get_or/has/length/is_empty combinations. golden.
 import collections;
 fn main() -> int {
-    Map<string, int> m = Map<string, int> { keys: [], values: [], buckets: [] };
+    Map<string, int> m = Map<string, int>();
     println("empty = {}", m.is_empty());
     m.set("a", 10);
     m.set("b", 20);

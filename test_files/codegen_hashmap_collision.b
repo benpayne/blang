@@ -2,7 +2,7 @@
 // removes; all survivors read back correctly. golden.
 import collections;
 fn main() -> int {
-    Map<string, int> m = Map<string, int> { keys: [], values: [], buckets: [] };
+    Map<string, int> m = Map<string, int>();
     int i = 0;
     while i < 200 {
         m.set("n{i}", i);
