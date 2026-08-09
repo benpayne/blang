@@ -819,3 +819,42 @@ U5 makes field access and struct literals on a cross-module struct a located Sem
 field/literal rules then key on "defined in a different module than the use site" — covering `.bmod` AND
 combine-mode namespaced stdlib uniformly — and the ABI flag is no longer read for visibility at all. Tracked
 alongside KI-16 (the file→module mapping Epic B owns).
+
+---
+
+## KI-24 — capturing a for-in loop element across a `break`/early-exit is not ARC-balanced
+
+**Filed**: U5b close-out (surfaced by `rev`; **independently reproduced by the owner** at
+epic completion). **Owner**: not this epic — pre-existing, epic-UNRELATED; file only.
+Candidate for a future codegen/ARC pass or Epic B.
+
+Assigning a for-in loop **element** to an outer refcounted variable and then leaving the
+loop early leaks (and, per `rev`'s analysis, can use-after-free on a sibling path). Minimal
+reproduction on `master` with a **plain `Array<string>`** (no generics, no modules):
+
+```blang
+Array<string> a = ["x", "y", "z"];
+string found = "none";
+for s in a {
+    if s == "y" { found = s; break; }   // element captured, then early exit
+}
+println("{}", found);                   // prints "y" (correct) but leaks the element
+```
+
+Under ASan/`--leak-check` this reports **`Leaks: 1`** — the element string retained into
+`found` is not balanced against the loop's per-iteration element cleanup on the `break`
+path. Output is correct; the defect is the refcount imbalance (leak; `rev` also observed a
+UAF variant on a related exit path).
+
+**Distinct from KI-22.** KI-22 (fixed in U5b) was about the loop **element-type resolution**
+and the **iterable temp's** lifetime across for-in exit paths for a *generic-struct-method*
+returning `Array<K>`; its fix (`codegen_forin_generic_method_exits.b`) is leak-clean. KI-24 is
+the **element's** refcount on a capture-and-break path for an ordinary array — a narrower
+residual the KI-22 fix does not cover.
+
+**Why not fixed here.** It is a general for-in/ARC codegen bug that reproduces independent of
+anything this epic touched, and **is not exercised by the committed corpus** (which is why the
+full suite is leak-clean at 165/0). Fixing it is an ARC-lifetime change to for-in element
+handling with no trace to any REQ in this epic; bundling it into the export work would widen a
+reviewable unit. Recorded here so it is not lost. A regression fixture should be added when it
+is fixed (the reproduction above, expected leak-clean).

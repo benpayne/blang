@@ -135,4 +135,4 @@ devbot:
       outcome: halted   # landed U1-U3 (PRs #139/#140/#141) + U4 renderer half on a branch; halted before U4 stdlib-API surface and all of U5. Resolved pending->halted at the 2026-08-08 continuation review.
     - run_id: aeba092e-0963-46c3-99aa-bd3f3fbc2160
       launched: 2026-08-08
-      outcome: pending   # continuation redo scoped to U4 remainder + U5
+      outcome: completed   # U4 remainder + U5 (a/b) merged to local master f70e0f4; all 9 done-condition items independently verified by the owner 2026-08-09. CI-green pending push.

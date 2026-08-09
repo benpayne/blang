@@ -642,19 +642,24 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
   - `modules-v2-exports` (`docs/epics/modules-v2-exports/`) — status:
-    **launched (redo, run `aeba092e-0963-46c3-99aa-bd3f3fbc2160`, 2026-08-08)** —
-    U1-U3 merged (PRs #139/#140/#141: construction
+    **complete-local** (all 5 units U1–U5 merged to local `master` `f70e0f4`;
+    epic done-condition — all 9 items — independently verified by the owner
+    2026-08-09; **CI-green pending push**). Runs: `aeba092e` (2026-08-08,
+    completed — U4 remainder + U5a/U5b); earlier `370bedc3` (stopped, controller
+    bug) and `92b1f2a0` (halted mid-U4, landed U1–U3). U1-U3 (PRs #139/#140/#141:
+    construction
     ABI via a library-emitted factory `specs/029`, the `.bmod` as a versioned true
     interface `specs/030`, `pub` on impl members + private-by-default + P9 export
-    enforcement `specs/031`); U4 **partial** — its print/interpolation-renderer
-    fixes (KI-8/8b/9/10) + the design artifact `specs/032` salvage-merged at
-    `58a240a`, so the U4 Principle VI design gate is satisfied. The **redo** owes
-    the U4 remainder (stdlib accessor surface, `Map`/`Set` `pub init` + call-site
-    migration, examples migration, KI-20/21) and **all of U5** — the flip
-    (always-private fields, module-private struct literals, opaque `.bmod`, D15
-    metadata, corpus migration). Prior runs: `370bedc3` (stopped, 0 turns —
-    controller bug) and `92b1f2a0` (halted mid-U4, 2026-08-05). See the
-    "Continuation scope" section in the overview. Epic A of the modules-v2 split: opaque exports — cross-module
+    enforcement `specs/031`); U4 (print/interpolation-renderer fixes KI-8/8b/9/10 +
+    design artifact `specs/032` salvage-merged `58a240a`, then the stdlib accessor
+    surface + `Map`/`Set` `pub init` + examples migration + KI-20/21, PR #143); U5
+    the flip (always-private fields, module-private struct literals, located
+    field-access errors, opaque `.bmod` v3→v4, D15 metadata, corpus migration;
+    U5a PR #144 `a93bb3c`, U5b `f70e0f4`; `Todo.from_json` symmetric builtin per
+    owner OQ#1 ruling, KI-22 fix). Verified: `run_tests` 239/0 + 232/0,
+    `test_codegen` 165/0, `--leak-check` Leaks:0, `test_lsp` 62/0, `test_build`
+    pass, reach-in gate exits 0. Filed KI-24 (pre-existing for-in
+    element-capture-across-break ARC leak, epic-unrelated). Epic A of the modules-v2 split: opaque exports — cross-module
     construction via library-emitted factory, `pub` methods/`init`
     (private-by-default), always-private fields, `.bmod` as true interface
     (signatures + protocol-conformance records + compiler-facing `table`/`@json`
