@@ -5,7 +5,7 @@
 // "instruction does not dominate all uses" -> IR-verify ICE.
 import collections;
 fn main() -> int {
-	Set<string> s = Set<string> { items: [], buckets: [] };
+	Set<string> s = Set<string>();
 	s.add("a");
 	s.add("b");
 	assert s.has("a") && s.has("b"), "both present";

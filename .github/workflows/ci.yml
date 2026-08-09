@@ -255,6 +255,17 @@ jobs:
             echo "  UPDATE_GOLDENS=1 ./test_build/run_build_tests.sh"
             exit 1
           }
+      - name: No field reach-ins in the consumer corpus (done-condition 8)
+        # The opaque-exports gate: no source-level reach-in on an opaque
+        # stdlib/imported-struct field across examples/ and the test_build/
+        # projects. Scoped to the real consumer corpus -- test_files/ is
+        # excluded because its single-file fixtures DEFINE their own collection
+        # types with the same field names (same-module, no boundary), which a
+        # field-name grep cannot distinguish from a reach-in; .bmod-path
+        # user-struct field privacy is enforced by Sema (fail/xmodule/) instead.
+        run: |
+          tools/check_no_field_reachins.sh --selfcheck
+          tools/check_no_field_reachins.sh examples/ test_build/
 
   # ---- 4. Sanitizer (ASan/UBSan) build + leak-check with teeth ----
   sanitizers:

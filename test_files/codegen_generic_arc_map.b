@@ -14,7 +14,7 @@ struct Point {
 
 fn main() -> int {
 	// String values: set, get, overwrite.
-	Map<string, string> m = Map<string, string> { keys: [], values: [], buckets: [] };
+	Map<string, string> m = Map<string, string>();
 	m.set("greeting", "hello");
 	m.set("name", "ada");
 	println("{}", m.get("greeting"));
@@ -23,7 +23,7 @@ fn main() -> int {
 	println("{}", m.get("name"));
 
 	// Struct values under churn: interpolated keys, every entry overwritten.
-	Map<string, Point> pts = Map<string, Point> { keys: [], values: [], buckets: [] };
+	Map<string, Point> pts = Map<string, Point>();
 	for i in 0..40 {
 		pts.set("p{i}", Point { x: i, label: "point {i}" });
 	}

@@ -11,7 +11,7 @@ import collections;
 struct Point { int x; int y; }
 
 fn main() -> int {
-	Map<string, int> ages = Map<string, int> { keys: [], values: [], buckets: [] };
+	Map<string, int> ages = Map<string, int>();
 	ages.set("alice", 30);
 	ages.set("bob", 25);
 	println("alice={}", ages.get("alice"));
@@ -39,7 +39,7 @@ fn main() -> int {
 	assert ages.has("bob") == false, "bob removed";
 
 	// Map<string, struct>: a refcounted value type through the module Map.
-	Map<string, Point> pts = Map<string, Point> { keys: [], values: [], buckets: [] };
+	Map<string, Point> pts = Map<string, Point>();
 	pts.set("origin", Point { x: 3, y: 4 });
 	Point p = pts.get("origin");
 	println("origin={},{}", p.x, p.y);

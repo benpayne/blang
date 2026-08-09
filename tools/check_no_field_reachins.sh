@@ -5,15 +5,24 @@
 # types that are (or become) opaque under the modules-v2-exports epic.
 # Exits 0 iff no reach-in is found.
 #
-# NOTE: this check is EXPECTED TO FAIL until workplan units U4/U5 migrate
-# the corpus onto the accessor/method surface. It is the target gate, not a
-# CI gate for master today. Wire it into CI when U5 lands.
+# STATUS (U5b): LIVE — wired into CI over `examples/ test_build/` (the real
+# consumer corpus). U4 migrated examples/ onto the accessor surface; U5b
+# migrated Map/Set construction and the generic consumer.
 #
-# Maintained by: U4 seeds the field list below (stdlib DTOs); U5 extends it
-# to the full opaque surface. Each entry is TYPE:FIELD — the pattern matches
-# `.FIELD` accesses in .b sources, with a curated per-field variable-name
-# heuristic kept deliberately simple; refine per-entry rather than making
-# the script clever.
+# SCOPE: run this over the multi-file / stdlib-consuming corpus (examples/,
+# test_build/). Do NOT point it at test_files/: its single-file fixtures DEFINE
+# their own collection types (`struct Box { Array<T> items; }`, local Map/Set)
+# and legitimately do SAME-MODULE field access with the same field names, which
+# a field-name grep cannot tell apart from a cross-module reach-in. The .bmod
+# cross-module path is enforced precisely by Sema (StructDefinition::
+# isFromInterface) with fail/xmodule/ fixtures; this grep covers the remaining
+# combine-mode namespaced-stdlib gap Sema does not reach this epic (KI-23).
+#
+# Maintained by: U4 seeded the field list below (stdlib DTOs); it enumerates
+# the opaque stdlib DTO surface + the promoted Map/Set collections. Each entry
+# is TYPE:FIELD — the pattern matches `.FIELD` accesses in .b sources, with a
+# curated per-field variable-name heuristic kept deliberately simple; refine
+# per-entry rather than making the script clever.
 #
 # Usage: tools/check_no_field_reachins.sh <dir> [<dir> ...]
 

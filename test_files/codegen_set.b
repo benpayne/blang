@@ -2,7 +2,7 @@
 import collections;
 
 fn main() -> int {
-    Set<string> s = Set<string> { items: [], buckets: [] };
+    Set<string> s = Set<string>();
 
     s.add("apple");
     s.add("banana");

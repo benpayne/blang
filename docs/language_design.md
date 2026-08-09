@@ -759,9 +759,24 @@ locally. This is invisible in source — it exists so a module's memory layout n
 not be part of its public interface — with one consequence worth knowing: a
 struct's internals can change without its consumers being rebuilt.
 
-Generic structs differ: their bodies travel in the interface file so a consumer
-can instantiate them for its own type arguments, and they are constructed by the
-consumer as before.
+Generic structs differ: their full field layout and every method body travel in
+the interface file so a consumer can instantiate (monomorphize) them for its own
+type arguments. A generic type is nonetheless just as opaque across a module
+boundary — its fields are private and its struct literal is not writable from
+another module. The one external construction spelling is `Name<Args>(...)`,
+which runs the type's `pub init` monomorphized for the written arguments:
+
+```
+Pair<int> p = Pair<int>(10, 32);   // construct via pub init
+int a = p.first();                 // read via an accessor method
+// Pair<int> { first: 10, ... }    // error: struct literal for imported type
+// int b = p.first;                // error: field 'first' is private
+```
+
+Visibility for generics is enforced purely as a resolution rule — the interface
+file still ships the full layout and all bodies (the consumer needs them to
+monomorphize), but a consumer's *source* cannot name a private field or write a
+literal for the type.
 
 ### Declarations Must Have Bodies
 
@@ -1066,12 +1081,21 @@ struct APIResponse {
 }
 
 // Automatically gets serializers, dispatched at compile time:
-// to_json(value) -> string            // serialize a @json struct
-// APIResponse_from_json(string input) -> APIResponse   // parse
+// to_json(value) -> string                       // serialize a @json struct
+// APIResponse.from_json(string) -> APIResponse   // parse (type-directed)
 ```
 
-The builtin `to_json(value)` resolves the argument's struct type at compile
-time and serializes it (a compile error if the struct is not `@json`).
+The two serializers are symmetric, and both dispatch through the compiler — you
+never write a mangled function name:
+
+- `to_json(value)` is **value-directed**: it resolves the argument's struct type
+  at compile time and serializes it (a compile error if the struct is not
+  `@json`).
+- `Type.from_json(string)` is **type-directed**: `APIResponse.from_json(body)`
+  parses a JSON string back into an `APIResponse`. It names the *type*, not the
+  generated function.
+
+Both work across a module boundary on an imported `@json` struct.
 
 ### gRPC and Protocol Buffers
 

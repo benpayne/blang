@@ -1120,6 +1120,35 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		if ( arrVal == nullptr )
 			return;
 
+		// If the iterable is a fresh owning array temporary — a method call or
+		// function call returning Array<...> — it is tracked in mTempArrays and
+		// would be released by the loop BODY's per-iteration block cleanup,
+		// freeing it on the first iteration (use-after-free on the next
+		// __blang_array_get, the KI-22 segfault). Move it OUT of statement-temp
+		// tracking and into the ENCLOSING block's array scope: that scope's
+		// cleanup releases it exactly once on EVERY loop exit — fall-through,
+		// break (branches to afterBB, then falls out of the enclosing block),
+		// and early return (the return handler releases every array-scope frame)
+		// — while the body block's own frame (pushed one level higher during
+		// body codegen) never touches it, so there is no per-iteration release.
+		// A variable/field iterable is owned elsewhere (not an owning temp), so
+		// iterableIsOwningTemp stays false and this is a no-op for those.
+		// KI-22 (rev finding A: break/early-return exit paths).
+		Expression *iterExpr = (Expression*)forInStmt->mIterableExpression;
+		bool iterableIsOwningTemp =
+			( dynamic_cast<MethodCallExpression*>( iterExpr ) != nullptr ||
+			  dynamic_cast<CallExpression*>( iterExpr ) != nullptr ) &&
+			!mArrayScopeStack.empty();
+		if ( iterableIsOwningTemp )
+		{
+			untrackTempArray( arrVal );
+			llvm::AllocaInst *iterHold = mBuilder->CreateAlloca(
+				llvm::PointerType::get( *mContext, 0 ), nullptr, "forin.iter.hold" );
+			mBuilder->CreateStore( arrVal, iterHold );
+			// nullptr VariableDefinition: never a move source, always released.
+			mArrayScopeStack.back().push_back( { iterHold, nullptr } );
+		}
+
 		// Get the array length
 		llvm::Value *lenVal = mBuilder->CreateCall(
 			getOrDeclareArrayLength(), { arrVal }, "arr.len" );
@@ -1143,6 +1172,18 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 			Type *fieldType = getFieldType( fa );
 			if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
 				elemQType = fieldType->getTypeParam( 0 );
+		}
+		else if ( auto *mc = dynamic_cast<MethodCallExpression*>(
+				 (Expression*)forInStmt->mIterableExpression ) )
+		{
+			// Method-call iterable (for k in m.keys()): resolve the method's
+			// Array<K> return element type, substituting the receiver's type
+			// arguments (K -> string for a Map<string,int>). Without this the
+			// loop var defaulted to int and a string element was read as an
+			// integer -> garbage/segfault (KI-22).
+			Type *retElem = methodReturnElementType( mc );
+			if ( retElem != nullptr )
+				elemQType = retElem;
 		}
 		if ( elemQType != nullptr )
 			elemType = getLLVMType( elemQType );
@@ -1219,7 +1260,9 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		mBuilder->CreateStore( nextVal, counterAlloca );
 		mBuilder->CreateBr( condBB );
 
-		// After
+		// After: the iterable temp (when it is an owning method/call result) is
+		// released by the enclosing block's array-scope cleanup on every exit
+		// path — see the registration above (KI-22). No manual release here.
 		mBuilder->SetInsertPoint( afterBB );
 		return;
 	}

@@ -1,7 +1,7 @@
 // U6: hashed Set dedup + large-N growth + remove. golden.
 import collections;
 fn main() -> int {
-    Set<string> s = Set<string> { items: [], buckets: [] };
+    Set<string> s = Set<string>();
     s.add("red");
     s.add("green");
     s.add("red");
