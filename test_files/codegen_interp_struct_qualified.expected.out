@@ -1,0 +1,5 @@
+local=Point(3,4)
+shared=Point(10,20)
+sync=Point(30,40)
+wide=Wide(5,mid,6)
+both=Point(3,4)/Point(10,20)

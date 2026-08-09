@@ -966,23 +966,48 @@ StructDefinition *CodeGen::structDefForInterpolationPart( Expression *part )
 	return receiverStructDef( part );
 }
 
-// Render a struct value through the Printable protocol. `selfPtr` must already
-// be the struct's self pointer (see genPrintCall for why that must come from the
-// variable's ADDRESS and not from a loaded value).
-llvm::Value *CodeGen::genPrintableToString( StructDefinition *sd, Expression *node,
-	llvm::Value *selfPtr )
+// Does this struct render through Printable? Explicit `impl Printable` always
+// counts; a structural `to_string` counts only for a type defined in THIS module
+// — an imported type must state conformance through the .bmod record (D16), so a
+// private to_string that vanishes under `pub` filtering does not silently qualify
+// it. The single source of truth for both the print and interpolation paths.
+bool CodeGen::structIsPrintable( StructDefinition *sd )
 {
-	bool hasPrintable = false;
+	if ( sd == nullptr )
+		return false;
 	for ( const auto &proto : sd->getConformedProtocols() )
 		if ( proto == "Printable" )
-			hasPrintable = true;
-	if ( !hasPrintable && !sd->isFromInterface() )
+			return true;
+	if ( !sd->isFromInterface() )
 	{
 		for ( auto &m : sd->getMethods() )
 			if ( m->getName() == "to_string" )
-				hasPrintable = true;
+				return true;
 	}
-	if ( !hasPrintable )
+	return false;
+}
+
+// The self pointer for a struct receiver, taken from the value's ADDRESS. A
+// loaded value is wrong for `shared`/`sync`, whose variable holds a heap pointer
+// that genVariableExpression loads twice (yielding the struct's first 8 bytes as
+// a pointer). A receiver with no addressable slot — a field access or a call
+// result — has genExpression yield the heap pointer directly, which is correct.
+llvm::Value *CodeGen::structSelfPointer( Expression *argExpr )
+{
+	llvm::AllocaInst *addr = getExpressionAddress( argExpr );
+	if ( addr != nullptr && addr->getAllocatedType()->isPointerTy() )
+		return mBuilder->CreateLoad(
+			llvm::PointerType::get( *mContext, 0 ), addr, "self.ptr" );
+	return genExpression( argExpr );
+}
+
+// Render a struct value through the Printable protocol. `selfPtr` must already
+// be the struct's self pointer (see structSelfPointer for why that must come
+// from the variable's ADDRESS and not from a loaded value).
+llvm::Value *CodeGen::genPrintableToString( StructDefinition *sd, Expression *node,
+	llvm::Value *selfPtr )
+{
+	if ( !structIsPrintable( sd ) )
 	{
 		reportError( node, "type '" + sd->getName() +
 			"' is not printable — implement the Printable protocol" );
@@ -1076,7 +1101,15 @@ llvm::Value *CodeGen::genStringInterpolation( StringInterpolation *interp )
 				StructDefinition *psd = structDefForInterpolationPart( part );
 				if ( psd != nullptr )
 				{
-					llvm::Value *strPart = genPrintableToString( psd, part, val );
+					// The self pointer must come from the ADDRESS, not `val`:
+					// `val` is genExpression's result, which double-loads a
+					// shared/sync struct variable and would pass its first 8
+					// bytes as a pointer (known-issues KI-20). This mirrors the
+					// direct-print path in genPrintCall.
+					llvm::Value *selfPtr = structSelfPointer( part );
+					if ( selfPtr == nullptr )
+						return nullptr;
+					llvm::Value *strPart = genPrintableToString( psd, part, selfPtr );
 					if ( strPart == nullptr )
 						return nullptr;   // reportError already fired
 					// to_string returns a FRESH string (refcount 1) that nothing
@@ -1400,27 +1433,24 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 			// genExpression yields for every ownership qualifier (see below), so
 			// generating first and reinterpreting afterwards is what produced a
 			// segfault for `shared`/`sync` receivers.
+			//
+			// receiverStructDef, not a bare mStructDefMap lookup: the implicit
+			// `self` parameter's declared type name is the literal "self", so a
+			// name lookup missed and `self` fell through to the generic path,
+			// which handed a raw struct pointer to __blang_string_concat_many AS
+			// IF it were a BlangString (known-issues KI-10). It also resolves a
+			// FIELD-access receiver (`println("{}", h.inner)`), which the earlier
+			// VariableExpression-only test dropped onto that same raw-pointer path
+			// (known-issues KI-21).
 			bool isStructArg = false;
 			std::string structTypeName;
-			if ( auto *ve = dynamic_cast<VariableExpression*>( argExpr ) )
+			if ( dynamic_cast<VariableExpression*>( argExpr ) != nullptr ||
+				 dynamic_cast<FieldAccessExpression*>( argExpr ) != nullptr )
 			{
-				if ( ve->mVariable && ve->mVariable->getVariableType() )
+				if ( StructDefinition *rsd = receiverStructDef( argExpr ) )
 				{
-					structTypeName = ve->mVariable->getVariableType()->getName();
-
-					// receiverStructDef, not a bare mStructDefMap lookup: the
-					// implicit `self` parameter's declared type name is the
-					// literal "self", so the name lookup missed and `self` fell
-					// through to the generic path — which handed a raw struct
-					// pointer to __blang_string_concat_many AS IF it were a
-					// BlangString. `println("{}", self)` therefore printed
-					// empty, a type confusion at the C boundary that rendered
-					// harmlessly by luck (known-issues KI-10).
-					if ( StructDefinition *rsd = receiverStructDef( argExpr ) )
-					{
-						structTypeName = rsd->getName();
-						isStructArg = true;
-					}
+					structTypeName = rsd->getName();
+					isStructArg = true;
 				}
 			}
 
@@ -1434,45 +1464,17 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 
 			if ( isStructArg )
 			{
-				// Struct type → call StructName_to_string
+				// Struct type → call StructName_to_string. structIsPrintable is
+				// the single Printable test shared with the interpolation path:
+				// an imported type must state conformance through its .bmod record
+				// (design record D16) — its private to_string does not silently
+				// count; a same-module type may conform structurally via a
+				// to_string method.
 				StructDefinition *sd = mStructDefMap[structTypeName];
 
-				// Does this type conform to Printable?
-				//
-				// For an IMPORTED type the answer must come from the recorded
-				// conformance the .bmod carries (design record D16). Falling back
-				// to "does it happen to have a method called to_string" would make
-				// the record decorative — and would break outright once `pub`
-				// filters non-public methods out of the interface, since a
-				// private to_string would vanish while the conformance remains
-				// the true statement of the type's API.
-				//
-				// For a type defined in THIS module the name scan stays, so a
-				// struct with a to_string but no `impl Printable for X` keeps
-				// printing exactly as before.
-				bool hasPrintable = false;
-				for ( const auto &proto : sd->getConformedProtocols() )
+				if ( !structIsPrintable( sd ) )
 				{
-					if ( proto == "Printable" )
-					{
-						hasPrintable = true;
-						break;
-					}
-				}
-				if ( !hasPrintable && !sd->isFromInterface() )
-				{
-					for ( auto &m : sd->getMethods() )
-					{
-						if ( m->getName() == "to_string" )
-						{
-							hasPrintable = true;
-							break;
-						}
-					}
-				}
-				if ( !hasPrintable )
-				{
-					if ( sd->isFromInterface() )
+					if ( sd != nullptr && sd->isFromInterface() )
 						reportError( call, "imported type '" + structTypeName +
 							"' is not printable — its interface declares no "
 							"'impl Printable for " + structTypeName + "'" );
@@ -1481,41 +1483,14 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 							"' is not printable — implement the Printable protocol" );
 					return;
 				}
-				std::string fnName = structTypeName + "_to_string";
 				llvm::Function *toStrFn = lookupToStringFn( sd );
 				if ( toStrFn )
 				{
-					// Obtain the receiver's self POINTER exactly as genMethodCall
-					// does: a single `load ptr` from the variable's alloca. For an
-					// unqualified local, a `shared`, and a `sync` struct alike the
-					// alloca holds the heap pointer, so one load is always right.
-					//
-					// Two earlier versions of this were wrong, in opposite ways:
-					//   - the original stored the generated value into a fresh
-					//     alloca and passed THAT — a pointer to the self pointer —
-					//     so to_string read its fields out of a stack slot and
-					//     printed garbage for every Printable struct;
-					//   - passing genExpression's result directly fixed the
-					//     unqualified case but SEGFAULTED for `shared`/`sync`,
-					//     because genVariableExpression double-loads those (heap
-					//     pointer, then the value through it), which for a struct
-					//     yields its first 8 bytes reinterpreted as a pointer.
-					// Neither is a property of "the value"; the receiver pointer
-					// has to be taken from the address, not from the loaded value.
-					llvm::Value *selfPtr = nullptr;
-					llvm::AllocaInst *selfAddr = getExpressionAddress( argExpr );
-					if ( selfAddr != nullptr && selfAddr->getAllocatedType()->isPointerTy() )
-					{
-						selfPtr = mBuilder->CreateLoad(
-							llvm::PointerType::get( *mContext, 0 ), selfAddr,
-							"print.self" );
-					}
-					else
-					{
-						// No addressable receiver (e.g. a call returning a struct):
-						// genExpression yields the heap pointer directly.
-						selfPtr = genExpression( argExpr );
-					}
+					// The self POINTER must come from the receiver's ADDRESS, not
+					// a loaded value — structSelfPointer carries the reasoning
+					// (shared/sync double-load; field-access/call fall back to the
+					// heap pointer directly).
+					llvm::Value *selfPtr = structSelfPointer( argExpr );
 					if ( selfPtr == nullptr )
 						continue;
 
@@ -1526,7 +1501,8 @@ void CodeGen::genPrintCall( CallExpression *call, bool appendNewline )
 				}
 				else
 				{
-					reportError( call, "'" + fnName + "' function not found" );
+					reportError( call, "'" + structTypeName +
+						"_to_string' function not found" );
 					return;
 				}
 			}

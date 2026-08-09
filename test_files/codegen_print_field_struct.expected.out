@@ -1,0 +1,4 @@
+h.inner direct = Inner(7)
+h.inner interp = Inner(7)
+self.inner direct = Inner(7)
+self.inner interp = Inner(7)

@@ -263,6 +263,20 @@ private:
 	llvm::Value *genPrintableToString( StructDefinition *sd, Expression *node,
 		llvm::Value *selfPtr );
 
+	// Is this struct Printable? Explicit `impl Printable` conformance always
+	// counts; a structural `to_string` counts only for a type defined in THIS
+	// module (an imported type must state conformance via the .bmod, D16).
+	// One predicate for both the print path and the interpolation path.
+	bool structIsPrintable( StructDefinition *sd );
+
+	// The self POINTER for a struct receiver, taken from the value's ADDRESS
+	// (not a loaded value): genVariableExpression double-loads a shared/sync
+	// variable, so a loaded struct would be its first 8 bytes as a pointer.
+	// A non-addressable receiver (field access, call result) yields the heap
+	// pointer directly. Shared by genPrintCall and the interpolation path
+	// (known-issues KI-20).
+	llvm::Value *structSelfPointer( Expression *argExpr );
+
 	// Pipeline expression codegen
 	llvm::Value *genPipelineExpression( PipelineExpression *pipeline );
 

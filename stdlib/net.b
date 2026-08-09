@@ -89,7 +89,7 @@ impl Socket {
 		return __blang_sendfile(self.fd, file_fd, offset, count);
 	}
 
-	fn get_fd(self) -> int {
+	pub fn get_fd(self) -> int {
 		return self.fd;
 	}
 }
@@ -129,6 +129,13 @@ pub fn server_bind(string host, int port) -> ServerSocket {
 
 pub fn tcp_connect(string host, int port) -> Socket {
 	int fd = __blang_tcp_connect(host, port);
+	return Socket { fd: fd };
+}
+
+// Wrap a raw connection fd in a Socket. The one external construction form for
+// a Socket once its `fd` field goes opaque (modules-v2-exports): a consumer that
+// has an fd (e.g. from an accept callback) builds a Socket without the literal.
+pub fn socket_from_fd(int fd) -> Socket {
 	return Socket { fd: fd };
 }
 
@@ -193,11 +200,23 @@ pub struct HttpRequest {
 	string body;
 }
 
+impl HttpRequest {
+	pub fn method(self) -> string { return self.method; }
+	pub fn path(self) -> string { return self.path; }
+	pub fn body(self) -> string { return self.body; }
+}
+
 // --- HttpResponse ---
 pub struct HttpResponse {
 	int status;
 	string content_type;
 	string body;
+}
+
+impl HttpResponse {
+	pub fn status(self) -> int { return self.status; }
+	pub fn content_type(self) -> string { return self.content_type; }
+	pub fn body(self) -> string { return self.body; }
 }
 
 // Convenience constructors
@@ -335,6 +354,12 @@ pub struct HttpRequestLine {
 	string version;
 }
 
+impl HttpRequestLine {
+	pub fn method(self) -> string { return self.method; }
+	pub fn path(self) -> string { return self.path; }
+	pub fn version(self) -> string { return self.version; }
+}
+
 // Parse the HTTP request line from a Buffer.
 pub fn parse_http_request_line(Buffer buf) -> HttpRequestLine {
 	Buffer crlf = Buffer(2);
@@ -373,6 +398,32 @@ pub fn parse_http_request_line(Buffer buf) -> HttpRequestLine {
 pub struct HttpParsedHeaders {
 	Array<string> keys;
 	Array<string> values;
+}
+
+// Designed lookup surface: the parallel-array representation is deliberately not
+// exposed (it is the representation most likely to change). `has`/`get` are the
+// lookup operations consumers want; `count`/`key`/`value` retain ordered
+// iteration without handing out the arrays.
+impl HttpParsedHeaders {
+	pub fn count(self) -> int { return self.keys.length; }
+
+	pub fn key(self, int i) -> string { return self.keys[i]; }
+
+	pub fn value(self, int i) -> string { return self.values[i]; }
+
+	pub fn has(self, string name) -> bool {
+		for i in 0..self.keys.length {
+			if self.keys[i] == name { return true; }
+		}
+		return false;
+	}
+
+	pub fn get(self, string name) -> string {
+		for i in 0..self.keys.length {
+			if self.keys[i] == name { return self.values[i]; }
+		}
+		return "";
+	}
 }
 
 pub fn parse_http_headers_from_buffer(Buffer buf) -> HttpParsedHeaders {

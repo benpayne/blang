@@ -143,8 +143,8 @@ fn path_id(string path) -> int {
 // request method and path (the router matches exact paths only, so path
 // parameters like /todos/{id} are parsed here).
 fn handle(net.HttpRequest req) -> net.HttpResponse {
-	string p = req.path;
-	string m = req.method;
+	string p = req.path();
+	string m = req.method();
 
 	// Static frontend.
 	if p == "/" {
@@ -157,7 +157,7 @@ fn handle(net.HttpRequest req) -> net.HttpResponse {
 			return net.http_json(todos_json());
 		}
 		if m == "POST" {
-			Todo input = Todo_from_json(req.body);
+			Todo input = Todo_from_json(req.body());
 			insert Todo { title: input.title, done: false };
 			return net.http_json(todos_json());
 		}
@@ -175,7 +175,7 @@ fn handle(net.HttpRequest req) -> net.HttpResponse {
 					return net.http_json(to_json(t));
 				}
 				if m == "PUT" {
-					Todo input = Todo_from_json(req.body);
+					Todo input = Todo_from_json(req.body());
 					bool nd = input.done;
 					update Todo |> where { .id == id } |> set { .done = nd };
 					return net.http_json(todos_json());
