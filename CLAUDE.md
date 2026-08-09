@@ -636,7 +636,8 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
   - `modules-v2-exports` (`docs/epics/modules-v2-exports/`) — status:
-    **redo (U4 remainder + U5)** — U1-U3 merged (PRs #139/#140/#141: construction
+    **launched (redo, run `aeba092e-0963-46c3-99aa-bd3f3fbc2160`, 2026-08-08)** —
+    U1-U3 merged (PRs #139/#140/#141: construction
     ABI via a library-emitted factory `specs/029`, the `.bmod` as a versioned true
     interface `specs/030`, `pub` on impl members + private-by-default + P9 export
     enforcement `specs/031`); U4 **partial** — its print/interpolation-renderer

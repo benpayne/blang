@@ -3,9 +3,9 @@
 **Archetype**: evolve (inverts the export model under the existing module
 surface; Epic A of the modules-v2 split)
 
-**Status**: ready (redo) — U1–U3 + U4-renderer landed on `master`; continuation
-scoped to **U4 remainder + U5** (see "Continuation scope" below); readiness review
-passed 2026-08-08
+**Status**: launched (redo) — U1–U3 + U4-renderer landed on `master`; continuation
+scoped to **U4 remainder + U5** (see "Continuation scope" below); run
+`aeba092e-0963-46c3-99aa-bd3f3fbc2160` launched 2026-08-08
 
 **Owner**: Ben Payne
 
@@ -255,6 +255,7 @@ about user code.
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
+| 2026-08-08 | aeba092e-0963-46c3-99aa-bd3f3fbc2160 | launched (redo) | Continuation run scoped to U4 remainder + U5. endpoint `http://localhost:8201`, dir `a6b2f628-…`; fully_autonomous, 90 turns / 12h / 4M tokens, no_progress_threshold 10. Backend was on 8201 (UI port), not the manifest's stale 8000 — corrected. |
 | 2026-08-08 | — | review passed (redo) | `/devbot-review`: all checks green after two minor fixes — refreshed the stale CLAUDE.md active-epics line (F1) and added `no_progress_threshold: 10` to manifest limits (F2). Done-condition sync verbatim, traceability REQ-001..011 complete, deps acyclic, harnesses all present, Principle VI U4 design gate satisfied. Status → ready. Next: `/devbot-launch modules-v2-exports` (needs devbot server up). |
 | 2026-08-08 | — | continuation planned | Pulled origin/master (U1–U3 + supporting work). Reviewed epic state: U1–U3 merged, U4 partial, U5 not started. Baseline re-verified green. Scoped this redo to **U4 remainder + U5**; overview "Continuation scope" + manifest limits updated. Next: `/devbot-review` → `/devbot-launch` (devbot server currently offline). |
 | 2026-08-08 | — | U4 renderer salvaged | Merged `origin/epic/modules-v2-exports-u4` (KI-8/8b/9/10 renderer fixes + speckit `032` design artifact) to `master` at `58a240a` via an independently-reviewed merge (no blockers; green; `--leak-check` clean). Filed KI-20/KI-21 (renderer follow-ups) for the U4-remainder run. U4 design gate (Principle VI) now satisfied. |

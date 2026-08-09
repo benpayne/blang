@@ -124,8 +124,8 @@ foldback:
   status_into: overview.md
 
 devbot:
-  endpoint: http://localhost:8000
-  directory_id: 2ac11b43-3628-49d1-a453-93d488ee308a
+  endpoint: http://localhost:8201   # backend shares the UI port on this host (8000 was the original planning host)
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b   # re-registered on this host; 2ac11b43-... was the original planning host
   runs:
     - run_id: 370bedc3-7619-4e21-bdcd-af18b007c893
       launched: 2026-08-05
@@ -133,5 +133,6 @@ devbot:
     - run_id: 92b1f2a0-c643-4fa9-a60a-fbdc6c305783
       launched: 2026-08-05
       outcome: halted   # landed U1-U3 (PRs #139/#140/#141) + U4 renderer half on a branch; halted before U4 stdlib-API surface and all of U5. Resolved pending->halted at the 2026-08-08 continuation review.
-  # Continuation redo (U4 remainder + U5) planned 2026-08-08; not yet launched
-  # (devbot server offline at plan time). A new run line is appended at launch.
+    - run_id: aeba092e-0963-46c3-99aa-bd3f3fbc2160
+      launched: 2026-08-08
+      outcome: pending   # continuation redo scoped to U4 remainder + U5
