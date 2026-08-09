@@ -71,6 +71,52 @@ co-ship invariant (design-audit-U1 B1) — a `bcc clean` between U1 and U5 on
 
 ---
 
+## KG-4 — `Set<int>` (value-type hashed Set) miscompiles: hashes with `__blang_hash_string`
+
+**Filed**: U3 (surfaced writing the D13 zero-import fixture). **Owner**: not this epic
+— pre-existing, epic-UNRELATED; file only.
+
+A `Set<int>` fails IR verification — its `find_slot`/`add` monomorphization calls
+`__blang_hash_string(i32)` (a `ptr`-parameter function) on an `int` key: `Call
+parameter type does not match function signature`. The hashed `Set<K>`
+(`stdlib/collections.b`) was only ever exercised with `Set<string>` (`codegen_set.b`),
+so the value-type key path (which should dispatch to an integer hash, as hashed `Map`
+does for value keys) was never covered. Reproduces identically via the normal
+`import collections;` path on `master` — **independent of U3** (U3 only made the
+first `Set<int>` get written). The D13 fixture uses `Set<string>` to avoid it.
+
+**Why not fixed here.** It is a collections/codegen monomorphization bug (value-type
+key hashing in `Set`) with no trace to U3's tier work; fixing it means teaching
+`Set`'s hash dispatch the same value-vs-string split `Map` already has. A regression
+fixture (`Set<int>` add/has/length) should land with the fix.
+
+---
+
+## KG-5 — an unknown type in a declaration reports at the operator, not the type token
+
+**Filed**: U3 (D14 fixture). **Owner**: follow-on (diagnostic quality); pre-existing.
+
+Deleting `Buffer`'s bare-name registration (D14) makes `Buffer b = ...` (without the
+prelude) fail at the declaration — the intended win (it no longer parses via a hollow
+registration and fails later at a symbol lookup). But the message is the generic
+`Failed parse varible` located at the **declaration operator** (`=`), not
+`unknown type 'Buffer'` at the **type token**, which is the design note's (§6)
+aspiration. This is the compiler's **pre-existing** behavior for *every* unknown-type
+declaration (identical for `test_files/fail/bad_type.b`'s `bogus x`), not
+Buffer-specific: `Type::Parse` returns null for an unknown user-type `SYMBOL` and the
+var-decl path throws `Failed parse varible` at the current token.
+
+**Why not fixed here.** Improving it well means either a change to the hot
+`Type::Parse` null path (which many callers depend on — forward refs, generic-arg
+recursion — so a broad regression risk) or threading a saved type-token location
+through the var-decl path; both are diagnostic-quality work orthogonal to the tier
+declaration. The D14 **substance** (an undefined type fails at declaration-time type
+resolution, not at a later symbol lookup) is delivered and locked by
+`fail/sema/buffer_without_prelude.b`. A follow-up should report `unknown type '<name>'`
+at the type token uniformly (updating `bad_type.b` too).
+
+---
+
 ## KG-3 — done-condition-1 fixture uses UNQUALIFIED calls (qualified `.bmod`-dep access is U6)
 
 **Filed**: U1. **Not a defect — a sequencing note.**

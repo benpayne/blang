@@ -21,7 +21,7 @@ fox: 2
 - **`Set<string>`** — stop-word filtering (`has` / `add`)
 - **`sort<T>` with a lambda comparator over strings** — the flagship
   previously-broken case (`sort<string>` was documented "NOT yet supported")
-- **Generic call inference** — `sort(names, ...)` binds `T = string` from the
+- **Generic call inference** — `collections.sort(names, ...)` binds `T = string` from the
   array argument; no explicit `<string>` needed
 - **Iterating a generic struct's field** — `for k in counts.keys` resolves the
   element type through the instance's type arguments (`Array<K>` →

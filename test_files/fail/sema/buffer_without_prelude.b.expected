@@ -1,0 +1,7 @@
+# modules-v2-graph U3 (D14): Buffer is no longer a bare-name registration, so
+# compiled WITHOUT the prelude, `Buffer b = ...` fails at the DECLARATION during
+# type resolution (findType returns null) — not later at a symbol lookup as the
+# registered bare name used to. (The generic "Failed parse varible" message and the
+# operator-column are the compiler's pre-existing behavior for ALL unknown-type
+# declarations, e.g. bad_type.b; column-at-type-token is a filed follow-up.)
+^[^:]+\.b:[0-9]+:[0-9]+: error: Failed parse varible$

@@ -8,7 +8,7 @@
 //   - Map<string, int>      counting (get_or + set overwrite)
 //   - Set<string>           stop-word filtering (has / add)
 //   - sort<T> + comparator  alphabetical order over STRINGS, via a lambda
-//   - generic call inference (sort(names, ...) — no explicit <string>)
+//   - generic call inference (collections.sort(names, ...) — no explicit <string>)
 //   - string scanning       tokenize with index_of / substring
 
 import collections;
@@ -40,7 +40,7 @@ fn main() -> int {
 	for k in keys {
 		names.push(k);
 	}
-	sort(names, fn(string a, string b) -> bool { return a < b; });
+	collections.sort(names, fn(string a, string b) -> bool { return a < b; });
 
 	for name in names {
 		println("{}: {}", name, counts.get(name));
@@ -106,7 +106,7 @@ test "set membership filters" {
 
 test "sort orders strings with a lambda comparator" {
 	Array<string> names = ["delta", "alpha", "charlie", "bravo"];
-	sort(names, fn(string a, string b) -> bool { return a < b; });
+	collections.sort(names, fn(string a, string b) -> bool { return a < b; });
 	assert names[0] == "alpha";
 	assert names[1] == "bravo";
 	assert names[2] == "charlie";
@@ -115,7 +115,7 @@ test "sort orders strings with a lambda comparator" {
 
 test "sort handles duplicates and stays stable in content" {
 	Array<string> xs = ["b", "a", "b", "a"];
-	sort(xs, fn(string a, string b) -> bool { return a < b; });
+	collections.sort(xs, fn(string a, string b) -> bool { return a < b; });
 	assert xs[0] == "a";
 	assert xs[1] == "a";
 	assert xs[2] == "b";

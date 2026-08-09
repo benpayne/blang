@@ -38,6 +38,15 @@ QLang::Scope *createGlobalScope();
 // directly, or it will reject legal intra-library access.
 void stampDefiningOrigin( QLang::Module *mod, const std::string &path );
 
+// Prelude type manifest (modules-v2-graph U3, D12/D13). The FIXED, compiler-shipped
+// set of ordinary-BLang types that are automatically in scope, unqualified,
+// everywhere — never imported. Membership is exactly {Map, Set, Buffer} (types
+// only) and is CLOSED: users and libraries cannot extend it (adding a name is a
+// language change with the one-way-door bar). Used by the driver's LOAD/PROMOTE
+// routing and by prelude-shadowing suppression. (`sort`, a free function in the
+// same collections module, is library-tier — qualified `collections.sort`.)
+bool isPreludeTypeName( const std::string &name );
+
 // Canonical module-identity digest (modules-v2-graph U1, D5/D10). Returns a short
 // SHA-256 digest (12 hex nibbles / 48 bits) of a module's canonical origin string
 // (realpath of its project dir for path deps; url@pin for git). SHARED by qcc and

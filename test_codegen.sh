@@ -317,18 +317,18 @@ run_one_test() {
 			need_combine=1
 		fi
 	fi
-	# collections.b (Map) is import-gated by content, mirroring bcc's real
-	# stdlib resolution: only combined when the test does `import collections;`.
-	# Content-gated (not filename-substring) so the inline codegen_map.b — which
-	# defines Map itself and does NOT import collections — never gets a second,
-	# conflicting Map definition.
-	# collections is combined when the test imports collections OR cli (cli.b
-	# uses collections' Map). collections.b must precede cli.b (Map before use).
-	if grep -qE '^[[:space:]]*import[[:space:]]+(collections|cli)[[:space:]]*;' "${test_file}" 2>/dev/null; then
-		if [ -f "${STDLIB_COLLECTIONS}" ]; then
-			stdlib_files+=("${STDLIB_COLLECTIONS}")
-			need_combine=1
-		fi
+	# collections.b (Map/Set = PRELUDE types) is now LOADED UNCONDITIONALLY
+	# (modules-v2-graph U3, D13): prelude types are automatically in scope with zero
+	# imports, so the harness mirrors bcc's unconditional prelude load. qcc parses it
+	# into a prelude holding scope and PROMOTES only Map/Set (its free function `sort`
+	# stays qualified as collections.sort). A test that defines its OWN Map/Set with
+	# no import (codegen_map.b, codegen_arc_map_struct_value.b,
+	# codegen_ix_method_chain_field.b) is unaffected: its definition SHADOWS the
+	# prelude one (combineScope is a child of the prelude scope). collections.b must
+	# precede cli.b (cli.b uses Map).
+	if [ -f "${STDLIB_COLLECTIONS}" ]; then
+		stdlib_files+=("${STDLIB_COLLECTIONS}")
+		need_combine=1
 	fi
 	if grep -q '^[[:space:]]*import[[:space:]]\+cli[[:space:]]*;' "${test_file}" 2>/dev/null; then
 		if [ -f "${STDLIB_CLI}" ]; then

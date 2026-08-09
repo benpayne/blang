@@ -941,6 +941,32 @@ different origins produce different types. Two origins are never merged, even if
 their bytes match, because the compiler cannot know they are the same version —
 that is a package-manager concern BLang deliberately does not take on.
 
+### Type Tiers: Core, Prelude, Library
+
+Every type belongs to exactly one of three tiers, so "does this need an import?"
+has a principled answer:
+
+- **Core** — types the compiler must know because they have dedicated syntax,
+  participate in an ARC/ABI contract, or back a semantic rule: the primitives,
+  `string`, `Array<T>`, `Option`/`Result`, `chan<T>`, the FFI types, `Task`,
+  `Printable`, and `print`/`println`/`to_json`. Always in scope; adding to this
+  tier is a language change.
+- **Prelude** — ordinary BLang library types that are automatically in scope,
+  unqualified, everywhere, and are **never imported**. The prelude is a **fixed,
+  compiler-shipped set — exactly `{Map, Set, Buffer}`** — that users and libraries
+  cannot extend. A module's own definition of a prelude name **shadows** the
+  prelude one (the same precedent as a user-defined `Option`/`Result` shadowing the
+  builtin), so declaring your own `struct Map` is always allowed and always wins in
+  your module.
+- **Library** — the default. A library type is imported and used qualified:
+  `import collections;` then `collections.SomeType`.
+
+**Tiers are assigned per name, not per module.** `collections` is a mixed module:
+its container **types** `Map` and `Set` are prelude (no import needed), while its
+free **function** `sort` is library-tier — you write `collections.sort(items, less)`
+and it requires `import collections;`. A free function is never prelude; only the
+fixed three container types are.
+
 ## Data and Persistence
 
 ### Design Philosophy: Language vs Standard Library
