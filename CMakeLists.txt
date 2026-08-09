@@ -161,6 +161,11 @@ if(BLANG_FUZZ)
 	target_include_directories(fuzz_parse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	target_compile_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address -fno-omit-frame-pointer -g)
 	target_link_options(fuzz_parse PRIVATE -fsanitize=fuzzer,address)
+	# modules-v2-graph U1: the frontend (QModule.cpp) computes a module-identity
+	# digest via SHA-256, so fuzz_parse — built from BLANG_FRONTEND_SOURCES — must
+	# link blang_sha256, exactly as qcc and blangd do. Unconditional: needed in the
+	# parse-only fuzz config (BLANG_ENABLE_LLVM=OFF) too.
+	target_link_libraries(fuzz_parse blang_sha256)
 	if(LLVM_FOUND)
 		# The parser needs no LLVM; keep fuzz_parse lean. (Normally the fuzz build
 		# is configured BLANG_ENABLE_LLVM=OFF so this branch is not taken.)
