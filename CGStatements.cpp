@@ -1122,18 +1122,32 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 
 		// If the iterable is a fresh owning array temporary — a method call or
 		// function call returning Array<...> — it is tracked in mTempArrays and
-		// would be released by the loop BODY's block-scope cleanup, freeing it on
-		// the first iteration (use-after-free on the next __blang_array_get, the
-		// KI-22 segfault). Untrack it so the body cannot release it, and release
-		// it once after the loop instead. A variable/field iterable is owned
-		// elsewhere (not an owning temp), so iterableIsOwningTemp stays false and
-		// this is a no-op for those. KI-22.
+		// would be released by the loop BODY's per-iteration block cleanup,
+		// freeing it on the first iteration (use-after-free on the next
+		// __blang_array_get, the KI-22 segfault). Move it OUT of statement-temp
+		// tracking and into the ENCLOSING block's array scope: that scope's
+		// cleanup releases it exactly once on EVERY loop exit — fall-through,
+		// break (branches to afterBB, then falls out of the enclosing block),
+		// and early return (the return handler releases every array-scope frame)
+		// — while the body block's own frame (pushed one level higher during
+		// body codegen) never touches it, so there is no per-iteration release.
+		// A variable/field iterable is owned elsewhere (not an owning temp), so
+		// iterableIsOwningTemp stays false and this is a no-op for those.
+		// KI-22 (rev finding A: break/early-return exit paths).
 		Expression *iterExpr = (Expression*)forInStmt->mIterableExpression;
 		bool iterableIsOwningTemp =
-			dynamic_cast<MethodCallExpression*>( iterExpr ) != nullptr ||
-			dynamic_cast<CallExpression*>( iterExpr ) != nullptr;
+			( dynamic_cast<MethodCallExpression*>( iterExpr ) != nullptr ||
+			  dynamic_cast<CallExpression*>( iterExpr ) != nullptr ) &&
+			!mArrayScopeStack.empty();
 		if ( iterableIsOwningTemp )
+		{
 			untrackTempArray( arrVal );
+			llvm::AllocaInst *iterHold = mBuilder->CreateAlloca(
+				llvm::PointerType::get( *mContext, 0 ), nullptr, "forin.iter.hold" );
+			mBuilder->CreateStore( arrVal, iterHold );
+			// nullptr VariableDefinition: never a move source, always released.
+			mArrayScopeStack.back().push_back( { iterHold, nullptr } );
+		}
 
 		// Get the array length
 		llvm::Value *lenVal = mBuilder->CreateCall(
@@ -1246,12 +1260,10 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		mBuilder->CreateStore( nextVal, counterAlloca );
 		mBuilder->CreateBr( condBB );
 
-		// After: release the iterable array temp once, now that the loop is done
-		// (it was untracked above so the body could not release it). KI-22.
+		// After: the iterable temp (when it is an owning method/call result) is
+		// released by the enclosing block's array-scope cleanup on every exit
+		// path — see the registration above (KI-22). No manual release here.
 		mBuilder->SetInsertPoint( afterBB );
-		if ( iterableIsOwningTemp &&
-			 mBuilder->GetInsertBlock()->getTerminator() == nullptr )
-			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrVal } );
 		return;
 	}
 

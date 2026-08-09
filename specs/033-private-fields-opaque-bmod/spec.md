@@ -230,8 +230,13 @@ conflict with a recorded decision** — but it leaves two conventions, which D15
 
 **Disposition**: this is **U5b**, not U5a — the DC-6 fixture (done-cond. 6) exercises `query` + `to_json`,
 neither of which needs `from_json`. So U5a is unblocked regardless. I approve the symmetric-builtin proposal
-against D1/D15 as the design intent and will flag it to the owner at PR #2 review for a final call
+against D1/D15 as the design intent and will flag it to the owner at PR review for a final call
 (symmetric builtin vs. document-the-literal), per the recorded OQ#1 process.
+
+**RESOLVED (2026-08-09, product-owner ruling): Option A — the symmetric builtin `Todo.from_json(str)`.**
+Implemented in U5b commit `c042fff`; no revert. The bare `Todo_from_json(str)` form stays as an additive,
+link-safe alias. Fixture `codegen_from_json_static.b` proves the round-trip + bare-spelling backward compat;
+`examples/todo_app` migrated to `Todo.from_json(req.body())`.
 
 ## 7. Q-U4-1 sub-design — `Map`/`Set` construction spelling (U5b)
 

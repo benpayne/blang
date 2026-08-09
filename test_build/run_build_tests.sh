@@ -152,9 +152,12 @@ if [ -d "$ASAN_DIR" ] && ls "$ASAN_DIR"/libblang_*.a > /dev/null 2>&1 && [ -n "$
 	"$QCC" counterlib/counter.b -o "$ATMP/lib.ll" > /dev/null 2>&1
 	"$LLC" -filetype=obj -relocation-model=pic "$ATMP/app.ll" -o "$ATMP/app.o" > /dev/null 2>&1
 	"$LLC" -filetype=obj -relocation-model=pic "$ATMP/lib.ll" -o "$ATMP/lib.o" > /dev/null 2>&1
+	# -luv: the runtime archive references libuv (async event loop). Without it the
+	# link fails (undefined uv_run/uv_default_loop/uv_queue_work) and this leg
+	# SKIPs -- a HARD FAILURE under CI=true (rev finding B).
 	cc -fsanitize=address,undefined -o "$ATMP/counterapp_asan" "$ATMP/app.o" "$ATMP/lib.o" \
 		-Wl,--start-group "$ASAN_DIR"/libblang_*.a -Wl,--end-group \
-		-lpthread -lm > /dev/null 2>&1
+		-lpthread -lm -luv > /dev/null 2>&1
 	if [ -x "$ATMP/counterapp_asan" ]; then
 		# Self-proof: a negative grep for sanitizer output passes trivially on an
 		# UNINSTRUMENTED binary, so assert the instrumentation is actually there
