@@ -3,10 +3,12 @@
 **Archetype**: evolve (inverts the export model under the existing module
 surface; Epic A of the modules-v2 split)
 
-**Status**: complete-local — all 5 units (U1–U5) merged to local `master`
-(`f70e0f4`); epic done-condition (all 9 items) **independently verified by the
-owner** 2026-08-09. **CI-green pending push** (origin is behind; GitHub CI has not
-run these commits — the manual publish step).
+**Status**: **complete** — all 5 units (U1–U5) merged to `master`, pushed to
+origin (`f5b2d13`); epic done-condition (all 9 items) independently verified by the
+owner 2026-08-09 **and GitHub CI is green** (run `31324486733`, all 14 jobs
+including `sanitizers`/leak-check, `golden-codegen`, `epic-acceptance`, both
+parse-suites). Epic A of the modules-v2 split is done; Epic B
+(`modules-v2-graph`) can now be planned.
 
 **Owner**: Ben Payne
 
@@ -264,6 +266,7 @@ about user code.
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
+| 2026-08-09 | — | **CI green — epic CLOSED** | Pushed `master` to origin (`f5b2d13`). GitHub CI run `31324486733` **all 14 jobs green** (`epic-acceptance`, `golden-codegen`, `sanitizers` incl. leak-check clean + teeth, `parse-suite` with-llvm & parse-only, `bcc-test`, `build-system`, `runtime-units`, `database`, `opt-suite`, `debug-suite`, `fuzz`, `lsp`, `demos`). Done-condition 9's CI clause satisfied. Note: earlier U4-remainder/U5a *branch* CI runs had failed on a pre-existing ASan/libuv-linkage drift, fixed by U5b Finding B — master CI confirms it green. Status → complete. |
 | 2026-08-09 | aeba092e-0963-46c3-99aa-bd3f3fbc2160 | **completed — epic done** | Run completed at turn 16 (~3.3M/4M tokens). **U5a** (PR #144, enforcement flip: always-private fields with `.bmod`-path Sema enforcement, module-private struct literals, located field-access errors, opaque `.bmod` v3→v4 + D15 metadata, P9 narrowing) merged at `a93bb3c`; **U5b** merged at `f70e0f4` (generic construction + field/literal privacy, Map/Set `pub init`, `Todo.from_json` OQ#1=A, KI-22 fix, corpus migration + reach-in CI). Each unit secondary-reviewed by `rev` (distinct from impl) across all five constitution dimensions. Transient controller `model_unavailable` pauses were resumed by the owner. **Owner independent verification (clean rebuild, both build modes):** `run_tests` 239/0 (LLVM) + 232/0 (parse-only), `test_codegen` 165/0, `--leak-check` 165/0 Leaks:0, `test_lsp` 62/0, `test_build` all-pass, reach-in gate exits 0; field-access-on-imported-type located error reproduced directly (`consumer.b:6:11: error: field 'count' … is private to its defining module`). All 9 done-condition items confirmed on `f70e0f4`. Filed **KI-24** (pre-existing, epic-unrelated for-in element-capture-across-break ARC leak, independently reproduced; not exercised by the corpus). Remaining: **push to origin + confirm GitHub CI green** (done-condition 9's CI clause — the manual publish step). |
 | 2026-08-08 | aeba092e-0963-46c3-99aa-bd3f3fbc2160 | U5b implemented (PR up for review) | Five commits on `epic/modules-v2-exports-u5b` off `a93bb3c`: KI-22 for-in fix (`22ee5f7`, own commit per OQ#2); generic `Name<Args>(...)` construction + generic field/literal enforcement + a latent generic-string-field ARC fix in `genFieldAssignment` (`e9ff04c`), with `test_build/mathlib`+`myapp` migrated; Map/Set `pub init` + call-site/golden migration (`2e51259`); OQ#1 `Type.from_json(str)` symmetric builtin (`c042fff`); reach-in gate CI-wired over `examples/ test_build/` + docs (`4be47f5`). **All gates green**: `run_tests.sh` 239/0 (LLVM) + 232/0 (parse-only), `test_codegen.sh` 163/0, `--leak-check` 164/0 Leaks:0, `test_lsp.sh` 62/0, `test_build` all-pass (the cross-module ASan leg SKIPs on a pre-existing libuv-linkage drift in the leg's manual `cc`, unrelated to U5b — counterlib/counterapp untouched). All 6 example integration scripts pass. KI-22 RESOLVED; OQ#1 implemented + queued to owner at PR review. Next: `rev` review of PR #3, surface OQ#1 to owner, merge.|
 | 2026-08-09 | aeba092e-0963-46c3-99aa-bd3f3fbc2160 | status check-in | turn 1, 131k/8k tokens. Team: impl + read-only reviewer. Manager approved impl's plan and pre-approved the U5a/U5b split; ruled Q-U4-1 (Map/Set `pub init` construction spelling) DEFERRED to U5/PR #3 (`specs/033`). **U4 remainder functionally complete at the PR gate** (accessor surface, examples migration — 6 integration scripts pass, reach-in gate exits 0, KI-20/KI-21 fixed with red→green fixtures; `test_codegen` 161/0 both modes, `--leak-check` clean, `test_lsp`/`test_build` green). U5 not started (gated behind U4 merge). New: **KI-22** filed (pre-existing for-in/generic-method codegen bug) — routed around in-scope; product-owner ruling queued (see Open Questions #2). |

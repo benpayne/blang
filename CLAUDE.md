@@ -642,9 +642,11 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     holds 0 deferred bugs (fix-or-file cap ≤ 3). From the 2026-07-19
     functional-coverage evaluation.
   - `modules-v2-exports` (`docs/epics/modules-v2-exports/`) — status:
-    **complete-local** (all 5 units U1–U5 merged to local `master` `f70e0f4`;
+    **complete** (all 5 units U1–U5 merged and pushed to origin `f5b2d13`;
     epic done-condition — all 9 items — independently verified by the owner
-    2026-08-09; **CI-green pending push**). Runs: `aeba092e` (2026-08-08,
+    2026-08-09 **and GitHub CI green**, run `31324486733`, all 14 jobs). Epic A of
+    the modules-v2 split is done; Epic B (`modules-v2-graph`) can now be planned.
+    Runs: `aeba092e` (2026-08-08,
     completed — U4 remainder + U5a/U5b); earlier `370bedc3` (stopped, controller
     bug) and `92b1f2a0` (halted mid-U4, landed U1–U3). U1-U3 (PRs #139/#140/#141:
     construction
