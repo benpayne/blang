@@ -271,6 +271,51 @@ int main( int argc, char *argv[] )
 	std::vector<SmartPtr<Module>> modules;
 	std::map<std::string, Module*> bmodMap;
 
+	// Inject one .bmod's public symbols into the global scope (the flat merge).
+	// modules-v2-graph U5: called INCREMENTALLY right after each .bmod parses, in
+	// topological order (a dependency before its dependent), so a later .bmod that
+	// references a FOREIGN type owned by an earlier one (e.g. midx.bmod's
+	// `-> Box<int>` where Box is defined in boxq.bmod) can resolve it at parse time
+	// — the transitive build closure (bcc) plus this ordered injection is what
+	// grants D7 use-capability for an indirectly-reached type (done-condition 7).
+	auto injectBmodSymbols = [&]( Module *bmod )
+	{
+		for ( const auto &sp : bmod->getFunctionList() )
+		{
+			FunctionDefinition *f = const_cast<FunctionDefinition*>( (const FunctionDefinition*)sp );
+			if ( f->isPublic() )
+			{
+				if ( !f->isGeneric() )
+					f->setFunctionExtern( true );
+				gScope->addSymbol( f );
+			}
+		}
+		for ( const auto &sp : bmod->getStructList() )
+		{
+			StructDefinition *s = const_cast<StructDefinition*>( (const StructDefinition*)sp );
+			if ( s->isPublic() )
+			{
+				gScope->addSymbol( s );
+				gScope->addType( new Type( s->getName() ) );
+			}
+		}
+		for ( const auto &sp : bmod->getEnumList() )
+		{
+			EnumDefinition *e = const_cast<EnumDefinition*>( (const EnumDefinition*)sp );
+			if ( e->isPublic() )
+			{
+				gScope->addSymbol( e );
+				gScope->addType( new Type( e->getName() ) );
+			}
+		}
+		for ( const auto &sp : bmod->getProtocolList() )
+		{
+			ProtocolDefinition *p = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
+			if ( p->isPublic() )
+				gScope->addSymbol( p );
+		}
+	};
+
 	// Separate input files into .bmod and .b
 	std::vector<std::string> bmodFiles, sourceFiles;
 	for ( const auto &f : inputFiles )
@@ -420,58 +465,13 @@ int main( int argc, char *argv[] )
 			fileScope = resolver.newModuleScope();
 		}
 
-		// For .b files: inject symbols from any .bmod modules that match imports.
-		// Since we don't know imports yet (they're parsed inside Module::Parse),
-		// we inject ALL bmod symbols into the global scope so they're available
-		// during parsing. This implements the flat merge.
-		if ( !isBmod && !bmodMap.empty() )
-		{
-			for ( auto &pair : bmodMap )
-			{
-				Module *bmod = pair.second;
-				for ( const auto &sp : bmod->getFunctionList() )
-				{
-					FunctionDefinition *f = const_cast<FunctionDefinition*>( (const FunctionDefinition*)sp );
-					if ( f->isPublic() )
-					{
-						// Non-generic: mark extern so codegen only declares (no
-						// body) — the symbol links from the library archive.
-						// GENERIC functions ship their bodies in the .bmod and
-						// stay non-extern so the consumer monomorphizes them on
-						// demand (instances are linkonce_odr, deduped with the
-						// library's own instantiations at link time).
-						if ( !f->isGeneric() )
-							f->setFunctionExtern( true );
-						gScope->addSymbol( f );
-					}
-				}
-				for ( const auto &sp : bmod->getStructList() )
-				{
-					StructDefinition *s = const_cast<StructDefinition*>( (const StructDefinition*)sp );
-					if ( s->isPublic() )
-					{
-						gScope->addSymbol( s );
-						gScope->addType( new Type( s->getName() ) );
-					}
-				}
-				for ( const auto &sp : bmod->getEnumList() )
-				{
-					EnumDefinition *e = const_cast<EnumDefinition*>( (const EnumDefinition*)sp );
-					if ( e->isPublic() )
-					{
-						gScope->addSymbol( e );
-						gScope->addType( new Type( e->getName() ) );
-					}
-				}
-				for ( const auto &sp : bmod->getProtocolList() )
-				{
-					ProtocolDefinition *p = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
-					if ( p->isPublic() )
-						gScope->addSymbol( p );
-				}
-			}
-			bmodMap.clear(); // only inject once
-		}
+		// modules-v2-graph U5: .bmod symbols are now injected INCREMENTALLY as each
+		// .bmod parses (injectBmodSymbols, above), in the transitive-closure's
+		// topological order — so a later .bmod referencing an earlier one's foreign
+		// types resolves, and by the time any .b file parses all interface symbols
+		// are already in gScope. (Was a single deferred flat merge here; its removal
+		// of the up-front injection is done-condition 6 / U6, not this unit — the
+		// merge still happens, just per-.bmod at parse time.)
 
 		LexerReader reader( inputFile.c_str() );
 		Lexer l( &reader );
@@ -610,6 +610,9 @@ int main( int argc, char *argv[] )
 			if ( dot != std::string::npos )
 				fname = fname.substr( 0, dot );
 			bmodMap[fname] = mod;
+			// U5: inject NOW (topological order) so a subsequent .bmod referencing
+			// this one's foreign types resolves at parse time.
+			injectBmodSymbols( (Module *)mod );
 		}
 
 		modules.push_back( mod );
