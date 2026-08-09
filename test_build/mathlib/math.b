@@ -33,11 +33,34 @@ pub struct Pair<T> {
 }
 
 impl Pair {
+	// Construction via `pub init` — the one cross-module construction spelling
+	// for a generic struct now that imported struct literals are private (U5b).
+	// A consumer writes `Pair<int>(10, 32)`, which monomorphizes Pair for the
+	// written type args and calls this init.
+	pub init(T first, T second) {
+		self.first = first;
+		self.second = second;
+	}
+
+	// Accessor methods — the member-variable read surface across a .bmod
+	// boundary (U5b: `q.first` is now module-private; a consumer reads via
+	// `q.first()`). Generic structs ship all method bodies in the .bmod, so a
+	// consumer monomorphizes these on demand.
+	fn first(self) -> T {
+		return self.first;
+	}
+
+	fn second(self) -> T {
+		return self.second;
+	}
+
 	fn sum(self) -> T {
 		return self.first + self.second;
 	}
 
 	fn swap(self) -> Pair<T> {
+		// Same-module construction keeps the struct-literal form (field/literal
+		// privacy is .bmod-path-only; Pair is not from-interface here).
 		return Pair<T> { first: self.second, second: self.first };
 	}
 }

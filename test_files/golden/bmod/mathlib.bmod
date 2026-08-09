@@ -10,10 +10,22 @@ pub struct Pair<T> {
 	T second;
 }
 impl Pair {
+	pub init(T first, T second) {
+		self.first = first;
+		self.second = second;
+	}
+	fn first(self) -> T {
+		return self.first;
+	}
+	fn second(self) -> T {
+		return self.second;
+	}
 	fn sum(self) -> T {
 		return self.first + self.second;
 	}
 	fn swap(self) -> Pair<T> {
+		// Same-module construction keeps the struct-literal form (field/literal
+		// privacy is .bmod-path-only; Pair is not from-interface here).
 		return Pair<T> { first: self.second, second: self.first };
 	}
 	fn total(self) -> int {

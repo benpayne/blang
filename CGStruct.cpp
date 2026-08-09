@@ -1727,14 +1727,29 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 
 	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName + ".ptr" );
 
+	// Resolve the field's type name, mapping generic params (T -> string) through
+	// the active monomorphization substitution. Doing this BEFORE the string
+	// check is what makes a generic string/struct/array field take the same
+	// ARC-on-store path as a concrete one: a generic Box<string>'s init
+	// `self.value = v` must retain, or the field holds an un-counted reference
+	// and the statement-temp release frees it, leaving the field dangling (the
+	// use-after-free surfaced by the U5b Name<Args>(...) construction spelling —
+	// the first field-assignment of a T-typed string field; existing generic
+	// string paths went through struct literals / concatenation, not this one).
+	string fTypeName = fieldType != nullptr ? fieldType->getName() : "";
+	{
+		auto fSubIt = mTypeSubstitution.find( fTypeName );
+		if ( fSubIt != mTypeSubstitution.end() && fSubIt->second != nullptr )
+			fTypeName = fSubIt->second->getName();
+	}
+
 	// For a refcounted string field, take ownership of the new value and drop
 	// the previous one so the field holds a counted reference — this mirrors
 	// struct initialization, which stores + retains. Without the retain the
 	// stored string is under-counted and the statement-temp release frees it,
 	// leaving the field dangling (a double-free / use-after-free). Retain the
 	// new value before releasing the old so self-assignment is safe.
-	if ( fieldType != nullptr && fieldType->getName() == "string" &&
-		 expr->mOperation == "=" )
+	if ( fTypeName == "string" && expr->mOperation == "=" )
 	{
 		llvm::Value *oldVal = mBuilder->CreateLoad(
 			structType->getElementType( fieldIdx ), fieldPtr,
@@ -1745,12 +1760,7 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 	}
 	else
 	{
-		// Resolve the field's type name, mapping generic params (e.g. T -> Inner).
-		string fTypeName = fieldType != nullptr ? fieldType->getName() : "";
-		auto subIt = mTypeSubstitution.find( fTypeName );
-		if ( subIt != mTypeSubstitution.end() )
-			fTypeName = subIt->second->getName();
-
+		// fTypeName is resolved above (generic params mapped through substitution).
 		if ( expr->mOperation == "=" && isUserStructType( fTypeName ) )
 		{
 			// Refcounted user-struct field reassignment (the S1 fix). A struct is

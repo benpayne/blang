@@ -402,9 +402,50 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 					l.setCurrentPos( pos ); // restore for Parse method
 					result = StructLiteralExpression::Parse( l, scope, identName );
 				}
+				else if ( !typeArgs.empty() && l.peekSymbol() == '(' )
+				{
+					// Generic constructor call: Map<string,int>(args) — construct a
+					// generic struct via its `pub init`, monomorphized for the
+					// written type args. Symmetric with the non-generic Counter(5)
+					// form; the one external construction spelling for a generic
+					// struct now that imported struct literals are private (U5b).
+					StructDefinition *gsd =
+						dynamic_cast<StructDefinition*>( (Symbol*)structSym );
+					if ( gsd != nullptr && gsd->hasInit() )
+					{
+						l.getSymbol(); // consume '('
+						ConstructExpression *ctor = new ConstructExpression( gsd );
+						for ( auto &ta : typeArgs )
+							ctor->addTypeArg( (Type*)ta );
+						if ( l.peekSymbol() != ')' )
+						{
+							do {
+								Expression *arg = ParseExpr( l, scope, 0 );
+								if ( arg == nullptr )
+									COMPILE_ERROR( l,
+										"Expected expression in constructor call" );
+								ctor->addArg( arg );
+								sym = l.getSymbol();
+							} while ( sym == ',' );
+							if ( sym != ')' )
+								COMPILE_ERROR( l, "Expected ')' in constructor call" );
+						}
+						else
+						{
+							l.getSymbol(); // consume ')'
+						}
+						result = ctor;
+					}
+					else
+					{
+						// A generic type with no `init` cannot be constructed this
+						// way — restore and let later parsing report it.
+						l.setCurrentPos( pos );
+					}
+				}
 				else if ( !typeArgs.empty() )
 				{
-					// Had type args but no '{' — restore
+					// Had type args but no '{' or '(' — restore
 					l.setCurrentPos( pos );
 				}
 				// else already restored above

@@ -1058,18 +1058,31 @@ Type *Sema::visitExpr( Expression *expr )
 		// that arrived through a .bmod is a located error, leaving external
 		// construction exactly one form: `Name(...)` via `pub init`. Same-module
 		// literals are unaffected (isFromInterface is false there).
-		// NON-GENERIC only in U5a: a generic imported struct is still constructed
-		// via its literal (Q-U4-1 — `Name<Args>(...)` does not parse yet), so
-		// blocking it here would break cross-module generic consumers with no
-		// migration path. Generic literal enforcement is U5b (spec 033 §5).
+		// U5b: generics are now included — the `Name<Args>(...)` construction
+		// spelling parses (QExpression.cpp) and monomorphizes, so a generic
+		// imported struct has a migration path off its literal. The suggested
+		// spelling renders the literal's own type arguments (`Pair<int>(...)`)
+		// so the fix is copy-pasteable.
 		if ( auto *sd = dynamic_cast<StructDefinition *>(
 			mScope->findSymbol( sl->mTypeName ) ) )
 		{
-			if ( sd->isFromInterface() && sd->getGenericParams().empty() )
+			if ( sd->isFromInterface() )
 			{
+				std::string ctorSpelling = sl->mTypeName;
+				if ( !sl->mTypeArgs.empty() )
+				{
+					ctorSpelling += "<";
+					for ( size_t i = 0; i < sl->mTypeArgs.size(); i++ )
+					{
+						if ( i != 0 )
+							ctorSpelling += ", ";
+						ctorSpelling += sl->mTypeArgs[i]->getName();
+					}
+					ctorSpelling += ">";
+				}
 				mDiag.error( sl->getLocation(),
 					"struct literal for imported type '" + sl->mTypeName +
-					"' is not permitted; construct it with " + sl->mTypeName +
+					"' is not permitted; construct it with " + ctorSpelling +
 					"(...)" );
 				mReported = true;
 			}
@@ -1478,26 +1491,25 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 	const string &name = fa->getFieldName();
 
 	// Rule 1 (U5, D9): a member variable is always private to its defining
-	// module. `imported` is true only for a NON-GENERIC struct that arrived
-	// through a parsed .bmod (isFromInterface) — the .bmod-path cross-module case
-	// U5a enforces. Same-module access keeps working (isFromInterface is false,
-	// so self.field and cross-struct access WITHIN a module resolve normally), and
-	// combine-mode namespaced-stdlib field access stays grep-gated (KI-23,
-	// Epic B).
+	// module. `imported` is true for any struct that arrived through a parsed
+	// .bmod (isFromInterface) — the .bmod-path cross-module case. Same-module
+	// access keeps working (isFromInterface is false, so self.field and
+	// cross-struct access WITHIN a module resolve normally), and combine-mode
+	// namespaced-stdlib field access stays grep-gated (KI-23, Epic B).
 	//
-	// GENERIC imported structs are EXCLUDED in U5a: they ship full layout + all
-	// method bodies (A6) so consumers monomorphize them, and the only way to
-	// construct one today is the struct literal (Q-U4-1) — so blocking their
-	// field/literal access here would break every cross-module generic consumer
-	// (e.g. test_build/myapp) with NO migration path. Generic field/literal
-	// enforcement lands in U5b, coupled to the `Name<Args>(...)` construction
-	// spelling + `pub init`/accessor migration (spec 033 §5, §7).
+	// U5b INCLUDES generics: a generic imported struct ships full layout + all
+	// method bodies (A6) so consumers still monomorphize it, but its fields are
+	// no longer source-nameable across the .bmod boundary. This is now safe
+	// because the `Name<Args>(...)` construction spelling + `pub` accessor
+	// migration give cross-module generic consumers a path off `.field`/literal
+	// (spec 033 §5, §7); `test_build/myapp` is migrated in the same change.
+	// Visibility for generics is a pure Sema resolution rule — emission is
+	// unchanged (A6: full layout + all bodies keep shipping).
 	//
 	// NOTE: the field loop stays FIRST so a same-module `self.keys` still
 	// resolves to the field even when a same-named accessor method exists (U4's
 	// field/method name-sharing) — the method loop must not shadow it.
-	const bool imported = structDef->isFromInterface() &&
-		structDef->getGenericParams().empty();
+	const bool imported = structDef->isFromInterface();
 
 	for ( auto &field : structDef->mFields )
 	{

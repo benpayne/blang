@@ -12,20 +12,22 @@ fn main() -> int {
 	println("largest int = {}", largest(9, 4));
 	println("largest dbl = {}", largest(2.5, 7.25));
 
-	// Generic STRUCT from the dep: instantiate, call methods.
-	Pair<int> p = Pair<int> { first: 10, second: 32 };
+	// Generic STRUCT from the dep: construct via `pub init`, read via accessors.
+	// U5b: an imported struct's fields are private — `Pair<int>(10, 32)` is the
+	// one construction spelling and `q.first()`/`q.second()` the read surface.
+	Pair<int> p = Pair<int>(10, 32);
 	println("sum = {}", p.sum());
 	Pair<int> q = p.swap();
-	println("swapped = {} {}", q.first, q.second);
+	println("swapped = {} {}", q.first(), q.second());
 
 	// The lib's own instantiation still works through its public wrapper.
 	println("max3 = {}", max3(5, 11, 7));
 
 	// Refcounted instantiations: string > is lexicographic, string + concats.
 	println("largest str = {}", largest("apple", "pear"));
-	Pair<string> names = Pair<string> { first: "ada ", second: "lovelace" };
+	Pair<string> names = Pair<string>("ada ", "lovelace");
 	println("concat = {}", names.sum());
 	Pair<string> flipped = names.swap();
-	println("flipped = {}{}", flipped.first, flipped.second);
+	println("flipped = {}{}", flipped.first(), flipped.second());
 	return 0;
 }
