@@ -1181,11 +1181,31 @@ static void addOriginFlags( vector<string> &cmd, const string &moduleOrigin,
 	}
 }
 
-// Outputs: fills aFile and bmodFile if type=lib.
-// depBmodFiles/depAFiles receive dependency artifacts to pass downstream.
+// modules-v2-graph U5 (done-condition 7): a dependency artifact in the TRANSITIVE
+// build closure — the .a to link, the .bmod to typecheck against, and the defining
+// module's canonical origin (for U1 --bmod-origin digest stamping). The transitive
+// closure grants D7 use-capability for INDIRECTLY-reached types: a consumer that
+// imports X (which imports Q) receives Q's .bmod/.a even though it never named Q,
+// so it can monomorphize a foreign generic X returns from Q.
+struct DepArtifact { string aFile, bmodFile, origin; };
+
+// Merge a dep into a closure, deduped by canonical origin (a diamond dep reached by
+// two paths appears once — matching D6: one origin is one module).
+static void mergeDep( vector<DepArtifact> &into, const DepArtifact &d )
+{
+	for ( const auto &e : into )
+		if ( e.origin == d.origin )
+			return;
+	into.push_back( d );
+}
+
+// Outputs: fills aFile and bmodFile if type=lib; outClosure gets this project's
+// TRANSITIVE dependency closure (its direct deps + their closures, deduped, self
+// excluded) so the caller can propagate it further up the graph.
 static int buildProject( const string &projectDir, const string &exeDir,
 	bool verbose, set<string> &building,
-	string &outAFile, string &outBmodFile, string &cacheHash )
+	string &outAFile, string &outBmodFile, string &cacheHash,
+	vector<DepArtifact> &outClosure )
 {
 	// Circular dependency detection
 	char resolvedDir[PATH_MAX];
@@ -1252,47 +1272,38 @@ static int buildProject( const string &projectDir, const string &exeDir,
 				depOrigin = depResolved;
 		}
 
-		// Check build cache
-		ProjectConfig *depConfig = ProjectConfig::loadFromDirectory( depDir );
-		if ( !depConfig )
-		{
-			cerr << "error: no blang.toml in dependency '" << dep.name << "' at " << depDir << endl;
-			delete config;
-			return 1;
-		}
-
-		vector<string> depSources = discoverSourceFiles( depDir );
-		string depToml = readFileToString( depDir + "/blang.toml" );
-		string depCacheKey = BuildCache::computeKey( depSources, depToml, {} );
-
-		string cachedA, cachedBmod;
-		if ( BuildCache::lookup( depCacheKey, cachedA, cachedBmod ) )
-		{
-			if ( verbose )
-				cerr << "  cache hit for " << dep.name << " (" << depCacheKey.substr( 0, 12 ) << "...)" << endl;
-			depAFiles.push_back( cachedA );
-			depBmodFiles.push_back( cachedBmod );
-			depOrigins.push_back( depOrigin );
-			depHashes.push_back( depCacheKey );
-			delete depConfig;
-			continue;
-		}
-
-		delete depConfig;
-
-		// Cache miss — build recursively
+		// Build the dependency (buildProject caches internally, so this is cheap on
+		// a warm cache). Always recurse — its dep loop assembles the dep's OWN
+		// transitive closure, which we fold into ours (U5). buildProject
+		// insert/erases `building` around itself, so a diamond dep reached twice is
+		// not a false circular error; mergeDep dedups the artifacts by origin.
 		string depA, depBmod, depHash;
-		int ret = buildProject( depDir, exeDir, verbose, building, depA, depBmod, depHash );
+		vector<DepArtifact> depClosure;
+		int ret = buildProject( depDir, exeDir, verbose, building,
+			depA, depBmod, depHash, depClosure );
 		if ( ret != 0 )
 		{
 			delete config;
 			return ret;
 		}
 
-		depAFiles.push_back( depA );
-		depBmodFiles.push_back( depBmod );
-		depOrigins.push_back( depOrigin );
 		depHashes.push_back( depHash );
+		// TOPOLOGICAL order: a dependency must precede its dependent in the .bmod
+		// list so qcc parses a foreign type's definition BEFORE the interface that
+		// references it. So fold the dep's transitive closure (its deps) in FIRST,
+		// then the dep itself.
+		for ( const auto &d : depClosure )
+			mergeDep( outClosure, d );
+		mergeDep( outClosure, { depA, depBmod, depOrigin } );
+	}
+
+	// The consumer typechecks against and links the FULL transitive closure (U5),
+	// not just direct deps — so an indirectly-reached foreign type resolves.
+	for ( const auto &d : outClosure )
+	{
+		depAFiles.push_back( d.aFile );
+		depBmodFiles.push_back( d.bmodFile );
+		depOrigins.push_back( d.origin );
 	}
 
 	// Discover source files
@@ -1598,7 +1609,8 @@ static int runBuild( int argc, char *argv[], const string &exeDir )
 
 	set<string> building;
 	string outA, outBmod, hash;
-	return buildProject( projectDir, exeDir, verbose, building, outA, outBmod, hash );
+	vector<DepArtifact> closure;   // U5: transitive dep closure (unused at top level)
+	return buildProject( projectDir, exeDir, verbose, building, outA, outBmod, hash, closure );
 }
 
 // bcc clean subcommand

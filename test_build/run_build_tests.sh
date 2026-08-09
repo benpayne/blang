@@ -116,6 +116,38 @@ check "clean rebuild links and runs (warm-cache/co-ship guard)" \
 42' ]"
 
 # ---------------------------------------------------------------------------
+# Foreign type refs + transitive build graph — the un-named foreign-generic
+# instantiation (modules-v2-graph U5, done-condition 7). boxq DEFINES Box<T>; midx
+# imports boxq and returns Box<int> from a pub fn; usebox imports midx ONLY (never
+# boxq) and uses the returned Box<int> — D7 use-capability across an un-named module.
+"$BCC" clean > /dev/null 2>&1
+( cd boxq   && rm -f libboxq.a boxq.bmod     && "$BCC" build > /dev/null 2>&1 )
+( cd midx   && rm -f libmidx.a midx.bmod     && "$BCC" build > /dev/null 2>&1 )
+( cd usebox && rm -f usebox                  && "$BCC" build > /dev/null 2>&1 )
+check "boxq builds (defines generic Box<T>)"   "[ -f boxq/libboxq.a ] && [ -f boxq/boxq.bmod ]"
+check "midx builds (returns foreign Box<int>)" "[ -f midx/libmidx.a ] && [ -f midx/midx.bmod ]"
+check "usebox builds (imports midx only — never boxq)" "[ -x usebox/usebox ]"
+check "usebox runs — un-named foreign generic monomorphized, linked, executed" \
+	"[ \"\$(cd usebox && ./usebox)\" = '7' ]"
+# The .bmod references the foreign type BY IDENTITY (name + human module + digest).
+check "midx.bmod carries a foreign-type ref by identity" \
+	"grep -qE '^// foreign-type: Box boxq [0-9a-f]{12}\$' midx/midx.bmod"
+check "midx.bmod is format 5" "grep -q '// blang-bmod-format: 5' midx/midx.bmod"
+# It PARSES STANDALONE (the foreign-ref registers Box) — the epic standing check.
+bmod_parses midx/midx.bmod
+bmod_parses boxq/boxq.bmod
+# U1 interlock: usebox's Box<int> and midx.a's dedup — one digest (boxq's origin).
+check "un-named foreign Box<int> dedups (one identity digest across usebox + midx.a)" \
+	"[ \"\$({ nm usebox/usebox; nm midx/libmidx.a; } 2>/dev/null | grep -oE 'm[0-9a-f]{12}_int' | sort -u | wc -l)\" = '1' ]"
+# SECURITY (Quality Gate 7): a malformed foreign-ref in an untrusted .bmod is a
+# LOCATED error, not a crash.
+BADBMOD="$(mktemp -d)/bad.bmod"
+printf '// auto-generated .bmod interface file\n// blang-bmod-format: 5\n// foreign-type: Box\n\npub fn f() -> Box<int>;\n' > "$BADBMOD"
+check "malformed .bmod foreign-ref is a LOCATED error, not a crash" \
+	"\"$QCC\" --parse-only \"$BADBMOD\" 2>&1 | grep -qE ':[0-9]+:[0-9]+: error: malformed foreign-type'"
+rm -f "$BADBMOD"
+
+# ---------------------------------------------------------------------------
 # Cross-module construction ABI (modules-v2-exports U1)
 #
 # Before the library-emitted factory, a consumer of a .bmod could reach into an
@@ -397,7 +429,7 @@ check "a stale-format .bmod is not silently accepted" \
 	"! \"$QCC\" --parse-only \"$FTMP/stale.bmod\" > /dev/null 2>&1"
 FOUT=$("$QCC" --parse-only "$FTMP/stale.bmod" 2>&1 >/dev/null)
 check "the stale-format rejection is located and names the fix" \
-	"echo \"\$FOUT\" | grep -Eq '^[^:]+\.bmod:[0-9]+:[0-9]+: error: .*format 2.*expects 4.*rebuild'"
+	"echo \"\$FOUT\" | grep -Eq '^[^:]+\.bmod:[0-9]+:[0-9]+: error: .*format 2.*expects 5.*rebuild'"
 rm -rf "$FTMP"
 
 # Prefix-aware factory mangling (known-issues KI-5 action 2). The factory symbol

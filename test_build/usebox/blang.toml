@@ -1,0 +1,7 @@
+[project]
+name = "usebox"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+midx = { path = "../midx" }

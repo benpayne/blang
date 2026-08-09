@@ -20,8 +20,13 @@ public:
 	static const int kFormatVersion = BlangBmod::kFormatVersion;
 
 	// Emit a .bmod interface file from one or more parsed modules.
-	// Only pub symbols are emitted.
-	static void emit( const std::vector<Module*> &modules, std::ostream &out );
+	// Only pub symbols are emitted. `scope` (may be null) is used to resolve
+	// FOREIGN types referenced in exported signatures — a type defined in another
+	// module — so U5 can emit `// foreign-type:` headers carrying that type's
+	// defining-module identity (digest) + human name, letting this interface parse
+	// standalone and mangle the foreign type with the DEFINING module's identity.
+	static void emit( const std::vector<Module*> &modules, std::ostream &out,
+		Scope *scope = nullptr );
 
 private:
 	static void emitFunction( FunctionDefinition *func, std::ostream &out );

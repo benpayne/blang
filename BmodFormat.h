@@ -54,7 +54,7 @@
 // consumer sees changes; not when a broken emission is repaired.
 namespace BlangBmod
 {
-	static const int kFormatVersion = 4;
+	static const int kFormatVersion = 5;
 }
 
 #endif // BLANG_BMOD_FORMAT_H_
