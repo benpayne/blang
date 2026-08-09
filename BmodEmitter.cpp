@@ -532,13 +532,90 @@ void BmodEmitter::emitProtocol( ProtocolDefinition *protoDef, ostream &out )
 	out << "}" << endl;
 }
 
-void BmodEmitter::emit( const vector<Module*> &modules, ostream &out )
+// Collect every type NAME referenced by a Type, recursing into generic args.
+static void collectTypeNames( Type *t, std::set<std::string> &names )
+{
+	if ( t == nullptr )
+		return;
+	names.insert( t->getName() );
+	for ( int i = 0; i < t->getNumTypeParams(); i++ )
+		collectTypeNames( t->getTypeParam( i ), names );
+}
+
+void BmodEmitter::emit( const vector<Module*> &modules, ostream &out, Scope *scope )
 {
 	out << "// auto-generated .bmod interface file — do not edit" << endl;
 	// Format version, deliberately a COMMENT: a compiler that predates the
 	// marker still parses the file. A version mismatch should cost a cache miss
 	// and a rebuild, never a syntax error inside a generated file.
 	out << "// blang-bmod-format: " << kFormatVersion << endl;
+
+	// modules-v2-graph U5 (done-condition 7): emit FOREIGN-TYPE references. A type
+	// used in an exported signature but DEFINED in another module (this lib imports
+	// Q and returns Q's Box<int>) is recorded as
+	//   // foreign-type: <name> <human-module-name> <identity-digest>
+	// so this interface (a) parses STANDALONE — the reader registers <name> before
+	// parsing signatures that use it — and (b) mangles the foreign type with its
+	// DEFINING module's identity digest, not the reader's. Reference-by-identity
+	// only — foreign bodies are NOT embedded; the transitive .bmod closure (bcc)
+	// supplies a generic's body for monomorphization.
+	if ( scope != nullptr )
+	{
+		std::set<std::string> ownTypes;
+		for ( auto *mod : modules )
+		{
+			for ( const auto &sp : mod->getStructList() )
+				ownTypes.insert( ( (const StructDefinition *)sp )->getName() );
+			for ( const auto &sp : mod->getEnumList() )
+				ownTypes.insert( ( (const EnumDefinition *)sp )->getName() );
+		}
+		std::set<std::string> referenced;
+		for ( auto *mod : modules )
+		{
+			for ( const auto &sp : mod->getFunctionList() )
+			{
+				FunctionDefinition *f = const_cast<FunctionDefinition *>(
+					(const FunctionDefinition *)sp );
+				if ( !f->isPublic() )
+					continue;
+				collectTypeNames( f->getReturnType(), referenced );
+				for ( int i = 0; i < f->getNumberParams(); i++ )
+					collectTypeNames( f->getParam( i )->getVariableType(), referenced );
+			}
+			for ( const auto &sp : mod->getStructList() )
+			{
+				StructDefinition *s = const_cast<StructDefinition *>(
+					(const StructDefinition *)sp );
+				if ( !s->isPublic() )
+					continue;
+				for ( const auto &msp : s->getMethods() )
+				{
+					FunctionDefinition *m = const_cast<FunctionDefinition *>(
+						(const FunctionDefinition *)msp );
+					if ( !m->isPublic() )
+						continue;
+					collectTypeNames( m->getReturnType(), referenced );
+					for ( int i = 0; i < m->getNumberParams(); i++ )
+						collectTypeNames( m->getParam( i )->getVariableType(), referenced );
+				}
+			}
+		}
+		for ( const auto &name : referenced )
+		{
+			if ( ownTypes.count( name ) )
+				continue;
+			Symbol *sym = scope->findSymbol( name );
+			StructDefinition *sd = dynamic_cast<StructDefinition *>( sym );
+			if ( sd == nullptr || sd->getModuleDigest().empty() )
+				continue;
+			std::string human = sd->getDefiningFile();
+			if ( human.empty() )
+				human = "?";
+			out << "// foreign-type: " << name << " " << human << " "
+				<< sd->getModuleDigest() << endl;
+		}
+	}
+
 	out << endl;
 
 	// Names a consumer of this file will be able to resolve: the protocols this

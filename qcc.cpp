@@ -473,6 +473,50 @@ int main( int argc, char *argv[] )
 		// of the up-front injection is done-condition 6 / U6, not this unit — the
 		// merge still happens, just per-.bmod at parse time.)
 
+		// modules-v2-graph U5 (done-condition 7): pre-scan a .bmod for FOREIGN-TYPE
+		// headers and register each named type BEFORE parsing, so signatures that
+		// reference a type owned by another module (`-> Box<int>`, Box from boxq)
+		// resolve — the interface parses STANDALONE (the bmod_parses check) even
+		// when the defining .bmod is not also on the command line. In a real build
+		// the transitive closure has already injected the real definition (with its
+		// digest); this only supplies a placeholder type name when it has not.
+		// SECURITY: the .bmod is untrusted parsed input — a malformed foreign-ref is
+		// a LOCATED error, never a crash (Quality Gate 7).
+		if ( isBmod )
+		{
+			std::ifstream fin( inputFile );
+			std::string fline;
+			int lineNo = 0;
+			while ( std::getline( fin, fline ) )
+			{
+				lineNo++;
+				const std::string tag = "// foreign-type:";
+				size_t at = fline.find( tag );
+				if ( at == std::string::npos )
+					continue;
+				std::istringstream fs( fline.substr( at + tag.size() ) );
+				std::string fname2, fhuman, fdigest, extra;
+				fs >> fname2 >> fhuman >> fdigest;
+				if ( fname2.empty() || fhuman.empty() || fdigest.empty() ||
+					 ( fs >> extra ) )
+				{
+					SourceLocation floc;
+					floc.file = inputFile;
+					floc.line = lineNo;
+					floc.col = 1;
+					gDiag->error( floc,
+						"malformed foreign-type reference in interface file "
+						"(expected '// foreign-type: <name> <module> <digest>')" );
+					hadError = true;
+					continue;
+				}
+				if ( gScope->findType( fname2 ) == nullptr )
+					gScope->addType( new Type( fname2 ) );
+			}
+			if ( hadError )
+				continue;
+		}
+
 		LexerReader reader( inputFile.c_str() );
 		Lexer l( &reader );
 		// Per-token "Symbol …" trace only under -v, never in --dump-locations.
@@ -710,7 +754,7 @@ int main( int argc, char *argv[] )
 			gDiag->finish();
 			return -1;
 		}
-		QLang::BmodEmitter::emit( modPtrs, bmodOut );
+		QLang::BmodEmitter::emit( modPtrs, bmodOut, gScope );
 		PARSE_TRACE( "Wrote .bmod to " << emitBmodFile );
 	}
 
