@@ -182,6 +182,51 @@ import while `sort` does. This is intentional and is the concrete manifestation 
 "tiers are assigned per name, not per module" (done-condition 2). It is documented
 in `language_design.md` (N3, §7).
 
+## 5b. Combine-mode SHADOWING — user definition wins uniformly (D13; B2 rev-3)
+
+**The regression the auditor caught.** Unconditional prelude load means a program
+that defines its **own** `Map` now has the prelude `Map` loaded alongside it. Today
+three registries **disagree** about who wins (verified on master):
+
+| Registry | Policy today | Winner if prelude injected first, user parsed later |
+|----------|--------------|------------------------------------------------------|
+| `Scope::mTypeList` (`addType`) | **last-write-wins** | **user** |
+| `Scope::mSymbolList` (`addSymbol`) | **first-wins** (dup dropped) | **prelude** |
+| CodeGen `mStructDefMap` (`CodeGen.cpp:399-401`) | **first-wins** (`if not present`) | **prelude** |
+
+That split-brain (type resolves to the user's struct, symbol/codegen to the
+prelude's) is a **silent miscompile** — and it is sharpest for
+`test_files/codegen_ix_method_chain_field.b`, whose `Map` has a **different shape**
+(`{Array<K> keys; Array<V> values;}` — no hash buckets) than collections' `Map`.
+
+**Mechanism: per-name suppression, uniform "user wins" across all three
+registries.** The prelude is not "base scope like `int`" via a mixed flat scope
+(that is what disagrees); instead the driver enforces a single rule:
+
+> For each prelude-manifest type name, if **any user module** (a combine input
+> routed to `combineScope`, i.e. not a prelude/namespaced stdlib module) declares a
+> struct of that name, the prelude module's definition of that name is **suppressed
+> entirely for that compile**: it is (a) **not** promoted into `combineScope`'s
+> `mTypeList`, (b) **not** promoted into `mSymbolList`, and (c) **skipped when
+> CodeGen registers the prelude module's structs** into `mStructDefMap`
+> (`registerExternalTypes` / the module loop skip a prelude struct whose name a user
+> module defines). The user's own definition — already registered by its own parse
+> (`mTypeList`) and its own CodeGen module pass (`mStructDefMap`) — then occupies
+> **all three** registries alone. No shadow (common case): the prelude definition is
+> injected uniformly into all three.
+
+Detection is order-independent: because combine parses stdlib-first / user-last, the
+promotion+skip pass runs with the **full set of user-declared type names** known, so
+it never races the registries. This makes shadowing *and* the normal case uniform —
+exactly one definition per name in every registry.
+
+**Precedent caveat (auditor).** The existing "user `Option`/`Result` shadows the
+builtin" precedent is a **compiler-AST child-scope** path (the builtin is a
+constructed AST in `gScope`; the user def lands in a child scope and shadows via
+child-first lookup). It is **not** the parsed-struct-into-`combineScope` path at
+issue here, so it does not by itself solve the three-registry disagreement — hence
+the explicit suppression rule above.
+
 ## 6. Bare-name `addType` — reclassify Task/Array to core, delete only Buffer (D14; B1 resolved)
 
 `QModule.cpp:585-587` registers three bare names with no definition behind them:
@@ -246,6 +291,29 @@ that removes the promotion also fixes every call site the promotion supported.
 (`Map`/`Set`/`Buffer`) need no import; a **same-module free function** (`sort`) is
 library-tier and needs `import collections;` — tiers are per name, not per module.
 
+**Three existing self-`Map` tests — kept green by the §5b shadowing mechanism (B2
+item 3), NOT migrated.** `test_files/codegen_map.b`,
+`codegen_arc_map_struct_value.b`, and `codegen_ix_method_chain_field.b` each define
+their **own** `struct Map<K,V>` with **no** `import`, and rely today on the
+`test_codegen.sh:320-325` import-gate that this unit removes (collections.b becomes
+unconditional). Under §5b, each program's user `Map` **suppresses** the prelude
+`Map` across all three registries, so they compile against their own `Map` and stay
+green with **no source change**. They are therefore the **regression guard** for the
+shadowing mechanism — `codegen_ix_method_chain_field.b` especially, because its
+different-shaped `Map` would miscompile loudly if collections' `Map` leaked into any
+registry. If, contrary to the design, the mechanism cannot keep one of them green,
+that test's migration is called out explicitly in the U3 PR rather than silently
+changed.
+
+**Positive D13 fixtures (the teeth):**
+- **No-import prelude use** — a new `codegen_*.b` using `Map`, `Set`, **and**
+  `Buffer` with **zero `import` lines**, compiled + run with a committed golden.
+  Proves prelude types are in scope without import (D13 load).
+- **Shadowing** — a new `codegen_*.b` defining its **own** `struct Map` (distinct
+  shape/behavior) with **zero imports**, compiled + run, asserting it uses **its**
+  `Map` (golden reflects the user shape), with the prelude unconditionally loaded.
+  Proves shadow, not clash (D13 §5b).
+
 ## 8. Gates
 
 `run_tests.sh` both modes; `test_codegen.sh` + `--leak-check` (the `cli`/`nsarc`
@@ -277,5 +345,19 @@ All settled; note re-submitted for re-audit.
   mixed-module rule (§5a, §7). **N4** verified line numbers: `addType` at
   `QModule.cpp:585-587` (Task 585 / Array 586 / Buffer 587).
 
-**Status:** B1 and B2 resolved; A/B and hard-error settled. Holding U3
-implementation for @auditor's re-audit clearance.
+**Status:** B1 cleared by auditor (rev 2). A/B + hard-error settled.
+
+**B2 rev 3 (2026-08-09) — the three re-audit items:**
+1. **Shadowing mechanism specified** (§5b): per-name suppression enforcing "user
+   definition wins" **uniformly** across `mTypeList` + `mSymbolList` +
+   `mStructDefMap` — closing the verified three-registry split-brain the auditor
+   flagged as a silent miscompile. Option/Result precedent caveat noted (AST
+   child-scope path ≠ parsed-struct-into-combineScope path).
+2. **Positive shadowing fixture added** (§7): a program defining its own `struct
+   Map`, zero imports, prelude unconditionally loaded, runs against **its** `Map`.
+3. **Three existing self-`Map` tests accounted for** (§7): `codegen_map.b`,
+   `codegen_arc_map_struct_value.b`, `codegen_ix_method_chain_field.b` (different
+   shape) stay green via §5b as the shadowing regression guard — no migration; any
+   exception called out in the PR.
+
+Holding U3 implementation for @auditor's re-audit of **B2 only**.
