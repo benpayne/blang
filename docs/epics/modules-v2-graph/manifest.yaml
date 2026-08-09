@@ -180,5 +180,10 @@ units:
 foldback:
   status_into: overview.md
 
-# devbot: section left null — filled at /devbot-launch.
-devbot: null
+devbot:
+  endpoint: http://localhost:8201
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b
+  runs:
+    - run_id: 3e3dbafe-0cd0-4838-bb98-10d3a17fedc5
+      launched: 2026-08-09
+      outcome: pending   # Epic B full-scope launch (U1-U9); may run in scoped passes
