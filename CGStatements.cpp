@@ -1120,6 +1120,21 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		if ( arrVal == nullptr )
 			return;
 
+		// If the iterable is a fresh owning array temporary — a method call or
+		// function call returning Array<...> — it is tracked in mTempArrays and
+		// would be released by the loop BODY's block-scope cleanup, freeing it on
+		// the first iteration (use-after-free on the next __blang_array_get, the
+		// KI-22 segfault). Untrack it so the body cannot release it, and release
+		// it once after the loop instead. A variable/field iterable is owned
+		// elsewhere (not an owning temp), so iterableIsOwningTemp stays false and
+		// this is a no-op for those. KI-22.
+		Expression *iterExpr = (Expression*)forInStmt->mIterableExpression;
+		bool iterableIsOwningTemp =
+			dynamic_cast<MethodCallExpression*>( iterExpr ) != nullptr ||
+			dynamic_cast<CallExpression*>( iterExpr ) != nullptr;
+		if ( iterableIsOwningTemp )
+			untrackTempArray( arrVal );
+
 		// Get the array length
 		llvm::Value *lenVal = mBuilder->CreateCall(
 			getOrDeclareArrayLength(), { arrVal }, "arr.len" );
@@ -1143,6 +1158,18 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 			Type *fieldType = getFieldType( fa );
 			if ( fieldType != nullptr && fieldType->getNumTypeParams() > 0 )
 				elemQType = fieldType->getTypeParam( 0 );
+		}
+		else if ( auto *mc = dynamic_cast<MethodCallExpression*>(
+				 (Expression*)forInStmt->mIterableExpression ) )
+		{
+			// Method-call iterable (for k in m.keys()): resolve the method's
+			// Array<K> return element type, substituting the receiver's type
+			// arguments (K -> string for a Map<string,int>). Without this the
+			// loop var defaulted to int and a string element was read as an
+			// integer -> garbage/segfault (KI-22).
+			Type *retElem = methodReturnElementType( mc );
+			if ( retElem != nullptr )
+				elemQType = retElem;
 		}
 		if ( elemQType != nullptr )
 			elemType = getLLVMType( elemQType );
@@ -1219,8 +1246,12 @@ void CodeGen::genForInStatement( ForInStatement *forInStmt )
 		mBuilder->CreateStore( nextVal, counterAlloca );
 		mBuilder->CreateBr( condBB );
 
-		// After
+		// After: release the iterable array temp once, now that the loop is done
+		// (it was untracked above so the body could not release it). KI-22.
 		mBuilder->SetInsertPoint( afterBB );
+		if ( iterableIsOwningTemp &&
+			 mBuilder->GetInsertBlock()->getTerminator() == nullptr )
+			mBuilder->CreateCall( getOrDeclareArrayRelease(), { arrVal } );
 		return;
 	}
 

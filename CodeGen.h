@@ -378,6 +378,12 @@ private:
 	// type arguments: Map<string,int>.get declared "V" -> "int". Falls back to
 	// mTypeSubstitution, then the declared name.
 	std::string methodReturnTypeName( MethodCallExpression *mc );
+	// Resolve the ELEMENT type of a method's Array-typed return, substituting
+	// the receiver's type arguments through the return element type param:
+	// Map<string,int>.keys() declares Array<K> -> element type "string" (KI-22).
+	// Returns nullptr when the method's return type is not a type-parameterized
+	// (Array<...>) type or cannot be resolved.
+	Type *methodReturnElementType( MethodCallExpression *mc );
 	// Infer a generic call's type arguments from its argument expressions'
 	// resolved/declared types when the caller wrote no explicit <...> list.
 	// Fills call->mTypeArgs; returns false (caller reports) if any generic

@@ -1306,3 +1306,60 @@ std::string CodeGen::methodReturnTypeName( MethodCallExpression *mc )
 	}
 	return resolvedTypeName( methodDef->getReturnType() );
 }
+
+Type *CodeGen::methodReturnElementType( MethodCallExpression *mc )
+{
+	if ( mc == nullptr )
+		return nullptr;
+
+	// The object's declared/resolved type carries the instance's type args
+	// (Map<string,int>); mirrors methodReturnTypeName.
+	Type *objType = nullptr;
+	if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)mc->mObject ) )
+	{
+		if ( ve->getVariable() != nullptr )
+			objType = ve->getVariable()->getVariableType();
+	}
+	if ( objType == nullptr )
+		objType = ( (Expression*)mc->mObject )->getResolvedType();
+
+	StructDefinition *sd = receiverStructDef( (Expression*)mc->mObject );
+	if ( sd == nullptr )
+		return nullptr;
+
+	FunctionDefinition *methodDef = nullptr;
+	for ( auto &m : sd->mMethods )
+	{
+		if ( m->getName() == mc->mMethodName )
+		{
+			methodDef = m;
+			break;
+		}
+	}
+	if ( methodDef == nullptr || methodDef->getReturnType() == nullptr )
+		return nullptr;
+
+	Type *retType = methodDef->getReturnType();
+	if ( retType->getNumTypeParams() == 0 )
+		return nullptr;
+	Type *elem = retType->getTypeParam( 0 ); // e.g. K in Array<K>
+	if ( elem == nullptr )
+		return nullptr;
+
+	// Substitute the return element type param through the receiver's type
+	// arguments: Array<K>, K bound to string for a Map<string,int> receiver.
+	std::string elemName = elem->getName();
+	const auto &gps = sd->getGenericParams();
+	for ( size_t i = 0; objType != nullptr && i < gps.size() &&
+		  (int)i < objType->getNumTypeParams(); i++ )
+	{
+		if ( gps[i].mName == elemName )
+			return objType->getTypeParam( (int)i );
+	}
+	// Concrete element (Array<int>) or resolvable via the active substitution
+	// (self receiver inside a monomorphized method).
+	auto subIt = mTypeSubstitution.find( elemName );
+	if ( subIt != mTypeSubstitution.end() && subIt->second != nullptr )
+		return subIt->second;
+	return elem;
+}
