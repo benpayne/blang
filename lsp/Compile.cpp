@@ -4,6 +4,7 @@
 #include "../Type.h"
 #include "../Expression.h"
 #include "../Frontend.h"
+#include "../Resolver.h"
 #include "../Sema.h"
 #include "StringLexerReader.h"
 
@@ -14,13 +15,16 @@ CompileResult compileDocument( const std::string &path, const std::string &text 
 {
 	using namespace QLang;
 
-	// One global builtin scope for the whole server process, owned here (a
-	// refcount-zero raw gScope would be freed when the first file scope's
-	// parent reference dropped — Frontend.h documents the contract). File
-	// scopes parent to it, so repeated compiles share builtins but never
-	// leak symbols into each other.
-	static SmartPtr<Scope> sGlobalScope = createGlobalScope();
-	gScope = (Scope *)sGlobalScope;
+	// modules-v2-graph U4: resolution runs through the standalone Resolver — the
+	// SAME component qcc.cpp constructs (the Epic C seam; grep `Resolver` in both).
+	// One process-lifetime Resolver owns the global builtin scope (a refcount-zero
+	// raw gScope would be freed when the first file scope's parent ref dropped —
+	// Frontend.h's contract), so repeated compiles share builtins but never leak
+	// symbols into each other. blangd stays SINGLE-FILE this epic: it constructs
+	// the resolver and calls only globalScope()/newModuleScope(); the module-graph
+	// methods are present-but-dormant until Epic C wires cross-module resolution.
+	static Resolver sResolver;
+	gScope = sResolver.globalScope();
 
 	// Fresh collector per reparse: DiagnosticEngine has no reset by design;
 	// finish() is never called (nothing may render — the LSP publishes the
@@ -30,8 +34,7 @@ CompileResult compileDocument( const std::string &path, const std::string &text 
 	gDiag = &engine;
 
 	CompileResult result;
-	result.fileScope = new Scope( Scope::kScope_Module );
-	result.fileScope->setParent( gScope );
+	result.fileScope = sResolver.newModuleScope();
 
 	StringLexerReader reader( text, path );
 	Lexer lexer( &reader );
