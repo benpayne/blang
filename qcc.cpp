@@ -375,10 +375,13 @@ int main( int argc, char *argv[] )
 			//     combineScope at parse time.
 			//   - `cli` STAYS promoted into combineScope (unqualified has_flag(...))
 			//     this unit. Its promotion is a CODEGEN special case (the
-			//     module-prefix string-ARC double-free workaround); retiring it is
-			//     U2's job under the F3 gate, NOT U3's tier declaration. Keeping the
-			//     type-tier change (U3) and the codegen-special-case removal (U2)
-			//     separate keeps both reviewable.
+			//     module-prefix string-ARC double-free workaround, now regression-
+			//     locked by U2). Demoting `cli` to a qualified library module is
+			//     DEFERRED out of U3 by owner decision (F3-gated) to a later unit —
+			//     see Known Issues KG-6. (U2 was characterization-only and retired no
+			//     promotion; done-condition 2 assigns the cli demotion to U3/later,
+			//     and the owner deferred it.) Keeping the tier declaration (U3)
+			//     separate from the cli demotion keeps both reviewable.
 			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
 			bool isCliPromoted = ( moduleName == "cli" );
 			bool isPreludeModule =

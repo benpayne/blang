@@ -17,6 +17,21 @@ positive zero-import fixture as the D13 teeth. Non-blocking N1–N4 folded.
 **Depends on**: U2 (merged, PR #145) — the string-ARC path is regression-locked, so
 demoting `cli` no longer ships the double-free.
 
+**Revision 5 (2026-08-09) — SHIPPED-REALITY RECONCILIATION ON `cli`.** This note's
+§4 and §7 describe demoting `cli` and migrating its call sites
+(`codegen_cli.b`, `examples/kv/main.b` → `cli.<fn>(...)`). **The shipped U3
+implementation deliberately does NOT do this: `cli` stays promoted, and its call
+sites are unchanged.** By **owner decision**, the `cli` demotion was **deferred out
+of U3** to a later unit (U6 enforcement or a dedicated follow-on), keeping the
+type-tier declaration and the cli-scope migration as separate reviewable changes.
+Done-condition 2 is therefore **PARTIAL** (manifest ✓, `Buffer` D14 + `Task`/`Array`
+core ✓, per-name `sort` ✓; **`cli`-not-promoted deferred**). The deferral is recorded
+in Known-Issues **KG-6**, which also corrects the earlier inaccurate "retiring `cli`
+is U2's job" phrasing (U2 was characterization-only and retired no promotion; F3 is
+satisfied, the owner deferred on scoping grounds). **Where §4/§7 below say "demote
+`cli`" / "migrate cli call sites," read them as describing the eventual follow-on,
+not U3 as shipped.**
+
 ---
 
 ## 1. Goal (done-conditions 2 + 3 retire-half)
