@@ -80,6 +80,10 @@ run:
     max_turns: 90
     max_runtime_seconds: 43200
     session_token_limit: 4000000
+  # Survive usage-window pauses / transient controller hiccups (both prior runs
+  # died to infra, not to lack of progress): don't declare no-progress until 10
+  # consecutive turns advance nothing.
+  no_progress_threshold: 10
   models:
     controller: null          # devbot default manager model
     worker: null              # manager staffs hires per unit
