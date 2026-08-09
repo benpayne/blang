@@ -1,5 +1,5 @@
 // auto-generated .bmod interface file — do not edit
-// blang-bmod-format: 3
+// blang-bmod-format: 4
 
 pub table struct Point {
 	int x;

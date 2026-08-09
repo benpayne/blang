@@ -662,6 +662,67 @@ pub fn public_api() -> int {    // explicitly public
 }
 ```
 
+### Opaque Types Across Modules: Methods Are the API, Fields Never Cross
+
+A `pub struct` exports its **methods and `init`** (each explicitly `pub`), never its
+**member variables**. Member variables are always private — module-visible only.
+Across a module boundary a type is **opaque**: a consumer constructs it through its
+`pub init` and operates on it through its `pub` methods, and can neither name a field
+nor write a struct literal for it.
+
+```
+// counter.b — the defining module
+pub struct Counter {
+	int count;                       // always private; `pub` on a field is never written
+}
+
+impl Counter {
+	pub init(int start) { self.count = start; }
+	pub fn bump(self) -> int { self.count = self.count + 1; return self.count; }
+	fn reset(self) { self.count = 0; }   // no `pub` — private to this module
+}
+
+// consumer.b
+import counter;
+
+fn main() -> int {
+	Counter c = Counter(5);          // the ONE external construction form (pub init)
+	c.bump();                        // pub method — OK
+	// c.count                       // error: field 'count' of type 'Counter' is
+	//                               //        private to its defining module
+	// Counter { count: 5 }          // error: struct literal for imported type
+	//                               //        'Counter' is not permitted
+	return c.bump();
+}
+```
+
+Within the defining module, fields and struct literals work normally (private means
+module-visible): `self.count`, cross-struct field access, and `Counter { count: 5 }`
+are all legal in `counter.b`.
+
+Consequences:
+
+- **Struct literals are module-private automatically.** With every field private,
+  `Name { ... }` cannot be written outside the defining module, so external
+  construction has exactly one spelling: `Name(...)`.
+- **The interface file (`.bmod`) carries no field layout for a plain struct** — only
+  its exported method/`init` signatures. A private field's type is not part of the
+  interface, so changing internals does not force downstream modules to rebuild.
+- **Data-contract structs are the exception.** A `table` or `@json` struct's field
+  *shape* is its contract (DB columns, JSON keys), so its field declarations do cross
+  the boundary as compiler-facing metadata: an imported `table` struct stays
+  queryable (`query T |> where { .field == ... }`) and an imported `@json` struct
+  serializable (`to_json(x)`). Those fields are still **un-nameable** in ordinary
+  source — visibility is a resolution rule, not an emission rule.
+- **An exported signature may only reference exported types.** A non-`pub` type in a
+  `pub` function/method signature, an exported enum variant payload, or a
+  data-contract struct's field is a located error at the **defining** module's build,
+  not a broken interface discovered later at a consumer's.
+
+*(This is the `.bmod`-mediated cross-module rule. The combine-compiled namespaced
+stdlib is enforced the same way for methods/`init`; field/literal privacy there is
+handled as the module system gains per-module scopes.)*
+
 This differs from languages like Go (uppercase = public) or Java (explicit `public`/`private`). In BLang, privacy is the default and publicity requires an explicit opt-in. This reduces accidental API surface and makes the module's public interface immediately apparent by scanning for `pub`.
 
 ### Constructing and Calling an Imported Type

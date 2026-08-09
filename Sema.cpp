@@ -213,29 +213,27 @@ void Sema::visitStruct( StructDefinition *structDef )
 	{
 		const string sname = structDef->getName();
 
-		// (3) FIELD types of every exported struct.
+		// (3) FIELD types of an exported DATA-CONTRACT struct only (U5 narrowing).
 		//
-		// AMENDED by manager ruling (2026-08-05) from "table/@json structs only"
-		// to "every `pub struct`, for as long as the emitter ships field layout".
-		// The sequencing argument is decisive: U5 is the unit that REMOVES the
-		// layout, so scoping this to annotated structs would leave the design
-		// record's own P9 reproduction live for exactly the interval U3 exists to
-		// close it, and then close it later by accident. While a plain `pub
-		// struct`'s fields are in the .bmod, their types cross the boundary and
-		// must be exported — annotated or not.
-		//
-		// The data-contract distinction is still real; it just is not the U3
-		// scope limit. It becomes the U5 case: once layout is dropped, only
-		// `table`/`@json` structs keep field metadata (D15), and only those
-		// fields still need to be exported.
-		for ( const auto &f : structDef->getFields() )
+		// U3 checked every `pub struct`'s field types, because at that point the
+		// emitter shipped field layout for all of them, so every field type
+		// crossed the boundary. U5 (format 4) DROPS field layout for a plain
+		// `pub struct` — its field types no longer cross, so a private field type
+		// is fine there and this check would be a false positive. A `table`/`@json`
+		// struct still ships its fields as D15 metadata, so its field types still
+		// cross and still must be exported. This is exactly the narrowing U3's
+		// comment anticipated ("once layout is dropped, only table/@json structs
+		// keep field metadata, and only those fields still need to be exported").
+		if ( isExportedDataContract( structDef ) )
 		{
-			if ( f == nullptr )
-				continue;
-			const string kindWord = isExportedDataContract( structDef )
-				? "exported data-contract struct" : "exported struct";
-			checkExportedTypeRef( f->getVariableType(), structDef->getLocation(),
-				"field '" + f->getName() + "' of " + kindWord + " '" + sname + "'" );
+			for ( const auto &f : structDef->getFields() )
+			{
+				if ( f == nullptr )
+					continue;
+				checkExportedTypeRef( f->getVariableType(), structDef->getLocation(),
+					"field '" + f->getName() +
+					"' of exported data-contract struct '" + sname + "'" );
+			}
 		}
 
 		// (5) A protocol named in an exported conformance record. U2's emitter
@@ -1053,6 +1051,30 @@ Type *Sema::visitExpr( Expression *expr )
 	{
 		for ( auto &v : sl->mFieldValues )
 			visitExpr( v );
+
+		// Rule 2 (U5, D9/D7): a struct literal names every field, so it is
+		// module-private automatically — with fields private, `Name { ... }`
+		// cannot be written outside the defining module. A literal for a struct
+		// that arrived through a .bmod is a located error, leaving external
+		// construction exactly one form: `Name(...)` via `pub init`. Same-module
+		// literals are unaffected (isFromInterface is false there).
+		// NON-GENERIC only in U5a: a generic imported struct is still constructed
+		// via its literal (Q-U4-1 — `Name<Args>(...)` does not parse yet), so
+		// blocking it here would break cross-module generic consumers with no
+		// migration path. Generic literal enforcement is U5b (spec 033 §5).
+		if ( auto *sd = dynamic_cast<StructDefinition *>(
+			mScope->findSymbol( sl->mTypeName ) ) )
+		{
+			if ( sd->isFromInterface() && sd->getGenericParams().empty() )
+			{
+				mDiag.error( sl->getLocation(),
+					"struct literal for imported type '" + sl->mTypeName +
+					"' is not permitted; construct it with " + sl->mTypeName +
+					"(...)" );
+				mReported = true;
+			}
+		}
+
 		Type *t = mScope->findType( sl->mTypeName );
 		expr->setResolvedType( t );
 		return t;
@@ -1455,10 +1477,43 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 
 	const string &name = fa->getFieldName();
 
+	// Rule 1 (U5, D9): a member variable is always private to its defining
+	// module. `imported` is true only for a NON-GENERIC struct that arrived
+	// through a parsed .bmod (isFromInterface) — the .bmod-path cross-module case
+	// U5a enforces. Same-module access keeps working (isFromInterface is false,
+	// so self.field and cross-struct access WITHIN a module resolve normally), and
+	// combine-mode namespaced-stdlib field access stays grep-gated (KI-23,
+	// Epic B).
+	//
+	// GENERIC imported structs are EXCLUDED in U5a: they ship full layout + all
+	// method bodies (A6) so consumers monomorphize them, and the only way to
+	// construct one today is the struct literal (Q-U4-1) — so blocking their
+	// field/literal access here would break every cross-module generic consumer
+	// (e.g. test_build/myapp) with NO migration path. Generic field/literal
+	// enforcement lands in U5b, coupled to the `Name<Args>(...)` construction
+	// spelling + `pub init`/accessor migration (spec 033 §5, §7).
+	//
+	// NOTE: the field loop stays FIRST so a same-module `self.keys` still
+	// resolves to the field even when a same-named accessor method exists (U4's
+	// field/method name-sharing) — the method loop must not shadow it.
+	const bool imported = structDef->isFromInterface() &&
+		structDef->getGenericParams().empty();
+
 	for ( auto &field : structDef->mFields )
 	{
 		if ( field->getName() == name )
 		{
+			// On an imported struct the field is present only as D15 metadata
+			// (a table/@json struct keeps its declarations) and must not be
+			// source-nameable — a match here is a located error, not a resolve.
+			if ( imported )
+			{
+				mDiag.error( fa->getLocation(),
+					"field '" + name + "' of type '" + baseType->getName() +
+					"' is private to its defining module" );
+				mReported = true;
+				return;
+			}
 			fa->mResolvedField = field;
 			Type *ft = field->getVariableType();
 			// Concrete-only contract, applied RECURSIVELY: Array<K> is not
@@ -1471,12 +1526,23 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 		}
 	}
 
+	// A bare `obj.method` (a method used as a name) is legitimate on any struct —
+	// methods are the API, so Rule 1 does not block it.
 	for ( auto &method : structDef->mMethods )
 		if ( method->getName() == name )
 			return;
 
-	mDiag.error( fa->getLocation(),
-		"type '" + baseType->getName() + "' has no field '" + name + "'" );
+	// Not a field and not a method. On an imported struct a PLAIN struct's fields
+	// were dropped from the interface (format 4), so an unmatched name is almost
+	// certainly a now-private field: give the D9 message rather than the bare
+	// "has no field", which would misleadingly imply the field never existed.
+	if ( imported )
+		mDiag.error( fa->getLocation(),
+			"field '" + name + "' of type '" + baseType->getName() +
+			"' is private to its defining module" );
+	else
+		mDiag.error( fa->getLocation(),
+			"type '" + baseType->getName() + "' has no field '" + name + "'" );
 	mReported = true;
 }
 

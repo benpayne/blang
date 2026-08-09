@@ -106,6 +106,19 @@ string BmodEmitter::sliceDefinitionSource( const SourceLocation &loc )
 // The BmodEmitter only reads from types, never modifies them.
 static Type *nc( const Type *t ) { return const_cast<Type*>( t ); }
 
+bool BmodEmitter::isDataContractStruct( StructDefinition *structDef )
+{
+	// KEEP IN SYNC with Sema::isExportedDataContract (Sema.cpp): the emitter and
+	// the P9 field-type check must agree on which structs' field types cross the
+	// boundary, or a struct could ship a field the exporter never validated.
+	if ( structDef->isTable() )
+		return true;
+	for ( const auto &ann : structDef->getAnnotations() )
+		if ( ann.mName == "json" )
+			return true;
+	return false;
+}
+
 void BmodEmitter::emitType( Type *type, ostream &out )
 {
 	out << type->getName();
@@ -232,11 +245,24 @@ void BmodEmitter::emitStruct( StructDefinition *structDef, ostream &out,
 	emitGenericParams( structDef->getGenericParams(), out );
 	out << " {" << endl;
 
-	for ( const auto &field : structDef->getFields() )
+	// FIELD LAYOUT (format 4, D15). A field's type reaches the consumer only when
+	// it MUST — for a generic struct (consumers monomorphize from full layout,
+	// A6) or a data-contract struct (its shape is its DB/JSON contract). Every
+	// other non-generic `pub struct` emits an EMPTY body: the consumer constructs
+	// through the library-emitted factory (which needs no layout, U1) and calls
+	// `pub` methods, and it can no longer NAME a field. The retained fields of a
+	// data-contract struct are compiler-facing metadata — present so query/@json
+	// codegen and Sema's field validation can read them, un-nameable from source
+	// by a resolution rule (Sema, U5). This is what drops a private field's type
+	// out of the interface hash so internal edits stop rebuilding downstream.
+	if ( !structDef->getGenericParams().empty() || isDataContractStruct( structDef ) )
 	{
-		out << "\t";
-		emitType( nc( field->getVariableType() ), out );
-		out << " " << field->getName() << ";" << endl;
+		for ( const auto &field : structDef->getFields() )
+		{
+			out << "\t";
+			emitType( nc( field->getVariableType() ), out );
+			out << " " << field->getName() << ";" << endl;
+		}
 	}
 
 	out << "}" << endl;

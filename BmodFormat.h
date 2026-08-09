@@ -25,8 +25,17 @@
 //       means declared-but-private. Reading a format-2 file under format-3 rules
 //       would invert the meaning of every unmarked member, which is exactly what
 //       the version marker exists to prevent.
-//
-// U5 bumps it again when field layout is dropped in favour of D15 metadata.
+//   4 — U5: field layout is DROPPED for a non-generic, non-data-contract
+//       `pub struct` (emitted as an empty body). A `table`/`@json` struct keeps
+//       its real field declarations — its shape IS its data contract (DB columns,
+//       JSON keys, D15), so the fields must cross and editing one must move the
+//       interface hash. Those retained fields are compiler-facing metadata:
+//       source outside the defining module can never NAME a field (a resolution
+//       rule, enforced in Sema), even though the declarations are present.
+//       Generic structs are unchanged (full layout + all method bodies ship, so
+//       consumers can monomorphize). Reading a format-3 file (which shipped
+//       layout for every struct) under format-4 rules is harmless for parsing,
+//       but the salt still forces a rebuild so a consumer never mixes shapes.
 //
 // THE MARKER IS VALIDATED ON READ (U3, qcc.cpp). A .bmod whose version differs
 // from this constant is REJECTED with a located diagnostic telling the user to
@@ -45,7 +54,7 @@
 // consumer sees changes; not when a broken emission is repaired.
 namespace BlangBmod
 {
-	static const int kFormatVersion = 3;
+	static const int kFormatVersion = 4;
 }
 
 #endif // BLANG_BMOD_FORMAT_H_

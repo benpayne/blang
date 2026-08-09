@@ -41,6 +41,15 @@ private:
 	// rather than absent).
 	static bool structHasInterfaceMembers( StructDefinition *structDef );
 
+	// A `table` or `@json` struct whose SHAPE is its data contract (DB columns,
+	// JSON keys, D15). Its field declarations must cross the `.bmod` boundary as
+	// compiler-facing metadata — and editing one must move the interface hash.
+	// Every OTHER non-generic struct drops its fields (format 4): a private
+	// field's type is not part of the interface, so a consumer cannot name it
+	// and internal changes stop rebuilding downstream. Generic structs are
+	// exempt from both rules (they ship full layout + bodies for monomorphization).
+	static bool isDataContractStruct( StructDefinition *structDef );
+
 	// Protocol conformance records (`impl Protocol for Type { }`, D16), emitted
 	// after the interface block so the conformance check sees the methods.
 	//

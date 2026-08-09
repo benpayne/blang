@@ -775,3 +775,34 @@ the manager for a ruling: fold a scoped codegen fix into U5, or handle as its ow
 Until fixed, the `check_no_field_reachins.sh` migration guidance for a generic
 collection is "bind to a typed `Array<...>` local, then iterate," not "add `()` in
 place."
+
+---
+
+## KI-23 — combine-mode namespaced-stdlib field/literal privacy is grep-gated, not Sema-enforced (Epic B)
+
+**Filed**: U5 design audit (run `aeba092e`, 2026-08-09; `rev` blocking finding point 1). **Owner: Epic B**
+(`modules-v2-graph`, per-module scopes). **Deliberate simplification** (Principle VI).
+
+U5 makes field access and struct literals on a cross-module struct a located Sema error. The rule keys on
+`StructDefinition::isFromInterface()` — true only for a struct that **arrived through a parsed `.bmod`**
+(`qcc.cpp:463`, the `.bmod`-input branch). That is **not** the same as "is cross-module":
+
+- **The Type.h contract.** `Type.h` (443-446, 467-475) documents `mFromInterface` as **an ABI predicate
+  only** — "must construction go through the library-emitted factory?", explicitly **NOT** "is this member
+  visible here?", with a standing instruction **not to overload the flag for visibility**. U5 reuses it for
+  the field/literal rules, but ONLY in rules that are themselves **scoped to `.bmod`-arrival** (which is
+  exactly what the flag holds) — so it is not a general-visibility overload. The initial U5 design draft
+  claimed a false "from-interface == imported" equivalence and named a synonym `isImported()`; the design
+  audit rejected that and it was removed (spec `033` §4.2).
+
+- **The gap.** A **combine-mode namespaced stdlib** struct (`net`/`fs`/`timer`, each with its own scope) is
+  parsed from `.b` **source** under `--combine`, so `setFromInterface(true)` is never called for it —
+  `isFromInterface() == false` — yet it **is** cross-module. U5's compile-time field/literal enforcement is
+  therefore **`.bmod`-path-only this epic**; a consumer reaching into a namespaced-stdlib struct's fields in
+  combine mode is **not** caught by Sema. That privacy stays **grep-gated** by
+  `tools/check_no_field_reachins.sh` (the reach-in gate covers the stdlib DTO fields).
+
+**Closed by Epic B**, which introduces real per-module scopes and a canonical module identity: the
+field/literal rules then key on "defined in a different module than the use site" — covering `.bmod` AND
+combine-mode namespaced stdlib uniformly — and the ABI flag is no longer read for visibility at all. Tracked
+alongside KI-16 (the file→module mapping Epic B owns).

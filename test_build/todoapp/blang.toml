@@ -1,0 +1,11 @@
+[project]
+name = "todoapp"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+todolib = { path = "../todolib" }
+
+[database]
+driver = "sqlite"
+url = "todoapp.db"
