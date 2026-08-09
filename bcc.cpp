@@ -1156,6 +1156,23 @@ static int resolveGitDependency( const Dependency &dep, bool verbose, string &ou
 }
 
 // Build a single project directory. Returns 0 on success.
+// modules-v2-graph U1 (D5/D10): append the canonical-identity flags a qcc
+// invocation needs. moduleOrigin is THIS module's origin (realpath of its project
+// dir); bmods/origins are the parallel dep .bmod paths and their canonical
+// origins, so each dep's .bmod generics are stamped with the DEP's identity and
+// mangle identically to the dep's own build (linkonce_odr dedup-preserving).
+static void addOriginFlags( vector<string> &cmd, const string &moduleOrigin,
+	const vector<string> &bmods, const vector<string> &origins )
+{
+	cmd.push_back( "--module-origin" );
+	cmd.push_back( moduleOrigin );
+	for ( size_t i = 0; i < bmods.size() && i < origins.size(); i++ )
+	{
+		cmd.push_back( "--bmod-origin" );
+		cmd.push_back( bmods[i] + "=" + origins[i] );
+	}
+}
+
 // Outputs: fills aFile and bmodFile if type=lib.
 // depBmodFiles/depAFiles receive dependency artifacts to pass downstream.
 static int buildProject( const string &projectDir, const string &exeDir,
@@ -1189,6 +1206,11 @@ static int buildProject( const string &projectDir, const string &exeDir,
 	vector<string> depBmodFiles;
 	vector<string> depAFiles;
 	vector<string> depHashes;
+	// modules-v2-graph U1 (D5/D10): each dep's canonical origin (realpath of its
+	// project dir), parallel to depBmodFiles. Passed to qcc as --bmod-origin so a
+	// dep's .bmod generics are stamped with the DEP's identity — identical to the
+	// dep's own build — keeping linkonce_odr dedup correct across the boundary.
+	vector<string> depOrigins;
 
 	for ( const auto &dep : config->getDependencies() )
 	{
@@ -1213,6 +1235,15 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			depDir = resolvePath( projectDir, dep.path );
 		}
 
+		// Canonical origin of this dep = realpath of its project dir (D5). The same
+		// value the dep's OWN build stamps via --module-origin, so digests agree.
+		string depOrigin = depDir;
+		{
+			char depResolved[PATH_MAX];
+			if ( realpath( depDir.c_str(), depResolved ) )
+				depOrigin = depResolved;
+		}
+
 		// Check build cache
 		ProjectConfig *depConfig = ProjectConfig::loadFromDirectory( depDir );
 		if ( !depConfig )
@@ -1233,6 +1264,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 				cerr << "  cache hit for " << dep.name << " (" << depCacheKey.substr( 0, 12 ) << "...)" << endl;
 			depAFiles.push_back( cachedA );
 			depBmodFiles.push_back( cachedBmod );
+			depOrigins.push_back( depOrigin );
 			depHashes.push_back( depCacheKey );
 			delete depConfig;
 			continue;
@@ -1251,6 +1283,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 
 		depAFiles.push_back( depA );
 		depBmodFiles.push_back( depBmod );
+		depOrigins.push_back( depOrigin );
 		depHashes.push_back( depHash );
 	}
 
@@ -1305,6 +1338,10 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		qccCmd.push_back( src );
 	for ( const auto &bmod : depBmodFiles )
 		qccCmd.push_back( bmod );
+	// modules-v2-graph U1 (D5/D10): canonical-identity flags — THIS module's
+	// origin, plus each dep's origin so its .bmod generics mangle with the dep's
+	// identity (dedup-preserving). addOriginFlags is defined above buildProject.
+	addOriginFlags( qccCmd, canonDir, depBmodFiles, depOrigins );
 
 	if ( config->isLibrary() )
 	{
@@ -1395,6 +1432,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 				qccCmd.push_back( src );
 			for ( const auto &bmod : depBmodFiles )
 				qccCmd.push_back( bmod );
+			addOriginFlags( qccCmd, canonDir, depBmodFiles, depOrigins );
 			qccCmd.push_back( "-o" );
 			qccCmd.push_back( combinedLL );
 

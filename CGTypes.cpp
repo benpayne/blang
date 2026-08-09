@@ -13,6 +13,23 @@ std::string CodeGen::mangleGenericName(
 	const std::vector<SmartPtr<Type>> &typeArgs )
 {
 	std::string mangled = baseName;
+
+	// Incorporate the DEFINING module's identity digest (modules-v2-graph U1,
+	// D10) so two same-named exported generic types from different modules get
+	// DISTINCT mangled symbols instead of collapsing onto one linkonce_odr symbol
+	// (P10, a silent miscompile). The digest is a property of the DEFINITION, so
+	// it is looked up by base name — every call site (instantiation and the
+	// field/var lookups that must find the same symbol) therefore agrees without
+	// threading the digest through each signature. Empty digest (builtins,
+	// origin-less compiles) => unchanged mangling, backward compatible.
+	auto dIt = mStructDefMap.find( baseName );
+	if ( dIt != mStructDefMap.end() && dIt->second != nullptr )
+	{
+		const std::string &digest = dIt->second->getModuleDigest();
+		if ( !digest.empty() )
+			mangled += "_m" + digest;
+	}
+
 	for ( auto &arg : typeArgs )
 	{
 		mangled += "_" + arg->getName();

@@ -923,6 +923,24 @@ There is no separate module declaration keyword. The file itself is the module b
 
 This eliminates an entire class of build-system complexity: no `mod.rs`, no `__init__.py`, no package declarations that must match directory names.
 
+### Type Identity Is Nominal and Owned by the Defining Module
+
+A type is identified by *where it is defined*, never by the route taken to reach
+it. Two different modules that each define a `Box<T>` define **two distinct
+types**, even when their fields and methods are identical — a value of one is not
+a value of the other, and the compiler keeps them apart.
+
+This is enforced all the way down to the generated symbols: a generic type's
+mangled name incorporates a short digest of its **defining module's canonical
+origin** (the resolved path of its project, or `url@pin` for a git dependency).
+So one binary can link two libraries that each export a `Box<int>` and the two
+instantiations remain distinct symbols rather than silently collapsing onto one —
+which would be a miscompile, the linker keeping whichever it saw first. The same
+library reached by the same origin is still deduplicated normally; only genuinely
+different origins produce different types. Two origins are never merged, even if
+their bytes match, because the compiler cannot know they are the same version —
+that is a package-manager concern BLang deliberately does not take on.
+
 ## Data and Persistence
 
 ### Design Philosophy: Language vs Standard Library

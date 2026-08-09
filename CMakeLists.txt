@@ -110,6 +110,9 @@ add_executable(blangd
 	lsp/blangd_main.cpp)
 set_target_properties(blangd PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(blangd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# modules-v2-graph U1: the frontend (QModule.cpp) computes a module-identity
+# digest via SHA-256, so every frontend consumer links blang_sha256.
+target_link_libraries(blangd blang_sha256)
 
 # Add LLVM code generation when available
 if(LLVM_FOUND)
@@ -129,6 +132,8 @@ set_target_properties(qcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 # blang_sqlgen (SQLGen + SchemaMigration) is always needed: codegen uses SQLGen
 # and --emit-schema uses SchemaMigration even in parse-only builds.
 target_link_libraries(qcc blang_sqlgen)
+# modules-v2-graph U1: module-identity digest (SHA-256) in the frontend.
+target_link_libraries(qcc blang_sha256)
 
 if(LLVM_FOUND)
 	target_compile_definitions(qcc PRIVATE BLANG_HAS_LLVM)

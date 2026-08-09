@@ -190,10 +190,18 @@ llvm::Function *CodeGen::getOrGenStructDestructor( StructDefinition *sd,
 	if ( sd == nullptr )
 		return nullptr;
 
-	// Determine the mangled name for this destructor (include type args for generics)
+	// Determine the mangled name for this destructor (include type args for
+	// generics). For a GENERIC INSTANCE this must mirror mangleGenericName exactly
+	// — base + module-identity digest (U1/D10) + type args — so the dtor symbol is
+	// as distinct across modules as the type it destroys: two modules' Box<int>
+	// otherwise share __Box_int_dtor and the linker collapses them (P10) even
+	// though their types no longer collapse. Non-generic dtors keep the plain
+	// __Name_dtor form (the .bmod factory references it by that name, KI-5).
 	string dtorName = "__" + sd->getName();
 	if ( !typeSub.empty() )
 	{
+		if ( !sd->getModuleDigest().empty() )
+			dtorName += "_m" + sd->getModuleDigest();
 		for ( auto &gp : sd->mGenericParams )
 		{
 			auto it2 = typeSub.find( gp.mName );
@@ -214,6 +222,13 @@ llvm::Function *CodeGen::getOrGenStructDestructor( StructDefinition *sd,
 	string structTypeName = sd->getName();
 	if ( !typeSub.empty() )
 	{
+		// Mirror mangleGenericName exactly (base + U1 module-identity digest + type
+		// args) so this lookup finds the instance type registered under the
+		// digested name (mStructTypeMap, CGTypes.cpp). Without the digest the lookup
+		// misses and the dtor runs against the wrong (unsubstituted) layout —
+		// releasing garbage field pointers.
+		if ( !sd->getModuleDigest().empty() )
+			structTypeName += "_m" + sd->getModuleDigest();
 		for ( auto &gp : sd->mGenericParams )
 		{
 			auto it2 = typeSub.find( gp.mName );

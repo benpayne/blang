@@ -84,6 +84,25 @@ plus a **shared-origin dedup** companion (one lib instantiated twice → one sym
 plus a **`bcc clean` warm-cache guard** documenting the U1↔U5 window (B1). Keep
 `mathlib`/`myapp` green (the cross-module-dedup regression guard, §2).
 
+## 4a. Co-ship consequence (manager-confirmed 2026-08-09)
+
+The `bcc`→`qcc` dep-origin plumbing in §2 is **not a scope expansion** — it is the
+expected consequence of the U1/U5 co-ship (B1) invariant and is squarely in-scope
+under clarity-note **source (a)** (own module + directly-imported deps stamped
+driver-side). It is the only correct way to land the mangling change without
+regressing cross-module generics (mathlib/myapp).
+
+**Digest origin key (U1 decision, correctness-first).** The serialized digest keys
+on **`realpath` of the module's project dir** — a value both the dep's own build
+(`bcc --module-origin <realpath(projectDir)>`) and any consumer referencing it
+(`bcc --bmod-origin <depBmod>=<realpath(depDir)>`) compute identically on one
+machine, so `linkonce_odr` dedup is preserved. **Cross-machine reproducibility is
+waived** for this pass (the design's own fallback for out-of-workspace deps) and
+recorded in Known Issues; the in-workspace project-root-relative refinement is a
+follow-on that must preserve dep/consumer digest agreement. In single-file/combine
+mode (no `bcc`), the origin defaults to `realpath(inputFile)` per module — no
+cross-`.bmod` reference exists there to disagree with.
+
 ## 5. Gates
 
 `run_tests.sh` (both modes), `test_codegen.sh` (+`--leak-check`), `test_lsp.sh`,
