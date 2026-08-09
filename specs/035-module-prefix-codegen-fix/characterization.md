@@ -98,6 +98,17 @@ owned-string-return-across-prefix path; committed golden
 - `./test_lsp.sh` **62/0**.
 - Teeth verified: prefix-free config → no `@nsarc__` → assertion fails.
 
+**"All green" means the full CI matrix, not just local.** The `--leak-check`
+fail-not-skip flip is a HARD failure under `CI=true` when `build-asan` is absent, so
+**every** CI job that runs `./test_codegen.sh --leak-check` must provision the
+ASan-instrumented archives — not only the `sanitizers` job. There are **four** such
+call sites: `sanitizers` (injected-leak probe + full run — already provisions
+`build-asan`), plus `opt-suite` (`-O2` ARC leg) and `debug-suite` (`-g` ARC leg),
+which this unit updated to add the same two `cmake -S . -B build-asan
+-DBLANG_SANITIZE=address,undefined …` provisioning lines (@reviewer
+CHANGES-REQUESTED on #145). A local `--leak-check` pass does not certify the matrix;
+the claim is complete only when all four legs are green in CI.
+
 ## 5. Sequencing
 
 F3 holds: **U3 must not demote `cli`** until this regression-lock merges. Its
