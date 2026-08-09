@@ -83,26 +83,37 @@ real namespaced boundaries — progress toward KI-3).
   unqualified across the promotion is not something U2 proved. **This is the risk
   the auditor should weigh.**
 
-### Option B — keep prelude modules prefix-free; route only free functions to a namespace (RECOMMENDED)
+### Option B — prefix-free prelude, LOAD into a holding scope then PROMOTE per-name (RECOMMENDED)
 
-Parse `collections.b`/`buffer.b` into `combineScope` **as today (no prefix)** —
-driven by the **manifest** (promote a module into `combineScope` iff it defines a
-prelude type), so the codegen path for `Map`/`Set`/`Buffer` is **byte-identical to
-today** (zero new prefix risk). For a **mixed** module, additionally register a
-`collections` **namespace** and route its **non-prelude free functions** (`sort`)
-there for qualified access, and **withhold them from unqualified `combineScope`
-visibility** so bare `sort(...)` no longer resolves (a located error) and
-`collections.sort(...)` does.
+**LOAD vs PROMOTE are distinct (B2-a).** Prelude modules `collections.b`/`buffer.b`
+are always *loaded* (parsed), but **not** into `combineScope` — they parse into a
+**holding scope** (a `kScope_Module` child of `gScope`, sibling to the user's
+`combineScope`), so their parse-time `addSymbol`/`addType` land in the holding scope,
+**never** committing a prelude symbol into `combineScope`'s `mSymbolList` at parse
+time. A **post-parse PROMOTE pass** then injects **only non-suppressed** prelude
+structs into `combineScope`'s three registries uniformly (§5b). This **retires the
+`isGlobalTypeLib → fileScope = combineScope` path** (`qcc.cpp:353`) for prelude
+types — that path's first-wins parse-time `addSymbol` is exactly the seam B2-a
+identified, and it cannot be undone by a later "don't promote" step.
+
+The codegen path for `Map`/`Set`/`Buffer` stays **prefix-free** (zero new prefix
+risk): the holding scope carries **no module prefix**, and the promoted structs are
+the same prefix-free definitions used today — only their *registration route*
+changes (holding-scope parse → controlled promote), not their mangling. For a
+**mixed** module, the promote pass sends its **prelude-type** structs to
+`combineScope` and routes its **non-prelude free functions** (`sort`) to a
+`collections` **namespace** (with `addImportedModule` so `collections.sort(...)`
+resolves), while **withholding them from unqualified `combineScope`** so bare
+`sort(...)` is a located error. `buffer.b` has no free functions — pure promotion.
 
 - **Pro**: no change to the `Map`/`Set`/`Buffer` codegen path (the thing most likely
   to regress); the only behavioral change is `sort`'s spelling and `cli`'s demotion.
-- **Con**: the promotion becomes "types + selected symbols to `combineScope`, other
-  free functions to a sibling namespace" — a slightly more nuanced injection than a
-  whole-file scope choice. Mechanically: after `Module::Parse`, iterate the module's
-  symbols; a prelude-type struct (and its `Type`) → `combineScope`; every other
-  top-level symbol → the `collections` namespace (and `addImportedModule` so
-  qualified access resolves). `buffer.b` has no free functions, so it needs no
-  namespace — pure prelude promotion.
+- **Con**: the promotion becomes "prelude-type structs → `combineScope`, other free
+  functions → a sibling namespace" — a more nuanced injection than a whole-file
+  scope choice. Mechanically (post-parse PROMOTE pass over the holding scope): a
+  prelude-manifest struct (and its `Type`) → `combineScope`'s three registries iff
+  not shadowed (§5b); every other top-level symbol → the `collections` namespace
+  (with `addImportedModule`). `buffer.b` has no free functions — pure promotion.
 
 **Decision: Option B (CONFIRMED by auditor, rev 2).** It satisfies the
 done-condition (prelude types unqualified; `collections.sort` qualified; `cli`
@@ -168,6 +179,14 @@ types are always in scope with **zero import lines**:
 - **the qcc combine harness / any other combine driver**: same — prelude modules are
   always present.
 
+**LOAD ≠ PROMOTE (B2-a).** "Unconditionally loaded" means the prelude file is always
+**parsed**; it does **not** mean parsed into `combineScope`. Under Option B (§3) a
+loaded prelude module parses into a **holding scope** (no prefix), and a post-parse
+**PROMOTE** pass injects its non-suppressed prelude structs into `combineScope`'s
+three registries. So the two axes are independent: *load* is unconditional (D13);
+*promote* is per-name and suppression-checked (§5b). The retired
+`isGlobalTypeLib → combineScope` path conflated them.
+
 **D13 teeth (positive fixture).** Add a `codegen_*.b` fixture that uses `Map`,
 `Set`, **and** `Buffer` with **ZERO `import` lines**, compiles, and runs (committed
 stdout golden). This is U3's real D13 proof: prelude types need no import. Pairs with
@@ -211,9 +230,13 @@ registries.** The prelude is not "base scope like `int`" via a mixed flat scope
 > CodeGen registers the prelude module's structs** into `mStructDefMap`
 > (`registerExternalTypes` / the module loop skip a prelude struct whose name a user
 > module defines). The user's own definition — already registered by its own parse
-> (`mTypeList`) and its own CodeGen module pass (`mStructDefMap`) — then occupies
-> **all three** registries alone. No shadow (common case): the prelude definition is
-> injected uniformly into all three.
+> into `combineScope` (**both** `mTypeList` **and** `mSymbolList`) and by its own
+> CodeGen module pass (`mStructDefMap`) — then occupies **all three** registries
+> alone. This holds **only because prelude modules parse into the holding scope, not
+> `combineScope` (§3, B2-a)**: no prelude `addSymbol` ever ran against `combineScope`,
+> so the user's parse-time `addSymbol` is first-and-only in `mSymbolList` — there is
+> no first-wins prelude entry to lose to. No shadow (common case): the PROMOTE pass
+> injects the prelude definition uniformly into all three.
 
 Detection is order-independent: because combine parses stdlib-first / user-last, the
 promotion+skip pass runs with the **full set of user-declared type names** known, so
@@ -360,4 +383,18 @@ All settled; note re-submitted for re-audit.
    shape) stay green via §5b as the shadowing regression guard — no migration; any
    exception called out in the PR.
 
-Holding U3 implementation for @auditor's re-audit of **B2 only**.
+**B2 rev 4 (2026-08-09) — B2-a (load path vs suppression model):** auditor cleared
+B2 items 2 & 3; B2-a remained: §3/§5a's "parse as today into `combineScope`" wording
+contradicted §5b, because the `isGlobalTypeLib → fileScope = combineScope` path
+(`qcc.cpp:353`) runs `addSymbol` at **parse** time (first-wins, prelude-first), which
+a later "don't promote" step cannot undo — reintroducing the `mSymbolList`
+split-brain, and §5b's "already registered" list had omitted `mSymbolList`. **Fixed**
+by distinguishing **LOAD** (always parse the prelude file, into a **holding scope** —
+never `combineScope`) from **PROMOTE** (a post-parse, suppression-checked pass that
+injects non-suppressed prelude structs into all three registries uniformly). The
+`isGlobalTypeLib → combineScope` path is **retired** for prelude types (§3); §5a
+gains an explicit LOAD≠PROMOTE paragraph; §5b's user-side list now names **both**
+`mTypeList` and `mSymbolList` and states the holding-scope precondition. No prelude
+`addSymbol` ever touches `combineScope`, so the seam is closed at its source.
+
+Holding U3 implementation for @auditor's re-audit of **B2-a only**.
