@@ -1,0 +1,7 @@
+[project]
+name = "midx"
+version = "0.1.0"
+type = "lib"
+
+[deps]
+boxq = { path = "../boxq" }
