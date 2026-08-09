@@ -582,9 +582,18 @@ Scope *createGlobalScope()
 	s->addType( new Type( "long" ) );
 	s->addType( new Type( "short" ) );
 	s->addType( new Type( "byte" ) );
+	// Task and Array are compiler-known CORE types (D14): Task drives the
+	// spawn/wait ABI (getLLVMType special-case, CGTypes.cpp) and Array has a
+	// getLLVMType special-case plus dozens of ==\"Array\" ARC predicates, with this
+	// registration its sole scope-resolution path — so they stay registered.
 	s->addType( new Type( "Task" ) );
 	s->addType( new Type( "Array" ) );
-	s->addType( new Type( "Buffer" ) );
+	// Buffer is NOT registered here (modules-v2-graph U3, D14): it is an ordinary
+	// BLang struct (stdlib/buffer.b) with no compiler special-case, so a bare-name
+	// registration would only let `Buffer x;` parse and defer the failure to a
+	// worse position. Buffer is a PRELUDE type — it resolves from its parsed
+	// definition in buffer.b (unconditionally loaded + promoted). Absent the
+	// prelude, `Buffer` now fails at the TYPE with a located error (fail/sema).
 
 	// Register print/println as compiler builtins
 	{
@@ -656,6 +665,12 @@ void stampDefiningOrigin( QLang::Module *mod, const std::string &path )
 		if ( s->getDefiningFile().empty() )
 			s->setDefiningFile( origin );
 	}
+}
+
+// See Frontend.h. The closed prelude-type manifest (U3, D12/D13).
+bool isPreludeTypeName( const std::string &name )
+{
+	return name == "Map" || name == "Set" || name == "Buffer";
 }
 
 // See Frontend.h. Canonical module-identity digest (U1, D5/D10).

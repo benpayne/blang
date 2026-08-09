@@ -11,27 +11,27 @@ fn less_double(double a, double b) -> bool { return a < b; }
 fn main() -> int {
     // Generic sort<int>, ascending then descending.
     Array<int> a = [5, 2, 8, 1, 9, 3, 7];
-    Array<int> asc = sort<int>(a, less_int);
+    Array<int> asc = collections.sort(a, less_int);
     print("int asc:");
     for x in asc { print(" {}", x); }
     println("");
 
     Array<int> b = [5, 2, 8, 1, 9, 3, 7];
-    Array<int> desc = sort<int>(b, greater_int);
+    Array<int> desc = collections.sort(b, greater_int);
     print("int desc:");
     for x in desc { print(" {}", x); }
     println("");
 
     // Generic sort<double>, ascending (a second element type).
     Array<double> d = [3.5, 1.2, 2.8, 0.5];
-    Array<double> dasc = sort<double>(d, less_double);
+    Array<double> dasc = collections.sort(d, less_double);
     print("double asc:");
     for x in dasc { print(" {:.1f}", x); }
     println("");
 
     // Single-element is a no-op.
     Array<int> one = [42];
-    Array<int> one_s = sort<int>(one, less_int);
+    Array<int> one_s = collections.sort(one, less_int);
     println("single: {}", one_s[0]);
     return 0;
 }

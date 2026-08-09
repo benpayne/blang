@@ -1015,13 +1015,21 @@ static vector<string> resolveStdlibFiles( const string &exeDir,
 	// buffer.b must precede fs.b and net.b (they use Buffer). These ship with
 	// the compiler and many programs use them (File, Socket, Buffer) without an
 	// explicit import, so inclusion is unconditional (preserves local behavior).
-	for ( const char *name : { "sys", "buffer", "fs", "net" } )
+	//
+	// modules-v2-graph U3 (D13): `collections` is now UNCONDITIONAL — it provides
+	// the PRELUDE types Map/Set, which are automatically in scope with zero imports.
+	// qcc parses it into a prelude holding scope and promotes only Map/Set (its free
+	// function `sort` stays qualified as collections.sort). A program defining its
+	// own Map/Set shadows the prelude via the prelude-scope hierarchy. `buffer` (the
+	// Buffer prelude type) was already unconditional. Placed before cli (cli uses Map).
+	for ( const char *name : { "sys", "buffer", "collections", "fs", "net" } )
 		addIfPresent( name );
 
 	// Origin's import-gated extras: only pulled in when the program imports
-	// them, so an unused module never pollutes the namespace (e.g. collections'
-	// Map). Ordered so base modules resolve first under --combine.
-	static const char *kKnownOrder[] = { "collections", "timer",
+	// them, so an unused module never pollutes the namespace. (collections moved
+	// to the unconditional base list above — D13 prelude load. cli stays gated: it
+	// is library-tier, qualified access, and its promotion is U2/F3's concern.)
+	static const char *kKnownOrder[] = { "timer",
 		"math", "time", "random", "env", "cli" };
 	for ( const char *name : kKnownOrder )
 	{

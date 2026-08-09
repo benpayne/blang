@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <map>
+#include <set>
 
 #include "FileLexer.h"
 #include "Type.h"
@@ -287,10 +288,39 @@ int main( int argc, char *argv[] )
 	Scope *combineScope = nullptr;
 	// Track module names for namespace scopes in combine mode
 	std::map<std::string, Scope*> moduleNamespaces;
+	// modules-v2-graph U3 (D12/D13): prelude LOAD/PROMOTE tracking.
+	//   preludeModuleNames  — stdlib modules that PROVIDE prelude types (buffer,
+	//                         collections). LOADED into a holding namespace scope
+	//                         (never combineScope), then a post-parse PROMOTE pass
+	//                         injects their prelude TYPES into combineScope.
+	//   preludePrefixExempt — those same modules compile PREFIX-FREE (Option B): a
+	//                         prelude type used unqualified must not carry a module
+	//                         prefix (esp. non-generic Buffer).
+	//   suppressedPrelude   — prelude type names shadowed by a user definition; the
+	//                         prelude one is suppressed uniformly (not promoted; and
+	//                         filtered from allStructs so mStructDefMap gets the
+	//                         user's) so "user definition wins" across all three
+	//                         registries (mTypeList, mSymbolList, mStructDefMap).
+	std::set<std::string> preludeModuleNames;
+	std::set<std::string> preludePrefixExempt;
+	std::set<std::string> suppressedPrelude;
+	// Module name (basename, no extension) parallel to `modules`, for the PROMOTE
+	// pass and the allStructs shadow filter.
+	std::vector<std::string> moduleNames;
+	// modules-v2-graph U3 (D13): the PRELUDE scope sits between core (gScope) and
+	// the user scope (combineScope). Promoted prelude types (Map/Set/Buffer) live
+	// here — "base scope like int," never imported. Because combineScope is its
+	// CHILD, a user's own `struct Map` in combineScope shadows the prelude Map by
+	// normal child-first lookup, UNIFORMLY across both scope registries (mTypeList
+	// and mSymbolList) with no addSymbol/addType disagreement. (mStructDefMap, a
+	// flat CodeGen map, is reconciled separately by the allStructs shadow filter.)
+	Scope *preludeScope = nullptr;
 	if ( combineMode )
 	{
+		preludeScope = new Scope( Scope::kScope_Module );
+		preludeScope->setParent( gScope );
 		combineScope = new Scope( Scope::kScope_Module );
-		combineScope->setParent( gScope );
+		combineScope->setParent( preludeScope );
 	}
 
 	// Quiet by default (FR-007): parser progress is a gated trace on STDERR
@@ -330,29 +360,46 @@ int main( int argc, char *argv[] )
 
 			// Last source file is the user's code — use combineScope directly.
 			// Stdlib files (not last) get their own namespace scope.
-			// A few stdlib modules define fundamental TYPES that programs use
-			// unqualified (no `module.` prefix) after importing them, so they are
-			// parsed into combineScope directly rather than a namespace scope:
-			//   - buffer: the `Buffer` type.
-			//   - collections: the `Map<K,V>` container (S2). It defines only the
-			//     Map struct + its impl (no free functions), so promoting it to
-			//     combineScope makes `Map<...>` resolve in a variable declaration
-			//     (the seeded S2 bug: a generic type from a namespaced combined
-			//     module was invisible unqualified) without polluting the global
-			//     namespace with functions. bcc only combines collections.b when
-			//     the program `import collections;`, so it is never present unless
-			//     requested.
+			//
+			// modules-v2-graph U3 (D12/D13): three type tiers.
+			//   - PRELUDE modules (buffer, collections) PROVIDE prelude TYPES
+			//     (Map/Set/Buffer). They are LOADED into a holding namespace scope
+			//     (prefix-exempt), NOT combineScope: their parse-time addSymbol/
+			//     addType land in the namespace, never combineScope's registries.
+			//     A post-parse PROMOTE pass then injects only their prelude types
+			//     into combineScope, suppression-checked (§5b) — so "user wins"
+			//     shadowing is uniform. collections' free function `sort` stays in
+			//     the `collections` namespace: qualified `collections.sort` (library
+			//     tier). This LOAD-vs-PROMOTE split closes the mSymbolList seam at
+			//     its source (B2-a): no prelude symbol is ever committed to
+			//     combineScope at parse time.
+			//   - `cli` STAYS promoted into combineScope (unqualified has_flag(...))
+			//     this unit. Its promotion is a CODEGEN special case (the
+			//     module-prefix string-ARC double-free workaround, now regression-
+			//     locked by U2). Demoting `cli` to a qualified library module is
+			//     DEFERRED out of U3 by owner decision (F3-gated) to a later unit —
+			//     see Known Issues KG-6. (U2 was characterization-only and retired no
+			//     promotion; done-condition 2 assigns the cli demotion to U3/later,
+			//     and the owner deferred it.) Keeping the tier declaration (U3)
+			//     separate from the cli demotion keeps both reviewable.
 			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
-			//   - cli (U5): parsed into combineScope (global, unqualified
-			//     `has_flag(...)`) like collections. A namespaced module's
-			//     internal string-returning calls (has_flag -> flag_name_of) hit a
-			//     string-ARC double-free under the module-prefix codegen; global
-			//     modules (collections' Map methods calling each other) are clean.
-			bool isGlobalTypeLib = ( moduleName == "buffer" ||
-				moduleName == "collections" || moduleName == "cli" );
-			if ( isUserFile || isGlobalTypeLib )
+			bool isCliPromoted = ( moduleName == "cli" );
+			bool isPreludeModule =
+				( moduleName == "buffer" || moduleName == "collections" );
+			if ( isUserFile || isCliPromoted )
 			{
 				fileScope = combineScope;
+			}
+			else if ( isPreludeModule )
+			{
+				// LOAD into a prefix-free holding namespace scope; PROMOTE later.
+				Scope *nsScope = new Scope( Scope::kScope_Namespace );
+				nsScope->setParent( combineScope );
+				combineScope->addNamespace( moduleName, nsScope );
+				moduleNamespaces[moduleName] = nsScope;
+				preludeModuleNames.insert( moduleName );
+				preludePrefixExempt.insert( moduleName );
+				fileScope = nsScope;
 			}
 			else
 			{
@@ -563,6 +610,19 @@ int main( int argc, char *argv[] )
 		}
 
 		modules.push_back( mod );
+		{
+			// Parallel module name (basename, no extension) for the U3 PROMOTE
+			// pass and the allStructs shadow filter. Kept in lockstep with
+			// `modules` so index alignment holds even if a file fails to parse.
+			std::string bn = inputFile;
+			size_t sl = bn.rfind( '/' );
+			if ( sl != std::string::npos )
+				bn = bn.substr( sl + 1 );
+			size_t dt = bn.rfind( '.' );
+			if ( dt != std::string::npos )
+				bn = bn.substr( 0, dt );
+			moduleNames.push_back( bn );
+		}
 		PARSE_TRACE( "Completed parse" );
 		// Semantic analysis (U3): runs in ALL build modes, immediately after a
 		// non-extern module parses and before any code generation, resolving
@@ -572,6 +632,31 @@ int main( int argc, char *argv[] )
 		// fails (non-zero exit) and codegen is not reached for this file.
 		if ( !isBmod && !Sema::analyze( (Module *)mod, fileScope, *gDiag ) )
 			hadError = true;
+
+		// modules-v2-graph U3 EAGER PROMOTE (D13): if the just-parsed module is a
+		// prelude PROVIDER (buffer/collections), inject its prelude TYPES into
+		// preludeScope NOW — before the user file (parsed last) reaches its own
+		// sema — so `Map`/`Set`/`Buffer` resolve unqualified with zero imports.
+		// Only prelude-manifest types are promoted; a mixed module's free functions
+		// (collections.sort) stay in its namespace scope for qualified access
+		// (library tier). Shadowing is uniform and automatic: combineScope is a
+		// CHILD of preludeScope, so a user's own same-named struct wins by
+		// child-first lookup in BOTH scope registries — no addSymbol/addType
+		// disagreement (that is B2-a closed at its source).
+		if ( combineMode && preludeScope != nullptr && !moduleNames.empty() &&
+			 preludeModuleNames.count( moduleNames.back() ) )
+		{
+			for ( const auto &sp : mod->getStructList() )
+			{
+				StructDefinition *s = const_cast<StructDefinition*>(
+					(const StructDefinition*)sp );
+				if ( isPreludeTypeName( s->getName() ) )
+				{
+					preludeScope->addSymbol( s );
+					preludeScope->addType( new Type( s->getName() ) );
+				}
+			}
+		}
 	}
 
 	// U1: stop before any output-producing stage if the compile had errors —
@@ -653,13 +738,41 @@ int main( int argc, char *argv[] )
 	{
 		// Collect all struct and enum definitions across all modules for
 		// cross-module type sharing (Task 67).
+		// modules-v2-graph U3 (D13, §5b): compute which prelude type names a USER
+		// module shadows, so the prelude provider's struct of that name is filtered
+		// out of allStructs below — making CodeGen's flat mStructDefMap agree with
+		// the scope registries (the user's definition wins in all three). A "user
+		// module" is one routed to combineScope: not a prelude provider and not a
+		// namespaced stdlib module (i.e. the user file, or cli).
+		std::set<std::string> userTypeNames;
+		for ( std::size_t idx = 0; idx < modules.size() && idx < moduleNames.size(); idx++ )
+		{
+			const std::string &mn = moduleNames[idx];
+			bool routedToCombine =
+				!preludeModuleNames.count( mn ) && !moduleNamespaces.count( mn );
+			if ( routedToCombine )
+				for ( auto &s : modules[idx]->getStructList() )
+					userTypeNames.insert( s->getName() );
+		}
+		for ( const auto &n : userTypeNames )
+			if ( isPreludeTypeName( n ) )
+				suppressedPrelude.insert( n );
+
 		std::vector<SmartPtr<StructDefinition>> allStructs;
 		std::vector<SmartPtr<EnumDefinition>> allEnums;
-		for ( auto &mod : modules )
+		for ( std::size_t idx = 0; idx < modules.size(); idx++ )
 		{
-			for ( auto &s : mod->getStructList() )
+			bool isPreludeProvider =
+				( idx < moduleNames.size() ) && preludeModuleNames.count( moduleNames[idx] );
+			for ( auto &s : modules[idx]->getStructList() )
+			{
+				// Shadowed prelude struct: drop it so mStructDefMap holds the
+				// user's same-named definition (the scope registries already do).
+				if ( isPreludeProvider && suppressedPrelude.count( s->getName() ) )
+					continue;
 				allStructs.push_back( s );
-			for ( auto &e : mod->getEnumList() )
+			}
+			for ( auto &e : modules[idx]->getEnumList() )
 				allEnums.push_back( e );
 		}
 
@@ -704,7 +817,13 @@ int main( int argc, char *argv[] )
 					size_t dot = fname.rfind( '.' );
 					if ( dot != std::string::npos )
 						fname = fname.substr( 0, dot );
-					if ( moduleNamespaces.count( fname ) > 0 )
+					// Prelude providers (buffer/collections) are namespaced for
+					// resolution (qualified collections.sort) but compile PREFIX-FREE
+					// (modules-v2-graph U3, Option B): a prelude type used unqualified
+					// must not carry a module prefix — decisive for non-generic
+					// Buffer, whose methods would otherwise mangle `buffer__Buffer_*`.
+					if ( moduleNamespaces.count( fname ) > 0 &&
+						 !preludePrefixExempt.count( fname ) )
 						modPrefix = fname;
 				}
 				codegen.setModulePrefix( modPrefix );
