@@ -1726,8 +1726,23 @@ llvm::Value *CodeGen::genToJsonCall( CallExpression *call )
 	llvm::Function *toJsonFn = mModule->getFunction( fnName );
 	if ( toJsonFn == nullptr )
 	{
-		mHasError = true;
-		return nullptr;
+		// An IMPORTED @json struct (D15): its shape crosses as compiler-facing
+		// metadata, but its generated `_to_json` body lives in the defining
+		// module's archive (like a non-generic method). The consumer DECLARES it
+		// and links it from the .a — never re-generates it, which would collide
+		// at link. The signature mirrors genJsonToJson exactly: (ptr self) -> ptr.
+		if ( sIt->second != nullptr && sIt->second->isFromInterface() )
+		{
+			llvm::Type *ptrTy = llvm::PointerType::get( *mContext, 0 );
+			llvm::FunctionType *ft = llvm::FunctionType::get( ptrTy, { ptrTy }, false );
+			toJsonFn = llvm::Function::Create(
+				ft, llvm::Function::ExternalLinkage, fnName, mModule.get() );
+		}
+		else
+		{
+			mHasError = true;
+			return nullptr;
+		}
 	}
 
 	llvm::Value *result = mBuilder->CreateCall( toJsonFn, { val }, "to_json" );

@@ -1,0 +1,1 @@
+^[^:]+\.b:[0-9]+:[0-9]+: error: field 'count' of type 'Counter' is private to its defining module

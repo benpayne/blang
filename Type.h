@@ -440,10 +440,19 @@ namespace QLang
 
 		// Provenance: true when this definition arrived through a parsed .bmod
 		// interface rather than from .b source in the module being compiled.
-		// This is an ABI predicate only — it answers "must construction go
-		// through the library-emitted factory?", NOT "is this member visible
-		// here?". Visibility is a separate, module-origin question owned by a
-		// later unit; do not overload this flag for it.
+		// Primarily an ABI predicate — it answers "must construction go through
+		// the library-emitted factory?".
+		//
+		// U5 ALSO reads it for the field/literal visibility rules (D9), but ONLY
+		// in rules that are themselves scoped to ".bmod-arrival": field access and
+		// struct literals on a `.bmod`-arrived struct are located errors. That is
+		// not the general-visibility overload this comment once warned against —
+		// the rule's scope IS exactly what the flag holds. It is deliberately
+		// `.bmod`-path-only: a namespaced-stdlib struct (net/fs/timer) arrives as
+		// parsed .b source, so isFromInterface() is false for it and its
+		// field/literal privacy stays grep-gated this epic (known-issues KI-23,
+		// closed by Epic B's per-module scopes). Do NOT reuse this flag for a
+		// GENERAL "is this visible here?" test — use module identity (Epic B).
 		bool isFromInterface() const { return mFromInterface; }
 		void setFromInterface( bool v ) { mFromInterface = v; }
 

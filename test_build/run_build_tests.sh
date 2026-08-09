@@ -263,6 +263,40 @@ check "the rejection is a located diagnostic naming the conformance" \
 	"echo \"\$NEG_OUT\" | grep -Eq '^[^:]+\.b:[0-9]+:[0-9]+: error: .*not printable.*impl Printable for Point'"
 rm -rf "$NTMP"
 
+# ---------------------------------------------------------------------------
+# D15 data-contract metadata across a .bmod boundary (modules-v2-exports U5)
+#
+# An imported @json table struct is QUERYABLE and SERIALIZABLE from a consumer
+# module: its field SHAPE crosses the .bmod as compiler-facing metadata, so
+# `query T |> where { .field }` and `to_json(x)` compile, link, and run against
+# it. The reverse direction — naming a field in ordinary source is a located
+# error — is fail/xmodule/imported_datacontract_field (run by run_tests.sh).
+# Together they are D15 both ways. Epic done-condition 6.
+# ---------------------------------------------------------------------------
+( cd todolib && rm -f libtodolib.a todolib.bmod && "$BCC" build > /dev/null 2>&1 )
+check "todolib builds (@json table struct)" \
+	"[ -f todolib/libtodolib.a ] && [ -f todolib/todolib.bmod ]"
+bmod_parses todolib/todolib.bmod
+# A data-contract struct KEEPS its field declarations in the .bmod (its shape IS
+# its contract, D15) — unlike a plain struct, whose fields are dropped (format 4).
+check "data-contract .bmod keeps field metadata (D15)" \
+	"grep -q '	int id;' todolib/todolib.bmod && grep -q '	string title;' todolib/todolib.bmod"
+
+( cd todoapp && rm -f todoapp todoapp.db && rm -rf .blang && "$BCC" build > /dev/null 2>&1 )
+check "todoapp builds (queries + to_json an imported @json table struct)" \
+	"[ -x todoapp/todoapp ]"
+# Create the schema from the table struct's canonical definition (it lives in the
+# lib): `bcc migrate` extracts a table struct from any source passed to it. The
+# imported struct's own field shape is what defines the table.
+( cd todoapp && rm -f todoapp.db && "$BCC" migrate --apply ../todolib/todo.b > /dev/null 2>&1 )
+TOUT=$(cd todoapp && ./todoapp)
+TEXPECTED='{"id":1,"title":"buy milk","done":false}
+{"id":2,"title":"walk dog","done":true}
+first done: {"id":2,"title":"walk dog","done":true}'
+check "imported @json table struct: query .field + to_json run cross-module (DC6)" \
+	"[ \"\$TOUT\" = \"\$TEXPECTED\" ]"
+( cd todoapp && rm -f todoapp.db && rm -rf .blang )
+
 # A conformance record naming a USER-DEFINED protocol. Every other fixture
 # conforms only to `Printable` — a builtin pre-registered in every scope, so its
 # record resolved wherever it appeared. A user-defined protocol does not, and
@@ -315,7 +349,7 @@ check "a stale-format .bmod is not silently accepted" \
 	"! \"$QCC\" --parse-only \"$FTMP/stale.bmod\" > /dev/null 2>&1"
 FOUT=$("$QCC" --parse-only "$FTMP/stale.bmod" 2>&1 >/dev/null)
 check "the stale-format rejection is located and names the fix" \
-	"echo \"\$FOUT\" | grep -Eq '^[^:]+\.bmod:[0-9]+:[0-9]+: error: .*format 2.*expects 3.*rebuild'"
+	"echo \"\$FOUT\" | grep -Eq '^[^:]+\.bmod:[0-9]+:[0-9]+: error: .*format 2.*expects 4.*rebuild'"
 rm -rf "$FTMP"
 
 # Prefix-aware factory mangling (known-issues KI-5 action 2). The factory symbol

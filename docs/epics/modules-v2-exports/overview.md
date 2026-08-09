@@ -202,14 +202,21 @@ U3 + U4). Budgets in `manifest.yaml` are re-scoped for the two remaining units
   methods, U2 ships **all** methods in the `.bmod`; U3 then flips to
   private-by-default. State this in the U2 PR so the reviewer doesn't flag a
   visibility hole.
-- `--combine` mode enforces the same visibility rules as the `.bmod` path
-  **for namespaced stdlib modules** (`net`, `fs`, `timer`, ... — each has its
-  own scope). The combine-promoted modules (`buffer`, `collections`, `cli`)
-  are parsed into the user's own scope (`qcc.cpp:308-313`) — no module
-  boundary exists to enforce against until Epic B's per-module scopes — and
-  are therefore **exempt from module-private enforcement in this epic**,
+- `--combine` mode enforces **method/`init` visibility** (U3) for namespaced
+  stdlib modules (`net`, `fs`, `timer`, ... — each has its own scope). **U5's
+  field/literal privacy, however, is `.bmod`-path-only** (reconciled during the
+  U5 design audit, 2026-08-09): U5's Sema rules key on `.bmod`-arrival
+  (`StructDefinition::isFromInterface()`), which is `false` for a namespaced
+  stdlib struct parsed from `.b` source under `--combine`. So combine-mode
+  namespaced-stdlib **field/literal** privacy is **not** Sema-enforced this epic —
+  it stays **grep-gated** via `tools/check_no_field_reachins.sh` and is closed by
+  Epic B's per-module scopes (Known Issues KI-16 / KI-23). The combine-promoted
+  modules (`buffer`, `collections`, `cli`) are parsed into the user's own scope
+  (`qcc.cpp:308-313`) — no module boundary exists to enforce against until Epic B
+  — and are therefore **exempt from module-private enforcement in this epic**,
   recorded in Known Issues per Principle VI (audit AF-1). Owned by U3
-  (enforcement) and U4 (`Map`/`Set` `pub init` + call-site migration).
+  (method/`init` enforcement) and U4 (`Map`/`Set` `pub init` + call-site
+  migration).
 - Consumer-side located errors need to know a symbol's defining origin. U3
   introduces a **lightweight defining-origin marker** on symbol/struct
   definitions (bmod-injected vs. source file) — explicitly NOT Epic B's
@@ -250,7 +257,7 @@ about user code.
 | # | Question | Blocking | Status | Answer |
 |---|----------|----------|--------|--------|
 | 1 | Canonical cross-module spelling for generated data-contract functions (e.g. `Todo_from_json`) under D1 — module-qualified name, or builtin dispatch like `to_json`? | U5 only | open — architect proposes in U5's speckit spec; the devbot manager approves against D1/D15, raising a question to the owner only if the proposal conflicts with a recorded decision | |
-| 2 | Disposition of **KI-22** (pre-existing codegen bug: `for x in <generic-struct-method>()` returning `Array<K>` mis-resolves the loop-var element type → garbage/segfault; idiomatic intermediate-typed-var workaround exists and is used in the migration). Fold a scoped codegen fix into this epic (as KI-8/KI-10 were folded into U4), or defer to Epic B? | scoping (not a blocker — U4 ships with the workaround) | **open — product-owner ruling** raised at U4 PR-review time by the manager | |
+| 2 | Disposition of **KI-22** (pre-existing codegen bug: `for x in <generic-struct-method>()` returning `Array<K>` mis-resolves the loop-var element type → garbage/segfault; idiomatic intermediate-typed-var workaround exists and is used in the migration). Fold a scoped codegen fix into this epic (as KI-8/KI-10 were folded into U4), or defer to Epic B? | scoping (not a blocker — U4 ships with the workaround) | **RESOLVED (2026-08-09, product-owner ruling)** | **Fold into U5** as its OWN commit/PR within the U5 phase (before/alongside U5b's corpus migration, so idiomatic `for x in coll.method()` loops need no workaround). NOT bolted onto the merged U4 PR #1; the U4 intermediate-typed-var workaround stays. Escape hatch: if the fix proves non-trivial / widens U5, stop and raise. Tracked as a named U5 task in `specs/033` §9. |
 
 ## Status log
 
