@@ -663,3 +663,47 @@ like `Box<T>` does.
 U4's accessor surface puts a `Map<K,V>` or `Set<T>` into any exported signature,
 it will meet the parser limitation first — and must not read "no P9 error" as
 "P9 checked it".
+
+---
+
+## KI-20 — a `shared`/`sync` struct as a string-interpolation part passes the wrong self pointer
+
+**Filed**: U4 salvage-merge (independent review, MINOR-1). **Owner: U4 remainder**
+(same renderer the unit owns).
+
+The KI-8/KI-10 fix renders a struct-valued interpolation part
+(`"{obj}"`) by calling `genPrintableToString( val )` where
+`val = genExpression(part)` (`CGExpressions.cpp:1079`). That is correct for a
+heap struct pointer, but `genVariableExpression` **double-loads** a `shared`/`sync`
+variable, so for a `shared`/`sync` struct local `val` is the first 8 bytes of the
+struct interpreted as a pointer, not the struct address. The sibling direct-print
+path (`genPrintCall`, `CGExpressions.cpp:1506`) already takes the self pointer from
+the variable's *address* to avoid exactly this. So `"{s}"` where `s` is a
+`shared`/`sync` struct would pass a garbage self pointer (wrong output or segfault).
+
+**Not a regression** — struct interpolation parts were fully broken before U4, and
+this shape is untested. But it is inconsistent with the fix applied one function
+over. The U4-remainder run should route the interpolation-part self pointer through
+the same address-based path as `genPrintCall`, and add a `shared`/`sync`-struct
+interpolation fixture.
+
+---
+
+## KI-21 — `println("{}", h.inner)` on a field-access struct arg still hits the KI-10 raw-pointer path
+
+**Filed**: U4 salvage-merge (independent review, MINOR-2). **Owner: U4 remainder**.
+
+The KI-10 fix covers the *interpolation* path (a field-access struct part renders
+correctly) and the *direct-print variable* path (`genPrintCall` treats a
+`VariableExpression` arg as a struct at `CGExpressions.cpp:1405`). It does **not**
+cover a **field-access** struct arg in the direct-print form: `println("{}", h.inner)`
+where `h.inner` is a struct still falls through to the raw-pointer-as-`BlangString`
+path — the same KI-10 defect, one argument shape not covered.
+
+Pre-existing and out of the salvage diff's scope, but it is the KI-10 class and
+belongs to the renderer question U4 owns. Once opaque types force reads through
+methods/`Printable`, this shape becomes reachable in real code. Fix in the
+U4-remainder run with a field-access direct-print fixture; unify the `hasPrintable`
+struct-arg detection between `genPrintCall` and `genPrintableToString` (the review
+also flagged a dead `fnName` local at `CGExpressions.cpp:1484` and the duplicated
+detection logic — clean up in the same pass).
