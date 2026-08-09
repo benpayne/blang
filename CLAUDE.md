@@ -671,6 +671,22 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     `modules-v2-graph` Epic B — module identity, per-module scopes, import
     enforcement, type tiers, module-prefix ARC fix, cross-module LSP — to be
     planned after Epic A completes).
+  - `modules-v2-graph` (`docs/epics/modules-v2-graph/`) — status: **planning**.
+    Epic B of the modules-v2 split (the resolution half): canonical module
+    identity (fixes P10 generic-mangling collapse), three type tiers
+    core/prelude/library (prelude = `{Map,Set,Buffer}`, delete bare-name
+    registration, demote `cli`), the module-prefix string-ARC codegen fix (crux,
+    unblocks retiring the `buffer`/`collections`/`cli` promotions — closes KI-3),
+    a per-module import graph via an **extractable resolver** (removes the
+    flat-merge injection), enforced imports with use/name-capability (D7) +
+    located collision/unknown/unused diagnostics, foreign-type refs in `.bmod` +
+    the transitive build graph (closes KI-5), and two stretch units (import
+    aliasing, module search path). Owner decisions (2026-08-09): cross-module LSP
+    split to a follow-on **Epic C (`modules-v2-lsp`)** that consumes U4's resolver
+    seam; both stretch units in scope; fully-autonomous/generous. Inherits
+    KI-3/KI-5/KI-16/KI-23 from Epic A. 9 units (U1–U9), REQ-001..014. Binding
+    design record: `docs/epics/modules-v2/overview.md` (D1–D17). Next:
+    `/devbot-review modules-v2-graph`.
   - `001-toolchain-and-stdlib` (`docs/epics/001-toolchain-and-stdlib/`) — status:
     **complete-local** (devbot run `3a358cfb-38ff-4189-82f5-172d64f05c14`; all 7
     units U0–U6 merged to local master; done-conditions #1–#5 independently
