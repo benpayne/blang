@@ -294,7 +294,7 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 						else if ( funcDef->isExtern() )
 							call->setMangledName( memberName );
 						else
-							call->setMangledName( identName + "__" + memberName );
+							call->setMangledName( scope->realModuleName( identName ) + "__" + memberName );
 
 						l.getSymbol(); // consume '('
 						if ( l.peekSymbol() != ')' )
@@ -326,7 +326,7 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 						else if ( funcDef->isExtern() )
 							call->setMangledName( memberName );
 						else
-							call->setMangledName( identName + "__" + memberName );
+							call->setMangledName( scope->realModuleName( identName ) + "__" + memberName );
 						result = call;
 					}
 				}

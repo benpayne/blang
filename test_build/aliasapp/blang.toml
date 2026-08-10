@@ -1,0 +1,7 @@
+[project]
+name = "aliasapp"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+mathlib = { path = "../mathlib" }

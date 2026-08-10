@@ -812,18 +812,22 @@ int main( int argc, char *argv[] )
 						(const ImportStatement *)impSp );
 					if ( imp == nullptr )
 						continue;
-					const std::string &name = imp->getModuleName();
-					if ( msc->findNamespace( name ) == nullptr )
+					// The unknown-module check verifies the REAL module exists; the
+					// unused check + its message key on the LOCAL qualifier (the
+					// alias `y` in `import x as y;`, which is what usage marks).
+					const std::string &realName = imp->getModuleName();
+					const std::string &localQ = imp->getLocalQualifier();
+					if ( msc->findNamespace( realName ) == nullptr )
 					{
 						gDiag->error( imp->getLocation(),
-							"unknown module '" + name + "' — no such dependency or "
+							"unknown module '" + realName + "' — no such dependency or "
 							"stdlib module is available to import" );
 						hadError = true;
 					}
-					else if ( !msc->wasModuleUsed( name ) )
+					else if ( !msc->wasModuleUsed( localQ ) )
 					{
 						gDiag->warning( imp->getLocation(),
-							"unused import '" + name + "'", "unused-import" );
+							"unused import '" + localQ + "'", "unused-import" );
 					}
 				}
 			}

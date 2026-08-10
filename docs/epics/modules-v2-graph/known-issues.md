@@ -11,6 +11,37 @@ by their listed units.)
 
 ---
 
+## KG-9 — DC9 field-privacy keys on the file BASENAME, so two same-named modules in different dirs collapse
+
+**Filed**: U6b-3. **Owner**: follow-on (module-identity precision); flagged by the U6b-3 reviewer.
+
+The combine-mode field-privacy rule (DC9/KI-23) compares a struct's **defining-file
+basename** (`getDefiningFile()`, e.g. `"net"`, `"main"`) against the use-site
+module's. The basename is used deliberately — in a `bcc` combine build every `.b`
+shares the project's `--module-origin` **digest**, so the U1 digest cannot separate
+`collections` from the user file, whereas the basename can. The cost: two distinct
+modules that happen to share a **basename** across different directories
+(`a/util.b` and `b/util.b`) are treated as the **same** module for field privacy —
+a reach-in between them would be a **false negative** (wrongly allowed).
+
+**Impact.** Narrow: it only weakens the *combine-mode* field-privacy check, and only
+for a genuine basename collision within one combined compilation — which the module
+graph makes unusual (two combined `.b` files with the same basename). The `.bmod`
+cross-module path is unaffected (it keys on `isFromInterface()` independently), and
+the U1/U6a/U6b name-capability + import enforcement close the window through which
+such a value would even be *named*.
+
+**Why not fixed here.** A precise fix needs a per-file identity that is BOTH unique
+within a combine build AND stable across the `.bmod`/consumer split — i.e. a
+per-file salt distinct from the shared project digest (e.g. `realpath(inputFile)`
+carried alongside the project origin, or a `basename@dir-hash`). That is a
+module-identity plumbing change touching `stampDefiningOrigin`/`stampModuleDigest`
+and the U1 mangling interlock, orthogonal to the DC9 privacy rule delivered here. A
+follow-on should give each compiled file a collision-free identity and re-key DC9 on
+it.
+
+---
+
 ## KG-8 — `bcc` reports a false "circular dependency" on a diamond dep graph
 
 **Filed**: U6b-1. **Owner**: follow-on (build-driver graph); pre-existing, surfaced by U6b's D7 fixtures.
