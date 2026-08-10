@@ -905,6 +905,16 @@ fn compute() -> int {
 
 The flat namespace means every import is one qualifier deep. This eliminates long qualification chains and makes it impossible to hallucinate intermediate namespace segments.
 
+A dependency's exported **functions** are reachable **only** through this qualified
+form, and **only** after the module is imported: resolution runs through the
+per-module import graph, not a global merge. Writing an imported function
+**unqualified** (`add(1, 2)` instead of `math.add(1, 2)`) is a located compile
+error, as is a qualified reference to a module that was never imported. The
+emitted symbol is chosen by the callee's provenance — a dependency function links
+to the plain symbol its library `.a` exports, while a combined stdlib function
+carries its module prefix — so qualification is purely a source-level spelling
+with no ABI cost.
+
 ### File Equals Module Convention
 
 Every `.b` source file is exactly one module. The module name is the file's base name without the extension:

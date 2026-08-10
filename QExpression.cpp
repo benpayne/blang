@@ -273,8 +273,26 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 					{
 						// sys.exit(1) → CallExpression with mangled name sys__exit
 						// Create a call expression referencing the original FunctionDefinition
+						// modules-v2-graph U6a — the codegen-naming fork: a
+						// qualified call's emitted symbol depends on the callee's
+						// PROVENANCE, because a namespaced (combined) module and a
+						// .bmod dependency reach codegen differently.
+						//   - GENERIC (either): leave the mangled name empty so
+						//     codegen monomorphizes via mangleGenericName (already
+						//     prefix-free + U1-digest-keyed).
+						//   - EXTERN (a .bmod dep function, marked extern by
+						//     injectBmodSymbols; also a real `extern fn`): the
+						//     UNPREFIXED name — the library `.a` exports plain `add`,
+						//     and codegen never prefixes an extern (CodeGen.cpp:157).
+						//   - otherwise a COMBINED-STDLIB function compiled in-process
+						//     WITH the module prefix (sys.args -> sys__args): prefixed.
 						CallExpression *call = new CallExpression( funcDef );
-						call->setMangledName( identName + "__" + memberName );
+						if ( funcDef->isGeneric() )
+							; // monomorphized name from mangleGenericName
+						else if ( funcDef->isExtern() )
+							call->setMangledName( memberName );
+						else
+							call->setMangledName( identName + "__" + memberName );
 
 						l.getSymbol(); // consume '('
 						if ( l.peekSymbol() != ')' )
@@ -298,9 +316,15 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 					}
 					else
 					{
-						// sys.args → zero-arg getter call (property-style)
+						// sys.args → zero-arg getter call (property-style).
+						// U6a provenance fork (see the '(' branch above).
 						CallExpression *call = new CallExpression( funcDef );
-						call->setMangledName( identName + "__" + memberName );
+						if ( funcDef->isGeneric() )
+							; // monomorphized name from mangleGenericName
+						else if ( funcDef->isExtern() )
+							call->setMangledName( memberName );
+						else
+							call->setMangledName( identName + "__" + memberName );
 						result = call;
 					}
 				}

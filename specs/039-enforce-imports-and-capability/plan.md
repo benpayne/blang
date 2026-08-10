@@ -23,6 +23,27 @@ Today `.bmod` dependency symbols are **flat-merged** into `gScope` and called
 So every cross-`.bmod` call site in the corpus must move to the qualified form
 (`mathlib.add(3,4)`, `boxa.boxed_a(5)`, `midx.get_box(7)`). That is the churn.
 
+## The codegen-naming crux (found during recon — solve this first)
+
+Routing `.bmod` deps through namespaces (like stdlib) has a **codegen fork** the
+stdlib path does not hit. Qualified access emits a prefixed callee name
+(`QExpression.cpp:277`, `call->setMangledName(identName + "__" + memberName)`), which
+is correct for a **combined stdlib** module (compiled in-process WITH the module
+prefix — `sys.args` → `sys__args`). But a **`.bmod` dependency** is compiled in its
+OWN prefix-free build, so `mathlib.a` exports plain `add`, not `mathlib__add`. So
+`mathlib.add(3,4)` under the naive path emits a call to a symbol that does not exist
+→ link error.
+
+**Resolution:** at the qualified-access site, choose the callee name by provenance —
+a `.bmod`-dep function is `isExtern()`/`isFromInterface()` (marked by
+`injectBmodSymbols`), a combined-stdlib function is not:
+- extern/`.bmod`-dep, non-generic → **unprefixed** `memberName` (links from the `.a`);
+- combined stdlib, non-generic → **prefixed** `module__member` (as today);
+- generic (either) → the monomorphized name from `mangleGenericName` (already
+  prefix-free + U1-digest-keyed), so `setMangledName` is not the deciding factor.
+This fork is the first thing U6a implements + tests (mathlib/myapp with qualified
+`mathlib.add`/`mathlib.largest` must build+link+run), before routing/removal.
+
 ## U6a — import enforcement + injection removal (the mechanism)
 
 1. **Remove `injectBmodSymbols`** (the flat merge). `.bmod` modules become
@@ -79,6 +100,19 @@ So every cross-`.bmod` call site in the corpus must move to the qualified form
 
 ## Status
 
-Plan committed to set up the split. U6a (mechanism + injection removal +
-`test_build` migration) is the first PR; U6b (capability + diagnostics + KI-23) the
-second. Distinct reviewer per PR.
+**U6a — LANDED.** The mechanism is in: a `.bmod` dependency's free functions are
+routed through a per-module namespace registered on `gScope` (out of the flat
+merge), the codegen-naming provenance fork picks the emitted symbol
+(generic/extern/combined-stdlib), unqualified dependency-function use is a located
+error (`fail/xmodule/unqualified_import_call/`), and the free-function consumers
+(`myapp`, `boxapp`, `usebox`, git-dep app) are migrated to qualified access — the
+positive proof. Types stay in `gScope` as the documented U6a/U6b bridge (foreign
+name-capability enforcement is U6b). Gates green both modes: `run_tests`
+241/0 (LLVM) + 234/0 (parse-only), `test_codegen` 168/0, `--leak-check` Leaks:0,
+`test_lsp` 63/0, `test_build` all pass.
+
+**U6b — REMAINING (second PR, distinct reviewer):** full type-injection removal +
+the D7 use-vs-name capability model (positive AND negative fixture each direction,
+incl. `usebox`'s `Box<int>` name-capability case), KI-23 (DC9) re-keyed on U1
+identity, and collision/import/unused-import diagnostics through the
+`DiagnosticEngine` with deterministic D3 display-name rendering (DC8).

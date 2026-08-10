@@ -271,15 +271,40 @@ int main( int argc, char *argv[] )
 	std::vector<SmartPtr<Module>> modules;
 	std::map<std::string, Module*> bmodMap;
 
-	// Inject one .bmod's public symbols into the global scope (the flat merge).
-	// modules-v2-graph U5: called INCREMENTALLY right after each .bmod parses, in
-	// topological order (a dependency before its dependent), so a later .bmod that
-	// references a FOREIGN type owned by an earlier one (e.g. midx.bmod's
-	// `-> Box<int>` where Box is defined in boxq.bmod) can resolve it at parse time
-	// — the transitive build closure (bcc) plus this ordered injection is what
-	// grants D7 use-capability for an indirectly-reached type (done-condition 7).
-	auto injectBmodSymbols = [&]( Module *bmod )
+	// modules-v2-graph U6a: a .bmod dependency's public interface is registered so
+	// resolution runs through the IMPORT GRAPH, not a flat merge into gScope.
+	//
+	//   - FREE FUNCTIONS land in a PER-MODULE NAMESPACE scope keyed by the dep's
+	//     import name and registered on gScope (the common ancestor of both the
+	//     combine user scope and a non-combine module scope, so `mathlib.add`
+	//     resolves in either build). They are NO LONGER added to gScope's symbol
+	//     list, so an UNQUALIFIED `add(3,4)` no longer resolves — that is the
+	//     import-enforcement half of done-condition 6: a dep symbol is reachable
+	//     only as `module.name` after `import module;` (D1). The namespace path is
+	//     the same one the namespaced stdlib already uses (QExpression.cpp:251).
+	//
+	//   - TYPES (struct/enum + their Type entries) and PROTOCOLS still land in
+	//     gScope. This is the deliberate U6a/U6b SPLIT: naming a foreign type
+	//     (declare a variable of it, construct one) is D7 *name-capability*, whose
+	//     enforcement + the accompanying capability/collision diagnostics are U6b.
+	//     Keeping type names resolvable here is the bridge that lets the type-using
+	//     consumers (Pair/Counter/Point/Box/Todo construction, methods, to_json,
+	//     query) stay green while U6a lands only the FUNCTION mechanism + migration.
+	//     It also preserves U5's parse-time foreign-type resolution (midx.bmod's
+	//     `-> Box<int>` where Box is defined in boxq.bmod), since this is still
+	//     called INCREMENTALLY in topological order (a dependency before its
+	//     dependent).
+	auto injectBmodSymbols = [&]( Module *bmod, const std::string &moduleName )
 	{
+		// Per-module export namespace for this dep's free functions. Registered on
+		// gScope so a consumer in either build mode reaches it up the parent chain.
+		Scope *depNs = gScope->findNamespace( moduleName );
+		if ( depNs == nullptr )
+		{
+			depNs = new Scope( Scope::kScope_Namespace );
+			depNs->setParent( gScope );
+			gScope->addNamespace( moduleName, depNs );
+		}
 		for ( const auto &sp : bmod->getFunctionList() )
 		{
 			FunctionDefinition *f = const_cast<FunctionDefinition*>( (const FunctionDefinition*)sp );
@@ -287,7 +312,9 @@ int main( int argc, char *argv[] )
 			{
 				if ( !f->isGeneric() )
 					f->setFunctionExtern( true );
-				gScope->addSymbol( f );
+				// Namespace only — NOT gScope. Qualified access resolves it here;
+				// unqualified access is a located error (enforcement).
+				depNs->addSymbol( f );
 			}
 		}
 		for ( const auto &sp : bmod->getStructList() )
@@ -295,6 +322,7 @@ int main( int argc, char *argv[] )
 			StructDefinition *s = const_cast<StructDefinition*>( (const StructDefinition*)sp );
 			if ( s->isPublic() )
 			{
+				// Bridge (U6b will re-key on name-capability): keep the type namable.
 				gScope->addSymbol( s );
 				gScope->addType( new Type( s->getName() ) );
 			}
@@ -464,13 +492,15 @@ int main( int argc, char *argv[] )
 			fileScope = resolver.newModuleScope();
 		}
 
-		// modules-v2-graph U5: .bmod symbols are now injected INCREMENTALLY as each
-		// .bmod parses (injectBmodSymbols, above), in the transitive-closure's
-		// topological order — so a later .bmod referencing an earlier one's foreign
-		// types resolves, and by the time any .b file parses all interface symbols
-		// are already in gScope. (Was a single deferred flat merge here; its removal
-		// of the up-front injection is done-condition 6 / U6, not this unit — the
-		// merge still happens, just per-.bmod at parse time.)
+		// modules-v2-graph U5/U6a: a .bmod's public interface is registered
+		// INCREMENTALLY as each .bmod parses (injectBmodSymbols, above), in the
+		// transitive-closure's topological order — so a later .bmod referencing an
+		// earlier one's foreign types resolves at parse time. U6a moved the FREE
+		// FUNCTIONS out of the gScope flat merge into a per-module namespace keyed
+		// by the dep's import name (qualified `module.fn` after `import module;`);
+		// TYPES stay in gScope as the name-capability bridge (U6b). This is the
+		// import-graph resolution DC6 requires — the flat merge of callable symbols
+		// is retired.
 
 		// modules-v2-graph U5 (done-condition 7): pre-scan a .bmod for FOREIGN-TYPE
 		// headers and register each named type BEFORE parsing, so signatures that
@@ -653,9 +683,11 @@ int main( int argc, char *argv[] )
 			if ( dot != std::string::npos )
 				fname = fname.substr( 0, dot );
 			bmodMap[fname] = mod;
-			// U5: inject NOW (topological order) so a subsequent .bmod referencing
-			// this one's foreign types resolves at parse time.
-			injectBmodSymbols( (Module *)mod );
+			// U5/U6a: register NOW (topological order) so a subsequent .bmod
+			// referencing this one's foreign types resolves at parse time. `fname`
+			// (the .bmod basename) is the dep's import name — the key for its
+			// per-module function namespace.
+			injectBmodSymbols( (Module *)mod, fname );
 		}
 
 		modules.push_back( mod );
