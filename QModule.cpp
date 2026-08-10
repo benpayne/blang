@@ -671,6 +671,12 @@ void stampDefiningOrigin( QLang::Module *mod, const std::string &path )
 	if ( dot != std::string::npos )
 		origin = origin.substr( 0, dot );
 
+	// U6b-3 (DC9): stamp the MODULE with its own identity so Sema can compare a
+	// use site's module against a struct's defining module (field-privacy by
+	// module identity), in lockstep with the per-struct stamp below.
+	if ( mod->getDefiningFile().empty() )
+		mod->setDefiningFile( origin );
+
 	for ( const auto &sp : mod->getStructList() )
 	{
 		QLang::StructDefinition *s = const_cast<QLang::StructDefinition *>(

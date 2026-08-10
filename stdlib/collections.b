@@ -38,6 +38,14 @@ impl Map {
         return self.keys.length == 0;
     }
 
+    // Capacity introspection: the size of the open-addressing bucket table (a
+    // power of two, grown on load). A public accessor so callers can observe the
+    // table without reaching into the private `buckets` field (U6b-3/DC9: a
+    // cross-module field reach-in is a located Sema error).
+    pub fn bucket_count(self) -> int {
+        return self.buckets.length;
+    }
+
     // Reset the bucket table to `new_cap` empty slots and re-insert every
     // existing key's index. Called on first use (lazy init) and on growth.
     fn rehash(self, int new_cap) {

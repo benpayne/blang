@@ -137,9 +137,18 @@ located error on bare use. D3 sharpening: an unqualified dependency function →
 DC8 checks. Gates green both modes: `run_tests` 243/0 + 236/0, `test_codegen`
 168/0, `--leak-check` Leaks:0, `test_lsp` 63/0, `test_build` all pass.
 
-**U6b-3 — REMAINING (next PR, distinct reviewer):** KI-23 (DC9) — combine-mode
-field privacy Sema-enforced, keyed on U1 module identity (defined-in-a-different-
-module-than-use-site, not the `.bmod`-arrival `isFromInterface()` heuristic), proven
-by a `fail/xmodule` or `fail/sema` fixture so the reach-in grep gate stops being the
-only guard. Split out from U6b-2 to isolate its distinct Sema subsystem + its
-corpus-wide field-privacy risk from the diagnostics theme.
+**U6b-3 — LANDED (closes DC9/KI-23).** `Sema::resolveFieldAccess` field privacy now
+keys on **module identity** (`imported = isFromInterface() || crossModule`, where
+`crossModule` is the struct's defining-file basename ≠ the use-site module's), so a
+combine-mode reach-in into a namespaced-stdlib struct's private field is a located
+Sema error in all build modes — the grep gate is no longer the only guard. Uses the
+file basename (not the U1 digest, which collapses to one project origin in a combine
+build). `Sema::analyze` already took the `Module*`, so `lsp/Compile.cpp` is unchanged
+(blangd single-file → DC9 inert, `test_lsp` green). The corpus's one white-box
+reach-in (`codegen_map_hashed.b`) moved to a new `pub Map.bucket_count()`. Fixtures:
+`run_build_tests.sh` DC9 checks (reach-in rejected + located; pub-accessor positive).
+Gates green both modes: `run_tests` 243/0 + 236/0, `test_codegen` 168/0,
+`--leak-check` Leaks:0, `test_lsp` 63/0, `test_build` all pass.
+
+**Epic core complete:** DC6, DC8, DC9 all closed by U6b-1/-2/-3. Stretch DC10/DC11
+(U8/U9 — import aliasing, module search path) remain, to be scoped against budget.

@@ -426,8 +426,18 @@ namespace QLang
 		bool isExtern() const { return mIsExtern; }
 		void setExtern( bool isExtern ) { mIsExtern = isExtern; }
 
+		// modules-v2-graph U6b-3 (DC9/KI-23) — this module's identity (its source
+		// file's basename, e.g. "net", "main"), stamped by stampDefiningOrigin in
+		// lockstep with the per-struct getDefiningFile(). Sema compares it against a
+		// struct's defining module so a field reach-in from a DIFFERENT module is a
+		// located error — keyed on module-of-definition, not the .bmod-arrival
+		// isFromInterface() heuristic (which misses the combine-mode stdlib case).
+		const std::string &getDefiningFile() const { return mDefiningFile; }
+		void setDefiningFile( const std::string &f ) { mDefiningFile = f; }
+
 	private:
 		Module() {}
+		std::string mDefiningFile;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class AstLocator;
