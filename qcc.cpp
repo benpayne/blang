@@ -303,6 +303,11 @@ int main( int argc, char *argv[] )
 		{
 			depNs = new Scope( Scope::kScope_Namespace );
 			depNs->setParent( gScope );
+			// U6b: a .bmod dep namespace grants D7 name-capability on import — its
+			// exported TYPE names become namable (unqualified) in an importer. (A
+			// combine-mode stdlib namespace is NOT marked, so `import net;` keeps
+			// net's types qualified-only, never dumped into the user scope.)
+			depNs->setGrantsNameCapability( true );
 			gScope->addNamespace( moduleName, depNs );
 		}
 		for ( const auto &sp : bmod->getFunctionList() )
@@ -317,14 +322,24 @@ int main( int argc, char *argv[] )
 				depNs->addSymbol( f );
 			}
 		}
+		// modules-v2-graph U6b: TYPES (struct/enum) and PROTOCOLS also land in the
+		// per-module namespace, NOT gScope. A foreign type is namable in ordinary
+		// source only through D7 *name-capability* — granted when the module is
+		// imported (the import handler in QModule.cpp copies these namespace entries
+		// into the importing scope). *Use-capability* (holding a foreign value,
+		// calling its pub methods, monomorphizing a foreign generic returned by an
+		// imported function) needs NO import: it rides on CodeGen's flat
+		// mStructDefMap/mEnumDefMap (populated by registerExternalTypes from every
+		// module's struct/enum list), never on this scope. This is the retirement of
+		// the gScope type-injection bridge — all name resolution now runs through the
+		// import graph (done-condition 6).
 		for ( const auto &sp : bmod->getStructList() )
 		{
 			StructDefinition *s = const_cast<StructDefinition*>( (const StructDefinition*)sp );
 			if ( s->isPublic() )
 			{
-				// Bridge (U6b will re-key on name-capability): keep the type namable.
-				gScope->addSymbol( s );
-				gScope->addType( new Type( s->getName() ) );
+				depNs->addSymbol( s );
+				depNs->addType( new Type( s->getName() ) );
 			}
 		}
 		for ( const auto &sp : bmod->getEnumList() )
@@ -332,15 +347,15 @@ int main( int argc, char *argv[] )
 			EnumDefinition *e = const_cast<EnumDefinition*>( (const EnumDefinition*)sp );
 			if ( e->isPublic() )
 			{
-				gScope->addSymbol( e );
-				gScope->addType( new Type( e->getName() ) );
+				depNs->addSymbol( e );
+				depNs->addType( new Type( e->getName() ) );
 			}
 		}
 		for ( const auto &sp : bmod->getProtocolList() )
 		{
 			ProtocolDefinition *p = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
 			if ( p->isPublic() )
-				gScope->addSymbol( p );
+				depNs->addSymbol( p );
 		}
 	};
 
@@ -411,6 +426,14 @@ int main( int argc, char *argv[] )
 	// rendered once by gDiag->finish() after the loop; codegen runs only if no
 	// errors remain (Constitution III).
 	bool hadError = false;
+
+	// modules-v2-graph U6b: the scope BmodEmitter reads to resolve a FOREIGN type
+	// referenced in an exported signature (to emit its `// foreign-type:` header).
+	// A foreign type now lands in the importing MODULE's scope (via the import
+	// handler's name-capability copy), not gScope — so emit must read that scope,
+	// not the global one. Captured as the last compiled non-.bmod module's scope
+	// (the module whose interface is being emitted).
+	Scope *bmodEmitScope = gScope;
 
 	for ( std::size_t fileIdx = 0; fileIdx < inputFiles.size(); fileIdx++ )
 	{
@@ -492,15 +515,16 @@ int main( int argc, char *argv[] )
 			fileScope = resolver.newModuleScope();
 		}
 
-		// modules-v2-graph U5/U6a: a .bmod's public interface is registered
+		// modules-v2-graph U5/U6a/U6b: a .bmod's public interface is registered
 		// INCREMENTALLY as each .bmod parses (injectBmodSymbols, above), in the
 		// transitive-closure's topological order — so a later .bmod referencing an
 		// earlier one's foreign types resolves at parse time. U6a moved the FREE
-		// FUNCTIONS out of the gScope flat merge into a per-module namespace keyed
-		// by the dep's import name (qualified `module.fn` after `import module;`);
-		// TYPES stay in gScope as the name-capability bridge (U6b). This is the
-		// import-graph resolution DC6 requires — the flat merge of callable symbols
-		// is retired.
+		// FUNCTIONS into a per-module namespace keyed by the dep's import name
+		// (qualified `module.fn` after `import module;`); U6b moved the TYPES there
+		// too and made naming a foreign type require `import` (D7 name-capability).
+		// NOTHING lands in gScope now — all name resolution runs through the import
+		// graph (done-condition 6). Use-capability (holding a foreign value, calling
+		// its pub methods) rides on CodeGen's mStructDefMap, not this scope.
 
 		// modules-v2-graph U5 (done-condition 7): pre-scan a .bmod for FOREIGN-TYPE
 		// headers and register each named type BEFORE parsing, so signatures that
@@ -539,8 +563,14 @@ int main( int argc, char *argv[] )
 					hadError = true;
 					continue;
 				}
-				if ( gScope->findType( fname2 ) == nullptr )
-					gScope->addType( new Type( fname2 ) );
+				// U6b: register the placeholder in THIS .bmod's own fileScope, not
+				// gScope — so a foreign type referenced only in an interface signature
+				// stays parseable HERE without leaking into a consumer's namable scope
+				// (which would silently grant name-capability the consumer never
+				// imported). The real definition still reaches CodeGen via the
+				// transitive closure + registerExternalTypes (use-capability).
+				if ( fileScope->findType( fname2 ) == nullptr )
+					fileScope->addType( new Type( fname2 ) );
 			}
 			if ( hadError )
 				continue;
@@ -691,6 +721,10 @@ int main( int argc, char *argv[] )
 		}
 
 		modules.push_back( mod );
+		if ( !isBmod )
+			// U6b: the interface being emitted is a compiled .b module's; capture
+			// its scope so BmodEmitter can resolve foreign types this module imported.
+			bmodEmitScope = fileScope;
 		{
 			// Parallel module name (basename, no extension) for the U3 PROMOTE
 			// pass and the allStructs shadow filter. Kept in lockstep with
@@ -785,7 +819,7 @@ int main( int argc, char *argv[] )
 			gDiag->finish();
 			return -1;
 		}
-		QLang::BmodEmitter::emit( modPtrs, bmodOut, gScope );
+		QLang::BmodEmitter::emit( modPtrs, bmodOut, bmodEmitScope );
 		PARSE_TRACE( "Wrote .bmod to " << emitBmodFile );
 	}
 

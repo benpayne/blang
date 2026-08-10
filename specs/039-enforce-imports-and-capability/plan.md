@@ -111,8 +111,22 @@ name-capability enforcement is U6b). Gates green both modes: `run_tests`
 241/0 (LLVM) + 234/0 (parse-only), `test_codegen` 168/0, `--leak-check` Leaks:0,
 `test_lsp` 63/0, `test_build` all pass.
 
-**U6b — REMAINING (second PR, distinct reviewer):** full type-injection removal +
-the D7 use-vs-name capability model (positive AND negative fixture each direction,
-incl. `usebox`'s `Box<int>` name-capability case), KI-23 (DC9) re-keyed on U1
-identity, and collision/import/unused-import diagnostics through the
-`DiagnosticEngine` with deterministic D3 display-name rendering (DC8).
+**U6b-1 — LANDED (closes DC6).** The gScope type-injection bridge is retired:
+`injectBmodSymbols` puts a dep's types/protocols in its per-module namespace, and
+the `import` handler grants D7 **name-capability** by copying a *dependency*
+namespace's type names into the importing scope (functions stay qualified-only;
+stdlib namespaces are not copied — flagged via `grantsNameCapability`).
+**Use-capability** rides on CodeGen's `mStructDefMap` and `var` inference (a Sema
+fix: a `var` now takes its type from the initializer, which repaired a latent
+struct/string mistyping and makes the un-named foreign generic real). The
+foreign-type pre-scan and `BmodEmitter` were re-scoped off `gScope`. Fixtures both
+directions: name pos (`counterapp`, transitive `run_build_tests.sh`) / neg
+(`fail/xmodule/name_capability_requires_import`); use pos (`usebox`) / use-≠-name
+neg (`run_build_tests.sh`). Gates green both modes: `run_tests` 242/0 + 235/0,
+`test_codegen` 168/0, `--leak-check` Leaks:0, `test_lsp` 63/0, `test_build` all pass.
+
+**U6b-2 — REMAINING (next PR, distinct reviewer):** KI-23 (DC9) re-keyed on U1
+identity, collision/import/unused-import diagnostics through the `DiagnosticEngine`
+with deterministic D3 display-name rendering (DC8), and sharpening the located
+unqualified/unimported message to a D3 "did you mean `module.name`?" form (plus the
+pre-existing `varible` typo).

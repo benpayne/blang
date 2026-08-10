@@ -205,6 +205,14 @@ namespace QLang
 			return nullptr;
 		}
 
+		// modules-v2-graph U6b — marks a per-module namespace as a .bmod DEPENDENCY
+		// export scope, whose exported TYPE names become namable (unqualified) in a
+		// module that imports it (D7 name-capability). Combine-mode stdlib
+		// namespaces (net/fs/timer) do NOT set this: their types are reached
+		// QUALIFIED (`net.HttpServer`) and must not be dumped into the user scope.
+		void setGrantsNameCapability( bool v ) { mGrantsNameCapability = v; }
+		bool grantsNameCapability() const { return mGrantsNameCapability; }
+
 		// Track which modules have been imported in this scope
 		void addImportedModule( const std::string &name )
 		{
@@ -220,6 +228,32 @@ namespace QLang
 			return false;
 		}
 
+		// modules-v2-graph U6b — D7 name-capability. On `import module;` the driver
+		// copies the module namespace's exported TYPE names (struct/enum) into the
+		// importing scope so they resolve UNQUALIFIED (`Pair<int> p`, `Counter(5)`).
+		// FUNCTIONS and PROTOCOLS are deliberately NOT copied: a dependency function
+		// stays reachable only as `module.name` (the U6a import enforcement), so
+		// bringing it unqualified would regress that. Only the namespace's OWN
+		// entries move (its parent is gScope, already visible); an entry the
+		// importing scope already defines is NOT overwritten (a local definition
+		// shadows an import).
+		void importTypeNamesFrom( Scope *src )
+		{
+			if ( src == nullptr )
+				return;
+			for ( auto &kv : src->mSymbolList )
+			{
+				if ( kv.second != nullptr &&
+					 kv.second->getSymbolType() == Symbol::TypeFunction )
+					continue; // functions + protocols stay qualified-only
+				if ( mSymbolList.find( kv.first ) == mSymbolList.end() )
+					mSymbolList[kv.first] = kv.second;
+			}
+			for ( auto &kv : src->mTypeList )
+				if ( mTypeList.find( kv.first ) == mTypeList.end() )
+					mTypeList[kv.first] = kv.second;
+		}
+
 	private:
 		typedef std::map<std::string, SmartPtr<Symbol> > SymbolListType;
 		typedef std::map<std::string, SmartPtr<Type> > TypeListType;
@@ -230,6 +264,7 @@ namespace QLang
 		TypeListType mTypeList;
 		std::map<std::string, SmartPtr<Scope>> mNamespaceMap;
 		std::set<std::string> mImportedModules;
+		bool mGrantsNameCapability = false;
 	};
 
 	struct GenericParam

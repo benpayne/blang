@@ -148,6 +148,51 @@ check "malformed .bmod foreign-ref is a LOCATED error, not a crash" \
 rm -f "$BADBMOD"
 
 # ---------------------------------------------------------------------------
+# D7 capability model (modules-v2-graph U6b) — use vs. name, the transitive case,
+# driven at the qcc level (bcc collapses a compile error to a generic message and
+# trips a false circular-dependency check on a diamond, so it cannot express these
+# — qcc surfaces the located diagnostic exactly like the fail/xmodule harness).
+#
+# boxq owns generic Box<T>; midx imports boxq and exposes `get_box -> Box<int>`.
+#   - USE-capability POSITIVE: usebox above imports midx ONLY, holds the returned
+#     Box<int> via `var` and calls its pub method — no import of boxq. (green)
+#   - USE does NOT grant NAME (negative): the same consumer NAMING `Box<int>`
+#     without importing boxq is a located error.
+#   - NAME-capability POSITIVE: import boxq too and the explicit `Box<int>` name
+#     resolves and compiles clean.
+# (The name-capability positive for a NON-transitive dep is test_build/counterapp,
+# which imports counterlib and writes `Counter c = Counter(5, "hits")`.)
+# midx.bmod + boxq.bmod are the interfaces the two lib builds just emitted.
+# ---------------------------------------------------------------------------
+CAPTMP=$(mktemp -d)
+cat > "$CAPTMP/useneg.b" <<'BLANG'
+import midx;
+fn main() -> int {
+	// Naming boxq's Box without importing boxq is a D7 name-capability error,
+	// even though the VALUE is legitimately reachable via use-capability.
+	Box<int> b = midx.get_box(7);
+	return b.get();
+}
+BLANG
+USENEG_OUT=$( "$QCC" --parse-only "$CAPTMP/useneg.b" midx/midx.bmod boxq/boxq.bmod 2>&1 >/dev/null )
+check "D7: use does NOT grant name — naming a foreign type without its import is rejected" \
+	"[ -n \"\$USENEG_OUT\" ] && ! \"$QCC\" --parse-only \"$CAPTMP/useneg.b\" midx/midx.bmod boxq/boxq.bmod >/dev/null 2>&1"
+check "D7: the name-capability rejection is located" \
+	"echo \"\$USENEG_OUT\" | grep -qE ':[0-9]+:[0-9]+: error:'"
+cat > "$CAPTMP/namepos.b" <<'BLANG'
+import midx;
+import boxq;
+fn main() -> int {
+	// boxq imported -> name-capability granted: naming Box<int> is allowed.
+	Box<int> b = midx.get_box(7);
+	return b.get();
+}
+BLANG
+check "D7: importing the owner grants name-capability (explicit Box<int> resolves)" \
+	"\"$QCC\" --parse-only \"$CAPTMP/namepos.b\" midx/midx.bmod boxq/boxq.bmod >/dev/null 2>&1"
+rm -rf "$CAPTMP"
+
+# ---------------------------------------------------------------------------
 # Cross-module construction ABI (modules-v2-exports U1)
 #
 # Before the library-emitted factory, a consumer of a .bmod could reach into an
@@ -325,17 +370,22 @@ check "imported Printable dispatches through print (DC5)" \
 # Without this, dispatch could keep working off a "does it have a method called
 # to_string" scan and the record would prove nothing -- and that scan breaks
 # outright once U3's `pub` filter removes non-public methods from the interface.
+# Keep the interface's basename `printlib.bmod`: the file's base name IS the
+# module name (File-Equals-Module), and post-U6b the consumer's `import printlib;`
+# resolves the type `Point` through the module named `printlib` — a renamed
+# `stripped.bmod` would be module `stripped`, which the consumer never imports.
+# The temp dir already isolates it from the real interface.
 NTMP=$(mktemp -d)
-cp printlib/printlib.bmod "$NTMP/stripped.bmod"
-python3 - "$NTMP/stripped.bmod" <<'PYEOF'
+cp printlib/printlib.bmod "$NTMP/printlib.bmod"
+python3 - "$NTMP/printlib.bmod" <<'PYEOF'
 import sys, re
 p = sys.argv[1]
 s = open(p).read()
 open(p, 'w').write(re.sub(r'impl Printable for Point \{\n\}\n', '', s))
 PYEOF
 check "stripping the conformance record removes it from the .bmod" \
-	"! grep -q 'impl Printable for Point' \"$NTMP/stripped.bmod\""
-NEG_OUT=$("$QCC" --combine printapp/main.b "$NTMP/stripped.bmod" -o "$NTMP/neg.ll" 2>&1 >/dev/null)
+	"! grep -q 'impl Printable for Point' \"$NTMP/printlib.bmod\""
+NEG_OUT=$("$QCC" --combine printapp/main.b "$NTMP/printlib.bmod" -o "$NTMP/neg.ll" 2>&1 >/dev/null)
 NEG_EXIT=$?
 check "consumer REJECTS an imported Printable with no conformance record" \
 	"[ $NEG_EXIT -ne 0 ]"
