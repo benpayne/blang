@@ -23,6 +23,27 @@ Today `.bmod` dependency symbols are **flat-merged** into `gScope` and called
 So every cross-`.bmod` call site in the corpus must move to the qualified form
 (`mathlib.add(3,4)`, `boxa.boxed_a(5)`, `midx.get_box(7)`). That is the churn.
 
+## The codegen-naming crux (found during recon — solve this first)
+
+Routing `.bmod` deps through namespaces (like stdlib) has a **codegen fork** the
+stdlib path does not hit. Qualified access emits a prefixed callee name
+(`QExpression.cpp:277`, `call->setMangledName(identName + "__" + memberName)`), which
+is correct for a **combined stdlib** module (compiled in-process WITH the module
+prefix — `sys.args` → `sys__args`). But a **`.bmod` dependency** is compiled in its
+OWN prefix-free build, so `mathlib.a` exports plain `add`, not `mathlib__add`. So
+`mathlib.add(3,4)` under the naive path emits a call to a symbol that does not exist
+→ link error.
+
+**Resolution:** at the qualified-access site, choose the callee name by provenance —
+a `.bmod`-dep function is `isExtern()`/`isFromInterface()` (marked by
+`injectBmodSymbols`), a combined-stdlib function is not:
+- extern/`.bmod`-dep, non-generic → **unprefixed** `memberName` (links from the `.a`);
+- combined stdlib, non-generic → **prefixed** `module__member` (as today);
+- generic (either) → the monomorphized name from `mangleGenericName` (already
+  prefix-free + U1-digest-keyed), so `setMangledName` is not the deciding factor.
+This fork is the first thing U6a implements + tests (mathlib/myapp with qualified
+`mathlib.add`/`mathlib.largest` must build+link+run), before routing/removal.
+
 ## U6a — import enforcement + injection removal (the mechanism)
 
 1. **Remove `injectBmodSymbols`** (the flat merge). `.bmod` modules become
