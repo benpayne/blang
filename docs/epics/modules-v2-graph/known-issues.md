@@ -11,6 +11,34 @@ by their listed units.)
 
 ---
 
+## KG-8 — `bcc` reports a false "circular dependency" on a diamond dep graph
+
+**Filed**: U6b-1. **Owner**: follow-on (build-driver graph); pre-existing, surfaced by U6b's D7 fixtures.
+
+A binary that depends on both `X` and `Q`, where `X` also depends on `Q`
+(a **diamond**: `app → X → Q` and `app → Q`), fails `bcc build` with
+`error: circular dependency detected: <Q>`. `Q` is reached by two distinct paths,
+not a cycle — the dependency resolver's traversal conflates "already on the current
+path" with "already visited", so a re-encountered node is misread as a back-edge.
+This is a **`bcc` build-graph** defect (dependency ordering / visited-set tracking),
+independent of the resolution model this epic changed.
+
+**Impact.** The D7 **name-capability positive** for a *transitive* type
+(`app` imports both `midx` and `boxq`, where `midx → boxq`, and explicitly names
+`Box<int>`) cannot be expressed through `bcc build`. U6b-1 routes that fixture
+through `qcc --parse-only main.b midx.bmod boxq.bmod` instead (the transitive `.bmod`
+closure on one command line), which `qcc` resolves correctly — proving the language
+rule without exercising the `bcc` diamond path. The non-transitive positive
+(`test_build/counterapp`, a single dep) builds through `bcc` normally.
+
+**Why not fixed here.** It is a `bcc` dependency-graph traversal fix (separate a
+DFS "on-stack" set from a global "visited" set so a diamond dedups instead of
+tripping the cycle check) — orthogonal to U6's resolution/capability work, and this
+epic's charter is the resolution half, not the build driver. A follow-on should fix
+the traversal and add a diamond `test_build` fixture that builds through `bcc`.
+
+---
+
 ## KG-1 — generic FUNCTION identity mangling is deferred (types done, functions unchanged)
 
 **Filed**: U1. **Owner**: follow-on (not this done-condition).

@@ -137,6 +137,11 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 	}
 
 	SmartPtr<Type> t = nullptr;
+	// modules-v2-graph U6b-2 (DC8/D3): capture the leading type token so a failed
+	// type resolution can name it in a located, actionable message instead of the
+	// generic one, and offer an `import` hint when the type is exported by an
+	// available module (naming a foreign type requires importing its module — D7).
+	std::string candidateType;
 
 	if ( isVar )
 	{
@@ -145,6 +150,10 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 	}
 	else
 	{
+		int typePos = l.getCurrentPos();
+		if ( l.getSymbol() == Lexer::SYMBOL )
+			candidateType = l.getSymbolText();
+		l.setCurrentPos( typePos );
 		// Normal type parse
 		t = Type::Parse( l, s, false );
 	}
@@ -164,10 +173,26 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 			data.mVaribale->setOwnership( ownership );
 			data.mVaribale->setLocation( loc );
 		}
+		else if ( t == nullptr )
+		{
+			// The type did not resolve — an unknown or unimported type.
+			if ( !candidateType.empty() )
+			{
+				std::string owner = s->moduleExporting( candidateType );
+				if ( !owner.empty() )
+					COMPILE_ERROR( l, "unknown type '" + candidateType +
+						"' — did you mean to `import " + owner +
+						";`? (naming a foreign type requires importing its module)" );
+				COMPILE_ERROR( l, "unknown type '" + candidateType +
+					"' in variable declaration" );
+			}
+			COMPILE_ERROR( l, "expected a type in variable declaration" );
+		}
 		else
 		{
-			// report error
-			COMPILE_ERROR( l, "Failed parse varible" );
+			// A type parsed, but no variable name followed it.
+			COMPILE_ERROR( l, "expected a variable name after type '" +
+				t->getName() + "'" );
 		}
 
 		s->addSymbol( data.mVaribale );

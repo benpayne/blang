@@ -1,7 +1,7 @@
 // Stdlib-via-bcc (functional-hardening U4 / REQ-004 + seeded S2): Map from the
 // `collections` MODULE, used through the real bcc driver. This is the S2
 // regression: pre-fix, `Map<K,V> m` in a variable declaration failed to parse
-// ("Failed parse varible") because a generic type from a namespaced combined
+// (the generic unknown-type error) because a generic type from a namespaced combined
 // stdlib module was invisible unqualified. Post-fix it resolves, monomorphizes,
 // and runs. Also covers a Map<string, struct> value (a refcounted value type
 // flowing through the module Map). Every value printed (golden) AND asserted.

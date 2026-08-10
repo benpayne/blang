@@ -125,8 +125,21 @@ directions: name pos (`counterapp`, transitive `run_build_tests.sh`) / neg
 neg (`run_build_tests.sh`). Gates green both modes: `run_tests` 242/0 + 235/0,
 `test_codegen` 168/0, `--leak-check` Leaks:0, `test_lsp` 63/0, `test_build` all pass.
 
-**U6b-2 — REMAINING (next PR, distinct reviewer):** KI-23 (DC9) re-keyed on U1
-identity, collision/import/unused-import diagnostics through the `DiagnosticEngine`
-with deterministic D3 display-name rendering (DC8), and sharpening the located
-unqualified/unimported message to a D3 "did you mean `module.name`?" form (plus the
-pre-existing `varible` typo).
+**U6b-2 — LANDED (closes DC8).** A whole-program import-diagnostics pass
+(`qcc.cpp`, gated on an authoritative module set) reports unknown-module imports
+(located error) and unused imports (warning, `-Werror` promotes) through the
+`DiagnosticEngine`. Duplicate exported names across imported modules are handled by
+unbinding the ambiguous name (importing both stays legal per D4/`boxapp`) with a
+located error on bare use. D3 sharpening: an unqualified dependency function →
+"did you mean 'lib.greet'?"; an unimported foreign type → "did you mean to
+`import lib;`?"; the `Failed parse varible` typo is fixed. Fixtures:
+`fail/xmodule/{unqualified_import_call,unknown_module_import}` + `run_build_tests.sh`
+DC8 checks. Gates green both modes: `run_tests` 243/0 + 236/0, `test_codegen`
+168/0, `--leak-check` Leaks:0, `test_lsp` 63/0, `test_build` all pass.
+
+**U6b-3 — REMAINING (next PR, distinct reviewer):** KI-23 (DC9) — combine-mode
+field privacy Sema-enforced, keyed on U1 module identity (defined-in-a-different-
+module-than-use-site, not the `.bmod`-arrival `isFromInterface()` heuristic), proven
+by a `fail/xmodule` or `fail/sema` fixture so the reach-in grep gate stops being the
+only guard. Split out from U6b-2 to isolate its distinct Sema subsystem + its
+corpus-wide field-privacy risk from the diagnostics theme.
