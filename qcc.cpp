@@ -421,20 +421,19 @@ int main( int argc, char *argv[] )
 			//     tier). This LOAD-vs-PROMOTE split closes the mSymbolList seam at
 			//     its source (B2-a): no prelude symbol is ever committed to
 			//     combineScope at parse time.
-			//   - `cli` STAYS promoted into combineScope (unqualified has_flag(...))
-			//     this unit. Its promotion is a CODEGEN special case (the
-			//     module-prefix string-ARC double-free workaround, now regression-
-			//     locked by U2). Demoting `cli` to a qualified library module is
-			//     DEFERRED out of U3 by owner decision (F3-gated) to a later unit —
-			//     see Known Issues KG-6. (U2 was characterization-only and retired no
-			//     promotion; done-condition 2 assigns the cli demotion to U3/later,
-			//     and the owner deferred it.) Keeping the tier declaration (U3)
-			//     separate from the cli demotion keeps both reviewable.
+			//   - `cli` is an ORDINARY namespaced library module (modules-v2-graph
+			//     U6, closes KG-6): qualified `cli.has_flag(...)`, module-prefixed
+			//     like every other stdlib namespace (net/fs/timer). Its former
+			//     promotion into combineScope was a CODEGEN special case — the
+			//     module-prefix string-ARC double-free workaround — now that U2 has
+			//     fixed+regression-locked that path (F3), the promotion is retired
+			//     and `cli` falls through to the plain namespace routing below. Its
+			//     internal string-returning calls (has_flag -> flag_name_of) are the
+			//     exact prefixed shape U2's nsarc fixture proves --leak-check clean.
 			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
-			bool isCliPromoted = ( moduleName == "cli" );
 			bool isPreludeModule =
 				( moduleName == "buffer" || moduleName == "collections" );
-			if ( isUserFile || isCliPromoted )
+			if ( isUserFile )
 			{
 				fileScope = combineScope;
 			}

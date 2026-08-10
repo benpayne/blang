@@ -23,7 +23,7 @@ import fs;
 
 fn main() -> int {
 	Array<string> args = sys.args();
-	Array<string> pos = positionals(args);
+	Array<string> pos = cli.positionals(args);
 
 	if pos.length == 0 {
 		usage();
@@ -124,7 +124,7 @@ fn usage() {
 
 // Where the store lives: --file=<path> flag, else $KV_FILE, else ./kv.store.
 fn store_path(Array<string> args) -> string {
-	string flag = flag_value(args, "file", "");
+	string flag = cli.flag_value(args, "file", "");
 	if flag != "" {
 		return flag;
 	}
