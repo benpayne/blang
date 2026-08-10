@@ -2,14 +2,16 @@
 // returns a foreign generic Box<int> (D7 use-capability across an un-named
 // module), then calls its pub method .get() and monomorphizes Box<int> from the
 // body shipped transitively via midx.bmod -> boxq.bmod.
-// modules-v2-graph U6a: midx's free function get_box is reached QUALIFIED
-// (midx.get_box) after `import midx;`. `Box<int>` is still named unqualified here
-// — naming a foreign type is D7 name-capability, whose enforcement (usebox would
-// then `import boxq;` or infer) lands in U6b; U6a keeps the type namable as the
-// bridge. The method call b.get() is use-capability (no import needed).
+// modules-v2-graph U6a/U6b: midx's free function get_box is reached QUALIFIED
+// (midx.get_box) after `import midx;`. The returned value is a foreign generic
+// Box<int> owned by boxq, which usebox NEVER imports — so it must not NAME Box
+// (D7 name-capability requires the import). `var` inference keeps this pure
+// use-capability: usebox holds the value and calls its pub method .get() without
+// ever naming Box. Box<int> is still monomorphized + linked from the body shipped
+// transitively via midx.bmod -> boxq.bmod (CodeGen's mStructDefMap).
 import midx;
 fn main() -> int {
-	Box<int> b = midx.get_box(7);
+	var b = midx.get_box(7);
 	println("{}", b.get());
 	return 0;
 }

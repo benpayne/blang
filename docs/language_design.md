@@ -978,7 +978,9 @@ importing `Q`**: the interface is already in your build graph (the compiler
 assembles the transitive closure of every `.bmod` it needs). Naming `Q`'s type in
 your own declarations, or constructing one, still requires importing `Q` — but pure
 *use* does not. This keeps a library's choice of return type from forcing its
-dependency onto every consumer.
+dependency onto every consumer. In practice `var` inference covers the use case:
+`var b = x.get_box();` binds the returned value and lets you call its `pub` methods
+without ever writing the type's name, so no import of `Q` is needed.
 
 **Tiers are assigned per name, not per module.** `collections` is a mixed module:
 its container **types** `Map` and `Set` are prelude (no import needed), while its

@@ -601,6 +601,21 @@ void Sema::visitStmt( Statement *stmt )
 					decl.mVaribale->getLocation(), "variable" );
 			}
 			Type *initType = visitExpr( decl.mInitialValue );
+			// modules-v2-graph U6b — `var` type inference. A `var` declaration
+			// carries a "var" placeholder type from the parser; resolve it to the
+			// initializer's type here (Sema runs before codegen, on the shared AST,
+			// so the concrete type reaches codegen's variable/method dispatch). This
+			// is what makes D7 use-capability real: `var b = midx.get_box(7)` holds a
+			// foreign `Box<int>` and dispatches `b.get()` WITHOUT ever naming Box —
+			// no name-capability (import of Box's owner) required. It also repairs a
+			// latent bug where a `var` bound to a non-int value was mistyped `i32`.
+			if ( decl.mVaribale != nullptr && initType != nullptr &&
+				 initType->getName() != "var" )
+			{
+				Type *declType = decl.mVaribale->getVariableType();
+				if ( declType != nullptr && declType->getName() == "var" )
+					decl.mVaribale->setType( initType );
+			}
 			// Initializer compatibility (FR-004). Only when both types are
 			// determinable and provably incompatible.
 			if ( decl.mInitialValue != nullptr && decl.mVaribale != nullptr )

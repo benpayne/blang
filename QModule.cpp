@@ -172,10 +172,23 @@ Module *Module::Parse( Lexer &l, Scope *s )
 					mod->mImports.push_back( imp );
 				}
 
-				// Validate and register the import for qualified access
+				// Validate and register the import for qualified access.
 				Scope *ns = s->findNamespace( moduleName );
 				if ( ns != nullptr )
+				{
 					s->addImportedModule( moduleName );
+					// modules-v2-graph U6b — grant D7 name-capability: bring a .bmod
+					// DEPENDENCY's exported TYPE names (struct/enum) into this scope so
+					// they resolve UNQUALIFIED (`Pair<int> p`, `Counter(5)`). The
+					// module's FUNCTIONS stay qualified-only (`module.fn`, the U6a
+					// enforcement) — importTypeNamesFrom copies types, not functions.
+					// Combine-mode stdlib namespaces are NOT copied (grantsNameCapability
+					// is false): their types are reached qualified (`net.HttpServer`).
+					// Timing: a dependency's .bmod parses before this consumer, so its
+					// namespace is already populated here.
+					if ( ns->grantsNameCapability() )
+						s->importTypeNamesFrom( ns );
+				}
 				// If namespace not found, it may be an external module — allow for now
 
 				PARSE_TRACE( "import " << moduleName );
