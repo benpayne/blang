@@ -108,10 +108,21 @@ sufficient and behavior-neutral.
 
 ---
 
-## KG-6 — `cli` demotion deferred out of U3 (done-condition 2 partial on the cli item)
+## KG-6 — `cli` demotion — CLOSED (U6)
 
-**Filed**: U3 (owner decision). **Owner**: a later unit — **U6 (import enforcement)**
-or a dedicated follow-on. **Deliberate deferral** (Constitution Principle VI).
+**Filed**: U3 (owner decision). **CLOSED in U6**: `cli` is demoted to an ordinary
+namespaced library module — it falls through to the plain namespaced-stdlib routing
+(`qcc.cpp`, no longer the `isCliPromoted` combineScope path), gets a `cli` module
+prefix like `net`/`fs`, and is accessed **qualified** (`cli.has_flag(...)`, etc.).
+Call sites migrated (`codegen_cli.b`, `codegen_flags_edge.b`, `codegen_flags_parse.b`,
+`examples/kv/main.b`). `--leak-check` on the real cli's prefixed internal
+string-returning path (`cli__has_flag → cli__flag_name_of`) is **Leaks: 0** — the
+live proof, on the real module, that KI-3 (the string-ARC double-free that forced
+the promotion) is fully closed. Completes done-condition 2's cli item and
+done-condition 3's cli special-case retirement. Original deferral rationale below.
+
+**Filed**: U3 (owner decision). **Was owned by**: **U6 (import enforcement)**.
+**Deliberate deferral** (Constitution Principle VI).
 
 Done-condition 2 calls for `cli` to become an ordinary qualified library module
 (`cli.has_flag(...)`), i.e. removed from the global-scope promotion. U3 delivers the
