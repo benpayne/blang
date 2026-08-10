@@ -100,6 +100,19 @@ This fork is the first thing U6a implements + tests (mathlib/myapp with qualifie
 
 ## Status
 
-Plan committed to set up the split. U6a (mechanism + injection removal +
-`test_build` migration) is the first PR; U6b (capability + diagnostics + KI-23) the
-second. Distinct reviewer per PR.
+**U6a — LANDED.** The mechanism is in: a `.bmod` dependency's free functions are
+routed through a per-module namespace registered on `gScope` (out of the flat
+merge), the codegen-naming provenance fork picks the emitted symbol
+(generic/extern/combined-stdlib), unqualified dependency-function use is a located
+error (`fail/xmodule/unqualified_import_call/`), and the free-function consumers
+(`myapp`, `boxapp`, `usebox`, git-dep app) are migrated to qualified access — the
+positive proof. Types stay in `gScope` as the documented U6a/U6b bridge (foreign
+name-capability enforcement is U6b). Gates green both modes: `run_tests`
+241/0 (LLVM) + 234/0 (parse-only), `test_codegen` 168/0, `--leak-check` Leaks:0,
+`test_lsp` 63/0, `test_build` all pass.
+
+**U6b — REMAINING (second PR, distinct reviewer):** full type-injection removal +
+the D7 use-vs-name capability model (positive AND negative fixture each direction,
+incl. `usebox`'s `Box<int>` name-capability case), KI-23 (DC9) re-keyed on U1
+identity, and collision/import/unused-import diagnostics through the
+`DiagnosticEngine` with deterministic D3 display-name rendering (DC8).

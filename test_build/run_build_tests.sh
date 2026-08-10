@@ -526,9 +526,11 @@ cat > "$GITTMP/app/main.b" <<'BLANG'
 import greetlib;
 
 fn main() -> int {
-	println("{}", greeting("git"));
-	println("{}", pick("left", "right", true));
-	println("{}", pick(10, 20, false));
+	// modules-v2-graph U6a: a dependency's free functions (incl. generics) are
+	// reached QUALIFIED (module.name) after `import module;`.
+	println("{}", greetlib.greeting("git"));
+	println("{}", greetlib.pick("left", "right", true));
+	println("{}", greetlib.pick(10, 20, false));
 	return 0;
 }
 BLANG
