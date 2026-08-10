@@ -228,6 +228,43 @@ namespace QLang
 			return false;
 		}
 
+		// modules-v2-graph U6b-2 (DC8) — import-usage tracking for the unused-import
+		// lint. A qualified access (`module.x`) or a bare imported-type reference
+		// marks the module used; markModuleUsed walks up to the scope that actually
+		// imported it (uses happen in nested block scopes).
+		void markModuleUsed( const std::string &name )
+		{
+			if ( mImportedModules.count( name ) > 0 )
+				mUsedModules.insert( name );
+			else if ( mParent != nullptr )
+				mParent->markModuleUsed( name );
+		}
+		bool wasModuleUsed( const std::string &name ) const
+		{
+			return mUsedModules.count( name ) > 0;
+		}
+		// Mark used the module that OWNS an imported bare type name (name-capability
+		// use — e.g. `Pair<int>` after `import mathlib;`).
+		void markTypeUsed( const std::string &typeName )
+		{
+			auto it = mImportedTypeOwner.find( typeName );
+			if ( it != mImportedTypeOwner.end() )
+				markModuleUsed( it->second );
+			else if ( mParent != nullptr )
+				mParent->markTypeUsed( typeName );
+		}
+		const std::set<std::string> &importedModules() const { return mImportedModules; }
+		// Enumerate this scope's OWN registered namespaces (for the "did you mean
+		// module.name?" suggestion — searching which module exports a given name).
+		const std::map<std::string, SmartPtr<Scope>> &namespaceMap() const
+		{
+			return mNamespaceMap;
+		}
+		const std::map<std::string, SmartPtr<Symbol>> &ownSymbols() const
+		{
+			return mSymbolList;
+		}
+
 		// modules-v2-graph U6b — D7 name-capability. On `import module;` the driver
 		// copies the module namespace's exported TYPE names (struct/enum) into the
 		// importing scope so they resolve UNQUALIFIED (`Pair<int> p`, `Counter(5)`).
@@ -237,7 +274,20 @@ namespace QLang
 		// entries move (its parent is gScope, already visible); an entry the
 		// importing scope already defines is NOT overwritten (a local definition
 		// shadows an import).
-		void importTypeNamesFrom( Scope *src )
+		// `moduleName` is the dependency's import qualifier. Ownership is recorded so
+		// the unused-import lint can attribute a bare type use.
+		//
+		// DUPLICATE exported name across two imported modules (DC8, P2): two modules
+		// may legitimately export the same name (D4 — qualifiers are per-module), and
+		// importing both is fine *as long as the bare name is never used* (the U1
+		// `boxapp` scenario: two libraries each export `Box`, the consumer uses both
+		// via qualified functions and never names `Box`). So a collision is NOT an
+		// import-time error — instead the name is UNBOUND (so it can't silently bind
+		// to whichever module was imported first, a P10-class trap) and recorded as
+		// ambiguous; a *bare use* of it is a located error (QType.cpp) that names the
+		// exporting modules. A name matching a LOCAL definition is shadowing, not a
+		// collision (mImportedTypeOwner tracks only imported names).
+		void importTypeNamesFrom( Scope *src, const std::string &moduleName )
 		{
 			if ( src == nullptr )
 				return;
@@ -246,12 +296,68 @@ namespace QLang
 				if ( kv.second != nullptr &&
 					 kv.second->getSymbolType() == Symbol::TypeFunction )
 					continue; // functions + protocols stay qualified-only
+				auto ambIt = mAmbiguousImports.find( kv.first );
+				if ( ambIt != mAmbiguousImports.end() )
+				{
+					ambIt->second.insert( moduleName ); // already ambiguous, extend
+					continue;
+				}
+				auto ownerIt = mImportedTypeOwner.find( kv.first );
+				if ( ownerIt != mImportedTypeOwner.end() &&
+					 ownerIt->second != moduleName )
+				{
+					// Collision: unbind and mark ambiguous (error only on bare use).
+					std::set<std::string> mods{ ownerIt->second, moduleName };
+					mAmbiguousImports[kv.first] = mods;
+					mSymbolList.erase( kv.first );
+					mTypeList.erase( kv.first );
+					mImportedTypeOwner.erase( kv.first );
+					continue;
+				}
 				if ( mSymbolList.find( kv.first ) == mSymbolList.end() )
+				{
 					mSymbolList[kv.first] = kv.second;
+					mImportedTypeOwner[kv.first] = moduleName;
+				}
 			}
 			for ( auto &kv : src->mTypeList )
+			{
+				if ( mAmbiguousImports.count( kv.first ) )
+					continue;
 				if ( mTypeList.find( kv.first ) == mTypeList.end() )
 					mTypeList[kv.first] = kv.second;
+			}
+		}
+
+		// modules-v2-graph U6b-2 (DC8, D3) — "did you mean module.name?" support.
+		// Search all reachable module namespaces for one that exports `name` (as its
+		// OWN symbol, so gScope builtins don't match), returning that module's
+		// qualifier or "" if none. Used to sharpen a bare-name resolution failure
+		// into a D3-rendered `module.name` suggestion.
+		std::string moduleExporting( const std::string &name )
+		{
+			for ( auto &kv : mNamespaceMap )
+			{
+				Scope *ns = kv.second;
+				if ( ns != nullptr &&
+					 ns->mSymbolList.find( name ) != ns->mSymbolList.end() )
+					return kv.first;
+			}
+			if ( mParent != nullptr )
+				return mParent->moduleExporting( name );
+			return "";
+		}
+
+		// The set of modules that export an ambiguous imported name (empty if the
+		// name is not ambiguous). Walks up to the scope that holds the import table.
+		std::set<std::string> ambiguousImportModules( const std::string &name )
+		{
+			auto it = mAmbiguousImports.find( name );
+			if ( it != mAmbiguousImports.end() )
+				return it->second;
+			if ( mParent != nullptr )
+				return mParent->ambiguousImportModules( name );
+			return {};
 		}
 
 	private:
@@ -264,6 +370,9 @@ namespace QLang
 		TypeListType mTypeList;
 		std::map<std::string, SmartPtr<Scope>> mNamespaceMap;
 		std::set<std::string> mImportedModules;
+		std::set<std::string> mUsedModules;
+		std::map<std::string, std::string> mImportedTypeOwner;
+		std::map<std::string, std::set<std::string>> mAmbiguousImports;
 		bool mGrantsNameCapability = false;
 	};
 

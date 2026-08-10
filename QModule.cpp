@@ -187,7 +187,7 @@ Module *Module::Parse( Lexer &l, Scope *s )
 					// Timing: a dependency's .bmod parses before this consumer, so its
 					// namespace is already populated here.
 					if ( ns->grantsNameCapability() )
-						s->importTypeNamesFrom( ns );
+						s->importTypeNamesFrom( ns, moduleName );
 				}
 				// If namespace not found, it may be an external module — allow for now
 

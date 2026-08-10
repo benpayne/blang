@@ -117,6 +117,7 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 		Scope *nsScope = s->findNamespace( symName );
 		if ( nsScope != nullptr && s->isModuleImported( symName ) && l.peekSymbol() == '.' )
 		{
+			s->markModuleUsed( symName ); // U6b-2 (DC8): qualified type use
 			l.getSymbol(); // consume '.'
 			int memberSym = l.getSymbol();
 			if ( memberSym != Lexer::SYMBOL )
@@ -129,6 +130,27 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 		else
 		{
 			t = s->findType( symName );
+			// U6b-2 (DC8): a bare imported type name (name-capability use, e.g.
+			// `Pair<int>` after `import mathlib;`) marks its owning module used.
+			if ( t != nullptr )
+				s->markTypeUsed( symName );
+			else
+			{
+				// A name exported by two imported modules is UNBOUND (ambiguous):
+				// a bare use is a located error naming the exporters (D4/P2). Fires
+				// only for a genuinely ambiguous name, so it does not perturb the
+				// ordinary unknown-type path.
+				std::set<std::string> amb = s->ambiguousImportModules( symName );
+				if ( !amb.empty() )
+				{
+					std::string mods;
+					for ( const auto &mname : amb )
+						mods += ( mods.empty() ? "" : " and " ) + mname + "." + symName;
+					COMPILE_ERROR( l, "type '" + symName +
+						"' is ambiguous — exported by " + mods +
+						"; qualify the value's source or remove one import" );
+				}
+			}
 		}
 	}
 	else

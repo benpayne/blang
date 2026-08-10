@@ -250,6 +250,8 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 		Scope *nsScope = scope->findNamespace( identName );
 		if ( nsScope != nullptr && scope->isModuleImported( identName ) )
 		{
+			// U6b-2 (DC8): a qualified access marks the module used (unused-import lint).
+			scope->markModuleUsed( identName );
 			// Save position past the module name to check for '.'
 			l.getSymbol(); // consume module name
 			if ( l.peekSymbol() == '.' )
@@ -1031,10 +1033,21 @@ VariableExpression *VariableExpression::Parse( Lexer &l, Scope *scope )
 	int sym = l.getSymbol();
 	if ( sym == Lexer::SYMBOL )
 	{
-		SmartPtr<Symbol> s = scope->findSymbol( l.getSymbolText() );
+		string name = l.getSymbolText();
+		SmartPtr<Symbol> s = scope->findSymbol( name );
 		if ( s == nullptr )
 		{
-			COMPILE_ERROR( l, "Failed to find symbol '" + l.getSymbolText() + "'" );
+			// modules-v2-graph U6b-2 (DC8, D3): a bare name that is actually
+			// exported by an imported/available module — a dependency's function
+			// used unqualified (`greet(...)` for `lib.greet`) — gets a D3-rendered
+			// "did you mean module.name?" hint instead of the bare "not found".
+			std::string owner = scope->moduleExporting( name );
+			if ( !owner.empty() )
+				COMPILE_ERROR( l, "undefined symbol '" + name +
+					"' — did you mean '" + owner + "." + name +
+					"'? (a dependency's names are reached qualified after `import " +
+					owner + ";`)" );
+			COMPILE_ERROR( l, "undefined symbol '" + name + "'" );
 		}
 
 		LOG( "Found symbol type %d", s->getSymbolType() );

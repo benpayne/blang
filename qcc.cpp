@@ -269,6 +269,10 @@ int main( int argc, char *argv[] )
 	// Phase 1: Parse .bmod files first (they provide type info for .b files).
 	// Build a map from module name to its parsed scope for import resolution.
 	std::vector<SmartPtr<Module>> modules;
+	// U6b-2 (DC8): the file scope each module parsed into, parallel to `modules`,
+	// so the post-parse import-diagnostics pass can read each module's import table
+	// + usage marks.
+	std::vector<Scope*> moduleScopes;
 	std::map<std::string, Module*> bmodMap;
 
 	// modules-v2-graph U6a: a .bmod dependency's public interface is registered so
@@ -721,6 +725,7 @@ int main( int argc, char *argv[] )
 		}
 
 		modules.push_back( mod );
+		moduleScopes.push_back( fileScope );
 		if ( !isBmod )
 			// U6b: the interface being emitted is a compiled .b module's; capture
 			// its scope so BmodEmitter can resolve foreign types this module imported.
@@ -781,6 +786,50 @@ int main( int argc, char *argv[] )
 	// can buffer its own located errors through the same engine (U-last) and
 	// everything — codegen errors and warnings alike — still renders exactly
 	// once, in one JSON array under --json.
+	// modules-v2-graph U6b-2 (DC8) — import diagnostics through the shared
+	// DiagnosticEngine: an UNKNOWN-module import is a located error; an UNUSED
+	// import is a located warning. Gated on an AUTHORITATIVE module set — a real
+	// build (combine mode, or dependency .bmods provided) where the set of
+	// importable modules is known. A bare single-file parse (a syntax-only fixture
+	// like `import std;` with no deps) has no authoritative set, so imports there
+	// stay lenient (unchanged). Duplicate-exported-name collisions are reported at
+	// import time in QModule.cpp; this pass covers the whole-program checks.
+	{
+		bool authoritativeModules = combineMode || !bmodFiles.empty();
+		if ( authoritativeModules )
+		{
+			for ( std::size_t mi = 0; mi < modules.size(); mi++ )
+			{
+				Module *m = (Module *)modules[mi];
+				if ( m == nullptr || m->isExtern() )
+					continue;
+				Scope *msc = ( mi < moduleScopes.size() ) ? moduleScopes[mi] : nullptr;
+				if ( msc == nullptr )
+					continue;
+				for ( const auto &impSp : m->getImports() )
+				{
+					ImportStatement *imp = const_cast<ImportStatement *>(
+						(const ImportStatement *)impSp );
+					if ( imp == nullptr )
+						continue;
+					const std::string &name = imp->getModuleName();
+					if ( msc->findNamespace( name ) == nullptr )
+					{
+						gDiag->error( imp->getLocation(),
+							"unknown module '" + name + "' — no such dependency or "
+							"stdlib module is available to import" );
+						hadError = true;
+					}
+					else if ( !msc->wasModuleUsed( name ) )
+					{
+						gDiag->warning( imp->getLocation(),
+							"unused import '" + name + "'", "unused-import" );
+					}
+				}
+			}
+		}
+	}
+
 	if ( hadError || gDiag->hasErrors() )
 	{
 		gDiag->finish();

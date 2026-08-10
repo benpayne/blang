@@ -190,6 +190,38 @@ fn main() -> int {
 BLANG
 check "D7: importing the owner grants name-capability (explicit Box<int> resolves)" \
 	"\"$QCC\" --parse-only \"$CAPTMP/namepos.b\" midx/midx.bmod boxq/boxq.bmod >/dev/null 2>&1"
+
+# ---------------------------------------------------------------------------
+# DC8 import diagnostics (modules-v2-graph U6b-2) — driven at the qcc level with a
+# real .bmod on the line (an AUTHORITATIVE module set). Three diagnostics through
+# the DiagnosticEngine: unused-import (warning, -Werror promotes), a duplicate
+# exported name across two imported modules (ambiguous bare use → located error),
+# and (covered by fail/xmodule/unknown_module_import) the unknown-module error.
+# ---------------------------------------------------------------------------
+# Unused import: import midx but never reference it -> a warning; clean exit
+# without -Werror, promoted to a failure with it.
+cat > "$CAPTMP/unused.b" <<'BLANG'
+import midx;
+fn main() -> int { return 0; }
+BLANG
+UNUSED_OUT=$( "$QCC" --parse-only "$CAPTMP/unused.b" midx/midx.bmod boxq/boxq.bmod 2>&1 >/dev/null )
+check "DC8: an unused import warns (clean exit, warning printed)" \
+	"\"$QCC\" --parse-only \"$CAPTMP/unused.b\" midx/midx.bmod boxq/boxq.bmod >/dev/null 2>&1 && echo \"\$UNUSED_OUT\" | grep -qE ':[0-9]+:[0-9]+: warning: unused import .midx.'"
+check "DC8: -Werror promotes the unused-import warning to a failure" \
+	"! \"$QCC\" -Werror --parse-only \"$CAPTMP/unused.b\" midx/midx.bmod boxq/boxq.bmod >/dev/null 2>&1"
+# Duplicate exported name: boxa and boxb each export a generic Box. Importing both
+# is fine; NAMING the bare `Box` is an ambiguous, located error listing both.
+cat > "$CAPTMP/ambig.b" <<'BLANG'
+import boxa;
+import boxb;
+fn main() -> int {
+	Box b = boxa.boxed_a(1);
+	return 0;
+}
+BLANG
+AMBIG_OUT=$( "$QCC" --parse-only "$CAPTMP/ambig.b" boxa/boxa.bmod boxb/boxb.bmod 2>&1 >/dev/null )
+check "DC8: a name exported by two imported modules is an ambiguous located error" \
+	"echo \"\$AMBIG_OUT\" | grep -qE \":[0-9]+:[0-9]+: error: type 'Box' is ambiguous — exported by \""
 rm -rf "$CAPTMP"
 
 # ---------------------------------------------------------------------------
