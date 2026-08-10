@@ -222,6 +222,42 @@ BLANG
 AMBIG_OUT=$( "$QCC" --parse-only "$CAPTMP/ambig.b" boxa/boxa.bmod boxb/boxb.bmod 2>&1 >/dev/null )
 check "DC8: a name exported by two imported modules is an ambiguous located error" \
 	"echo \"\$AMBIG_OUT\" | grep -qE \":[0-9]+:[0-9]+: error: type 'Box' is ambiguous — exported by \""
+
+# ---------------------------------------------------------------------------
+# DC9 / KI-23 (modules-v2-graph U6b-3) — combine-mode field privacy by module
+# identity. Reaching into a namespaced-stdlib struct's PRIVATE field from user
+# code in a combined build is a located Sema error (all build modes) — keyed on
+# module-of-definition vs use-site, NOT the .bmod-arrival isFromInterface()
+# heuristic, so the reach-in grep gate stops being the only guard for this path.
+# ---------------------------------------------------------------------------
+STDLIB_DIR="$(cd .. && pwd)/build/stdlib"
+cat > "$CAPTMP/reachin.b" <<'BLANG'
+import collections;
+fn main() -> int {
+	Map<string,int> m = Map<string,int>();
+	m.set("a", 1);
+	// `buckets` is Map's private field, defined in `collections`, reached from
+	// this user module: a located Sema error (DC9). Read it via bucket_count().
+	return m.buckets.length;
+}
+BLANG
+REACHIN_OUT=$( "$QCC" --combine "$STDLIB_DIR/sys.b" "$STDLIB_DIR/buffer.b" "$STDLIB_DIR/collections.b" "$CAPTMP/reachin.b" --parse-only 2>&1 >/dev/null )
+check "DC9: a combine-mode reach-in into a stdlib struct's private field is rejected" \
+	"! \"$QCC\" --combine \"$STDLIB_DIR/sys.b\" \"$STDLIB_DIR/buffer.b\" \"$STDLIB_DIR/collections.b\" \"$CAPTMP/reachin.b\" --parse-only >/dev/null 2>&1"
+check "DC9: the reach-in rejection is a located field-privacy diagnostic" \
+	"echo \"\$REACHIN_OUT\" | grep -qE \":[0-9]+:[0-9]+: error: field 'buckets' of type 'Map' is private to its defining module\""
+# POSITIVE companion: the same structural check via the pub bucket_count() accessor
+# compiles clean (use-capability — a method call is not a field reach-in).
+cat > "$CAPTMP/accessor_ok.b" <<'BLANG'
+import collections;
+fn main() -> int {
+	Map<string,int> m = Map<string,int>();
+	m.set("a", 1);
+	return m.bucket_count();
+}
+BLANG
+check "DC9: the same observation via a pub accessor compiles clean" \
+	"\"$QCC\" --combine \"$STDLIB_DIR/sys.b\" \"$STDLIB_DIR/buffer.b\" \"$STDLIB_DIR/collections.b\" \"$CAPTMP/accessor_ok.b\" --parse-only >/dev/null 2>&1"
 rm -rf "$CAPTMP"
 
 # ---------------------------------------------------------------------------

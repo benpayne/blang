@@ -128,7 +128,7 @@ bool Sema::analyze( Module *module, Scope *scope, DiagnosticEngine &diag )
 	if ( module == nullptr || module->isExtern() )
 		return true;
 
-	Sema sema( scope, diag );
+	Sema sema( scope, diag, module->getDefiningFile() );
 
 	for ( auto &s : module->mStructList )
 		sema.visitStruct( s );
@@ -1506,25 +1506,31 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 	const string &name = fa->getFieldName();
 
 	// Rule 1 (U5, D9): a member variable is always private to its defining
-	// module. `imported` is true for any struct that arrived through a parsed
-	// .bmod (isFromInterface) — the .bmod-path cross-module case. Same-module
-	// access keeps working (isFromInterface is false, so self.field and
-	// cross-struct access WITHIN a module resolve normally), and combine-mode
-	// namespaced-stdlib field access stays grep-gated (KI-23, Epic B).
+	// module. `imported` is true for any struct defined in a DIFFERENT module than
+	// this use site — covering BOTH the .bmod-path cross-module case
+	// (isFromInterface) AND, per U6b-3 (DC9/KI-23), the combine-mode namespaced-
+	// stdlib case (a user reaching into a `net`/`fs`/`collections` struct's private
+	// field). The check keys on MODULE IDENTITY (defining-file basename, stamped by
+	// stampDefiningOrigin) rather than the .bmod-arrival heuristic, so it is one
+	// rule for every module boundary and retires the grep gate as the only guard.
+	// Same-module access keeps working (defining == use-site module → self.field
+	// and cross-struct access WITHIN a module resolve normally).
 	//
 	// U5b INCLUDES generics: a generic imported struct ships full layout + all
 	// method bodies (A6) so consumers still monomorphize it, but its fields are
-	// no longer source-nameable across the .bmod boundary. This is now safe
-	// because the `Name<Args>(...)` construction spelling + `pub` accessor
-	// migration give cross-module generic consumers a path off `.field`/literal
-	// (spec 033 §5, §7); `test_build/myapp` is migrated in the same change.
+	// no longer source-nameable across the boundary. This is now safe because the
+	// `Name<Args>(...)` construction spelling + `pub` accessor migration give
+	// cross-module generic consumers a path off `.field`/literal (spec 033 §5, §7).
 	// Visibility for generics is a pure Sema resolution rule — emission is
 	// unchanged (A6: full layout + all bodies keep shipping).
 	//
 	// NOTE: the field loop stays FIRST so a same-module `self.keys` still
 	// resolves to the field even when a same-named accessor method exists (U4's
 	// field/method name-sharing) — the method loop must not shadow it.
-	const bool imported = structDef->isFromInterface();
+	const std::string &defMod = structDef->getDefiningFile();
+	const bool crossModule = ( !defMod.empty() && !mModuleId.empty() &&
+		defMod != mModuleId );
+	const bool imported = structDef->isFromInterface() || crossModule;
 
 	for ( auto &field : structDef->mFields )
 	{

@@ -33,7 +33,13 @@ namespace QLang
 		static bool analyze( Module *module, Scope *scope, DiagnosticEngine &diag );
 
 	private:
-		Sema( Scope *scope, DiagnosticEngine &diag ) : mScope( scope ), mDiag( diag ) {}
+		Sema( Scope *scope, DiagnosticEngine &diag, const std::string &moduleId = "" )
+			: mScope( scope ), mDiag( diag ), mModuleId( moduleId ) {}
+
+		// U6b-3 (DC9/KI-23): identity (source-file basename) of the module being
+		// analyzed — the USE-SITE module. A field access on a struct whose defining
+		// module differs is a private-field reach-in across a module boundary.
+		std::string mModuleId;
 
 		void visitFunction( FunctionDefinition *func );
 		void visitStruct( StructDefinition *structDef );

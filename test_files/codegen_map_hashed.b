@@ -24,8 +24,9 @@ fn main() -> int {
 
     // Structural evidence of hashing: the bucket table grew (doubling+rehash),
     // is a power of two, and is larger than the key count — a real open-address
-    // table, not a vestigial array beside an O(n) scan.
-    int bl = m.buckets.length;
+    // table, not a vestigial array beside an O(n) scan. Read through the public
+    // bucket_count() accessor (U6b-3/DC9: `m.buckets` is a private-field reach-in).
+    int bl = m.bucket_count();
     println("buckets >= 512 = {}", bl >= 512);
     // power-of-two check: bl & (bl-1) == 0
     int pot = 0;
