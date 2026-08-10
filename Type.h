@@ -213,6 +213,25 @@ namespace QLang
 		void setGrantsNameCapability( bool v ) { mGrantsNameCapability = v; }
 		bool grantsNameCapability() const { return mGrantsNameCapability; }
 
+		// modules-v2-graph U8 (DC10) — import aliasing. `import x as y;` binds the
+		// local qualifier `y` to module `x`. addModuleAlias records y->x so codegen's
+		// module-prefix fork (a combined-stdlib callee `y.foo` must emit `x__foo`,
+		// not `y__foo`) can recover the real module. realModuleName returns the real
+		// module for a qualifier (the qualifier itself when it is not an alias).
+		void addModuleAlias( const std::string &alias, const std::string &real )
+		{
+			mModuleAliases[alias] = real;
+		}
+		std::string realModuleName( const std::string &qualifier )
+		{
+			auto it = mModuleAliases.find( qualifier );
+			if ( it != mModuleAliases.end() )
+				return it->second;
+			if ( mParent != nullptr )
+				return mParent->realModuleName( qualifier );
+			return qualifier;
+		}
+
 		// Track which modules have been imported in this scope
 		void addImportedModule( const std::string &name )
 		{
@@ -373,6 +392,7 @@ namespace QLang
 		std::set<std::string> mUsedModules;
 		std::map<std::string, std::string> mImportedTypeOwner;
 		std::map<std::string, std::set<std::string>> mAmbiguousImports;
+		std::map<std::string, std::string> mModuleAliases;
 		bool mGrantsNameCapability = false;
 	};
 
@@ -393,13 +413,26 @@ namespace QLang
 	public:
 		ImportStatement( const std::string &moduleName ) : mModuleName( moduleName ) {}
 
+		// The real module being imported (`x` in `import x as y;`).
 		const std::string &getModuleName() const { return mModuleName; }
+
+		// modules-v2-graph U8 (DC10) — import aliasing. The LOCAL qualifier the
+		// consumer uses: `y` in `import x as y;`, else the module name itself. All
+		// consumer-facing resolution + diagnostics key on this; `getModuleName()`
+		// (the real module) is only used to find the module's actual namespace.
+		void setAlias( const std::string &alias ) { mAlias = alias; }
+		const std::string &getAlias() const { return mAlias; }
+		const std::string &getLocalQualifier() const
+		{
+			return mAlias.empty() ? mModuleName : mAlias;
+		}
 
 		void setLocation( const SourceLocation &loc ) { mLocation = loc; }
 		const SourceLocation &getLocation() const { return mLocation; }
 
 	private:
 		std::string mModuleName;
+		std::string mAlias;
 		SourceLocation mLocation;
 		friend class LocationDumper;
 		friend class AstLocator;

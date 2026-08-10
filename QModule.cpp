@@ -161,13 +161,39 @@ Module *Module::Parse( Lexer &l, Scope *s )
 					moduleName += "." + l.getSymbolText();
 				}
 
+				// modules-v2-graph U8 (DC10) — import aliasing: `import x as y;`.
+				// `as` is a contextual keyword (lexes as a plain SYMBOL). The local
+				// qualifier `y` is what the consumer writes (`y.foo`, `Pair<int>`),
+				// and diagnostics + usage key on it; `moduleName` (x) is only used to
+				// find the module's real namespace and (for a combined-stdlib callee)
+				// its emitted module prefix.
+				std::string alias;
+				if ( l.peekSymbol() == Lexer::SYMBOL )
+				{
+					int savedPos = l.getCurrentPos();
+					l.getSymbol();
+					if ( l.getSymbolText() == "as" )
+					{
+						int aliasSym = l.getSymbol();
+						if ( aliasSym != Lexer::SYMBOL )
+							COMPILE_ERROR( l, "Expected an alias name after 'as'" );
+						alias = l.getSymbolText();
+						if ( alias.find( '.' ) != std::string::npos )
+							COMPILE_ERROR( l, "an import alias must be a single name" );
+					}
+					else
+						l.setCurrentPos( savedPos ); // not `as`, restore
+				}
+
 				// Expect semicolon
 				int semi = l.getSymbol();
 				if ( semi != ';' )
 					COMPILE_ERROR( l, "Expected ';' after import statement" );
 
+				const std::string localQ = alias.empty() ? moduleName : alias;
 				{
 					ImportStatement *imp = new ImportStatement( moduleName );
+					imp->setAlias( alias );
 					imp->setLocation( importLoc );
 					mod->mImports.push_back( imp );
 				}
@@ -176,7 +202,14 @@ Module *Module::Parse( Lexer &l, Scope *s )
 				Scope *ns = s->findNamespace( moduleName );
 				if ( ns != nullptr )
 				{
-					s->addImportedModule( moduleName );
+					s->addImportedModule( localQ );
+					if ( !alias.empty() )
+					{
+						// Bind the alias qualifier to the module's real namespace, and
+						// record alias->real so codegen can recover the module prefix.
+						s->addNamespace( localQ, ns );
+						s->addModuleAlias( localQ, moduleName );
+					}
 					// modules-v2-graph U6b — grant D7 name-capability: bring a .bmod
 					// DEPENDENCY's exported TYPE names (struct/enum) into this scope so
 					// they resolve UNQUALIFIED (`Pair<int> p`, `Counter(5)`). The
@@ -185,13 +218,15 @@ Module *Module::Parse( Lexer &l, Scope *s )
 					// Combine-mode stdlib namespaces are NOT copied (grantsNameCapability
 					// is false): their types are reached qualified (`net.HttpServer`).
 					// Timing: a dependency's .bmod parses before this consumer, so its
-					// namespace is already populated here.
+					// namespace is already populated here. Ownership is keyed on the
+					// LOCAL qualifier (the alias) for the unused-import lint.
 					if ( ns->grantsNameCapability() )
-						s->importTypeNamesFrom( ns, moduleName );
+						s->importTypeNamesFrom( ns, localQ );
 				}
 				// If namespace not found, it may be an external module — allow for now
 
-				PARSE_TRACE( "import " << moduleName );
+				PARSE_TRACE( "import " << moduleName <<
+					( alias.empty() ? "" : ( " as " + alias ) ) );
 				continue;
 			}
 

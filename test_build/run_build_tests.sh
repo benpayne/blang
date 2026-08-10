@@ -71,6 +71,24 @@ check "no unresolved-param instantiation (largest_T absent)" \
 	"! nm myapp/myapp | grep -q 'largest_T'"
 
 # ---------------------------------------------------------------------------
+# Import aliasing (modules-v2-graph U8, DC10) — `import mathlib as m;` binds the
+# dependency to the LOCAL qualifier `m`. Functions are reached qualified through
+# the alias (`m.add`), name-capability rides on the alias (`Pair<int>` is namable),
+# and the emitted symbols are the library's real ones (linked from mathlib.a) — so
+# it builds, links, and RUNS. The alias is a pure source rebind (D8: no re-export).
+# ---------------------------------------------------------------------------
+( cd aliasapp && rm -f aliasapp && "$BCC" build > /dev/null 2>&1 )
+check "aliasapp builds (bin, import mathlib as m)" "[ -x aliasapp/aliasapp ]"
+check "aliasapp output exact (aliased qualified calls + name-capability)" \
+	"[ \"\$(cd aliasapp && ./aliasapp)\" = '3 + 4 = 7
+5 * 6 = 30
+largest = 9
+sum = 42' ]"
+# The D8 negative (the alias rebinds — the original module name stays unbound, no
+# implicit re-export) is fail/xmodule/alias_rebind, run in BOTH build modes by
+# run_tests.sh.
+
+# ---------------------------------------------------------------------------
 # Canonical module identity (modules-v2-graph U1, D5/D10) — done-condition 1.
 #
 # Two libraries (boxa, boxb) each export a same-named generic Box<T> and

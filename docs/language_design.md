@@ -905,6 +905,23 @@ fn compute() -> int {
 
 The flat namespace means every import is one qualifier deep. This eliminates long qualification chains and makes it impossible to hallucinate intermediate namespace segments.
 
+An import may **rename** the module to a local qualifier with `as`:
+
+```
+import mathlib as m;
+
+fn compute() -> int {
+	return m.add(1, 2);   // reached only as `m`, never `mathlib`
+}
+```
+
+The alias is a purely local **rebind**: it binds the module to exactly one local
+qualifier and does not also keep the original name bound (there is no re-export —
+the alias chosen in one module is invisible to that module's consumers). This is
+what lets a consumer import two dependencies that happen to share a module name
+without conflict, and it keeps qualification a source-level spelling with no effect
+on the emitted symbols.
+
 A dependency's exported **functions** are reachable **only** through this qualified
 form, and **only** after the module is imported: resolution runs through the
 per-module import graph, not a global merge. Writing an imported function
