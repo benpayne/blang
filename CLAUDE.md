@@ -682,8 +682,9 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     `modules-v2-graph` Epic B — module identity, per-module scopes, import
     enforcement, type tiers, module-prefix ARC fix, cross-module LSP — to be
     planned after Epic A completes).
-  - `modules-v2-graph` (`docs/epics/modules-v2-graph/`) — status: **core complete**
-    (all core done-conditions DC1–9 + DC12 closed, plus stretch DC10; DC11 deferred).
+  - `modules-v2-graph` (`docs/epics/modules-v2-graph/`) — status: **complete (core)**
+    (core DC1–9 + DC12 + stretch DC10 merged/pushed, run `3e3dbafe`; DC11 deferred KG-10;
+    owner-verified both modes + CI green 2026-08-10; residual gaps KG-1..KG-10).
     Epic B of the modules-v2 split (the resolution half). **Closed:** canonical
     module identity — DC1 (U1, fixes P10 generic-mangling collapse); three type
     tiers core/prelude/library — DC2/DC3 (U3, prelude = `{Map,Set,Buffer}`,

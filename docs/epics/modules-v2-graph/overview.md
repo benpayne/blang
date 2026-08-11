@@ -3,7 +3,12 @@
 **Archetype**: evolve (replaces the resolution model under the existing module
 surface; **Epic B** of the modules-v2 split)
 
-**Status**: launched — run `3e3dbafe-0cd0-4838-bb98-10d3a17fedc5` launched 2026-08-09 (full scope U1–U9; may run in scoped passes)
+**Status**: **complete** (core) — core done-condition (DC1–9 + DC12) **and** stretch
+DC10 (import aliasing) merged to `master` and pushed; DC11 (module search path)
+deferred to a follow-on (KG-10, workplan-sanctioned). Independently verified by the
+owner 2026-08-09/10 (both build modes) and GitHub CI green. Residual gaps recorded
+in `known-issues.md` (KG-1..KG-10). Follow-on: **Epic C (`modules-v2-lsp`)** +
+a small DC11 epic.
 
 **Owner**: Ben Payne
 
@@ -261,6 +266,7 @@ a committed test that CI runs:
 
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
+| 2026-08-10 | 3e3dbafe-0cd0-4838-bb98-10d3a17fedc5 | **completed — core done** | Run completed turn 50, ~12.4M/16M tokens. **3-role team** (lead implementer + design auditor/spike reviewer + distinct secondary PR reviewer). PRs #146–#155 merged to `master` (U1–U5, cli-demotion, U6a, U6b-1/2/3, U8 aliasing), each pushed with CI green per merge; closeout #156 merged by owner. Core **DC1–9 + DC12** and stretch **DC10** closed; **DC11 deferred** (KG-10, stretch, workplan-sanctioned). Inherited KI-3/5/16/23 closed. **Owner independent verification (clean rebuild, both modes):** run_tests 244/0 + 237/0, test_codegen 168/0, --leak-check Leaks:0, test_lsp 63/0, test_build all-pass; P10 fix confirmed directly via `nm` (two distinct `Box_m<digest>_int` symbols, no bare `Box_int` collapse); import-enforcement located errors reproduced. Residual gaps filed KG-1..KG-10 (notably KG-1 generic *function* mangling deferred, KG-4 `Set<int>` miscompile, KG-8 diamond-dep false-positive, KG-9 field-privacy basename-collapse window). Note: run report overstated #156 as merged — it was OPEN; owner reviewed + merged it. |
 | 2026-08-09 | — | U1/U2/U3 landed | **U2** (#145, module-prefix string-ARC characterization + regression-lock) and **U1** (#146, canonical module identity — P10 fix) merged to `master`, CI 14/14 green. **U3** (#147, three type tiers) reviewer-approved. **Done-condition 2 = PARTIAL**: manifest `{Map,Set,Buffer}` ✓, `Buffer` D14 deletion + `Task`/`Array` core ✓, per-name `collections.sort` ✓ — **`cli`-not-promoted DEFERRED** out of U3 by owner decision (F3-gated) to a later unit (U6/follow-on), recorded in Known-Issues **KG-6**. Done-condition 3 (special-case retirement) likewise remains open on the `buffer`/`collections`/`cli` global-scope-promotion removal — U3 replaced the *type-tier* promotion for buffer/collections (prelude); the codegen-special-case removal is separate. Filed KG-4 (pre-existing `Set<int>` hashing), KG-5 (unknown-type diagnostic column). |
 | 2026-08-09 | 3e3dbafe-0cd0-4838-bb98-10d3a17fedc5 | launched | Full-scope launch (U1–U9). endpoint `http://localhost:8201`, dir `a6b2f628-…`; fully_autonomous, 160 turns / 36h / 16M tokens, no_progress_threshold 10. May run in scoped passes (~U1–U4/U5 per pass). |
 | 2026-08-09 | — | review passed | `/devbot-review` + fresh-context audit (no blockers). Applied F1–F9: `sort`/`collections.b` mixed-file split + call-site migration owned by U3 (F1); injection-removal moved from done-cond 4 to done-cond 6/U6 (F2); un-named foreign-generic spike + fixture added to U5 — the design record's "sharpest corner" (F3); done-cond 5 concretized to a `ResolverReuseTest` + both-call-sites grep (F4); `cli.has_flag` example fix (F5); budget-hint denomination clarified (F6); U6a/U6b downstream deps stated (F7); U5 design-audit gate added (F8); done conditions renumbered 1–12, `4b` promoted to `5` (F9). Done-condition sync verbatim; traceability REQ-001..014 complete. Status → ready. Next: `/devbot-launch modules-v2-graph`. |
