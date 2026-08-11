@@ -682,23 +682,28 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     `modules-v2-graph` Epic B — module identity, per-module scopes, import
     enforcement, type tiers, module-prefix ARC fix, cross-module LSP — to be
     planned after Epic A completes).
-  - `modules-v2-graph` (`docs/epics/modules-v2-graph/`) — status: **launched**
-    (run `3e3dbafe-0cd0-4838-bb98-10d3a17fedc5`, 2026-08-09; full scope U1–U9).
-    Epic B of the modules-v2 split (the resolution half): canonical module
-    identity (fixes P10 generic-mangling collapse), three type tiers
-    core/prelude/library (prelude = `{Map,Set,Buffer}`, delete bare-name
-    registration, demote `cli`), the module-prefix string-ARC codegen fix (crux,
-    unblocks retiring the `buffer`/`collections`/`cli` promotions — closes KI-3),
-    a per-module import graph via an **extractable resolver** (removes the
-    flat-merge injection), enforced imports with use/name-capability (D7) +
-    located collision/unknown/unused diagnostics, foreign-type refs in `.bmod` +
-    the transitive build graph (closes KI-5), and two stretch units (import
-    aliasing, module search path). Owner decisions (2026-08-09): cross-module LSP
-    split to a follow-on **Epic C (`modules-v2-lsp`)** that consumes U4's resolver
-    seam; both stretch units in scope; fully-autonomous/generous. Inherits
-    KI-3/KI-5/KI-16/KI-23 from Epic A. 9 units (U1–U9), REQ-001..014. Binding
-    design record: `docs/epics/modules-v2/overview.md` (D1–D17). Next:
-    `/devbot-review modules-v2-graph`.
+  - `modules-v2-graph` (`docs/epics/modules-v2-graph/`) — status: **core complete**
+    (all core done-conditions DC1–9 + DC12 closed, plus stretch DC10; DC11 deferred).
+    Epic B of the modules-v2 split (the resolution half). **Closed:** canonical
+    module identity — DC1 (U1, fixes P10 generic-mangling collapse); three type
+    tiers core/prelude/library — DC2/DC3 (U3, prelude = `{Map,Set,Buffer}`,
+    bare-name registration deleted, `cli` demoted in U6); the module-prefix
+    string-ARC codegen fix — DC4 (U2, closes KI-3); the **extractable Resolver**
+    seam — DC5 (U4); a per-module import graph with enforced imports + D7
+    use/name-capability + injection removal — DC6 (U6a/U6b-1); foreign-type refs in
+    `.bmod` + the transitive build graph + un-named foreign generic — DC7 (U5,
+    closes KI-5); located collision/unknown/unused-import diagnostics + D3
+    "did you mean" sharpening — DC8 (U6b-2); combine-mode field privacy keyed on
+    module identity — DC9 (U6b-3, closes KI-23); **stretch** import aliasing
+    `import x as y;` — DC10 (U8). **Deferred:** DC11 (U9, module search path /
+    configurable resolution roots) → follow-on epic, recorded KG-10 (a build-driver
+    change, a clean boundary; deferring a stretch unit does not fail the core).
+    Inherited KI-3/KI-5/KI-16/KI-23 from Epic A all closed. Known-gaps filed: KG-6
+    (closed), KG-8 (bcc diamond false-positive), KG-9 (DC9 basename identity),
+    KG-10 (DC11 deferral). Cross-module LSP is the separate follow-on **Epic C
+    (`modules-v2-lsp`)** consuming U4's resolver seam. Binding design record:
+    `docs/epics/modules-v2/overview.md` (D1–D17); specs `034`–`040`. Merged PRs
+    this line: #147–#155.
   - `001-toolchain-and-stdlib` (`docs/epics/001-toolchain-and-stdlib/`) — status:
     **complete-local** (devbot run `3a358cfb-38ff-4189-82f5-172d64f05c14`; all 7
     units U0–U6 merged to local master; done-conditions #1–#5 independently

@@ -11,6 +11,35 @@ by their listed units.)
 
 ---
 
+## KG-10 — DC11 (module search path / std separation) deferred to a follow-on epic
+
+**Filed**: epic closeout (after U8). **Owner**: follow-on epic. **Not a defect — a scoped deferral** (workplan-sanctioned: a stretch unit may defer without failing the core done-condition).
+
+Done-condition 11 (U9) asks to replace the hardcoded `stdlib/<name>.b` mapping with
+**configurable resolution roots**, so a user module named `timer` deterministically
+**shadows** the stdlib `timer` (P7), proven by a `test_build` fixture built with a
+custom resolution root. This is the epic's **second** stretch unit; the first
+(DC10, import aliasing) landed in U8.
+
+**Why deferred.** It is a **build-driver** change — `bcc`/`ProjectConfig` gain a
+resolution-roots concept and a deterministic search order (user roots before the
+bundled stdlib), and `bcc`'s stdlib assembly (`resolveStdlibFiles` / the
+`kKnownOrder` mapping) is rewritten to consult it. That is materially different in
+character and risk from the **resolution-model** work this epic delivered (module
+identity, capability, import graph, diagnostics, field privacy) — a clean boundary
+for a separate unit. The epic's **core** (DC1–9, DC12) plus the first stretch unit
+(DC10) are complete and green; deferring DC11 does not fail the core done-condition
+(the workplan states stretch units defer to a follow-on recorded here).
+
+**Follow-on scope.** A small epic: (a) a `[resolution]` / roots concept in
+`blang.toml` + `ProjectConfig`; (b) a deterministic search order (user roots →
+bundled stdlib); (c) `bcc` stdlib assembly consulting it; (d) a `test_build`
+fixture where a user `timer.b` under a custom root shadows the stdlib `timer` and
+the program links against the user version. Single-file/combine mode keeps the
+current bundled-stdlib behavior when no roots are configured (backward compatible).
+
+---
+
 ## KG-9 — DC9 field-privacy keys on the file BASENAME, so two same-named modules in different dirs collapse
 
 **Filed**: U6b-3. **Owner**: follow-on (module-identity precision); flagged by the U6b-3 reviewer.
