@@ -71,7 +71,14 @@ it.
 
 ---
 
-## KG-8 — `bcc` reports a false "circular dependency" on a diamond dep graph
+## KG-8 — `bcc` reports a false "circular dependency" on a diamond dep graph — CLOSED
+
+**Closed** (2026-11-25): root cause was narrower than the traversal design — `buildProject`
+(`bcc.cpp`) did erase its node from the on-path `building` set on the normal exit, but the
+**library cache-hit early return** skipped the erase, so on the diamond's second visit the
+(now cached) shared dep was still "on the path". An RAII `OnPathGuard` now clears it on every
+exit. Regression: `test_build/diamondapp` (`→ midx → boxq` and `→ boxq`, names `Box<int>`)
+built twice (cold + warm) in `run_build_tests.sh`.
 
 **Filed**: U6b-1. **Owner**: follow-on (build-driver graph); pre-existing, surfaced by U6b's D7 fixtures.
 

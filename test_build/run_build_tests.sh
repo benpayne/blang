@@ -154,6 +154,15 @@ check "midx.bmod is format 5" "grep -q '// blang-bmod-format: 5' midx/midx.bmod"
 # It PARSES STANDALONE (the foreign-ref registers Box) — the epic standing check.
 bmod_parses midx/midx.bmod
 bmod_parses boxq/boxq.bmod
+# KG-8: a DIAMOND (diamondapp -> midx -> boxq, diamondapp -> boxq) builds through
+# bcc — boxq is reached twice, which is not a cycle. Run twice: the second build is
+# warm-cache, the path that used to leave boxq "on the DFS path" and trip a false
+# "circular dependency".
+( cd diamondapp && rm -f diamondapp && "$BCC" build > /dev/null 2>&1 )
+( cd diamondapp && rm -f diamondapp && "$BCC" build > /dev/null 2>&1 )
+check "KG-8: diamond dep graph builds through bcc (warm cache, no false cycle)" "[ -x diamondapp/diamondapp ]"
+check "KG-8: diamond app runs (transitive name-capability: Box<int> named via import boxq)" \
+	"[ \"\$(cd diamondapp && ./diamondapp)\" = '12' ]"
 # U1 interlock: usebox's Box<int> and midx.a's dedup — one digest (boxq's origin).
 check "un-named foreign Box<int> dedups (one identity digest across usebox + midx.a)" \
 	"[ \"\$({ nm usebox/usebox; nm midx/libmidx.a; } 2>/dev/null | grep -oE 'm[0-9a-f]{12}_int' | sort -u | wc -l)\" = '1' ]"
@@ -167,9 +176,8 @@ rm -f "$BADBMOD"
 
 # ---------------------------------------------------------------------------
 # D7 capability model (modules-v2-graph U6b) — use vs. name, the transitive case,
-# driven at the qcc level (bcc collapses a compile error to a generic message and
-# trips a false circular-dependency check on a diamond, so it cannot express these
-# — qcc surfaces the located diagnostic exactly like the fail/xmodule harness).
+# driven at the qcc level (bcc collapses a compile error to a generic message, so
+# it cannot express the negatives — qcc surfaces the located diagnostic exactly like the fail/xmodule harness).
 #
 # boxq owns generic Box<T>; midx imports boxq and exposes `get_box -> Box<int>`.
 #   - USE-capability POSITIVE: usebox above imports midx ONLY, holds the returned
