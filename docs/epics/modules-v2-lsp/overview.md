@@ -3,7 +3,7 @@
 **Archetype**: evolve (reworks the existing `blangd` compile pipeline on top of
 the Resolver seam Epic B extracted; `qcc`/`bcc` behavior must not change)
 
-**Status**: ready
+**Status**: launched
 
 **Owner**: Ben Payne
 
@@ -226,3 +226,4 @@ and every unit's done condition in workplan.md is met.
 |------|-----|-------|-------|
 | 2026-11-26 | — | epic planned | Epic C of the modules-v2 split. Owner decisions: evolve; deps resolved from source (not `.bmod`); scope = design record only (diagnostics/definition/hover across modules; no extras); wait for PR #157 then launch fully autonomous with generous limits. Recon on `master` @ `7a68fcd`. Next: `/devbot-review modules-v2-lsp`. |
 | 2026-11-26 | — | review passed | `/devbot-review`: all 12 checks pass after fixes F1–F4 (reference compile defined as the `qcc` line `bcc -v -S` / `bcc build -v` prints, errors+warnings compared; docs done-condition made a grep check; `project_compile` ctest assertions spelled out; latency measured on non-sanitizer `build/` only). Launch still waits on PR #157 merging + rebasing this branch onto the new `master`. Next: `/devbot-launch modules-v2-lsp`. |
+| 2026-11-26 | `6d49bcb9` | launched | Run `6d49bcb9-82f3-4642-9393-83c73cb157ef` on `epic/modules-v2-lsp` (base `master` @ `830557c`, PR #157 merged); fully autonomous, 200 turns / 36h / 50M tokens, no-progress 10; instance-default manager (anthropic/claude-opus-4-8) and worker (claude). |

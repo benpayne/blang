@@ -180,6 +180,10 @@ foldback:
   status_into: overview.md
 
 devbot:
-  endpoint: null
-  directory_id: null
-  runs: []
+  endpoint: http://localhost:8201
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b
+  runs:
+    - run_id: 6d49bcb9-82f3-4642-9393-83c73cb157ef
+      launched: 2026-11-26
+      branch: epic/modules-v2-lsp
+      outcome: pending
