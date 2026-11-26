@@ -96,7 +96,9 @@ VariableDefinition *VariableDefinition::ParseFuncParam( Lexer &l, Scope *s, bool
 VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 {
 	SourceLocation loc = l.getTokenLocation();
-	VariableDeclaration *def = new VariableDeclaration;
+	// Guarded (KG-7): Statement::Parse tries a declaration first and backtracks
+	// on CompileError, so a throw here must free the partial node.
+	SmartPtr<VariableDeclaration> def = new VariableDeclaration;
 	def->setLocation( loc );
 	bool isConst = false;
 	bool isVar = false;
@@ -228,5 +230,5 @@ VariableDeclaration *VariableDeclaration::Parse( Lexer &l, Scope *s )
 		l.getSymbol(); // consume ','
 	} while ( true );
 
-	return def;
+	return def.release();
 }

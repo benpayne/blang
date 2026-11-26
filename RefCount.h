@@ -22,6 +22,15 @@ public:
 		}
 	}
 
+	// Drop one reference WITHOUT destroying the object when the count reaches
+	// zero — returning it to the "floating" refcount-zero state a parser factory
+	// hands to its caller (the caller's SmartPtr then takes ownership). Only
+	// SmartPtr::release() uses this.
+	void ReleaseNoDelete() const
+	{
+		mRefCount.fetch_sub( 1, std::memory_order_acq_rel );
+	}
+
 	int getRefCountForDebug() const { return mRefCount.load( std::memory_order_relaxed ); }
 
 protected:
@@ -73,6 +82,20 @@ public:
 	operator const T*() const { return mObj; }
 
 	const T* getObjectForDebug() const { return mObj; }
+
+	// Give up this SmartPtr's reference and return the raw pointer WITHOUT
+	// deleting the object (it may return to refcount zero — "floating"). Lets a
+	// Parse factory guard its partially-built node with a SmartPtr (so a
+	// CompileError thrown mid-parse frees it — KG-7) while still returning a raw,
+	// unowned pointer on success, per the parser's factory convention.
+	T *release()
+	{
+		T *obj = mObj;
+		mObj = nullptr;
+		if ( obj != nullptr )
+			obj->ReleaseNoDelete();
+		return obj;
+	}
 
 private:
 	T *mObj;

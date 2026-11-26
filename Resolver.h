@@ -43,10 +43,12 @@ public:
 
 	// A fresh module-level scope parented into the resolution environment (default
 	// parent = the global scope). Replicates EXACTLY what the drivers built inline
-	// (`new Scope(kScope_Module); setParent(parent)`) and returns the raw pointer —
-	// lifetime is held by the returned scope's children / the caller / the parent
-	// chain, precisely as before. The Resolver does NOT retain module scopes (doing
-	// so would leak one per LSP reparse); it owns only the global scope.
+	// (`new Scope(kScope_Module)` linked to `parent`) and returns the raw pointer
+	// at refcount zero. The CALLER owns it — adopt it into a SmartPtr immediately
+	// (KG-7: a child scope no longer retains its parent, and the parent does not
+	// adopt a module scope). The Resolver does NOT retain module scopes (doing so
+	// would leak one per LSP reparse); it owns only the global scope, so every
+	// module scope must be released before the Resolver is destroyed.
 	Scope *newModuleScope( Scope *parent = nullptr );
 
 	// --- Module graph (behavior-neutral bookkeeping) ------------------------

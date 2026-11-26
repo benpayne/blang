@@ -23,8 +23,9 @@ extern QLang::DiagnosticEngine *gDiag;
 // Build the global scope with every compiler builtin: primitive types,
 // print/println/to_json, the Printable protocol, and Option/Result. Returned
 // at refcount 0 like any freshly built node — the caller must take ownership
-// (store it in a SmartPtr) before parenting file scopes to it, or the first
-// file scope's release will free it.
+// (store it in a SmartPtr). Child scopes do NOT retain their parent (KG-7:
+// scopes are owned top-down), so the owner must outlive every module scope
+// parented to it.
 QLang::Scope *createGlobalScope();
 
 // Stamp every struct a just-parsed module declares with the source file it came

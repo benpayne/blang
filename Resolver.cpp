@@ -12,8 +12,7 @@ namespace QLang
 Resolver::Resolver()
 {
 	// Own the global builtin scope (createGlobalScope returns refcount 0; the
-	// SmartPtr takes the owning reference — Frontend.h's contract, so the first
-	// child's parent ref does not free it out from under us). Install it as the
+	// SmartPtr takes the owning reference — Frontend.h's contract). Install it as the
 	// process `gScope` alias the parser/sema read, saving the previous alias so a
 	// nested Resolver (LSP server, unit tests) restores it on destruction.
 	mGlobalScope = createGlobalScope();
@@ -33,7 +32,9 @@ Resolver::~Resolver()
 Scope *Resolver::newModuleScope( Scope *parent )
 {
 	Scope *s = new Scope( Scope::kScope_Module );
-	s->setParent( parent != nullptr ? parent : (Scope *)mGlobalScope );
+	// Unowned link (KG-7): the CALLER owns a module scope (blangd's CompileResult,
+	// qcc's module-scope keep-alive list). The parent must outlive it.
+	s->setParentUnowned( parent != nullptr ? parent : (Scope *)mGlobalScope );
 	return s;
 }
 
