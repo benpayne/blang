@@ -709,6 +709,15 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     (`modules-v2-lsp`)** consuming U4's resolver seam. Binding design record:
     `docs/epics/modules-v2/overview.md` (D1–D17); specs `034`–`040`. Merged PRs
     this line: #147–#155.
+  - `modules-v2-lsp` (`docs/epics/modules-v2-lsp/`) — status: **planning**
+    (2026-11-26). Epic C of the modules-v2 split: blangd compiles each document in
+    the same context `bcc` would (stdlib + prelude, `blang.toml` project sources,
+    path/fetched-git deps resolved from source with `.bmod`-equivalent interfaces)
+    through one shared project-compile entry point that `qcc` also calls, then
+    adds cross-module go-to-definition and hover. Fixes blangd's false
+    diagnostics on essentially every real program (it compiles files alone today).
+    Units U1–U5 (specs `041`–`044` + exempt close-out). Launch precondition: PR
+    #157 merged and this branch's doc commits replayed onto `master`.
   - `001-toolchain-and-stdlib` (`docs/epics/001-toolchain-and-stdlib/`) — status:
     **complete-local** (devbot run `3a358cfb-38ff-4189-82f5-172d64f05c14`; all 7
     units U0–U6 merged to local master; done-conditions #1–#5 independently
