@@ -30,9 +30,12 @@ run:
        prelude `bcc file.b` uses. A committed corpus check
        (`tools/lsp_diag_corpus.py`, run by `test_lsp.sh`) opens every file in its
        listed corpus — at minimum the six files in this overview's table, every
-       `examples/*/main.b`, and every `test_files/codegen_*.b` that compiles clean
-       via `test_codegen.sh` — and asserts blangd publishes **exactly the diagnostics
-       `qcc` reports for the same compile** (zero for clean files). The stdlib
+       `examples/*/main.b`, and every `test_files/codegen_*.b` whose reference compile exits 0 — and asserts blangd
+       publishes **exactly the diagnostics of the reference compile**. The **reference compile** for a single file is the `qcc` command line that
+       `bcc -v -S <file>` prints; for a project it is the final `qcc` command
+       `bcc build -v` prints. "Same diagnostics" means the same errors **and
+       warnings** (severity, line, column, message); a file is *clean* when its
+       reference compile exits 0. The stdlib
        location is discoverable (blangd-relative `stdlib/`, an LSP
        `initializationOptions.stdlibPath`, and `BLANG_STDLIB_DIR`), each covered by
        a transcript golden.
@@ -42,7 +45,7 @@ run:
        dependencies **from source**, transitively, with the same module identities
        and D7 use/name capabilities `bcc build` applies. The corpus check covers
        every `test_build/*` binary project that `run_build_tests.sh` builds
-       successfully (zero diagnostics) and every `test_files/fail/xmodule/*` fixture
+       successfully (blangd's diagnostics on its `main.b` equal its reference compile's) and every `test_files/fail/xmodule/*` fixture
        (blangd reports the same located diagnostic `qcc` does: same line, column and
        message). An unresolvable dependency (missing path, unfetched git dep,
        malformed `blang.toml`) yields **one located diagnostic** at the import
@@ -72,9 +75,9 @@ run:
     7. **Real-client smoke.** `ci/nvim_smoke.lua` additionally opens a project
        fixture with a dependency and asserts zero error diagnostics and a
        cross-module definition result (still a yellow SKIP when `nvim` is absent).
-    8. **Docs.** `CLAUDE.md` (the `blangd`/`lsp/` entries and Supported/Known-Issues
-       text) and `editors/README.md` (stdlib-path configuration, project
-       discovery) describe the new behavior.
+    8. **Docs.** `grep -n "blangd" CLAUDE.md | grep -i "single-file"` prints nothing
+       (no line still describes blangd as single-file), and `grep -c` finds each of
+       `stdlibPath`, `BLANG_STDLIB_DIR` and `blang.toml` in `editors/README.md`.
 
     and every unit's done condition in workplan.md is met.
   guidance: >
@@ -117,8 +120,8 @@ units:
     done: >
       Shared entry point called from qcc.cpp and lsp/Compile.cpp (grep); qcc.cpp
       no longer contains the isUserFile/isPreludeModule routing or its own
-      import-diagnostics pass; bcc selects stdlib via the shared function; new
-      project_compile ctest passes; all gates green with zero golden edits;
+      import-diagnostics pass; bcc selects stdlib via the shared function; new project_compile ctest passes (diagnostics == qcc --combine; prelude
+      Map/Set, net namespace, user Map shadowing asserted); all gates green with zero golden edits;
       parser_no_leak LSan-clean; converge gate for specs/041-shared-project-compile.
     speckit: 041-shared-project-compile
   - id: U2
@@ -127,10 +130,11 @@ units:
     depends_on: [U1]
     done: >
       tools/lsp_diag_corpus.py --corpus stdlib passes on the committed corpus
-      (incl. the overview table files, every examples/*/main.b, every clean
-      test_files/codegen_*.b); goldens for each stdlib discovery route + the
-      missing-stdlib fallback; lsp_latency median <= 500 ms on
-      examples/todo_app/main.b; parser_no_leak stdlib-context loop LSan-clean;
+      (incl. the overview table files, every examples/*/main.b, every
+      test_files/codegen_*.b whose bcc -v -S reference qcc compile exits 0;
+      diagnostics == reference, errors and warnings); goldens for each stdlib discovery route + the
+      missing-stdlib fallback; lsp_latency median <= 500 ms on examples/todo_app/main.b (non-sanitizer
+      build/); parser_no_leak stdlib-context loop LSan-clean;
       pre-existing LSP golden diffs individually justified; converge gate for
       specs/042-lsp-stdlib-context.
     speckit: 042-lsp-stdlib-context
@@ -140,7 +144,8 @@ units:
     depends_on: [U2]
     done: >
       lsp_diag_corpus --corpus project passes on every test_build bin project
-      that run_build_tests builds (zero diagnostics) and every
+      that run_build_tests builds (diagnostics == the bcc build -v reference
+      qcc compile, errors and warnings) and every
       test_files/fail/xmodule fixture (same line/col/message as qcc); negative
       goldens for missing path dep, unfetched git dep, malformed blang.toml;
       git-shim no-subprocess test passes; unsaved-buffer overlay golden;
@@ -165,9 +170,8 @@ units:
     summary: Close-out — nvim smoke on a project fixture, CLAUDE.md + editors/README.md, CI green, done-condition evidence map
     depends_on: [U4]
     done: >
-      test_lsp_nvim.sh passes with nvim (or CI lsp job green); CLAUDE.md no
-      longer describes blangd as single-file; editors/README.md documents
-      stdlibPath / BLANG_STDLIB_DIR and blang.toml discovery; epic-branch CI
+      test_lsp_nvim.sh passes with nvim (or CI lsp job green); `grep -n blangd CLAUDE.md | grep -i single-file` prints nothing;
+      editors/README.md contains stdlibPath, BLANG_STDLIB_DIR and blang.toml; epic-branch CI
       green on every job; PR body maps every overview done-condition bullet to
       its committed test.
     speckit: null   # exempt — docs + CI smoke + close-out evidence

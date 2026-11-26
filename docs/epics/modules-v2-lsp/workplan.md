@@ -53,9 +53,10 @@ allows one active feature at a time); U5 is an exempt close-out.
   selection) or its own copy of the import-diagnostics pass; (b) `bcc.cpp`
   selects stdlib files through the shared function (no local
   `resolveStdlibFiles` body); (c) a new `ctest` (`project_compile`) drives the
-  entry point directly and asserts a combined stdlib + user fixture yields the
-  same diagnostics and the same resolved prelude/namespace bindings as
-  `qcc --combine`; (d) all unit gates green with **zero golden edits** across
+  entry point directly and asserts, for a combined stdlib + user fixture: the diagnostic text equals
+  `qcc --combine` on the same inputs; `Map`/`Set` resolve through the prelude
+  scope; `net` is registered as a namespace scope; and a user `struct Map`
+  shadows the prelude `Map`; (d) all unit gates green with **zero golden edits** across
   `test_files/` and `test_files/lsp/`; (e) `parser_no_leak` still LSan-clean;
   (f) converge gate: `/speckit-converge` reports `converged` for
   `specs/041-shared-project-compile`, or two converge→implement cycles have run
@@ -89,13 +90,14 @@ allows one active feature at a time); U5 is an exempt close-out.
 - **Done condition**: (a) `tools/lsp_diag_corpus.py --corpus stdlib` passes over:
   `test_files/codegen_prelude_no_import.b`, `test_files/codegen_http_routing.b`,
   `examples/kv/main.b`, `examples/todo_app/main.b`, every `examples/*/main.b`, and
-  every `test_files/codegen_*.b` that `test_codegen.sh` compiles clean. blangd's
-  published diagnostics equal `qcc`'s for the same compile, empty for clean
-  files. The corpus list is a committed file and must include at least those
+  every `test_files/codegen_*.b` whose reference compile (the `qcc` command
+  `bcc -v -S <file>` prints) exits 0. blangd's published diagnostics equal the
+  reference compile's — errors and warnings, same severity/line/column/message. The corpus list is a committed file and must include at least those
   named; (b) transcript goldens under `test_files/lsp/` for each stdlib
   discovery route (initializationOptions, env var, blangd-relative) and for the
-  stdlib-missing fallback diagnostic; (c) `tools/lsp_latency.py` median ≤ 500 ms
-  on `examples/todo_app/main.b`; (d) `parser_no_leak` extended with a
+  stdlib-missing fallback diagnostic; (c) `tools/lsp_latency.py` median ≤ 500 ms on `examples/todo_app/main.b`,
+  measured with the non-sanitizer `build/` blangd (`test_lsp.sh` skips the latency
+  leg with a printed notice when `BUILD_DIR` is a sanitizer build); (d) `parser_no_leak` extended with a
   stdlib-context `compileDocument` loop (≥ 50 reparses) and LSan-clean; (e) every
   pre-existing `test_lsp.sh` golden still passes or carries a per-file
   justification in the PR (a single-file fixture that newly gets the prelude
@@ -128,8 +130,9 @@ allows one active feature at a time); U5 is an exempt close-out.
 - **Done condition**: (a) `tools/lsp_diag_corpus.py --corpus project` passes over
   every `test_build/*` **binary** project that `run_build_tests.sh` builds
   successfully (at least `myapp`, `counterapp`, `usebox`, `boxapp`, `aliasapp`,
-  `diamondapp`, `todoapp`, `printapp`, `sizeapp`, `timerapp`): zero diagnostics
-  on each `main.b`. It also passes over every `test_files/fail/xmodule/*`
+  `diamondapp`, `todoapp`, `printapp`, `sizeapp`, `timerapp`): blangd's
+  diagnostics on each `main.b` equal the project's reference compile (the final
+  `qcc` command `bcc build -v` prints; errors and warnings). It also passes over every `test_files/fail/xmodule/*`
   fixture: blangd's diagnostic matches `qcc`'s (line, column, message) when the
   fixture's `lib.b` is resolved as a project dependency. These fixtures are bare
   `lib.b` + `consumer.b` pairs, so the harness synthesizes a temporary
@@ -199,10 +202,9 @@ allows one active feature at a time); U5 is an exempt close-out.
   configuration and project discovery). Confirm the `lsp` CI job runs the corpus
   and latency harnesses, then assemble the epic's functional-review evidence.
 - **Done condition**: (a) `./test_lsp_nvim.sh` passes on a machine with `nvim`
-  (or the manager records that CI's `lsp` job ran it green); (b) `grep -n
-  "single-file" CLAUDE.md` no longer describes blangd as single-file, and
-  `editors/README.md` documents `stdlibPath` / `BLANG_STDLIB_DIR` and
-  `blang.toml` discovery; (c) the epic branch's CI is green on every job; (d)
+  (or the manager records that CI's `lsp` job ran it green); (b) `grep -n "blangd" CLAUDE.md | grep -i "single-file"` prints nothing, and
+  `editors/README.md` contains each of `stdlibPath`, `BLANG_STDLIB_DIR` and
+  `blang.toml` (documenting stdlib discovery and project discovery); (c) the epic branch's CI is green on every job; (d)
   every bullet of overview.md's done condition is mapped to the committed test
   that proves it, in this unit's PR body.
 - **Audit**: functional review (epic completion, per evaluation.md).

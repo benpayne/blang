@@ -709,8 +709,8 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
     (`modules-v2-lsp`)** consuming U4's resolver seam. Binding design record:
     `docs/epics/modules-v2/overview.md` (D1–D17); specs `034`–`040`. Merged PRs
     this line: #147–#155.
-  - `modules-v2-lsp` (`docs/epics/modules-v2-lsp/`) — status: **planning**
-    (2026-11-26). Epic C of the modules-v2 split: blangd compiles each document in
+  - `modules-v2-lsp` (`docs/epics/modules-v2-lsp/`) — status: **ready**
+    (planned + review passed 2026-11-26). Epic C of the modules-v2 split: blangd compiles each document in
     the same context `bcc` would (stdlib + prelude, `blang.toml` project sources,
     path/fetched-git deps resolved from source with `.bmod`-equivalent interfaces)
     through one shared project-compile entry point that `qcc` also calls, then

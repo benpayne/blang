@@ -3,7 +3,7 @@
 **Archetype**: evolve (reworks the existing `blangd` compile pipeline on top of
 the Resolver seam Epic B extracted; `qcc`/`bcc` behavior must not change)
 
-**Status**: planning
+**Status**: ready
 
 **Owner**: Ben Payne
 
@@ -73,9 +73,12 @@ existing jobs for regression):
    prelude `bcc file.b` uses. A committed corpus check
    (`tools/lsp_diag_corpus.py`, run by `test_lsp.sh`) opens every file in its
    listed corpus — at minimum the six files in this overview's table, every
-   `examples/*/main.b`, and every `test_files/codegen_*.b` that compiles clean
-   via `test_codegen.sh` — and asserts blangd publishes **exactly the diagnostics
-   `qcc` reports for the same compile** (zero for clean files). The stdlib
+   `examples/*/main.b`, and every `test_files/codegen_*.b` whose reference compile exits 0 — and asserts blangd
+   publishes **exactly the diagnostics of the reference compile**. The **reference compile** for a single file is the `qcc` command line that
+   `bcc -v -S <file>` prints; for a project it is the final `qcc` command
+   `bcc build -v` prints. "Same diagnostics" means the same errors **and
+   warnings** (severity, line, column, message); a file is *clean* when its
+   reference compile exits 0. The stdlib
    location is discoverable (blangd-relative `stdlib/`, an LSP
    `initializationOptions.stdlibPath`, and `BLANG_STDLIB_DIR`), each covered by
    a transcript golden.
@@ -85,7 +88,7 @@ existing jobs for regression):
    dependencies **from source**, transitively, with the same module identities
    and D7 use/name capabilities `bcc build` applies. The corpus check covers
    every `test_build/*` binary project that `run_build_tests.sh` builds
-   successfully (zero diagnostics) and every `test_files/fail/xmodule/*` fixture
+   successfully (blangd's diagnostics on its `main.b` equal its reference compile's) and every `test_files/fail/xmodule/*` fixture
    (blangd reports the same located diagnostic `qcc` does: same line, column and
    message). An unresolvable dependency (missing path, unfetched git dep,
    malformed `blang.toml`) yields **one located diagnostic** at the import
@@ -115,9 +118,9 @@ existing jobs for regression):
 7. **Real-client smoke.** `ci/nvim_smoke.lua` additionally opens a project
    fixture with a dependency and asserts zero error diagnostics and a
    cross-module definition result (still a yellow SKIP when `nvim` is absent).
-8. **Docs.** `CLAUDE.md` (the `blangd`/`lsp/` entries and Supported/Known-Issues
-   text) and `editors/README.md` (stdlib-path configuration, project
-   discovery) describe the new behavior.
+8. **Docs.** `grep -n "blangd" CLAUDE.md | grep -i "single-file"` prints nothing
+   (no line still describes blangd as single-file), and `grep -c` finds each of
+   `stdlibPath`, `BLANG_STDLIB_DIR` and `blang.toml` in `editors/README.md`.
 
 and every unit's done condition in workplan.md is met.
 
@@ -135,7 +138,7 @@ and every unit's done condition in workplan.md is met.
 | REQ-008 | Cross-module hover renders the foreign signature with a deterministic D3 display name | P1 | Done cond. 5 — transcript goldens |
 | REQ-009 | Median `didChange`→`publishDiagnostics` ≤ 500 ms on the two named files | P2 | Done cond. 6 — `tools/lsp_latency.py` |
 | REQ-010 | The headless-Neovim smoke covers a project with a dependency | P3 | Done cond. 7 — `ci/nvim_smoke.lua` |
-| REQ-011 | `CLAUDE.md` and `editors/README.md` document project-context compilation and stdlib discovery | P2 | Done cond. 8 — reviewer check in the close-out PR |
+| REQ-011 | `CLAUDE.md` and `editors/README.md` document project-context compilation and stdlib discovery | P2 | Done cond. 8 — docs grep check (evaluation.md) |
 
 ## Non-goals
 
@@ -222,3 +225,4 @@ and every unit's done condition in workplan.md is met.
 | Date | Run | Event | Notes |
 |------|-----|-------|-------|
 | 2026-11-26 | — | epic planned | Epic C of the modules-v2 split. Owner decisions: evolve; deps resolved from source (not `.bmod`); scope = design record only (diagnostics/definition/hover across modules; no extras); wait for PR #157 then launch fully autonomous with generous limits. Recon on `master` @ `7a68fcd`. Next: `/devbot-review modules-v2-lsp`. |
+| 2026-11-26 | — | review passed | `/devbot-review`: all 12 checks pass after fixes F1–F4 (reference compile defined as the `qcc` line `bcc -v -S` / `bcc build -v` prints, errors+warnings compared; docs done-condition made a grep check; `project_compile` ctest assertions spelled out; latency measured on non-sanitizer `build/` only). Launch still waits on PR #157 merging + rebasing this branch onto the new `master`. Next: `/devbot-launch modules-v2-lsp`. |
