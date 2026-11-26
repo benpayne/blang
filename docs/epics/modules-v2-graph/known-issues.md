@@ -40,7 +40,20 @@ current bundled-stdlib behavior when no roots are configured (backward compatibl
 
 ---
 
-## KG-9 — DC9 field-privacy keys on the file BASENAME, so two same-named modules in different dirs collapse
+## KG-9 — DC9 field-privacy keys on the file BASENAME, so two same-named modules in different dirs collapse — CLOSED
+
+**Closed** (2026-11-25). `stampDefiningOrigin` now also stamps a collision-free identity —
+the file's canonical path (`getDefiningPath()`, realpath when it exists) — on the `Module` and
+each struct; `Sema` field privacy compares that, while `getDefiningFile()` stays the human
+basename used by `.bmod` foreign-type headers. Writing the fixture exposed a wider DC9 gap: a
+struct from an ordinary **namespaced** combine module (`lib.Secret`, or a `var` holding
+`lib.make()`) was never found by `structForType`, so its fields were never privacy-checked at
+all. `resolveFieldAccess` now falls back to a unique struct in the visible module namespaces,
+for the privacy check only. That surfaced real reach-ins into `net` structs in five
+`test_files/codegen_http*`/`codegen_bcc_net_utils` tests and two demos — migrated to the
+existing accessors, plus a new `HttpServer.dispatch(req)` (replacing a `srv._routes` reach-in).
+Regression: `test_files/xmodule_combine/kg9/{a,b}/util.b` (negative + accessor positive) in
+`run_build_tests.sh`.
 
 **Filed**: U6b-3. **Owner**: follow-on (module-identity precision); flagged by the U6b-3 reviewer.
 
@@ -106,7 +119,16 @@ the traversal and add a diamond `test_build` fixture that builds through `bcc`.
 
 ---
 
-## KG-1 — generic FUNCTION identity mangling is deferred (types done, functions unchanged)
+## KG-1 — generic FUNCTION identity mangling is deferred (types done, functions unchanged) — CLOSED
+
+**Closed** (2026-11-25). Not benign after all: two libraries exporting a same-named generic
+function with **different bodies** (each instantiated internally) collapsed onto one
+`linkonce_odr` `tag_int`, and one library silently ran the other's code (`boxapp` printed
+`1 1` instead of `1 2`). `FunctionDefinition` now carries the module digest, stamped by
+`stampModuleDigest` alongside structs, and `instantiateGenericFunction` mangles
+`<name>_m<digest>_<args>`. Same-origin dedup holds (`largest_m<digest>_int` stays a single weak
+symbol in myapp + mathlib.a). Regression: `tag<T>` in `test_build/boxa` + `boxb` (`1 2` output +
+`nm` shows two `tag_m…_int`).
 
 **Filed**: U1. **Owner**: follow-on (not this done-condition).
 

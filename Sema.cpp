@@ -157,7 +157,7 @@ bool Sema::analyze( Module *module, Scope *scope, DiagnosticEngine &diag )
 	if ( module == nullptr || module->isExtern() )
 		return true;
 
-	Sema sema( scope, diag, module->getDefiningFile() );
+	Sema sema( scope, diag, module->getDefiningPath() );
 
 	for ( auto &s : module->mStructList )
 		sema.visitStruct( s );
@@ -1565,7 +1565,47 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 {
 	StructDefinition *structDef = structForType( baseType );
 	if ( structDef == nullptr )
+	{
+		// KG-9: a struct defined in a combine-mode namespaced module (reached as
+		// `lib.Secret` or via `var` from `lib.make()`) is not in the use site's
+		// scope chain, so the privacy rule below never saw it. Find it in the
+		// visible module namespaces — only when the name is UNIQUE, and only to
+		// enforce privacy (resolution of the access is otherwise unchanged).
+		if ( baseType != nullptr && !mModuleId.empty() )
+		{
+			std::vector<Scope *> nss;
+			mScope->collectNamespaces( nss );
+			StructDefinition *found = nullptr;
+			int matches = 0;
+			for ( Scope *ns : nss )
+			{
+				auto *sd = ns != nullptr
+					? dynamic_cast<StructDefinition *>( ns->findSymbol( baseType->getName() ) )
+					: nullptr;
+				if ( sd != nullptr && sd != found )
+				{
+					found = sd;
+					matches++;
+				}
+			}
+			if ( matches == 1 && !found->getDefiningPath().empty() &&
+				 found->getDefiningPath() != mModuleId )
+			{
+				for ( auto &field : found->mFields )
+				{
+					if ( field->getName() == fa->getFieldName() )
+					{
+						mDiag.error( fa->getLocation(),
+							"field '" + fa->getFieldName() + "' of type '" + baseType->getName() +
+							"' is private to its defining module" );
+						mReported = true;
+						return;
+					}
+				}
+			}
+		}
 		return;
+	}
 
 	const string &name = fa->getFieldName();
 
@@ -1574,8 +1614,8 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 	// this use site — covering BOTH the .bmod-path cross-module case
 	// (isFromInterface) AND, per U6b-3 (DC9/KI-23), the combine-mode namespaced-
 	// stdlib case (a user reaching into a `net`/`fs`/`collections` struct's private
-	// field). The check keys on MODULE IDENTITY (defining-file basename, stamped by
-	// stampDefiningOrigin) rather than the .bmod-arrival heuristic, so it is one
+	// field). The check keys on MODULE IDENTITY (the defining file's canonical path,
+	// stamped by stampDefiningOrigin; KG-9) rather than the .bmod-arrival heuristic, so it is one
 	// rule for every module boundary and retires the grep gate as the only guard.
 	// Same-module access keeps working (defining == use-site module → self.field
 	// and cross-struct access WITHIN a module resolve normally).
@@ -1591,7 +1631,8 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 	// NOTE: the field loop stays FIRST so a same-module `self.keys` still
 	// resolves to the field even when a same-named accessor method exists (U4's
 	// field/method name-sharing) — the method loop must not shadow it.
-	const std::string &defMod = structDef->getDefiningFile();
+	// KG-9: compare the collision-free path identity, not the basename.
+	const std::string &defMod = structDef->getDefiningPath();
 	const bool crossModule = ( !defMod.empty() && !mModuleId.empty() &&
 		defMod != mModuleId );
 	const bool imported = structDef->isFromInterface() || crossModule;

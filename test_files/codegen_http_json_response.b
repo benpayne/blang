@@ -22,10 +22,10 @@ fn main() -> int {
 	net.HttpResponse resp = net.dispatch_request(routes,
 		net.HttpRequest { method: "GET", path: "/user", body: "" });
 
-	if resp.status != 200 { return 1; }
-	if resp.content_type != "application/json" { return 2; }
-	if resp.body.contains("ada") != true { return 3; }
-	if resp.body.contains("7") != true { return 4; }
+	if resp.status() != 200 { return 1; }
+	if resp.content_type() != "application/json" { return 2; }
+	if resp.body().contains("ada") != true { return 3; }
+	if resp.body().contains("7") != true { return 4; }
 
 	println("auto-json HTTP response test passed!");
 	return 0;

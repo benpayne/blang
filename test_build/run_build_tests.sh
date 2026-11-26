@@ -65,8 +65,8 @@ largest str = pear
 concat = ada lovelace
 flipped = lovelaceada '
 check "myapp output exact" "[ \"\$OUT\" = \"\$EXPECTED\" ]"
-check "linkonce instantiations dedup (largest_int weak, single)" \
-	"[ \"\$(nm myapp/myapp | grep -c ' W largest_int')\" = '1' ]"
+check "linkonce instantiations dedup (largest<int> weak, single, identity-mangled)" \
+	"[ \"\$(nm myapp/myapp | grep -cE ' W largest_m[0-9a-f]{12}_int\$')\" = '1' ]"
 check "no unresolved-param instantiation (largest_T absent)" \
 	"! nm myapp/myapp | grep -q 'largest_T'"
 
@@ -109,7 +109,12 @@ BOXOUT=$(cd boxapp && ./boxapp)
 check "boxapp output exact (per-library behavior distinct)" \
 	"[ \"\$BOXOUT\" = '105
 207
-42' ]"
+42
+1 2' ]"
+# KG-1: the two libraries' same-named generic FUNCTION tag<int> keeps distinct
+# symbols (the "1 2" line above proves behavior; nm proves the mangling).
+check "KG-1: same-named generic functions get DISTINCT mangled symbols" \
+	"[ \"\$(nm boxapp/boxapp | grep -oE 'tag_m[0-9a-f]{12}_int' | sort -u | wc -l)\" = '2' ]"
 # The keystone assertion: exactly TWO distinct module-identity digests attached to
 # a Box<int> symbol in the linked binary — the two libraries' types did NOT
 # collapse onto one linkonce_odr symbol (P10 eliminated).
@@ -131,7 +136,8 @@ check "same-origin dedup: boxa's Box<int> instance is not duplicated" \
 check "clean rebuild links and runs (warm-cache/co-ship guard)" \
 	"[ -x boxapp/boxapp ] && [ \"\$(cd boxapp && ./boxapp)\" = '105
 207
-42' ]"
+42
+1 2' ]"
 
 # ---------------------------------------------------------------------------
 # Foreign type refs + transitive build graph — the un-named foreign-generic
@@ -284,6 +290,18 @@ fn main() -> int {
 BLANG
 check "DC9: the same observation via a pub accessor compiles clean" \
 	"\"$QCC\" --combine \"$STDLIB_DIR/sys.b\" \"$STDLIB_DIR/buffer.b\" \"$STDLIB_DIR/collections.b\" \"$CAPTMP/accessor_ok.b\" --parse-only >/dev/null 2>&1"
+# KG-9: module identity for field privacy is the canonical PATH, not the basename —
+# two combined modules that share a basename (a/util.b, b/util.b) stay distinct, so
+# the reach-in is rejected. The fallback also covers a struct reached from a
+# namespaced module via `var` (previously invisible to the privacy rule).
+KG9="$(cd .. && pwd)/test_files/xmodule_combine/kg9"
+KG9_OUT=$( "$QCC" --combine "$KG9/a/util.b" "$KG9/b/util.b" --parse-only 2>&1 >/dev/null )
+check "KG-9: same-basename modules stay distinct — the reach-in is rejected (located)" \
+	"echo \"\$KG9_OUT\" | grep -qE \"util\\.b:[0-9]+:[0-9]+: error: field 'n' of type 'Secret' is private to its defining module\""
+sed 's/return s\.n;/return s.get();/' "$KG9/b/util.b" > "$CAPTMP/util.b"
+mkdir -p "$CAPTMP/kg9b" && mv "$CAPTMP/util.b" "$CAPTMP/kg9b/util.b"
+check "KG-9: the same access via the pub accessor compiles clean" \
+	"\"$QCC\" --combine \"$KG9/a/util.b\" \"$CAPTMP/kg9b/util.b\" --parse-only >/dev/null 2>&1"
 rm -rf "$CAPTMP"
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,8 @@
 //     top-level statement parsers that historically lived beside it
 //   - createGlobalScope(): the builtin types/functions/protocols/enums
 
+#include <climits>
+#include <cstdlib>
 #include <assert.h>
 
 #include <iostream>
@@ -706,11 +708,23 @@ void stampDefiningOrigin( QLang::Module *mod, const std::string &path )
 	if ( dot != std::string::npos )
 		origin = origin.substr( 0, dot );
 
+	// KG-9: the collision-free identity is the canonical path (realpath when the
+	// file exists; the path as given otherwise — e.g. an unsaved LSP buffer — which
+	// is still distinct per file and identical for every struct of that file).
+	std::string identity = path;
+	{
+		char resolved[PATH_MAX];
+		if ( !path.empty() && realpath( path.c_str(), resolved ) != nullptr )
+			identity = resolved;
+	}
+
 	// U6b-3 (DC9): stamp the MODULE with its own identity so Sema can compare a
 	// use site's module against a struct's defining module (field-privacy by
 	// module identity), in lockstep with the per-struct stamp below.
 	if ( mod->getDefiningFile().empty() )
 		mod->setDefiningFile( origin );
+	if ( mod->getDefiningPath().empty() )
+		mod->setDefiningPath( identity );
 
 	for ( const auto &sp : mod->getStructList() )
 	{
@@ -718,6 +732,8 @@ void stampDefiningOrigin( QLang::Module *mod, const std::string &path )
 			(const QLang::StructDefinition *)sp );
 		if ( s->getDefiningFile().empty() )
 			s->setDefiningFile( origin );
+		if ( s->getDefiningPath().empty() )
+			s->setDefiningPath( identity );
 	}
 }
 
@@ -758,5 +774,14 @@ void stampModuleDigest( QLang::Module *mod, const std::string &digest )
 			(const QLang::StructDefinition *)sp );
 		if ( s->getModuleDigest().empty() )
 			s->setModuleDigest( digest );
+	}
+	// KG-1: generic functions carry the same identity (non-generic functions
+	// ignore it — their symbol is the plain/module-prefixed name).
+	for ( const auto &fp : mod->getFunctionList() )
+	{
+		QLang::FunctionDefinition *f = const_cast<QLang::FunctionDefinition *>(
+			(const QLang::FunctionDefinition *)fp );
+		if ( f != nullptr && f->getModuleDigest().empty() )
+			f->setModuleDigest( digest );
 	}
 }

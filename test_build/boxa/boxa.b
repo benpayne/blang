@@ -20,3 +20,10 @@ pub fn boxed_twice(int v) -> int {
 	Box<int> b2 = Box<int>(b1.get());
 	return b2.get();
 }
+
+// KG-1: a same-named generic FUNCTION in both boxa and boxb, with DIFFERENT
+// bodies, each instantiated with int inside its own library. With function
+// identity mangling the two tag<int> instances are distinct symbols; without it
+// they collapse onto one linkonce_odr `tag_int` and one library runs the other's code.
+fn tag<T>(T v) -> int { return 1; }
+pub fn tagged_a(int v) -> int { return tag(v); }

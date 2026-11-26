@@ -29,30 +29,30 @@ fn main() -> int {
 	req_buf.append_string("GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
 	net.HttpRequestLine reqline = net.parse_http_request_line(req_buf);
-	if reqline.method != "GET" { return 20; }
-	if reqline.path != "/hello" { return 21; }
-	if reqline.version != "HTTP/1.1" { return 22; }
+	if reqline.method() != "GET" { return 20; }
+	if reqline.path() != "/hello" { return 21; }
+	if reqline.version() != "HTTP/1.1" { return 22; }
 
 	// ---- Test 5: parse POST request line ----
 	Buffer post_buf = Buffer(256);
 	post_buf.append_string("POST /api/data HTTP/1.1\r\nContent-Type: application/json\r\n\r\n");
 
 	net.HttpRequestLine postline = net.parse_http_request_line(post_buf);
-	if postline.method != "POST" { return 23; }
-	if postline.path != "/api/data" { return 24; }
+	if postline.method() != "POST" { return 23; }
+	if postline.path() != "/api/data" { return 24; }
 
 	// ---- Test 6: parse_http_headers_from_buffer ----
 	Buffer hdr_buf = Buffer(512);
 	hdr_buf.append_string("GET / HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/plain\r\nX-Custom: hello\r\n\r\n");
 
 	net.HttpParsedHeaders hdrs = net.parse_http_headers_from_buffer(hdr_buf);
-	if hdrs.keys.length != 3 { return 30; }
-	if hdrs.keys[0] != "Host" { return 31; }
-	if hdrs.values[0] != "example.com" { return 32; }
-	if hdrs.keys[1] != "Content-Type" { return 33; }
-	if hdrs.values[1] != "text/plain" { return 34; }
-	if hdrs.keys[2] != "X-Custom" { return 35; }
-	if hdrs.values[2] != "hello" { return 36; }
+	if hdrs.count() != 3 { return 30; }
+	if hdrs.key(0) != "Host" { return 31; }
+	if hdrs.value(0) != "example.com" { return 32; }
+	if hdrs.key(1) != "Content-Type" { return 33; }
+	if hdrs.value(1) != "text/plain" { return 34; }
+	if hdrs.key(2) != "X-Custom" { return 35; }
+	if hdrs.value(2) != "hello" { return 36; }
 
 	// ---- Test 7: extract_http_body ----
 	Buffer body_buf = Buffer(256);
@@ -73,8 +73,8 @@ fn main() -> int {
 	bad_buf.append_string("garbage");
 
 	net.HttpRequestLine badline = net.parse_http_request_line(bad_buf);
-	if badline.method != "" { return 50; }
-	if badline.path != "" { return 51; }
+	if badline.method() != "" { return 50; }
+	if badline.path() != "" { return 51; }
 
 	println("HTTP BLang-native test passed!");
 	return 0;

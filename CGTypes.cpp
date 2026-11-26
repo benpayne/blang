@@ -485,7 +485,13 @@ llvm::Function *CodeGen::instantiateGenericFunction(
 	FunctionDefinition *genericDef,
 	const std::vector<SmartPtr<Type>> &typeArgs )
 {
-	std::string mangledName = mangleGenericName( genericDef->getName(), typeArgs );
+	// KG-1: key the instance on the DEFINING module's identity digest, exactly
+	// as mangleGenericName does for generic types, so two modules' same-named
+	// generic functions get distinct symbols. Empty digest => legacy name.
+	std::string baseName = genericDef->getName();
+	if ( !genericDef->getModuleDigest().empty() )
+		baseName += "_m" + genericDef->getModuleDigest();
+	std::string mangledName = mangleGenericName( baseName, typeArgs );
 
 	// Check if already instantiated
 	auto it = mGenericFunctionMap.find( mangledName );
