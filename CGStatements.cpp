@@ -362,13 +362,17 @@ void CodeGen::genVariableDeclaration( VariableDeclaration *decl )
 					{
 						if ( llvmType->isIntegerTy() && initVal->getType()->isIntegerTy() )
 						{
+							// int->int keeps the byte-unsigned special case here.
 							bool isSigned = !isByteExpression( data.mInitialValue );
 							initVal = mBuilder->CreateIntCast( initVal, llvmType, isSigned, "icast" );
 						}
-						else if ( llvmType->isFloatTy() && initVal->getType()->isDoubleTy() )
-							initVal = mBuilder->CreateFPTrunc( initVal, llvmType, "fptrunc" );
-						else if ( llvmType->isDoubleTy() && initVal->getType()->isFloatTy() )
-							initVal = mBuilder->CreateFPExt( initVal, llvmType, "fpext" );
+						else
+						{
+							// float<->double and int<->float via the shared scalar coercion.
+							llvm::Value *coerced = coerceScalarTo( initVal, llvmType, "init.cast" );
+							if ( coerced != nullptr )
+								initVal = coerced;
+						}
 						// U4 (REQ-012): the silent dropped-initializer fallback (a null
 						// assignment followed by a skipped store) is deleted. Incompatible
 						// initializers are rejected by sema before codegen; only the
@@ -672,8 +676,9 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 			// Cast if needed
 			if ( retVal->getType() != mAsyncReturnType )
 			{
-				if ( mAsyncReturnType->isIntegerTy() && retVal->getType()->isIntegerTy() )
-					retVal = mBuilder->CreateIntCast( retVal, mAsyncReturnType, true, "icast" );
+				llvm::Value *coerced = coerceScalarTo( retVal, mAsyncReturnType, "async.ret.cast" );
+				if ( coerced != nullptr )
+					retVal = coerced;
 			}
 			mBuilder->CreateStore( retVal, mAsyncResultAlloca );
 		}
@@ -689,12 +694,9 @@ void CodeGen::genReturnStatement( ReturnStatement *ret )
 		// Cast if the value type doesn't match the function return type
 		if ( retVal->getType() != expectedType )
 		{
-			if ( expectedType->isFloatTy() && retVal->getType()->isDoubleTy() )
-				retVal = mBuilder->CreateFPTrunc( retVal, expectedType, "fptrunc" );
-			else if ( expectedType->isDoubleTy() && retVal->getType()->isFloatTy() )
-				retVal = mBuilder->CreateFPExt( retVal, expectedType, "fpext" );
-			else if ( expectedType->isIntegerTy() && retVal->getType()->isIntegerTy() )
-				retVal = mBuilder->CreateIntCast( retVal, expectedType, true, "icast" );
+			llvm::Value *coerced = coerceScalarTo( retVal, expectedType, "ret.cast" );
+			if ( coerced != nullptr )
+				retVal = coerced;
 			// U4 (REQ-012): the return-type fabrication coercions (getNullValue for
 			// a struct return, ptrtoint, inttoptr) are deleted. Return-type
 			// mismatches are rejected by sema before codegen; only the documented

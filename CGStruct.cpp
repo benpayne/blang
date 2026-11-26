@@ -1243,24 +1243,30 @@ llvm::Value *CodeGen::genArrayMethodCall( MethodCallExpression *expr )
 			emitArrayElemRetain( elemVal, pushElemType );
 		}
 
-		// Determine element type from Array<T> and cast if needed
+		// Coerce the pushed value to the array's declared Array<T> element type.
+		// Under opaque pointers a mismatched store into the push temp is
+		// verifier-clean but pushes the wrong bytes (an 8-byte double's low half
+		// into a 4-byte float slot → silent garbage). int->int keeps the
+		// byte-unsigned special case; everything else uses the shared coercion.
+		std::string pushElemName;
 		llvm::Type *elemType = elemVal->getType();
-		if ( auto *ve = dynamic_cast<VariableExpression*>( (Expression*)expr->mObject ) )
+		llvm::Type *declaredType = arrayElemLLVMType( expr->mObject, &pushElemName );
+		if ( declaredType != nullptr && declaredType != elemType )
 		{
-			Type *varType = ve->mVariable->getVariableType();
-			if ( varType != nullptr && varType->getNumTypeParams() > 0 )
+			llvm::Value *coerced = nullptr;
+			if ( declaredType->isIntegerTy() && elemType->isIntegerTy() )
 			{
-				Type *ep = varType->getTypeParam( 0 );
-				string en = ep->getName();
-				auto subIt = mTypeSubstitution.find( en );
-				llvm::Type *declaredType = subIt != mTypeSubstitution.end()
-					? getLLVMType( subIt->second ) : getLLVMType( ep );
-				if ( declaredType != elemType && declaredType->isIntegerTy() && elemType->isIntegerTy() )
-				{
-					bool isSigned = ( en != "byte" );
-					elemVal = mBuilder->CreateIntCast( elemVal, declaredType, isSigned, "push.cast" );
-					elemType = declaredType;
-				}
+				bool isSigned = ( pushElemName != "byte" );
+				coerced = mBuilder->CreateIntCast( elemVal, declaredType, isSigned, "push.cast" );
+			}
+			else
+			{
+				coerced = coerceScalarTo( elemVal, declaredType, "push.cast" );
+			}
+			if ( coerced != nullptr )
+			{
+				elemVal = coerced;
+				elemType = declaredType;
 			}
 		}
 
@@ -1721,6 +1727,22 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 	if ( val == nullptr )
 		return nullptr;
 
+	// Coerce a scalar RHS to the field's stored type before any load/combine/
+	// store. Without this, `p.x = 5` on a float field emits `store i32 into a
+	// float slot` (opaque pointers hide the mismatch → silent bit-reinterpret),
+	// and a compound `p.x += 1` on a float field does add(float, i32) → IR
+	// verification failure. Mirrors the assignment/var-decl/call coercion.
+	if ( structType != nullptr && fieldIdx < structType->getNumElements() )
+	{
+		llvm::Type *fieldStoreTy = structType->getElementType( fieldIdx );
+		if ( val->getType() != fieldStoreTy )
+		{
+			llvm::Value *coerced = coerceScalarTo( val, fieldStoreTy, "field.cast" );
+			if ( coerced != nullptr )
+				val = coerced;
+		}
+	}
+
 	// Handle compound assignment operators (+=, -=, etc.)
 	if ( expr->mOperation != "=" )
 	{
@@ -1728,16 +1750,13 @@ llvm::Value *CodeGen::genFieldAssignment( FieldAssignmentExpression *expr )
 		llvm::Value *currentVal = mBuilder->CreateLoad(
 			structType->getElementType( fieldIdx ), fieldPtr, expr->mFieldName + ".cur" );
 
-		if ( expr->mOperation == "+=" )
-			val = mBuilder->CreateAdd( currentVal, val, "addtmp" );
-		else if ( expr->mOperation == "-=" )
-			val = mBuilder->CreateSub( currentVal, val, "subtmp" );
-		else if ( expr->mOperation == "*=" )
-			val = mBuilder->CreateMul( currentVal, val, "multmp" );
-		else if ( expr->mOperation == "/=" )
-			val = mBuilder->CreateSDiv( currentVal, val, "divtmp" );
-		else if ( expr->mOperation == "%=" )
-			val = mBuilder->CreateSRem( currentVal, val, "modtmp" );
+		llvm::Value *combined = genCompoundOp( expr->mOperation, currentVal, val );
+		if ( combined == nullptr )
+		{
+			reportError( expr, "unsupported compound assignment operator '" + expr->mOperation + "'" );
+			return nullptr;
+		}
+		val = combined;
 	}
 
 	llvm::Value *fieldPtr = mBuilder->CreateStructGEP( structType, gepBase, fieldIdx, expr->mFieldName + ".ptr" );
@@ -2417,21 +2436,21 @@ llvm::Value *CodeGen::genMethodCall( MethodCallExpression *expr )
 				pd != nullptr ? pd->getVariableType() : nullptr );
 		}
 
-		// Integer width coercion to the parameter type (B2): mirror the
-		// free-call path so an `int` argument widens to a `long` parameter (and
-		// narrows the other way) instead of emitting a type-mismatched call that
-		// fails IR verification — e.g. `file.read_into(buf, 11)` where the
-		// parameter is `long`.
+		// Scalar coercion to the parameter type (B2): mirror the free-call path so
+		// an `int` argument widens to a `long` parameter, and int<->float /
+		// float<->double coerce, instead of emitting a type-mismatched call that
+		// fails IR verification — e.g. `file.read_into(buf, 11)` where the parameter
+		// is `long`, or a generic `Map<K,V>.set` where V is `float`.
 		size_t paramIdx = ai + 1; // +1 for self
 		if ( paramIdx < llvmFunc->arg_size() )
 		{
 			llvm::Type *paramType = llvmFunc->getFunctionType()->getParamType( paramIdx );
-			if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
-				 paramType->getIntegerBitWidth() > argVal->getType()->getIntegerBitWidth() )
-				argVal = mBuilder->CreateSExt( argVal, paramType, "marg.ext" );
-			else if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
-					  paramType->getIntegerBitWidth() < argVal->getType()->getIntegerBitWidth() )
-				argVal = mBuilder->CreateTrunc( argVal, paramType, "marg.trunc" );
+			if ( argVal->getType() != paramType )
+			{
+				llvm::Value *coerced = coerceScalarTo( argVal, paramType, "marg.cast" );
+				if ( coerced != nullptr )
+					argVal = coerced;
+			}
 		}
 
 		args.push_back( argVal );

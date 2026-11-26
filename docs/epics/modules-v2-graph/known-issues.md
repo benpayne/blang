@@ -241,7 +241,14 @@ done-condition 2's cli item closes.
 
 ---
 
-## KG-4 — `Set<int>` (value-type hashed Set) miscompiles: hashes with `__blang_hash_string`
+## KG-4 — `Set<int>` (value-type hashed Set) miscompiles: hashes with `__blang_hash_string` — CLOSED
+
+**Closed** (2026-11-25): `stdlib/collections.b` now calls a compiler-reserved
+`__blang_hash(key)` primitive that `CodeGen::genHashCall` (`CGRuntime.cpp`) dispatches
+on the monomorphized key type — `string` → `__blang_hash_string`, integer/bool/float →
+`__blang_hash_bits` (new, `runtime/blang_hash.c`); any other key type is a located
+error. Regression fixture: `codegen_hashmap_value_keys.b` (`Set<int>`, `Set<long>`,
+`Map<int,_>`, `Map<double,_>`), leak-clean.
 
 **Filed**: U3 (surfaced writing the D13 zero-import fixture). **Owner**: not this epic
 — pre-existing, epic-UNRELATED; file only.

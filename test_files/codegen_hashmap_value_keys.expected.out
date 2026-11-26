@@ -1,0 +1,6 @@
+int map: len=50 get(7)=v7 has(49)=true has(99)=false
+overwrite: len=50 get(7)=seven
+long set: len=2 has(6)=true has(7)=false
+int set: len=7 has(3)=true has(9)=false
+double map: get(2.25)=225 has(3.0)=false
+float value: 1.50

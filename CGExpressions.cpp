@@ -122,6 +122,14 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 		}
 	}
 
+	// Compiler-reserved generic hash primitive: __blang_hash(key) dispatches on
+	// the key's concrete (post-monomorphization-substitution) type. A call to
+	// this name is never emitted as a call to a symbol named __blang_hash.
+	if ( funcDef->getName() == "__blang_hash" )
+	{
+		return genHashCall( call );
+	}
+
 	// Handle @format annotation: validate format string at call site
 	for ( const auto &ann : funcDef->getAnnotations() )
 	{
@@ -388,19 +396,17 @@ llvm::Value *CodeGen::genCallExpression( CallExpression *call )
 			}
 		}
 
-		// Integer type coercion: widen or narrow to match parameter type
+		// Scalar coercion: widen/narrow (and int<->float) to match the parameter
+		// type. Sema permits the whole scalar family as compatible; the coercion
+		// must cover the full matrix here or an opaque-pointer store miscompiles.
 		if ( llvmFunc != nullptr && argIdx < llvmFunc->arg_size() )
 		{
 			llvm::Type *paramType = llvmFunc->getFunctionType()->getParamType( argIdx );
-			if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
-				 paramType->getIntegerBitWidth() > argVal->getType()->getIntegerBitWidth() )
+			if ( argVal->getType() != paramType )
 			{
-				argVal = mBuilder->CreateSExt( argVal, paramType, "arg.ext" );
-			}
-			else if ( paramType->isIntegerTy() && argVal->getType()->isIntegerTy() &&
-					  paramType->getIntegerBitWidth() < argVal->getType()->getIntegerBitWidth() )
-			{
-				argVal = mBuilder->CreateTrunc( argVal, paramType, "arg.trunc" );
+				llvm::Value *coerced = coerceScalarTo( argVal, paramType, "arg.cast" );
+				if ( coerced != nullptr )
+					argVal = coerced;
 			}
 		}
 
@@ -730,12 +736,9 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 		llvm::Type *dataType = getLLVMType( varDef->getVariableType() );
 		mBuilder->CreateCall( getOrDeclareSyncLock(), { heapPtr } );
 		llvm::Value *current = mBuilder->CreateLoad( dataType, heapPtr, "cur" );
-		llvm::Value *result = nullptr;
-		if ( op == "+=" )      result = mBuilder->CreateAdd( current, rhs, "addassign" );
-		else if ( op == "-=" ) result = mBuilder->CreateSub( current, rhs, "subassign" );
-		else if ( op == "*=" ) result = mBuilder->CreateMul( current, rhs, "mulassign" );
-		else if ( op == "/=" ) result = mBuilder->CreateSDiv( current, rhs, "divassign" );
-		else result = current;
+		llvm::Value *result = genCompoundOp( op, current, rhs );
+		if ( result == nullptr )
+			result = current;
 		if ( result != nullptr )
 			mBuilder->CreateStore( result, heapPtr );
 		mBuilder->CreateCall( getOrDeclareSyncUnlock(), { heapPtr } );
@@ -792,30 +795,20 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 			}
 		}
 
-		// Coerce integer RHS to the destination width before storing. Without this,
-		// assigning a bool literal (`true`/`false` — codegen'd as i32) to an i1 bool
-		// variable emits `store i32 into i1*`, a 4-byte write into a 1-byte stack slot
-		// that corrupts adjacent locals (e.g. a loop counter → infinite loop). The
-		// var-decl initializer path already coerces; the assignment path must too.
+		// Coerce the RHS scalar to the destination type before storing. Without
+		// this, assigning a bool literal (`true`/`false` — codegen'd as i32) to an
+		// i1 bool variable emits `store i32 into i1*`, a 4-byte write into a
+		// 1-byte stack slot that corrupts adjacent locals (e.g. a loop counter →
+		// infinite loop); the same class covers int<->float (a 4-byte i32 stored
+		// into a float slot silently reinterprets bits under opaque pointers). The
+		// shared scalar coercion covers the full matrix.
 		llvm::Value *storeVal = rhs;
 		llvm::Type *destTy = alloca->getAllocatedType();
-		if ( rhs->getType()->isIntegerTy() && destTy->isIntegerTy() &&
-			 rhs->getType() != destTy )
+		if ( rhs->getType() != destTy )
 		{
-			if ( destTy->isIntegerTy( 1 ) )
-			{
-				// Any nonzero value becomes true.
-				storeVal = mBuilder->CreateICmpNE(
-					rhs, llvm::ConstantInt::get( rhs->getType(), 0 ), "assign.tobool" );
-			}
-			else
-			{
-				unsigned srcBits = rhs->getType()->getIntegerBitWidth();
-				unsigned dstBits = destTy->getIntegerBitWidth();
-				storeVal = ( dstBits < srcBits )
-					? mBuilder->CreateTrunc( rhs, destTy, "assign.trunc" )
-					: mBuilder->CreateSExt( rhs, destTy, "assign.sext" );
-			}
+			llvm::Value *coerced = coerceScalarTo( rhs, destTy, "assign.cast" );
+			if ( coerced != nullptr )
+				storeVal = coerced;
 		}
 
 		mBuilder->CreateStore( storeVal, alloca );
@@ -848,22 +841,44 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 	// Compound assignment: load current value, apply operation, store result
 	llvm::Value *current = mBuilder->CreateLoad(
 		alloca->getAllocatedType(), alloca, "cur" );
-	llvm::Value *result = nullptr;
-
-	if ( op == "+=" )      result = mBuilder->CreateAdd( current, rhs, "addassign" );
-	else if ( op == "-=" ) result = mBuilder->CreateSub( current, rhs, "subassign" );
-	else if ( op == "*=" ) result = mBuilder->CreateMul( current, rhs, "mulassign" );
-	else if ( op == "/=" ) result = mBuilder->CreateSDiv( current, rhs, "divassign" );
-	else if ( op == "%=" ) result = mBuilder->CreateSRem( current, rhs, "modassign" );
-	else if ( op == "^=" ) result = mBuilder->CreateXor( current, rhs, "xorassign" );
-	else
+	llvm::Value *result = genCompoundOp( op, current, rhs );
+	if ( result == nullptr )
 	{
-		cerr << "CodeGen: unknown assignment operator '" << op << "'" << endl;
+		reportError( assign, "unsupported compound assignment operator '" + op + "'" );
 		return nullptr;
 	}
 
 	mBuilder->CreateStore( result, alloca );
 	return result;
+}
+
+llvm::Value *CodeGen::genCompoundOp( const std::string &op, llvm::Value *current, llvm::Value *rhs )
+{
+	// Coerce the RHS to the destination's scalar type first (`f += 1` on a
+	// float, `l += i` on a long), then pick the instruction family from the
+	// destination: FP ops for float/double, integer ops otherwise.
+	if ( rhs->getType() != current->getType() )
+	{
+		llvm::Value *coerced = coerceScalarTo( rhs, current->getType(), "compound.cast" );
+		if ( coerced != nullptr )
+			rhs = coerced;
+	}
+	if ( current->getType()->isFloatingPointTy() )
+	{
+		if ( op == "+=" ) return mBuilder->CreateFAdd( current, rhs, "addassign" );
+		if ( op == "-=" ) return mBuilder->CreateFSub( current, rhs, "subassign" );
+		if ( op == "*=" ) return mBuilder->CreateFMul( current, rhs, "mulassign" );
+		if ( op == "/=" ) return mBuilder->CreateFDiv( current, rhs, "divassign" );
+		if ( op == "%=" ) return mBuilder->CreateFRem( current, rhs, "modassign" );
+		return nullptr;
+	}
+	if ( op == "+=" ) return mBuilder->CreateAdd( current, rhs, "addassign" );
+	if ( op == "-=" ) return mBuilder->CreateSub( current, rhs, "subassign" );
+	if ( op == "*=" ) return mBuilder->CreateMul( current, rhs, "mulassign" );
+	if ( op == "/=" ) return mBuilder->CreateSDiv( current, rhs, "divassign" );
+	if ( op == "%=" ) return mBuilder->CreateSRem( current, rhs, "modassign" );
+	if ( op == "^=" ) return mBuilder->CreateXor( current, rhs, "xorassign" );
+	return nullptr;
 }
 
 llvm::Value *CodeGen::genUnaryExpression( UnaryExpression *unary )
