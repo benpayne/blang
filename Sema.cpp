@@ -46,8 +46,9 @@ static bool mentionsGenericParam( StructDefinition *structDef, Type *t )
 // Scalar primitives that interconvert implicitly. Integer-width promotion is the
 // documented implicit conversion; float<->double and the fact that bool/char are
 // lowered to integers (true/false parse as ConstInteger "int") make the scalar
-// family mutually compatible — matching codegen's existing coercions. Rejecting
-// within this set would false-positive on pervasive bool/int/char/float mixing.
+// family mutually compatible — matching codegen's existing coercions — with ONE
+// exception enforced in typesCompatible: float/double never implicitly narrows to
+// an integer/bool/char (that silently drops the fraction).
 static bool isScalarTypeName( const string &n )
 {
 	return n == "int" || n == "long" || n == "short" || n == "byte" ||
@@ -110,13 +111,41 @@ bool Sema::typesCompatible( Type *from, Type *to )
 	if ( !isCheckableType( from ) || !isCheckableType( to ) )
 		return true;
 	if ( isScalarTypeName( f ) && isScalarTypeName( t ) )
+	{
+		// A floating-point value never implicitly becomes an integer (or
+		// bool/char/byte): the conversion silently drops the fraction, which is
+		// exactly the hidden lossy conversion the design forbids. int->float and
+		// float<->double stay implicit.
+		bool fromFP = ( f == "float" || f == "double" );
+		bool toFP = ( t == "float" || t == "double" );
+		if ( fromFP && !toFP )
+			return false;
 		return true;
+	}
 	return false;
 }
 
 static string typeName( Type *t )
 {
 	return ( t != nullptr && !t->getName().empty() ) ? t->getName() : string( "<unknown>" );
+}
+
+// The declared type of a named field of a (non-generic or generic) struct type,
+// or nullptr when the type is not a known struct or has no such field. Used by
+// the store-compatibility checks (field assignment, struct literal).
+Type *Sema::structFieldType( Type *structType, const string &field )
+{
+	if ( structType == nullptr )
+		return nullptr;
+	auto *sd = dynamic_cast<StructDefinition *>( mScope->findSymbol( structType->getName() ) );
+	if ( sd == nullptr )
+		return nullptr;
+	for ( const auto &f : sd->getFields() )
+	{
+		if ( f != nullptr && f->getName() == field )
+			return const_cast<Type *>( (const Type *)f->getVariableType() );
+	}
+	return nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,7 +1037,18 @@ Type *Sema::visitExpr( Expression *expr )
 
 	if ( auto *as = dynamic_cast<AssignmentExpression *>( expr ) )
 	{
-		visitExpr( as->mValue );
+		Type *valType = visitExpr( as->mValue );
+		if ( as->mVariable != nullptr )
+		{
+			Type *dst = as->mVariable->getVariableType();
+			if ( dst != nullptr && !typesCompatible( valType, dst ) )
+			{
+				mDiag.error( as->getLocation(),
+					"cannot assign a value of type '" + typeName( valType ) + "' to '" +
+					as->mVariable->getName() + "' of type '" + typeName( dst ) + "'" );
+				mReported = true;
+			}
+		}
 		// U1: a write also counts as a reference (conservative — avoids flagging
 		// a variable that is assigned to but, e.g., read only in codegen paths).
 		if ( as->mVariable != nullptr )
@@ -1022,8 +1062,18 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( auto *fas = dynamic_cast<FieldAssignmentExpression *>( expr ) )
 	{
-		visitExpr( fas->mObject );
-		visitExpr( fas->mValue );
+		Type *objType = visitExpr( fas->mObject );
+		Type *valType = visitExpr( fas->mValue );
+		if ( Type *fieldTy = structFieldType( objType, fas->mFieldName ) )
+		{
+			if ( !typesCompatible( valType, fieldTy ) )
+			{
+				mDiag.error( fas->getLocation(),
+					"cannot assign a value of type '" + typeName( valType ) + "' to field '" +
+					fas->mFieldName + "' of type '" + typeName( fieldTy ) + "'" );
+				mReported = true;
+			}
+		}
 		// Concurrency safety (REQ-010): a `shared` value is immutable through its
 		// fields — assigning to a field of a shared variable is a located error.
 		// (`sync` values are mutated under a lock in codegen and are allowed.)
@@ -1064,8 +1114,22 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( auto *sl = dynamic_cast<StructLiteralExpression *>( expr ) )
 	{
-		for ( auto &v : sl->mFieldValues )
-			visitExpr( v );
+		Type *litType = mScope->findType( sl->mTypeName );
+		for ( size_t i = 0; i < sl->mFieldValues.size(); i++ )
+		{
+			Type *valType = visitExpr( sl->mFieldValues[i] );
+			if ( i >= sl->mFieldNames.size() || litType == nullptr )
+				continue;
+			Type *fieldTy = structFieldType( litType, sl->mFieldNames[i] );
+			if ( fieldTy != nullptr && !typesCompatible( valType, fieldTy ) )
+			{
+				mDiag.error( sl->mFieldValues[i]->getLocation(),
+					"field '" + sl->mFieldNames[i] + "' of '" + sl->mTypeName +
+					"' has type '" + typeName( fieldTy ) + "', cannot initialize it from '" +
+					typeName( valType ) + "'" );
+				mReported = true;
+			}
+		}
 
 		// Rule 2 (U5, D9/D7): a struct literal names every field, so it is
 		// module-private automatically — with fields private, `Name { ... }`

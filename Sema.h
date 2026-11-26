@@ -113,6 +113,7 @@ namespace QLang
 
 		// U4 type-compatibility (members: use mScope to classify a type).
 		bool isCheckableType( Type *t );
+		Type *structFieldType( Type *structType, const std::string &field );
 		bool typesCompatible( Type *from, Type *to );
 
 		// U5 match/generics helpers.

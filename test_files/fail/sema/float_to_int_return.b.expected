@@ -1,0 +1,1 @@
+cannot return 'double' from function 'trunc_it' returning 'int'
