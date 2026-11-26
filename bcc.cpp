@@ -31,6 +31,7 @@
 
 #include "ProjectConfig.h"
 #include "BuildCache.h"
+#include "StdlibSelect.h"
 #include "Type.h"
 #include "Expression.h"
 #include "SchemaMigration.h"
@@ -552,9 +553,7 @@ static vector<string> collectTestFiles( const string &searchRoot )
 // dispatches to __blang_test_main, forwarding `--filter <name>` when set.
 // Returns the test binary's exit code (non-zero iff a test failed), or a
 // non-zero sentinel on a compile/link failure.
-static set<string> parseImports( const string &path );
-static vector<string> resolveStdlibFiles( const string &exeDir,
-	const set<string> &imports );
+static string readFileToString( const string &path );
 
 static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 	const string &file, const string &filter, bool verbose )
@@ -568,7 +567,8 @@ static int compileAndRunTestFile( const string &exeDir, const string &qcc,
 	// previous hand-rolled subset here (base + collections/timer only) made
 	// `bcc test` fail on files importing env/cli/etc. that `bcc build` accepts.
 	vector<string> stdlibFiles =
-		resolveStdlibFiles( exeDir, parseImports( file ) );
+		BlangStdlib::selectStdlibFiles( exeDir + "/stdlib",
+			BlangStdlib::scanImports( readFileToString( file ) ) );
 
 	// Step 1: qcc --combine <stdlib...> <file> --emit-test-main
 	{
@@ -736,9 +736,7 @@ static int runTests( int argc, char *argv[], const string &exeDir )
 
 // Forward declarations (defined later) so migrate can resolve stdlib imports
 // the same way `bcc build` does.
-static set<string> parseImports( const string &path );
-static vector<string> resolveStdlibFiles( const string &exeDir,
-	const set<string> &imports );
+static string readFileToString( const string &path );
 
 // bcc migrate subcommand
 //
@@ -795,9 +793,9 @@ static int runMigrate( int argc, char *argv[] )
 	// does. User sources go last (combine treats the last file as user scope).
 	set<string> imports;
 	for ( const auto &f : sourceFiles )
-		for ( const auto &imp : parseImports( f ) )
+		for ( const auto &imp : BlangStdlib::scanImports( readFileToString( f ) ) )
 			imports.insert( imp );
-	vector<string> stdlibFiles = resolveStdlibFiles( exeDir, imports );
+	vector<string> stdlibFiles = BlangStdlib::selectStdlibFiles( exeDir + "/stdlib", imports );
 
 	vector<string> qccCmd = { qcc };
 	if ( !stdlibFiles.empty() )
@@ -956,93 +954,6 @@ static string readFileToString( const string &path )
 	ostringstream ss;
 	ss << f.rdbuf();
 	return ss.str();
-}
-
-// Extract the set of imported module names from a BLang source file.
-// Recognizes top-level `import name;` and `import name.sub;` statements,
-// returning just the leading identifier ("name"). Comments and other tokens
-// are ignored well enough for stdlib resolution.
-static set<string> parseImports( const string &path )
-{
-	set<string> imports;
-	string src = readFileToString( path );
-	istringstream in( src );
-	string line;
-	while ( getline( in, line ) )
-	{
-		// Strip a trailing line comment.
-		size_t cpos = line.find( "//" );
-		if ( cpos != string::npos )
-			line = line.substr( 0, cpos );
-
-		// Find the first non-space character.
-		size_t i = 0;
-		while ( i < line.size() && isspace( (unsigned char)line[i] ) )
-			i++;
-		if ( line.compare( i, 7, "import " ) != 0 )
-			continue;
-		i += 7;
-		while ( i < line.size() && isspace( (unsigned char)line[i] ) )
-			i++;
-
-		// Read the leading identifier of the module path.
-		size_t start = i;
-		while ( i < line.size() &&
-			( isalnum( (unsigned char)line[i] ) || line[i] == '_' ) )
-			i++;
-		if ( i > start )
-			imports.insert( line.substr( start, i - start ) );
-	}
-	return imports;
-}
-
-// Given the user's imports, return the stdlib `.b` files to combine, in a
-// dependency-safe order. Only modules the program actually imports are pulled
-// in, so an unused module never pollutes the namespace (e.g. collections' Map).
-static vector<string> resolveStdlibFiles( const string &exeDir,
-	const set<string> &imports )
-{
-	vector<string> files;
-	set<string> handled;
-	auto addIfPresent = [&]( const string &name ) {
-		string candidate = exeDir + "/stdlib/" + name + ".b";
-		if ( access( candidate.c_str(), F_OK ) == 0 )
-			files.push_back( candidate );
-		handled.insert( name );
-	};
-
-	// Local's base modules are always combined, in dependency-safe order:
-	// buffer.b must precede fs.b and net.b (they use Buffer). These ship with
-	// the compiler and many programs use them (File, Socket, Buffer) without an
-	// explicit import, so inclusion is unconditional (preserves local behavior).
-	//
-	// modules-v2-graph U3 (D13): `collections` is now UNCONDITIONAL — it provides
-	// the PRELUDE types Map/Set, which are automatically in scope with zero imports.
-	// qcc parses it into a prelude holding scope and promotes only Map/Set (its free
-	// function `sort` stays qualified as collections.sort). A program defining its
-	// own Map/Set shadows the prelude via the prelude-scope hierarchy. `buffer` (the
-	// Buffer prelude type) was already unconditional. Placed before cli (cli uses Map).
-	for ( const char *name : { "sys", "buffer", "collections", "fs", "net" } )
-		addIfPresent( name );
-
-	// Origin's import-gated extras: only pulled in when the program imports
-	// them, so an unused module never pollutes the namespace. (collections moved
-	// to the unconditional base list above — D13 prelude load. cli stays gated: it
-	// is library-tier, qualified access, and its promotion is U2/F3's concern.)
-	static const char *kKnownOrder[] = { "timer",
-		"math", "time", "random", "env", "cli" };
-	for ( const char *name : kKnownOrder )
-	{
-		if ( imports.count( name ) && !handled.count( name ) )
-			addIfPresent( name );
-	}
-	// Any other imported name that happens to ship a stdlib file.
-	for ( const string &name : imports )
-	{
-		if ( !handled.count( name ) )
-			addIfPresent( name );
-	}
-	return files;
 }
 
 // Resolve absolute path from a possibly relative path
@@ -1333,10 +1244,10 @@ static int buildProject( const string &projectDir, const string &exeDir,
 	set<string> projImports;
 	for ( const auto &src : sources )
 	{
-		set<string> imp = parseImports( src );
+		set<string> imp = BlangStdlib::scanImports( readFileToString( src ) );
 		projImports.insert( imp.begin(), imp.end() );
 	}
-	vector<string> stdlibFiles = resolveStdlibFiles( exeDir, projImports );
+	vector<string> stdlibFiles = BlangStdlib::selectStdlibFiles( exeDir + "/stdlib", projImports );
 	bool useCombine = !stdlibFiles.empty() && !config->isLibrary();
 
 	// Compute cache key for this project
@@ -1695,7 +1606,8 @@ int main( int argc, char *argv[] )
 	// are pulled in only when the program imports them. The matching runtime
 	// libraries are linked unconditionally in step 3, so any module resolves.
 	vector<string> stdlibFiles =
-		resolveStdlibFiles( exeDir, parseImports( opts.inputFile ) );
+		BlangStdlib::selectStdlibFiles( exeDir + "/stdlib",
+			BlangStdlib::scanImports( readFileToString( opts.inputFile ) ) );
 
 	// Step 1: Parse and generate LLVM IR
 	if ( opts.verbose )

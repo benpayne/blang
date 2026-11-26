@@ -93,6 +93,8 @@ set(BLANG_FRONTEND_SOURCES
 	DiagnosticEngine.cpp
 	Sema.cpp
 	Resolver.cpp
+	ProjectCompile.cpp
+	StdlibSelect.cpp
 	FormatString.cpp)
 
 # The qcc driver = frontend + the CLI main.
@@ -321,7 +323,7 @@ set_target_properties(blang_sqlgen PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUI
 target_include_directories(blang_sqlgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # bcc - BLang compiler driver (orchestrates qcc -> llc -> cc pipeline)
-add_executable(bcc bcc.cpp ProjectConfig.cpp BuildCache.cpp sha256.c)
+add_executable(bcc bcc.cpp ProjectConfig.cpp BuildCache.cpp StdlibSelect.cpp sha256.c)
 set_target_properties(bcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # Bake tool paths into bcc at build time so it works regardless of runtime PATH/arch
