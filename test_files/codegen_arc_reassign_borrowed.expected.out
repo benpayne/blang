@@ -1,0 +1,6 @@
+string var: x{1} x{1}
+string elem: n1
+array var: 3 3
+struct field: 3 array field: 2
+struct var: 7 7
+own move: o{1}

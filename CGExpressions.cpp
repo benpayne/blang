@@ -747,6 +747,37 @@ llvm::Value *CodeGen::genAssignmentExpression( AssignmentExpression *assign )
 
 	if ( op == "=" )
 	{
+		// Borrowed-source retain (KI-24 and the general reassignment case): a
+		// variable copy (`b = a`), an array element (`b = arr[i]`, which includes
+		// a for-in loop element), or — for struct/Array — a field read is a
+		// BORROW; the destination becomes a second tracked owner, so it must
+		// take its own reference. This mirrors genVariableDeclaration's binding
+		// rules exactly (string excludes FieldAccess: genFieldAccess already
+		// retains + tracks a string temp, transferred by the untrack below). The
+		// retain is emitted BEFORE the old value's release so self-assignment
+		// (`a = a`) cannot free the value it is about to store. An own-from-own
+		// assignment is a MOVE and transfers the single reference (no retain).
+		if ( varDef->getVariableType() != nullptr )
+		{
+			string dstTypeName = resolvedTypeName( varDef->getVariableType() );
+			Expression *srcExpr = (Expression *)assign->mValue;
+			auto *srcVar = dynamic_cast<VariableExpression*>( srcExpr );
+			bool srcIsIndex = dynamic_cast<IndexExpression*>( srcExpr ) != nullptr;
+			bool srcIsField = dynamic_cast<FieldAccessExpression*>( srcExpr ) != nullptr;
+			bool isMove = ownership == OwnershipQualifier::kOwnership_Own &&
+				srcVar != nullptr && srcVar->getVariable() != nullptr &&
+				srcVar->getVariable()->getOwnership() == OwnershipQualifier::kOwnership_Own;
+			if ( !isMove )
+			{
+				if ( dstTypeName == "string" && ( srcVar != nullptr || srcIsIndex ) )
+					mBuilder->CreateCall( getOrDeclareStringRetain(), { rhs } );
+				else if ( dstTypeName == "Array" && ( srcVar != nullptr || srcIsIndex || srcIsField ) )
+					mBuilder->CreateCall( getOrDeclareArrayRetain(), { rhs } );
+				else if ( isUserStructType( dstTypeName ) && ( srcVar != nullptr || srcIsIndex || srcIsField ) )
+					mBuilder->CreateCall( getOrDeclareRcRetain(), { rhs } );
+			}
+		}
+
 		// If reassigning a string variable, release the old value first
 		if ( varDef->getVariableType() != nullptr &&
 			 varDef->getVariableType()->getName() == "string" )
