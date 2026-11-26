@@ -344,7 +344,7 @@ Each case constructs its **own** `Resolver` in a nested block, so the global sco
 
 | Case | Inputs (`stdlibDir = <src>/stdlib`) | Asserts |
 |---|---|---|
-| C1 diag parity | `selectStdlibFiles(stdlib, scanImports(fixture))` + `test_files/project_compile/diag_parity.b` (an `import net;` that is unused → warning; an `import nonesuch;` → error; a Sema type error) | `run` rendered through `DiagnosticEngine(ostringstream)` + `finish()` == stderr of `qcc --parse-only --combine <same paths, same order>` (popen; **qcc is the oracle, not the system under test**). Also: `( ctx->hadError() \|\| diag.hasErrors() )` == (qcc exit ≠ 0), the same two-part test qcc's error exit uses (F6). Both human and `--json` renderings are compared (json via `setJson(true)` vs `qcc --json`). |
+| C1 diag parity | `selectStdlibFiles(stdlib, scanImports(fixture))` + `test_files/project_compile/diag_parity.b` (an `import net;` that is unused → warning; an `import nonesuch;` → error; a Sema type error) | `run` rendered through `DiagnosticEngine(ostringstream)` + `finish()` == stderr of `qcc --parse-only --combine <same paths, same order>` (popen; **qcc is the oracle, not the system under test**; the popen command string is prefixed `ASAN_OPTIONS=detect_leaks=0`, child-only, because under `build-asan` the oracle's pre-existing error-exit leak would otherwise append a LeakSanitizer report to the compared stderr — the test process keeps leak detection on). Also: `( ctx->hadError() \|\| diag.hasErrors() )` == (qcc exit ≠ 0), the same two-part test qcc's error exit uses (F6). Both human and `--json` renderings are compared (json via `setJson(true)` vs `qcc --json`). |
 | C2 prelude resolution | base stdlib + `prelude_use.b` (zero imports, `Map<string,int>` and `Set<int>` declared) | `ctx->preludeScope()->findType("Map")` and `("Set")` non-null; the user scope has **no own** entry for them (lookup from the user scope resolves to the prelude scope's symbol, pointer-equal); no diagnostics |
 | C3 namespace registration | the same base set | `ctx->userScope()->findNamespace("net")` non-null; `ctx->record(i)` for `stdlib/net.b` has role `kNamespaced`; `codegenPrefix` == `"net"`; buffer/collections have role `kPreludeProvider` and an empty prefix |
 | C4 user shadowing | base stdlib + `prelude_shadow.b` (user `struct Map` with a distinct API) | user-scope lookup of `Map` == the user's `StructDefinition` (pointer-equal to the struct in the user module's struct list); `ctx->suppressedPrelude()` contains `"Map"` and not `"Set"`; no diagnostics |
@@ -366,7 +366,7 @@ This is a binary-level proof of invariant C4 / I8. It replaces the source grep.
   ```cmake
   add_test(NAME blangd_no_subprocess COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:blangd>)
   add_test(NAME blangd_no_subprocess_teeth COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:bcc>)
-  set_tests_properties(blangd_no_subprocess_teeth PROPERTIES WILL_FAIL TRUE)
+  set_tests_properties(blangd_no_subprocess_teeth PROPERTIES PASS_REGULAR_EXPRESSION "fork")
   ```
 
   The teeth leg is real: `bcc` imports `fork`, `execvp`, `popen` and `system` (verified 2026-11-26).
@@ -385,7 +385,7 @@ The gates below run at **every phase checkpoint** (after D-1, after D-2+D-3, aft
 2. `./run_tests.sh` in both modes, at the baseline counts (evaluation.md: 251/0 LLVM, 244/0 parse-only; re-measured on the base **before** Phase D-1, with any pre-existing red reported and not absorbed).
 3. `./test_codegen.sh` (172/0), `--leak-check` (Leaks: 0), `--selfcheck` (prints `SELFCHECK: OK`, exits non-zero).
 4. `test_build/run_build_tests.sh` passes (this exercises `bcc build`'s stdlib selection, `.bmod` injection, origins, aliasing, diamond, git dep and ASan counter legs).
-5. `ctest --test-dir build` and `ctest --test-dir build-asan` pass. The baseline is 82/82. After D-5 and D-6 it is 85/85, adding `project_compile`, `blangd_no_subprocess` and `blangd_no_subprocess_teeth` (WILL_FAIL). `parser_no_leak`, `resolver_component` and `resolver_reuse` stay unmodified and green.
+5. `ctest --test-dir build` and `ctest --test-dir build-asan` pass. The baseline is 82/82. After D-5 and D-6 it is 85/85, adding `project_compile`, `blangd_no_subprocess` and `blangd_no_subprocess_teeth` (PASS_REGULAR_EXPRESSION "fork" on the offender listing). `parser_no_leak`, `resolver_component` and `resolver_reuse` stay unmodified and green.
 6. `./test_lsp.sh` (70/0) and `./test_lsp.sh --selfcheck`.
 7. `tools/check_no_field_reachins.sh` (+ `--selfcheck`), `examples/*/test_*.sh`, `make -C demos run`.
 8. **Byte-identity spot check** (SC-005, quickstart §3): for the six overview files, capture exit code + stderr of `qcc --parse-only <file>` and of the `qcc` line `bcc -v -S <file>` prints, from a **pre-unit** `qcc`/`bcc` built at `epic/modules-v2-lsp`, then `cmp` against the post-unit binaries. Add one `--json` and one `-Werror` run, one `--dump-locations` (`test_files/pass/func_simple.b`) and one `--emit-bmod` (`test_build/mathlib` sources), all `cmp`-identical.

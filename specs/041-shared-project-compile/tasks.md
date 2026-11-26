@@ -138,7 +138,7 @@ description: "Task list for U1 — shared project-compile entry point (behavior-
   - (c) `buildProject` (L1336–L1339, `bcc build`): the same two substitutions, with the union loop kept;
   - (d) `main`'s single-file compile (L1698, `bcc file.b`): `BlangStdlib::selectStdlibFiles( exeDir + "/stdlib", BlangStdlib::scanImports( readFileToString( opts.inputFile ) ) )`.
 
-  Delete both `parseImports` forward declarations (L555, L739), both `resolveStdlibFiles` forward declarations (L556, L740), the `parseImports` body (L965) and the `resolveStdlibFiles` body (L1002). Keep `readFileToString` in `bcc.cpp`, because the new call sites still use it to read each file.
+  Delete both `parseImports` forward declarations (L555, L739), both `resolveStdlibFiles` forward declarations (L556, L740), the `parseImports` body (L965) and the `resolveStdlibFiles` body (L1002). Keep `readFileToString` in `bcc.cpp`, because the new call sites still use it to read each file. Where the deleted `parseImports` forward declarations were, add `static string readFileToString( const string & );` (analyze L1) so the new call sites at L571/L798, which precede `readFileToString`'s definition, compile.
 - [ ] T012 [US2] D-1 checkpoint. Run the T003 gate list (especially `test_build/run_build_tests.sh`, `bcc test` via `test_codegen.sh`'s bcc legs, and examples), the zero-golden-edit commands, and `grep -nE "resolveStdlibFiles|parseImports" bcc.cpp`, which must print nothing. Commit.
 
 ### D-2: `ProjectCompile::run` (FR-004–013; F1/F2/F6; research R3)
@@ -286,7 +286,7 @@ description: "Task list for U1 — shared project-compile entry point (behavior-
   - **Arguments**: `argv[1]` is the qcc oracle path and `argv[2]` is the source root. If the oracle is missing, print `FAIL` and exit non-zero; **never skip**.
   - **Helpers**:
     - `runCase( plan, json )`: construct a **fresh `Resolver` in a nested block**, run, render through `DiagnosticEngine( ostringstream )` with `setJson( json )` and `finish()`, and destroy the context before the resolver (KG-7);
-    - `oracle( args, json )`: `popen` `<qcc> --parse-only --combine [--json] <paths> 2>&1 1>/dev/null`, capturing stderr and the exit status.
+    - `oracle( args, json )`: `popen` `ASAN_OPTIONS=detect_leaks=0 <qcc> --parse-only --combine [--json] <paths> 2>&1 1>/dev/null`, capturing stderr and the exit status. The `ASAN_OPTIONS=detect_leaks=0` prefix is on the popen command string, so it applies to the **child only** (analyze H1): under `build-asan` the qcc oracle leaks on its error exit (C1/C7 are error cases; a pre-existing qcc error-path leak outside U1) and a LeakSanitizer report on its stderr would break the byte comparison. The test process itself keeps leak detection on, so SC-004/LSan still applies to `run`.
   - **Cases**:
     - **C1**: inputs = `selectStdlibFiles( <src>/stdlib, scanImports( fixture text ) )` + `diag_parity.b`. Rendered text == oracle text, human and `--json`. `( ctx->hadError() || diag.hasErrors() )` == ( oracle exit ≠ 0 ) (F6).
     - **C2**: `prelude_use.b`. `preludeScope()->findType( "Map" )` and `( "Set" )` are non-null. User-scope lookup of `Map`/`Set` is pointer-equal to the prelude scope's symbol, and the user scope has no own entry. No diagnostics.
@@ -313,10 +313,10 @@ description: "Task list for U1 — shared project-compile entry point (behavior-
   ```cmake
   add_test(NAME blangd_no_subprocess COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:blangd>)
   add_test(NAME blangd_no_subprocess_teeth COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:bcc>)
-  set_tests_properties(blangd_no_subprocess_teeth PROPERTIES WILL_FAIL TRUE)
+  set_tests_properties(blangd_no_subprocess_teeth PROPERTIES PASS_REGULAR_EXPRESSION "fork")
   ```
 
-  Verify locally that `sh tools/check_no_subprocess.sh build/bcc` exits non-zero (it imports `fork`/`execvp`/`popen`/`system`) and that `build/blangd` and `build-asan/blangd` exit 0.
+  The teeth leg passes only when the script's offender listing names `fork` (analyze L2), not on a bare non-zero exit, so a script that fails for an unrelated reason (missing `nm`, bad path) cannot satisfy it. Verify locally that `sh tools/check_no_subprocess.sh build/bcc` exits non-zero (it imports `fork`/`execvp`/`popen`/`system`) and that `build/blangd` and `build-asan/blangd` exit 0.
 - [ ] T034 [US3] D-5/D-6 checkpoint:
   - `ctest --test-dir build`, `ctest --test-dir build-asan` and `ctest --test-dir build-nollvm`, each green at **85/85** (82 + `project_compile`, `blangd_no_subprocess` and `blangd_no_subprocess_teeth`);
   - `project_compile` LSan-clean under `build-asan`;

@@ -38,7 +38,7 @@ for t in examples/*/test_*.sh; do (cd "$(dirname "$t")" && "./$(basename "$t")")
 make -C demos run
 ```
 
-**Expected**: every command green at the baseline counts. After phases D-5/D-6, ctest has 3 more tests: `project_compile`, `blangd_no_subprocess` and `blangd_no_subprocess_teeth`, the last of which is WILL_FAIL and counts as passed. **If anything is red, do not update a golden. Stop and raise a `BLOCKER:`** (plan constraint 3).
+**Expected**: every command green at the baseline counts. After phases D-5/D-6, ctest has 3 more tests: `project_compile`, `blangd_no_subprocess` and `blangd_no_subprocess_teeth`, the last of which runs against `bcc` and passes only when its offender listing matches `fork` (PASS_REGULAR_EXPRESSION). **If anything is red, do not update a golden. Stop and raise a `BLOCKER:`** (plan constraint 3).
 
 ## 3. Byte-identity spot check (SC-005)
 
