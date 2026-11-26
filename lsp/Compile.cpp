@@ -17,10 +17,11 @@ CompileResult compileDocument( const std::string &path, const std::string &text 
 
 	// modules-v2-graph U4: resolution runs through the standalone Resolver — the
 	// SAME component qcc.cpp constructs (the Epic C seam; grep `Resolver` in both).
-	// One process-lifetime Resolver owns the global builtin scope (a refcount-zero
-	// raw gScope would be freed when the first file scope's parent ref dropped —
-	// Frontend.h's contract), so repeated compiles share builtins but never leak
-	// symbols into each other. blangd stays SINGLE-FILE this epic: it constructs
+	// One process-lifetime Resolver owns the global builtin scope (Frontend.h's
+	// contract; a file scope's parent link is non-owning — KG-7 — so the global
+	// must outlive every CompileResult), so repeated compiles share builtins but
+	// never leak symbols into each other. Each CompileResult owns its file scope
+	// (and, through it, the whole parsed AST), freed when the result is dropped. blangd stays SINGLE-FILE this epic: it constructs
 	// the resolver and calls only globalScope()/newModuleScope(); the module-graph
 	// methods are present-but-dormant until Epic C wires cross-module resolution.
 	static Resolver sResolver;

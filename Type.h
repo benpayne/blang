@@ -184,7 +184,27 @@ namespace QLang
 				return (*i).second;
 		}
 
+		// Scope ownership (KG-7). Scopes form a TREE owned top-down: a parent
+		// OWNS its children (mChildren) and a child's link back to its parent is a
+		// raw, non-owning pointer. The previous design (child retained its parent
+		// via SmartPtr) formed refcount cycles — module scope -> FunctionDefinition
+		// symbol -> function scope -> (retained) module scope, and likewise for
+		// impl/protocol/lambda/arm scopes — so no parsed module was ever freed. A
+		// child can never outlive its parent's lookups: the parent holds it.
+		//
+		// setParent: the parent adopts this scope (every parser-created scope).
 		void setParent( Scope *parent )
+		{
+			mParent = parent;
+			if ( parent != nullptr )
+				parent->mChildren.push_back( this );
+		}
+
+		// setParentUnowned: link to `parent` WITHOUT the parent adopting this
+		// scope — the caller owns it (and guarantees `parent` outlives it). Used
+		// for module scopes (Resolver::newModuleScope): a long-lived global scope
+		// must not accumulate one module scope per blangd reparse.
+		void setParentUnowned( Scope *parent )
 		{
 			mParent = parent;
 		}
@@ -384,7 +404,8 @@ namespace QLang
 		typedef std::map<std::string, SmartPtr<Type> > TypeListType;
 
 		ScopeType	mType;
-		SmartPtr<Scope> mParent;
+		Scope *mParent = nullptr;                    // non-owning (see setParent)
+		std::vector<SmartPtr<Scope>> mChildren;      // owned child scopes
 		SymbolListType mSymbolList;
 		TypeListType mTypeList;
 		std::map<std::string, SmartPtr<Scope>> mNamespaceMap;

@@ -411,6 +411,15 @@ target_include_directories(resolverReuseTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(resolverReuseTest blang_sqlgen blang_sha256)
 add_test(NAME resolver_reuse COMMAND resolverReuseTest)
 
+# KG-7 regression: parsing function bodies / extern params / impl methods /
+# lambdas / match arms must not leak the parser's AST or scopes. Meaningful under
+# build-asan (LeakSanitizer fails the process at exit on any leak).
+add_executable(parserLeakTest ParserLeakTest.cpp lsp/Compile.cpp ${BLANG_FRONTEND_SOURCES})
+set_target_properties(parserLeakTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(parserLeakTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(parserLeakTest blang_sqlgen blang_sha256)
+add_test(NAME parser_no_leak COMMAND parserLeakTest)
+
 add_executable(test_array runtime/tests/test_array.c)
 target_link_libraries(test_array blang_array blang_string)
 set_target_properties(test_array PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)

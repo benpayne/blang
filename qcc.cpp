@@ -260,6 +260,16 @@ int main( int argc, char *argv[] )
 	// The combine routing policy and the .bmod flat-merge injection stay in this
 	// driver (their removal is done-condition 6 / U6).
 	Resolver resolver;
+	// KG-7: the driver OWNS every module scope the resolver hands out (a scope no
+	// longer retains its parent, and the global scope does not adopt module
+	// scopes). Declared right after `resolver` so the scopes — and the parser
+	// scopes/AST they own — are released before the global scope.
+	std::vector<SmartPtr<Scope>> ownedModuleScopes;
+	auto adoptModuleScope = [&]( Scope *sc ) -> Scope *
+	{
+		ownedModuleScopes.push_back( sc );
+		return sc;
+	};
 
 	// Parse each input file into its own Module. Each module gets its own
 	// module-level scope parented to the shared global scope so that built-in
@@ -414,8 +424,8 @@ int main( int argc, char *argv[] )
 	if ( combineMode )
 	{
 		// U4: module scopes come from the resolver (parented into its environment).
-		preludeScope = resolver.newModuleScope();               // parent = global
-		combineScope = resolver.newModuleScope( preludeScope );
+		preludeScope = adoptModuleScope( resolver.newModuleScope() );   // parent = global
+		combineScope = adoptModuleScope( resolver.newModuleScope( preludeScope ) );
 	}
 
 	// Quiet by default (FR-007): parser progress is a gated trace on STDERR
@@ -516,7 +526,7 @@ int main( int argc, char *argv[] )
 		else
 		{
 			// U4: non-combine module scope from the resolver (parent = global).
-			fileScope = resolver.newModuleScope();
+			fileScope = adoptModuleScope( resolver.newModuleScope() );
 		}
 
 		// modules-v2-graph U5/U6a/U6b: a .bmod's public interface is registered

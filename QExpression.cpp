@@ -716,6 +716,9 @@ Expression *Expression::ParsePrimary( Lexer &l, Scope *scope )
 					 l.peekSymbol() == '(' )
 				{
 					l.getSymbol(); // consume '('
+					// The callee VariableExpression is replaced by the indirect
+					// call (which keeps only its variable): free it — KG-7.
+					SmartPtr<Expression> calleeHold = result;
 					IndirectCallExpression *indCall = new IndirectCallExpression( varExpr->getVariable() );
 					if ( l.peekSymbol() != ')' )
 					{
@@ -978,6 +981,11 @@ Expression *Expression::Parse( Lexer &l, Scope *scope, char terminal )
 
 		if ( isAssign )
 		{
+			// The parsed LHS is consumed: the assignment node takes its parts
+			// (variable / object+field / object+index), so the LHS node itself is
+			// discarded. Hold it until the end of this block so it is freed once
+			// its parts are adopted (or on a CompileError) — KG-7.
+			SmartPtr<Expression> lhsHold = exp;
 			// The assignment node spans from the LHS's first token.
 			SourceLocation assignLoc = exp->getLocation();
 			VariableExpression *varExpr = dynamic_cast<VariableExpression*>( exp );

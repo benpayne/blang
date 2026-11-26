@@ -159,7 +159,29 @@ co-ship invariant (design-audit-U1 B1) — a `bcc clean` between U1 and U5 on
 
 ---
 
-## KG-7 — the parser leaks its internal body scopes/AST under ASan (compiler-process leak)
+## KG-7 — the parser leaks its internal body scopes/AST under ASan (compiler-process leak) — CLOSED
+
+**Closed** (2026-11-25). **Root cause:** a refcount cycle, not un-adopted
+allocations. `Scope::mParent` was a `SmartPtr` (a child retained its parent), so
+module scope → `FunctionDefinition` symbol → `mFuncScope` → (retained) module scope
+formed a cycle — likewise for impl/protocol/lambda/match-arm scopes — and no parsed
+module (nor the global builtin scope it pinned) was ever freed. A struct-only fixture
+was clean because a struct creates no child scope. **Fix:** scopes are owned
+top-down — `Scope::mParent` is a raw non-owning pointer and a parent owns its
+children (`mChildren`, adopted by `setParent`); module scopes use
+`setParentUnowned` and are owned by their caller (blangd's `CompileResult`, qcc's
+`ownedModuleScopes`, the fuzzer's per-input `SmartPtr`), so a long-lived global
+scope never accumulates one module scope per reparse. Three smaller parse-time
+leaks the cycle had masked were fixed too: `VariableDeclaration::Parse` (thrown
+away on the decl-then-expression backtrack) is guarded by a `SmartPtr` and returns
+via the new `SmartPtr::release()`; the LHS node an assignment consumes, and the
+callee `VariableExpression` an indirect call replaces, are now freed. **Regression
+test:** ctest `parser_no_leak` (`ParserLeakTest.cpp`) parses function bodies,
+extern params, impl/init methods, a protocol, lambdas with captures, match arms,
+if/else/while/for-in and a test block through `Module::Parse` + Sema (and the
+blangd `compileDocument` path), and fails under `build-asan`'s LeakSanitizer on
+any leak (70 KB / 603 allocs before the fix, 0 after). `ResolverReuseTest`'s
+fixture now includes a function with a body.
 
 **Filed**: U4 (surfaced by the resolver ctests — the first to run the C++ parser
 under ASan/LSan). **Owner**: not this epic — pre-existing, file only.
