@@ -40,7 +40,20 @@ current bundled-stdlib behavior when no roots are configured (backward compatibl
 
 ---
 
-## KG-9 — DC9 field-privacy keys on the file BASENAME, so two same-named modules in different dirs collapse
+## KG-9 — DC9 field-privacy keys on the file BASENAME, so two same-named modules in different dirs collapse — CLOSED
+
+**Closed** (2026-11-25). `stampDefiningOrigin` now also stamps a collision-free identity —
+the file's canonical path (`getDefiningPath()`, realpath when it exists) — on the `Module` and
+each struct; `Sema` field privacy compares that, while `getDefiningFile()` stays the human
+basename used by `.bmod` foreign-type headers. Writing the fixture exposed a wider DC9 gap: a
+struct from an ordinary **namespaced** combine module (`lib.Secret`, or a `var` holding
+`lib.make()`) was never found by `structForType`, so its fields were never privacy-checked at
+all. `resolveFieldAccess` now falls back to a unique struct in the visible module namespaces,
+for the privacy check only. That surfaced real reach-ins into `net` structs in five
+`test_files/codegen_http*`/`codegen_bcc_net_utils` tests and two demos — migrated to the
+existing accessors, plus a new `HttpServer.dispatch(req)` (replacing a `srv._routes` reach-in).
+Regression: `test_files/xmodule_combine/kg9/{a,b}/util.b` (negative + accessor positive) in
+`run_build_tests.sh`.
 
 **Filed**: U6b-3. **Owner**: follow-on (module-identity precision); flagged by the U6b-3 reviewer.
 
@@ -71,7 +84,14 @@ it.
 
 ---
 
-## KG-8 — `bcc` reports a false "circular dependency" on a diamond dep graph
+## KG-8 — `bcc` reports a false "circular dependency" on a diamond dep graph — CLOSED
+
+**Closed** (2026-11-25): root cause was narrower than the traversal design — `buildProject`
+(`bcc.cpp`) did erase its node from the on-path `building` set on the normal exit, but the
+**library cache-hit early return** skipped the erase, so on the diamond's second visit the
+(now cached) shared dep was still "on the path". An RAII `OnPathGuard` now clears it on every
+exit. Regression: `test_build/diamondapp` (`→ midx → boxq` and `→ boxq`, names `Box<int>`)
+built twice (cold + warm) in `run_build_tests.sh`.
 
 **Filed**: U6b-1. **Owner**: follow-on (build-driver graph); pre-existing, surfaced by U6b's D7 fixtures.
 
@@ -99,7 +119,16 @@ the traversal and add a diamond `test_build` fixture that builds through `bcc`.
 
 ---
 
-## KG-1 — generic FUNCTION identity mangling is deferred (types done, functions unchanged)
+## KG-1 — generic FUNCTION identity mangling is deferred (types done, functions unchanged) — CLOSED
+
+**Closed** (2026-11-25). Not benign after all: two libraries exporting a same-named generic
+function with **different bodies** (each instantiated internally) collapsed onto one
+`linkonce_odr` `tag_int`, and one library silently ran the other's code (`boxapp` printed
+`1 1` instead of `1 2`). `FunctionDefinition` now carries the module digest, stamped by
+`stampModuleDigest` alongside structs, and `instantiateGenericFunction` mangles
+`<name>_m<digest>_<args>`. Same-origin dedup holds (`largest_m<digest>_int` stays a single weak
+symbol in myapp + mathlib.a). Regression: `tag<T>` in `test_build/boxa` + `boxb` (`1 2` output +
+`nm` shows two `tag_m…_int`).
 
 **Filed**: U1. **Owner**: follow-on (not this done-condition).
 
@@ -159,7 +188,29 @@ co-ship invariant (design-audit-U1 B1) — a `bcc clean` between U1 and U5 on
 
 ---
 
-## KG-7 — the parser leaks its internal body scopes/AST under ASan (compiler-process leak)
+## KG-7 — the parser leaks its internal body scopes/AST under ASan (compiler-process leak) — CLOSED
+
+**Closed** (2026-11-25). **Root cause:** a refcount cycle, not un-adopted
+allocations. `Scope::mParent` was a `SmartPtr` (a child retained its parent), so
+module scope → `FunctionDefinition` symbol → `mFuncScope` → (retained) module scope
+formed a cycle — likewise for impl/protocol/lambda/match-arm scopes — and no parsed
+module (nor the global builtin scope it pinned) was ever freed. A struct-only fixture
+was clean because a struct creates no child scope. **Fix:** scopes are owned
+top-down — `Scope::mParent` is a raw non-owning pointer and a parent owns its
+children (`mChildren`, adopted by `setParent`); module scopes use
+`setParentUnowned` and are owned by their caller (blangd's `CompileResult`, qcc's
+`ownedModuleScopes`, the fuzzer's per-input `SmartPtr`), so a long-lived global
+scope never accumulates one module scope per reparse. Three smaller parse-time
+leaks the cycle had masked were fixed too: `VariableDeclaration::Parse` (thrown
+away on the decl-then-expression backtrack) is guarded by a `SmartPtr` and returns
+via the new `SmartPtr::release()`; the LHS node an assignment consumes, and the
+callee `VariableExpression` an indirect call replaces, are now freed. **Regression
+test:** ctest `parser_no_leak` (`ParserLeakTest.cpp`) parses function bodies,
+extern params, impl/init methods, a protocol, lambdas with captures, match arms,
+if/else/while/for-in and a test block through `Module::Parse` + Sema (and the
+blangd `compileDocument` path), and fails under `build-asan`'s LeakSanitizer on
+any leak (70 KB / 603 allocs before the fix, 0 after). `ResolverReuseTest`'s
+fixture now includes a function with a body.
 
 **Filed**: U4 (surfaced by the resolver ctests — the first to run the C++ parser
 under ASan/LSan). **Owner**: not this epic — pre-existing, file only.
@@ -241,7 +292,14 @@ done-condition 2's cli item closes.
 
 ---
 
-## KG-4 — `Set<int>` (value-type hashed Set) miscompiles: hashes with `__blang_hash_string`
+## KG-4 — `Set<int>` (value-type hashed Set) miscompiles: hashes with `__blang_hash_string` — CLOSED
+
+**Closed** (2026-11-25): `stdlib/collections.b` now calls a compiler-reserved
+`__blang_hash(key)` primitive that `CodeGen::genHashCall` (`CGRuntime.cpp`) dispatches
+on the monomorphized key type — `string` → `__blang_hash_string`, integer/bool/float →
+`__blang_hash_bits` (new, `runtime/blang_hash.c`); any other key type is a located
+error. Regression fixture: `codegen_hashmap_value_keys.b` (`Set<int>`, `Set<long>`,
+`Map<int,_>`, `Map<double,_>`), leak-clean.
 
 **Filed**: U3 (surfaced writing the D13 zero-import fixture). **Owner**: not this epic
 — pre-existing, epic-UNRELATED; file only.

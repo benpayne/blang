@@ -2,9 +2,9 @@
 //
 // Usage: import collections;
 //
-// Map<K,V> is a HASHED map (open addressing, FNV-1a via __blang_hash_string),
-// replacing the former O(n) parallel-array scan. Keys are strings (the only key
-// type in use; the hash primitive is string-based). `buckets[slot]` holds
+// Map<K,V> is a HASHED map (open addressing, FNV-1a via the compiler-dispatched
+// __blang_hash primitive: string keys hash their bytes, value-type keys their
+// bits). Keys may be `string` or any numeric/bool type. `buckets[slot]` holds
 // (keyIndex + 1); 0 means empty. The table grows (doubling + rehash) when the
 // load factor exceeds 0.7, so `has`/`get`/`set` are O(1) average.
 //
@@ -13,7 +13,7 @@
 // surface — `Map<K,V>()` is symmetric with a non-generic Counter(5) and does
 // not name the internal fields.
 
-extern fn __blang_hash_string(string s) -> int;
+extern fn __blang_hash(string key) -> int;
 
 pub struct Map<K, V> {
     Array<K> keys;
@@ -54,7 +54,7 @@ impl Map {
             self.buckets.push(0);
         }
         for i in 0..self.keys.length {
-            int h = __blang_hash_string(self.keys[i]);
+            int h = __blang_hash(self.keys[i]);
             int slot = h % new_cap;
             while self.buckets[slot] != 0 {
                 slot = slot + 1;
@@ -77,7 +77,7 @@ impl Map {
     // always an empty slot, so the probe terminates).
     fn find_slot(self, K key) -> int {
         int cap = self.buckets.length;
-        int h = __blang_hash_string(key);
+        int h = __blang_hash(key);
         int slot = h % cap;
         while self.buckets[slot] != 0 {
             int idx = self.buckets[slot] - 1;
@@ -207,7 +207,7 @@ impl Set {
             self.buckets.push(0);
         }
         for i in 0..self.items.length {
-            int h = __blang_hash_string(self.items[i]);
+            int h = __blang_hash(self.items[i]);
             int slot = h % new_cap;
             while self.buckets[slot] != 0 {
                 slot = slot + 1;
@@ -221,7 +221,7 @@ impl Set {
 
     fn find_slot(self, K key) -> int {
         int cap = self.buckets.length;
-        int h = __blang_hash_string(key);
+        int h = __blang_hash(key);
         int slot = h % cap;
         while self.buckets[slot] != 0 {
             int idx = self.buckets[slot] - 1;

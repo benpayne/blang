@@ -13,3 +13,7 @@ pub fn boxed_b(int v) -> int {
 	Box<int> b = Box<int>(v);
 	return b.get() + 200;
 }
+
+// KG-1: see boxa — same name, different body.
+fn tag<T>(T v) -> int { return 2; }
+pub fn tagged_b(int v) -> int { return tag(v); }

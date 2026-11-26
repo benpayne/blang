@@ -28,11 +28,9 @@ int main()
 		// A fresh module scope parents into the environment: builtins are visible
 		// via the parent chain, but the module scope is its own symbol table.
 		// NOTE: hold module scopes in SmartPtr locals so they RELEASE at end of this
-		// block — before ~Resolver. A raw Scope* would leak, and (because
-		// Scope::mParent retains) each leaked module scope would pin the builtin
-		// global scope alive so ~Resolver could not free it (LSan). The production
-		// LSP caller already owns its scope via SmartPtr; this is a test-local
-		// lifetime concern only.
+		// block — before ~Resolver. The caller owns a module scope (a raw Scope*
+		// would leak) and its parent link is non-owning (KG-7), so it must not
+		// outlive the Resolver's global scope.
 		SmartPtr<Scope> m = r.newModuleScope();
 		assert( (Scope *)m != nullptr );
 		assert( m->findType( "int" ) != nullptr && "builtins visible via parent" );

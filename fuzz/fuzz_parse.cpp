@@ -93,7 +93,7 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t *data, size_t size )
 		// Fresh module scope per input; SmartPtr frees the whole AST on return
 		// (Module/Scope are RefCount), so corpus replay stays leak-clean.
 		SmartPtr<Scope> fileScope = new Scope( Scope::kScope_Module );
-		fileScope->setParent( gScope );
+		fileScope->setParentUnowned( gScope );   // caller-owned (KG-7)
 		SmartPtr<Module> mod = Module::Parse( l, (Scope *)fileScope );
 		(void)mod;
 	}

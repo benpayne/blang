@@ -95,12 +95,12 @@ fn stream_file(net.Socket conn, string path, string content_type, bool is_head) 
 }
 
 fn handle_request(net.HttpRequest req, net.Socket conn, string doc_root) {
-	println("{} {}", req.method, req.path);
+	println("{} {}", req.method(), req.path());
 
-	bool is_head = req.method == "HEAD";
+	bool is_head = req.method() == "HEAD";
 
 	// Only allow GET and HEAD requests
-	if req.method != "GET" {
+	if req.method() != "GET" {
 		if is_head == false {
 			send_error(conn, 405, "Method Not Allowed", false);
 			return;
@@ -108,13 +108,13 @@ fn handle_request(net.HttpRequest req, net.Socket conn, string doc_root) {
 	}
 
 	// Reject path traversal attempts
-	if req.path.contains("..") {
+	if req.path().contains("..") {
 		send_error(conn, 403, "Forbidden", is_head);
 		return;
 	}
 
 	// Build the filesystem path
-	string request_path = req.path;
+	string request_path = req.path();
 	string full_path = doc_root + request_path;
 
 	// Check if path exists

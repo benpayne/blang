@@ -46,8 +46,9 @@ static bool mentionsGenericParam( StructDefinition *structDef, Type *t )
 // Scalar primitives that interconvert implicitly. Integer-width promotion is the
 // documented implicit conversion; float<->double and the fact that bool/char are
 // lowered to integers (true/false parse as ConstInteger "int") make the scalar
-// family mutually compatible — matching codegen's existing coercions. Rejecting
-// within this set would false-positive on pervasive bool/int/char/float mixing.
+// family mutually compatible — matching codegen's existing coercions — with ONE
+// exception enforced in typesCompatible: float/double never implicitly narrows to
+// an integer/bool/char (that silently drops the fraction).
 static bool isScalarTypeName( const string &n )
 {
 	return n == "int" || n == "long" || n == "short" || n == "byte" ||
@@ -110,13 +111,41 @@ bool Sema::typesCompatible( Type *from, Type *to )
 	if ( !isCheckableType( from ) || !isCheckableType( to ) )
 		return true;
 	if ( isScalarTypeName( f ) && isScalarTypeName( t ) )
+	{
+		// A floating-point value never implicitly becomes an integer (or
+		// bool/char/byte): the conversion silently drops the fraction, which is
+		// exactly the hidden lossy conversion the design forbids. int->float and
+		// float<->double stay implicit.
+		bool fromFP = ( f == "float" || f == "double" );
+		bool toFP = ( t == "float" || t == "double" );
+		if ( fromFP && !toFP )
+			return false;
 		return true;
+	}
 	return false;
 }
 
 static string typeName( Type *t )
 {
 	return ( t != nullptr && !t->getName().empty() ) ? t->getName() : string( "<unknown>" );
+}
+
+// The declared type of a named field of a (non-generic or generic) struct type,
+// or nullptr when the type is not a known struct or has no such field. Used by
+// the store-compatibility checks (field assignment, struct literal).
+Type *Sema::structFieldType( Type *structType, const string &field )
+{
+	if ( structType == nullptr )
+		return nullptr;
+	auto *sd = dynamic_cast<StructDefinition *>( mScope->findSymbol( structType->getName() ) );
+	if ( sd == nullptr )
+		return nullptr;
+	for ( const auto &f : sd->getFields() )
+	{
+		if ( f != nullptr && f->getName() == field )
+			return const_cast<Type *>( (const Type *)f->getVariableType() );
+	}
+	return nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +157,7 @@ bool Sema::analyze( Module *module, Scope *scope, DiagnosticEngine &diag )
 	if ( module == nullptr || module->isExtern() )
 		return true;
 
-	Sema sema( scope, diag, module->getDefiningFile() );
+	Sema sema( scope, diag, module->getDefiningPath() );
 
 	for ( auto &s : module->mStructList )
 		sema.visitStruct( s );
@@ -1008,7 +1037,18 @@ Type *Sema::visitExpr( Expression *expr )
 
 	if ( auto *as = dynamic_cast<AssignmentExpression *>( expr ) )
 	{
-		visitExpr( as->mValue );
+		Type *valType = visitExpr( as->mValue );
+		if ( as->mVariable != nullptr )
+		{
+			Type *dst = as->mVariable->getVariableType();
+			if ( dst != nullptr && !typesCompatible( valType, dst ) )
+			{
+				mDiag.error( as->getLocation(),
+					"cannot assign a value of type '" + typeName( valType ) + "' to '" +
+					as->mVariable->getName() + "' of type '" + typeName( dst ) + "'" );
+				mReported = true;
+			}
+		}
 		// U1: a write also counts as a reference (conservative — avoids flagging
 		// a variable that is assigned to but, e.g., read only in codegen paths).
 		if ( as->mVariable != nullptr )
@@ -1022,8 +1062,18 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( auto *fas = dynamic_cast<FieldAssignmentExpression *>( expr ) )
 	{
-		visitExpr( fas->mObject );
-		visitExpr( fas->mValue );
+		Type *objType = visitExpr( fas->mObject );
+		Type *valType = visitExpr( fas->mValue );
+		if ( Type *fieldTy = structFieldType( objType, fas->mFieldName ) )
+		{
+			if ( !typesCompatible( valType, fieldTy ) )
+			{
+				mDiag.error( fas->getLocation(),
+					"cannot assign a value of type '" + typeName( valType ) + "' to field '" +
+					fas->mFieldName + "' of type '" + typeName( fieldTy ) + "'" );
+				mReported = true;
+			}
+		}
 		// Concurrency safety (REQ-010): a `shared` value is immutable through its
 		// fields — assigning to a field of a shared variable is a located error.
 		// (`sync` values are mutated under a lock in codegen and are allowed.)
@@ -1064,8 +1114,22 @@ Type *Sema::visitExpr( Expression *expr )
 	}
 	if ( auto *sl = dynamic_cast<StructLiteralExpression *>( expr ) )
 	{
-		for ( auto &v : sl->mFieldValues )
-			visitExpr( v );
+		Type *litType = mScope->findType( sl->mTypeName );
+		for ( size_t i = 0; i < sl->mFieldValues.size(); i++ )
+		{
+			Type *valType = visitExpr( sl->mFieldValues[i] );
+			if ( i >= sl->mFieldNames.size() || litType == nullptr )
+				continue;
+			Type *fieldTy = structFieldType( litType, sl->mFieldNames[i] );
+			if ( fieldTy != nullptr && !typesCompatible( valType, fieldTy ) )
+			{
+				mDiag.error( sl->mFieldValues[i]->getLocation(),
+					"field '" + sl->mFieldNames[i] + "' of '" + sl->mTypeName +
+					"' has type '" + typeName( fieldTy ) + "', cannot initialize it from '" +
+					typeName( valType ) + "'" );
+				mReported = true;
+			}
+		}
 
 		// Rule 2 (U5, D9/D7): a struct literal names every field, so it is
 		// module-private automatically — with fields private, `Name { ... }`
@@ -1501,7 +1565,47 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 {
 	StructDefinition *structDef = structForType( baseType );
 	if ( structDef == nullptr )
+	{
+		// KG-9: a struct defined in a combine-mode namespaced module (reached as
+		// `lib.Secret` or via `var` from `lib.make()`) is not in the use site's
+		// scope chain, so the privacy rule below never saw it. Find it in the
+		// visible module namespaces — only when the name is UNIQUE, and only to
+		// enforce privacy (resolution of the access is otherwise unchanged).
+		if ( baseType != nullptr && !mModuleId.empty() )
+		{
+			std::vector<Scope *> nss;
+			mScope->collectNamespaces( nss );
+			StructDefinition *found = nullptr;
+			int matches = 0;
+			for ( Scope *ns : nss )
+			{
+				auto *sd = ns != nullptr
+					? dynamic_cast<StructDefinition *>( ns->findSymbol( baseType->getName() ) )
+					: nullptr;
+				if ( sd != nullptr && sd != found )
+				{
+					found = sd;
+					matches++;
+				}
+			}
+			if ( matches == 1 && !found->getDefiningPath().empty() &&
+				 found->getDefiningPath() != mModuleId )
+			{
+				for ( auto &field : found->mFields )
+				{
+					if ( field->getName() == fa->getFieldName() )
+					{
+						mDiag.error( fa->getLocation(),
+							"field '" + fa->getFieldName() + "' of type '" + baseType->getName() +
+							"' is private to its defining module" );
+						mReported = true;
+						return;
+					}
+				}
+			}
+		}
 		return;
+	}
 
 	const string &name = fa->getFieldName();
 
@@ -1510,8 +1614,8 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 	// this use site — covering BOTH the .bmod-path cross-module case
 	// (isFromInterface) AND, per U6b-3 (DC9/KI-23), the combine-mode namespaced-
 	// stdlib case (a user reaching into a `net`/`fs`/`collections` struct's private
-	// field). The check keys on MODULE IDENTITY (defining-file basename, stamped by
-	// stampDefiningOrigin) rather than the .bmod-arrival heuristic, so it is one
+	// field). The check keys on MODULE IDENTITY (the defining file's canonical path,
+	// stamped by stampDefiningOrigin; KG-9) rather than the .bmod-arrival heuristic, so it is one
 	// rule for every module boundary and retires the grep gate as the only guard.
 	// Same-module access keeps working (defining == use-site module → self.field
 	// and cross-struct access WITHIN a module resolve normally).
@@ -1527,7 +1631,8 @@ void Sema::resolveFieldAccess( FieldAccessExpression *fa, Type *baseType )
 	// NOTE: the field loop stays FIRST so a same-module `self.keys` still
 	// resolves to the field even when a same-named accessor method exists (U4's
 	// field/method name-sharing) — the method loop must not shadow it.
-	const std::string &defMod = structDef->getDefiningFile();
+	// KG-9: compare the collision-free path identity, not the basename.
+	const std::string &defMod = structDef->getDefiningPath();
 	const bool crossModule = ( !defMod.empty() && !mModuleId.empty() &&
 		defMod != mModuleId );
 	const bool imported = structDef->isFromInterface() || crossModule;

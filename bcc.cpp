@@ -1219,6 +1219,15 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		return 1;
 	}
 	building.insert( canonDir );
+	// `building` is the DFS on-current-path set: it must be cleared on EVERY exit,
+	// or a node that returns early (the lib cache-hit path) stays "on the path"
+	// and a diamond's second visit to it is misread as a cycle (KG-8).
+	struct OnPathGuard
+	{
+		set<string> &mSet;
+		const string mKey;
+		~OnPathGuard() { mSet.erase( mKey ); }
+	} onPathGuard{ building, canonDir };
 
 	ProjectConfig *config = ProjectConfig::loadFromDirectory( projectDir );
 	if ( !config )
@@ -1587,7 +1596,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			cerr << "  built " << config->getName() << " -> " << projectDir + "/" + outName << endl;
 	}
 
-	building.erase( canonDir );
 	delete config;
 	return 0;
 }

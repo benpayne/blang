@@ -7,7 +7,7 @@ fn main() -> int {
 	net.HttpServer server = net.http_server("127.0.0.1", 9876);
 
 	server.on_request(fn(net.HttpRequest req) -> net.HttpResponse {
-		if req.path == "/health" {
+		if req.path() == "/health" {
 			return net.http_ok("OK");
 		}
 		return net.http_not_found();

@@ -2015,3 +2015,61 @@ llvm::Function *CodeGen::getOrDeclareJsonGetBool()
 	return declareExtern( "__blang_json_get_bool", llvm::Type::getInt32Ty( *mContext ),
 		{ llvm::PointerType::get( *mContext, 0 ) } );
 }
+
+llvm::Function *CodeGen::getOrDeclareHashString()
+{
+	return declareExtern( "__blang_hash_string", llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::PointerType::get( *mContext, 0 ) } );
+}
+
+llvm::Function *CodeGen::getOrDeclareHashBits()
+{
+	return declareExtern( "__blang_hash_bits", llvm::Type::getInt32Ty( *mContext ),
+		{ llvm::Type::getInt64Ty( *mContext ) } );
+}
+
+llvm::Value *CodeGen::genHashCall( CallExpression *call )
+{
+	// Compiler-reserved generic hash primitive. stdlib/collections.b declares
+	// `extern fn __blang_hash(string) -> int` once; under monomorphization the
+	// key argument is K-typed, so the concrete argument type (post-substitution)
+	// decides the dispatch: string keys hash their bytes, value-type keys
+	// (integers sign-extended, floats bitcast) hash their bits. This is the
+	// same type-directed shape as `==` on a K-typed value.
+	if ( call->mParams.size() != 1 )
+	{
+		reportError( call, "__blang_hash expects exactly one argument" );
+		return nullptr;
+	}
+
+	llvm::Value *argVal = genExpression( call->mParams[0] );
+	if ( argVal == nullptr )
+		return nullptr;
+
+	llvm::Type *argType = argVal->getType();
+	if ( argType->isPointerTy() )
+	{
+		if ( !isStringType( call->mParams[0] ) )
+		{
+			reportError( call, "collection key is not hashable — only string and numeric/bool key types are supported" );
+			return nullptr;
+		}
+		return mBuilder->CreateCall( getOrDeclareHashString(), { argVal }, "hash" );
+	}
+	if ( argType->isIntegerTy() )
+	{
+		if ( argType->getIntegerBitWidth() < 64 )
+			argVal = mBuilder->CreateSExt( argVal, llvm::Type::getInt64Ty( *mContext ), "hash.key" );
+		return mBuilder->CreateCall( getOrDeclareHashBits(), { argVal }, "hash" );
+	}
+	if ( argType->isFloatingPointTy() )
+	{
+		if ( argType != llvm::Type::getDoubleTy( *mContext ) )
+			argVal = mBuilder->CreateFPExt( argVal, llvm::Type::getDoubleTy( *mContext ), "hash.key" );
+		argVal = mBuilder->CreateBitCast( argVal, llvm::Type::getInt64Ty( *mContext ), "hash.bits" );
+		return mBuilder->CreateCall( getOrDeclareHashBits(), { argVal }, "hash" );
+	}
+
+	reportError( call, "collection key is not hashable — only string and numeric/bool key types are supported" );
+	return nullptr;
+}

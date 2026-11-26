@@ -542,6 +542,13 @@ impl HttpServer {
 	// --- Route registration (ported from origin). get()/post()/put() are sugar
 	// over route(); `delete` is a reserved keyword, so DELETE routes use
 	// route("DELETE", ...). Handlers are stored in _routes and matched by serve().
+	// Dispatch one request through this server's route table without a socket —
+	// the observable surface for routing (tests, in-process callers); `_routes`
+	// itself stays private.
+	pub fn dispatch(self, HttpRequest req) -> HttpResponse {
+		return dispatch_request(self._routes, req);
+	}
+
 	fn route(self, string method, string path, fn(HttpRequest) -> HttpResponse handler) {
 		self._routes.push(Route { method: method, path: path, handler: handler });
 	}

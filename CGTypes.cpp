@@ -485,7 +485,13 @@ llvm::Function *CodeGen::instantiateGenericFunction(
 	FunctionDefinition *genericDef,
 	const std::vector<SmartPtr<Type>> &typeArgs )
 {
-	std::string mangledName = mangleGenericName( genericDef->getName(), typeArgs );
+	// KG-1: key the instance on the DEFINING module's identity digest, exactly
+	// as mangleGenericName does for generic types, so two modules' same-named
+	// generic functions get distinct symbols. Empty digest => legacy name.
+	std::string baseName = genericDef->getName();
+	if ( !genericDef->getModuleDigest().empty() )
+		baseName += "_m" + genericDef->getModuleDigest();
+	std::string mangledName = mangleGenericName( baseName, typeArgs );
 
 	// Check if already instantiated
 	auto it = mGenericFunctionMap.find( mangledName );
@@ -621,6 +627,79 @@ bool CodeGen::isUserStructType( const std::string &typeName )
 		 typeName == "carray" || typeName == "Task" || typeName == "self" )
 		return false;
 	return mStructDefMap.find( typeName ) != mStructDefMap.end();
+}
+
+llvm::Value *CodeGen::coerceScalarTo( llvm::Value *val, llvm::Type *destTy, const char *name )
+{
+	if ( val == nullptr || destTy == nullptr )
+		return val;
+	llvm::Type *srcTy = val->getType();
+	if ( srcTy == destTy )
+		return val;
+
+	bool srcInt = srcTy->isIntegerTy();
+	bool dstInt = destTy->isIntegerTy();
+	bool srcFP = srcTy->isFloatTy() || srcTy->isDoubleTy();
+	bool dstFP = destTy->isFloatTy() || destTy->isDoubleTy();
+	if ( !srcInt && !srcFP )
+		return nullptr;   // not a scalar source (pointer/struct/aggregate)
+	if ( !dstInt && !dstFP )
+		return nullptr;   // not a scalar destination
+
+	if ( srcInt && dstInt )
+	{
+		if ( destTy->isIntegerTy( 1 ) )
+		{
+			// Any nonzero value becomes true (sext/trunc to i1 is invalid).
+			return mBuilder->CreateICmpNE(
+				val, llvm::ConstantInt::get( srcTy, 0 ), name );
+		}
+		if ( srcTy->isIntegerTy( 1 ) )
+		{
+			// bool (i1) widens zero-extended so true == 1 (sext would yield -1).
+			return mBuilder->CreateZExt( val, destTy, name );
+		}
+		unsigned sb = srcTy->getIntegerBitWidth();
+		unsigned db = destTy->getIntegerBitWidth();
+		return ( db < sb )
+			? mBuilder->CreateTrunc( val, destTy, name )
+			: mBuilder->CreateSExt( val, destTy, name );
+	}
+	if ( srcInt && dstFP )
+		return mBuilder->CreateSIToFP( val, destTy, name );
+	if ( srcFP && dstInt )
+		return mBuilder->CreateFPToSI( val, destTy, name );
+	// srcFP && dstFP
+	return destTy->isDoubleTy()
+		? mBuilder->CreateFPExt( val, destTy, name )
+		: mBuilder->CreateFPTrunc( val, destTy, name );
+}
+
+llvm::Type *CodeGen::arrayElemLLVMType( Expression *object, std::string *outName )
+{
+	Type *arrElemQType = nullptr;
+	if ( auto *ve = dynamic_cast<VariableExpression*>( object ) )
+	{
+		Type *vt = ve->mVariable != nullptr ? ve->mVariable->getVariableType() : nullptr;
+		if ( vt != nullptr && vt->getNumTypeParams() > 0 )
+			arrElemQType = vt->getTypeParam( 0 );
+	}
+	else if ( auto *fa = dynamic_cast<FieldAccessExpression*>( object ) )
+	{
+		Type *ft = getFieldType( fa );
+		if ( ft != nullptr && ft->getNumTypeParams() > 0 )
+			arrElemQType = ft->getTypeParam( 0 );
+	}
+	if ( arrElemQType == nullptr )
+		return nullptr;
+
+	string en = arrElemQType->getName();
+	auto subIt = mTypeSubstitution.find( en );
+	Type *resolved = ( subIt != mTypeSubstitution.end() && subIt->second != nullptr )
+		? (Type *)subIt->second : arrElemQType;
+	if ( outName != nullptr )
+		*outName = resolved->getName();
+	return getLLVMType( resolved );
 }
 
 bool CodeGen::isStringType( Expression *expr )

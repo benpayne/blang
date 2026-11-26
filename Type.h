@@ -184,7 +184,27 @@ namespace QLang
 				return (*i).second;
 		}
 
+		// Scope ownership (KG-7). Scopes form a TREE owned top-down: a parent
+		// OWNS its children (mChildren) and a child's link back to its parent is a
+		// raw, non-owning pointer. The previous design (child retained its parent
+		// via SmartPtr) formed refcount cycles — module scope -> FunctionDefinition
+		// symbol -> function scope -> (retained) module scope, and likewise for
+		// impl/protocol/lambda/arm scopes — so no parsed module was ever freed. A
+		// child can never outlive its parent's lookups: the parent holds it.
+		//
+		// setParent: the parent adopts this scope (every parser-created scope).
 		void setParent( Scope *parent )
+		{
+			mParent = parent;
+			if ( parent != nullptr )
+				parent->mChildren.push_back( this );
+		}
+
+		// setParentUnowned: link to `parent` WITHOUT the parent adopting this
+		// scope — the caller owns it (and guarantees `parent` outlives it). Used
+		// for module scopes (Resolver::newModuleScope): a long-lived global scope
+		// must not accumulate one module scope per blangd reparse.
+		void setParentUnowned( Scope *parent )
 		{
 			mParent = parent;
 		}
@@ -193,6 +213,16 @@ namespace QLang
 		void addNamespace( const std::string &name, Scope *ns )
 		{
 			mNamespaceMap[name] = ns;
+		}
+
+		// KG-9: every module namespace visible from this scope (own + ancestors),
+		// for lookups that must see a struct defined in a namespaced module.
+		void collectNamespaces( std::vector<Scope *> &out )
+		{
+			for ( auto &kv : mNamespaceMap )
+				out.push_back( kv.second );
+			if ( mParent != nullptr )
+				mParent->collectNamespaces( out );
 		}
 
 		Scope *findNamespace( const std::string &name )
@@ -384,7 +414,8 @@ namespace QLang
 		typedef std::map<std::string, SmartPtr<Type> > TypeListType;
 
 		ScopeType	mType;
-		SmartPtr<Scope> mParent;
+		Scope *mParent = nullptr;                    // non-owning (see setParent)
+		std::vector<SmartPtr<Scope>> mChildren;      // owned child scopes
 		SymbolListType mSymbolList;
 		TypeListType mTypeList;
 		std::map<std::string, SmartPtr<Scope>> mNamespaceMap;
@@ -467,10 +498,17 @@ namespace QLang
 		// isFromInterface() heuristic (which misses the combine-mode stdlib case).
 		const std::string &getDefiningFile() const { return mDefiningFile; }
 		void setDefiningFile( const std::string &f ) { mDefiningFile = f; }
+		// KG-9: the COLLISION-FREE module identity (canonical path of the defining
+		// source file). getDefiningFile() stays the human basename (it is what
+		// .bmod foreign-type headers print); field privacy compares this instead,
+		// so two same-basename modules in different directories stay distinct.
+		const std::string &getDefiningPath() const { return mDefiningPath; }
+		void setDefiningPath( const std::string &p ) { mDefiningPath = p; }
 
 	private:
 		Module() {}
 		std::string mDefiningFile;
+		std::string mDefiningPath;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class AstLocator;
@@ -542,7 +580,16 @@ namespace QLang
 		void setAnnotations( const std::vector<AnnotationNode> &annotations ) { mAnnotations = annotations; }
 		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 
+		// modules-v2-graph U1 follow-on (KG-1): the DEFINING module's identity
+		// digest, stamped by the driver exactly like StructDefinition's, so a
+		// generic FUNCTION instance mangles distinctly per defining module
+		// (largest_m<digest>_int) instead of two modules' same-named generic
+		// functions collapsing onto one linkonce_odr symbol.
+		const std::string &getModuleDigest() const { return mModuleDigest; }
+		void setModuleDigest( const std::string &d ) { mModuleDigest = d; }
+
 	private:
+		std::string mModuleDigest;
 		FunctionDefinition( const std::string &name ) : Symbol( name ) {}
 
 		SmartPtr<Type> mReturnType;
@@ -681,6 +728,12 @@ namespace QLang
 		// Canonical module identity is Epic B's (D5).
 		const std::string &getDefiningFile() const { return mDefiningFile; }
 		void setDefiningFile( const std::string &f ) { mDefiningFile = f; }
+		// KG-9: the COLLISION-FREE module identity (canonical path of the defining
+		// source file). getDefiningFile() stays the human basename (it is what
+		// .bmod foreign-type headers print); field privacy compares this instead,
+		// so two same-basename modules in different directories stay distinct.
+		const std::string &getDefiningPath() const { return mDefiningPath; }
+		void setDefiningPath( const std::string &p ) { mDefiningPath = p; }
 
 		// Canonical module-identity digest (modules-v2-graph U1, D5/D10): a short
 		// SHA-256 (12 hex / 48 bits) of the DEFINING module's canonical origin
@@ -715,6 +768,7 @@ namespace QLang
 		bool mFromInterface = false;
 		std::vector<std::string> mConformedProtocols;
 		std::string mDefiningFile;
+		std::string mDefiningPath;
 		std::string mModuleDigest;
 		friend class CodeGen;
 		friend class LocationDumper;

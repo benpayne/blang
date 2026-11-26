@@ -26,3 +26,19 @@ int32_t __blang_hash_string( BlangString *s )
 	uint32_t folded = (uint32_t)( h ^ ( h >> 32 ) );
 	return (int32_t)( folded & 0x7FFFFFFFU );
 }
+
+int32_t __blang_hash_bits( int64_t v )
+{
+	/* FNV-1a over the key's raw bytes. Same mixing/folding as the string hash
+	   so value-type keys index buckets identically in shape. */
+	uint64_t h = 1469598103934665603ULL;       /* FNV offset basis */
+	const unsigned char *p = (const unsigned char *)&v;
+	for ( int i = 0; i < (int)sizeof( v ); ++i )
+	{
+		h ^= p[i];
+		h *= 1099511628211ULL;                  /* FNV prime */
+	}
+
+	uint32_t folded = (uint32_t)( h ^ ( h >> 32 ) );
+	return (int32_t)( folded & 0x7FFFFFFFU );
+}

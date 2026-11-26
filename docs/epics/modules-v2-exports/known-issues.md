@@ -822,7 +822,17 @@ alongside KI-16 (the file→module mapping Epic B owns).
 
 ---
 
-## KI-24 — capturing a for-in loop element across a `break`/early-exit is not ARC-balanced
+## KI-24 — capturing a for-in loop element across a `break`/early-exit is not ARC-balanced — CLOSED
+
+**Closed** (2026-11-25). The real defect was broader than for-in: **every reassignment
+from a borrowed source** (`b = a`, `b = arr[i]`, `b = p.field` for struct/Array, and so a
+for-in element `found = s`) stored the reference without retaining it, so the destination
+and the source shared one count — a heap-use-after-free at scope exit for string, Array and
+struct alike (the `break` was incidental; `last = s` with no early exit failed too).
+`genAssignmentExpression` (`CGExpressions.cpp`) now applies the same borrowed-source retain
+rules as `genVariableDeclaration`, retaining **before** releasing the old value (so `a = a` is
+safe) and skipping the retain for an `own`-from-`own` move. Regressions:
+`codegen_forin_capture_break.b`, `codegen_arc_reassign_borrowed.b` (both leak-clean).
 
 **Filed**: U5b close-out (surfaced by `rev`; **independently reproduced by the owner** at
 epic completion). **Owner**: not this epic — pre-existing, epic-UNRELATED; file only.

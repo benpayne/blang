@@ -22,26 +22,26 @@ fn main() -> int {
 
 	net.HttpResponse r1 = net.dispatch_request(routes,
 		net.HttpRequest { method: "GET", path: "/health", body: "" });
-	if r1.status != 200 { return 1; }
-	if r1.body != "OK" { return 2; }
+	if r1.status() != 200 { return 1; }
+	if r1.body() != "OK" { return 2; }
 
 	net.HttpResponse r2 = net.dispatch_request(routes,
 		net.HttpRequest { method: "GET", path: "/hello", body: "" });
-	if r2.body != "hi" { return 3; }
+	if r2.body() != "hi" { return 3; }
 
 	net.HttpResponse r3 = net.dispatch_request(routes,
 		net.HttpRequest { method: "POST", path: "/data", body: "x" });
-	if r3.content_type != "application/json" { return 4; }
+	if r3.content_type() != "application/json" { return 4; }
 
 	// Unknown path -> 404
 	net.HttpResponse r4 = net.dispatch_request(routes,
 		net.HttpRequest { method: "GET", path: "/missing", body: "" });
-	if r4.status != 404 { return 5; }
+	if r4.status() != 404 { return 5; }
 
 	// Right path, wrong method -> 404 (only POST /data is registered)
 	net.HttpResponse r5 = net.dispatch_request(routes,
 		net.HttpRequest { method: "GET", path: "/data", body: "" });
-	if r5.status != 404 { return 6; }
+	if r5.status() != 404 { return 6; }
 
 	// ---- Part 2: register routes via HttpServer.get/.post (no socket) ----
 	Array<net.Route> empty = [];
@@ -52,16 +52,16 @@ fn main() -> int {
 		return net.http_ok("pong");
 	});
 	srv.post("/echo", fn(net.HttpRequest req) -> net.HttpResponse {
-		return net.http_ok(req.body);
+		return net.http_ok(req.body());
 	});
 
-	net.HttpResponse p1 = net.dispatch_request(srv._routes,
+	net.HttpResponse p1 = srv.dispatch(
 		net.HttpRequest { method: "GET", path: "/ping", body: "" });
-	if p1.body != "pong" { return 7; }
+	if p1.body() != "pong" { return 7; }
 
-	net.HttpResponse p2 = net.dispatch_request(srv._routes,
+	net.HttpResponse p2 = srv.dispatch(
 		net.HttpRequest { method: "POST", path: "/echo", body: "payload" });
-	if p2.body != "payload" { return 8; }
+	if p2.body() != "payload" { return 8; }
 
 	println("HTTP routing test passed!");
 	return 0;

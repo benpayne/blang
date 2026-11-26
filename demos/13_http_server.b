@@ -25,7 +25,7 @@ fn main() -> int {
 
 	// Echo the request body back to the client.
 	server.post("/echo", fn(net.HttpRequest req) -> net.HttpResponse {
-		return net.http_ok(req.body);
+		return net.http_ok(req.body());
 	});
 
 	server.serve();

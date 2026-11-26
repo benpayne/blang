@@ -35,12 +35,12 @@ fn main() -> int {
 	rl.append_byte(13);
 	rl.append_byte(10);
 	net.HttpRequestLine parsed = net.parse_http_request_line(rl);
-	println("method={}", parsed.method);
-	println("path={}", parsed.path);
-	println("version={}", parsed.version);
-	assert parsed.method == "GET", "parsed method";
-	assert parsed.path == "/index.html", "parsed path";
-	assert parsed.version == "HTTP/1.1", "parsed version";
+	println("method={}", parsed.method());
+	println("path={}", parsed.path());
+	println("version={}", parsed.version());
+	assert parsed.method() == "GET", "parsed method";
+	assert parsed.path() == "/index.html", "parsed path";
+	assert parsed.version() == "HTTP/1.1", "parsed version";
 
 	// dispatch_request with a printed golden (complements the exit-code-only
 	// codegen_http_routing.b) — matched route + 404 fallthrough.
@@ -50,11 +50,11 @@ fn main() -> int {
 		net.HttpRequest { method: "GET", path: "/", body: "" });
 	net.HttpResponse miss = net.dispatch_request(routes,
 		net.HttpRequest { method: "GET", path: "/nope", body: "" });
-	println("hit_status={} hit_body={}", hit.status, hit.body);
-	println("miss_status={}", miss.status);
-	assert hit.status == 200, "hit status";
-	assert hit.body == "home", "hit body";
-	assert miss.status == 404, "miss 404";
+	println("hit_status={} hit_body={}", hit.status(), hit.body());
+	println("miss_status={}", miss.status());
+	assert hit.status() == 200, "hit status";
+	assert hit.body() == "home", "hit body";
+	assert miss.status() == 404, "miss 404";
 
 	println("PASS");
 	return 0;

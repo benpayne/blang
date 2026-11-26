@@ -14,5 +14,6 @@ fn main() -> int {
 	println("{}", boxa.boxed_a(5));
 	println("{}", boxb.boxed_b(7));
 	println("{}", boxa.boxed_twice(42));
+	println("{} {}", boxa.tagged_a(0), boxb.tagged_b(0));
 	return 0;
 }

@@ -8,9 +8,8 @@
 // agrees, so both call sites are exercised, not just re-implemented here.
 //
 // Lifetime note: each Resolver's module scope is held in a SmartPtr and released
-// BEFORE that Resolver is destroyed (a raw Scope* would leak, and because
-// Scope::mParent retains, it would pin the builtin global scope so ~Resolver could
-// not free it). So the "qcc path" captures its resolution RESULTS inside the block
+// BEFORE that Resolver is destroyed (the caller owns a module scope, and its
+// non-owning parent link must not outlive the Resolver's global scope — KG-7). So the "qcc path" captures its resolution RESULTS inside the block
 // rather than returning a scope that outlives its Resolver.
 
 #include <cassert>
@@ -36,6 +35,7 @@ struct Resolutions
 	bool type_int = false, type_Point = false, type_string = false, type_bool = false;
 	bool type_absent = false;   // a name that must NOT resolve
 	bool sym_Point = false;     // the struct is also a symbol
+	bool sym_add = false;       // a function (with a body) is a symbol
 	bool sym_absent = false;
 
 	bool operator==( const Resolutions &o ) const
@@ -43,7 +43,7 @@ struct Resolutions
 		return parsed == o.parsed && type_int == o.type_int &&
 			type_Point == o.type_Point && type_string == o.type_string &&
 			type_bool == o.type_bool && type_absent == o.type_absent &&
-			sym_Point == o.sym_Point && sym_absent == o.sym_absent;
+			sym_Point == o.sym_Point && sym_add == o.sym_add && sym_absent == o.sym_absent;
 	}
 };
 
@@ -57,6 +57,7 @@ static Resolutions probe( Scope *s, bool parsed )
 	r.type_bool = s->findType( "bool" ) != nullptr;
 	r.type_absent = s->findType( "NoSuchType" ) != nullptr;
 	r.sym_Point = s->findSymbol( "Point" ) != nullptr;     // a struct is also a symbol
+	r.sym_add = s->findSymbol( "add" ) != nullptr;         // function symbol
 	r.sym_absent = s->findSymbol( "no_such_symbol" ) != nullptr;
 	return r;
 }
@@ -64,16 +65,16 @@ static Resolutions probe( Scope *s, bool parsed )
 int main()
 {
 	const std::string path = "reuse_fixture.b";
-	// Fixture: a struct. A struct is registered as BOTH a type (findType) and a
-	// symbol (findSymbol), so it proves type AND symbol resolution. Deliberately
-	// no function: parsing a function BODY (or even an extern-fn param list) leaks
-	// the parser's internal AST/scope allocations under ASan — a PRE-EXISTING
-	// compiler-process leak, unrelated to the resolver and never ASan-checked
-	// before these ctests (the compiler's own memory is not leak-checked;
-	// test_codegen --leak-check checks the compiled BINARY's runtime, not qcc).
-	// See modules-v2-graph Known-Issues KG-7.
+	// Fixture: a struct and a function WITH A BODY. A struct is registered as
+	// BOTH a type (findType) and a symbol (findSymbol), so it proves type AND
+	// symbol resolution; the function proves a function symbol resolves too.
+	// (Until KG-7 was fixed this fixture had to be struct-only: parsing a
+	// function body leaked the parser's AST/scopes under ASan because a child
+	// scope retained its parent, forming refcount cycles. Scopes are now owned
+	// top-down, so this test is LSan-clean with a body.)
 	const std::string src =
-		"struct Point { int x; int y; }\n";
+		"struct Point { int x; int y; }\n"
+		"fn add( int a, int b ) -> int { int c = a + b; return c; }\n";
 
 	// (1) The qcc-style path, built through the shared Resolver EXACTLY as
 	// lsp/Compile.cpp does (Resolver + newModuleScope). Everything lives and dies
@@ -102,7 +103,7 @@ int main()
 		qccPath = probe( (Scope *)fileScope, parsed );
 	}
 	assert( qccPath.parsed && "fixture parses through the resolver-built scope" );
-	assert( qccPath.type_int && qccPath.type_Point && qccPath.sym_Point &&
+	assert( qccPath.type_int && qccPath.type_Point && qccPath.sym_Point && qccPath.sym_add &&
 		"builtin + fixture type + fixture symbol resolve on the qcc path" );
 	assert( !qccPath.type_absent && !qccPath.sym_absent &&
 		"absent names do not resolve (negative resolution)" );
@@ -117,7 +118,7 @@ int main()
 		lspPath = probe( (Scope *)res.fileScope, res.module != nullptr );
 	}
 	assert( lspPath.parsed && lspPath.type_int && lspPath.type_Point &&
-		lspPath.sym_Point && "builtin + fixture type + fixture symbol resolve (lsp path)" );
+		lspPath.sym_Point && lspPath.sym_add && "builtin + fixture type + fixture symbol resolve (lsp path)" );
 
 	// Identical resolution: the shared component yields the SAME result on both the
 	// qcc path and the real blangd entry point.

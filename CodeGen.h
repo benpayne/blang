@@ -362,6 +362,28 @@ private:
 	// String type helper
 	bool isStringType( Expression *expr );
 
+	// Centralized scalar coercion: widens/narrows between the scalar-family
+	// types (int/long/short/byte/char/bool widths, int<->float/double, and
+	// float<->double) to match a destination type. Returns nullptr when the
+	// conversion is NOT a scalar-family conversion (caller leaves the value
+	// untouched). Shared by the call-argument, assignment, var-decl, and return
+	// sites so the whole scalar matrix is handled uniformly at every boundary
+	// (a missing case at any site is a silent store/load miscompile under
+	// opaque pointers).
+	llvm::Value *coerceScalarTo( llvm::Value *val, llvm::Type *destTy, const char *name );
+
+	// Resolve the declared element LLVM type of an Array<T> expression (from a
+	// variable or field's Array<T>, mapping generic params through the active
+	// substitution). Returns nullptr when the element type is not determinable.
+	// Optionally reports the resolved element type NAME (for the byte-unsigned
+	// special case). Used by array push/index-set to coerce stored values.
+	llvm::Type *arrayElemLLVMType( Expression *object, std::string *outName = nullptr );
+
+	// Compound assignment combine (+=, -=, *=, /=, %=, ^=): coerces the RHS to
+	// the current value's scalar type, then emits the FP or integer op.
+	// Returns nullptr for an operator with no lowering for that type.
+	llvm::Value *genCompoundOp( const std::string &op, llvm::Value *current, llvm::Value *rhs );
+
 	// ---- Generic-context type resolution (generic ARC unit) ----
 	// Resolve a declared type name through the ACTIVE monomorphization
 	// substitution (mTypeSubstitution): inside sort<string>'s body, "T" -> string.
@@ -430,6 +452,13 @@ private:
 
 	// Builtin to_json(value): compile-time dispatch to StructName_to_json
 	llvm::Value *genToJsonCall( CallExpression *call );
+
+	// Compiler-reserved generic hash primitive __blang_hash(key): dispatches on
+	// the key's concrete (post-substitution) type to __blang_hash_string or
+	// __blang_hash_bits. Used by the hashed collections in stdlib/collections.b.
+	llvm::Value *genHashCall( CallExpression *call );
+	llvm::Function *getOrDeclareHashString();
+	llvm::Function *getOrDeclareHashBits();
 
 	// JSON codegen (@json annotation)
 	bool genJsonToJson( StructDefinition *structDef );
