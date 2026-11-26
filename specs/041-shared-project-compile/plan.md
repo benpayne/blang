@@ -18,12 +18,33 @@
    - LSP transcripts.
 
    (spec FR-001)
-2. **Zero golden edits.** `git diff --stat epic/modules-v2-lsp..HEAD -- test_files/` must be empty at every commit of this branch. Nothing under `test_files/` or `test_files/lsp/` is regenerated or hand-edited. The `.bmod` format version, `BuildCache` keys, the quarantine list and D1–D17 are untouched. (FR-002)
+2. **Zero golden edits.** At every commit of this branch, both of these must print nothing:
+
+   ```bash
+   git diff --no-renames --name-only --diff-filter=MDTRC epic/modules-v2-lsp...HEAD -- test_files/
+   git diff --no-renames --name-only --diff-filter=A     epic/modules-v2-lsp...HEAD -- test_files/ | grep -v '^test_files/project_compile/'
+   ```
+
+   The first command proves no existing file under `test_files/` was modified, deleted, type-changed, renamed or copied. The second proves the only additions are the new ctest fixtures. Nothing under `test_files/` or `test_files/lsp/` is regenerated or hand-edited. The `.bmod` format version, `BuildCache` keys, the quarantine list and D1–D17 are untouched. (FR-002)
 3. **Stop rule.** If any step appears to *require* a golden, diagnostic-text, exit-code or output change, the implementer stops. They do not "fix" or regenerate the golden. They end the turn with a `BLOCKER:` line naming the failing gate, the file, the diff and why it seems forced. Running `--update-goldens` is forbidden in this unit. (FR-003)
 
 Every phase below ends with the regression checkpoint in [§Verification protocol](#verification-protocol). A red checkpoint is a bug in the extraction, never a golden to update.
 
 ---
+
+## Design-audit amendments (2026-11-26)
+
+The Principle VI design audit **passed with no STOP**, on condition that the amendments below are made before `/speckit-tasks`. They are folded into the sections they touch.
+
+| Finding | Severity | Amendment | Where |
+|---|---|---|---|
+| F1 | HIGH | "Recorded" is a distinct step. A module that parsed fine can still be **dropped**: a `realpath` failure (qcc.cpp ~L640–656) or a wrong-format `.bmod` (~L670–700). `ModuleRecord::module` and the `recorded` flag are set **only** at the recorded step, after injection. Every downstream reader uses the recorded-only view: `moduleIndices()`, Sema, eager PROMOTE, the import-diagnostics pass, the prelude-shadow set and `bmodEmitScope`. Error paths therefore add no diagnostics (FR-001). New ctest case **C7**. | D-2, D-5, data-model.md, contract I9 |
+| F2 | MEDIUM | `compileDocument` **keeps** `gScope = sResolver.globalScope();`. A local `Resolver` in `resolver_reuse`/`parser_no_leak` restores `gScope` to its saved (possibly null) value on destruction, so the alias must be re-installed per compile. I3 is reworded: **the caller installs the alias; `run` asserts it.** | D-4, contract I3 |
+| F3 | promoted to REQUIRED | The no-subprocess/no-network guarantee is checked on the **binary**, not by grepping source. A new ctest `blangd_no_subprocess` asserts that `nm -D --undefined-only blangd` imports none of the forbidden symbols, with teeth (it is run against `bcc`, which must fail). | D-6 (new), Verification gate 5, contract I8 |
+| F4 | correction | The `bcc` call-site labels were wrong: L798 is `runMigrate`, and L1698 is `main`'s single-file compile. | D-1 |
+| F5 | correction | `scanImports` keeps bcc's exact rule: `isspace()` skipping, then a literal `"import "` (one ASCII space). | D-1, stdlib-select contract |
+| F6 | correction | The shadow-set prose now states the real, name-keyed test `!preludeModuleNames.count(mn) && !moduleNamespaces.count(mn)`. That test includes `.bmod` modules and the user file. C1 asserts `hadError() \|\| diag.hasErrors()` against qcc's exit status. | D-2, D-3, D-5, data-model.md, research R10 |
+| F7 | correction | The zero-golden-edit gate is an exact `git diff --diff-filter` command pair. New files are allowed only under `test_files/project_compile/`. | Constraint 2, Verification gate 1, quickstart |
 
 ## Summary
 
@@ -153,12 +174,20 @@ namespace BlangStdlib {
 
 - **Path-string identity.** Today the candidate is `exeDir + "/stdlib/" + name + ".b"`. `bcc` will call `selectStdlibFiles( exeDir + "/stdlib", … )` and the function builds `stdlibDir + "/" + name + ".b"`, which yields the **identical string**. That matters because these paths appear in `qcc` diagnostics and `bcc -v` output (R5).
 - **`bcc` call sites.** The four sites switch to `BlangStdlib::selectStdlibFiles( exeDir + "/stdlib", BlangStdlib::scanImports( readFileToString( f ) ) )`:
-  - `compileAndRunTestFile` (L571);
-  - the single-file compile (L800);
-  - `buildProject` (L1339; it unions the scans of every project source exactly as today);
-  - `bcc migrate` (L1698).
+  - `compileAndRunTestFile` (L571; `bcc test`);
+  - `runMigrate` (L798–L800; `bcc migrate`, unions the scans of every `sourceFiles` entry);
+  - `buildProject` (L1336–L1339; `bcc build`, unions the scans of every project source);
+  - `main`'s single-file compile (L1698; `bcc file.b`).
 
-  Both forward declarations (L556, L740) and both bodies are deleted.
+  The union loops stay in `bcc` exactly as written. Only `parseImports( f )` becomes `BlangStdlib::scanImports( readFileToString( f ) )`, and `resolveStdlibFiles( exeDir, I )` becomes `BlangStdlib::selectStdlibFiles( exeDir + "/stdlib", I )`. Every forward declaration (`parseImports` at L555/L739, `resolveStdlibFiles` at L556/L740) and both bodies (L965, L1002) are deleted.
+- **`scanImports` rule, verbatim from `parseImports` (F5).** For each `getline` line:
+  1. truncate at the first `"//"`, even one inside a string literal;
+  2. skip characters while `isspace( (unsigned char)c )`;
+  3. require `line.compare( i, 7, "import " ) == 0`: a literal `import` followed by exactly one ASCII space, so a tab after `import` does not match;
+  4. skip `isspace` characters again;
+  5. take the maximal `isalnum || '_'` run and insert it if it is non-empty.
+
+  Block comments are not recognized. The function is a copy of the existing body with `readFileToString( path )` replaced by the `sourceText` parameter, and nothing else changes.
 - **Missing-file behavior.** `readFileToString` on a missing file behaves exactly as today, because it is unchanged and stays in `bcc`.
 - **Linkage.** `StdlibSelect.cpp` is added to `add_executable(bcc …)` and to `BLANG_FRONTEND_SOURCES`. It includes only `<set> <string> <vector> <unistd.h>`.
 
@@ -205,14 +234,27 @@ std::string moduleNameOf( const std::string &path );          // basename sans e
    - `stampDefiningOrigin`;
    - origin selection and `stampModuleDigest` (skipped under `kNone`);
    - for an interface input: the format check, `setExtern`, `setFromInterface`, and `injectBmodSymbols`;
-   - record the module;
+   - **record** the module: set `record.module` and `record.recorded = true`, append to `moduleIndices`, and for a source input set `bmodEmitScope`. This is the point where today's code pushes onto `modules` / `moduleScopes` / `moduleNames` (qcc.cpp ~L737–L752);
    - `PARSE_TRACE("Completed parse")`;
    - Sema;
    - eager PROMOTE.
 
    The `continue`-on-failure points are exactly today's.
-5. Run the import-diagnostics pass, gated on `combine || anyInterfaceInput`.
-6. Compute the prelude-shadow set. This is the non-LLVM half of today's L918–L935, moved so codegen consumes data instead of recomputing roles.
+
+   **Drop points (F1).** A record whose input fails *before* the recorded step stays unrecorded: `recorded == false` and `module == null`. Its parsed `SmartPtr<Module>` is a local that is released at the end of the iteration, exactly as today's `mod` local. There are five such points:
+   - a malformed foreign-type header;
+   - the global-`hadError` skip after the pre-scan;
+   - a catastrophic parse failure;
+   - a `realpath` failure;
+   - a wrong-format `.bmod`.
+
+   Each sets `hadError` and emits only the diagnostic it emits today. A dropped module is **never** analyzed, promoted, scanned by the import pass, counted in the shadow set, or chosen as `bmodEmitScope`. Its `import` lines therefore produce no unknown-module or unused-import diagnostic, matching today's behavior, where it never reached `modules`. Only `record.scope` is set at routing time, because blangd needs a non-null `fileScope` even on failure.
+5. Run the import-diagnostics pass over **recorded** modules only (today: `modules`), gated on `combine || anyInterfaceInput`. The gate counts interface *inputs*, recorded or not, exactly as today's `!bmodFiles.empty()`.
+6. Compute the prelude-shadow set over **recorded** modules only. This is the non-LLVM half of today's L918–L935, moved verbatim:
+   - for each recorded module `mn` with `!preludeModuleNames.count(mn) && !moduleNamespaces.count(mn)`, collect its struct names. That test is name-keyed, so it also admits `.bmod` interface modules and the combine user file;
+   - `suppressedPrelude` = those names ∩ the prelude manifest.
+
+   It moved so that codegen consumes data instead of re-deriving it.
 7. Restore `gDiag` and return.
 
 **`run` never calls `diag.finish()`** (FR-011). Rendering stays with the caller.
@@ -240,7 +282,7 @@ The output stages read from `ctx`. Their logic is unchanged; only the data sourc
 
 | Output stage | Reads from `ctx` |
 |---|---|
-| error exit (`hadError \|\| gDiag->hasErrors()`) | `ctx->hadError()` |
+| error exit (`hadError \|\| gDiag->hasErrors()`) | `ctx->hadError() \|\| diagnostics.hasErrors()`: both halves, as today |
 | `--dump-locations` | `ctx->modules()` |
 | `--emit-bmod` | non-extern modules + `ctx->bmodEmitScope()` |
 | `--emit-schema` | `ctx->modules()` |
@@ -265,19 +307,23 @@ These are the SC-003 grep targets.
 
 ```cpp
 static Resolver sResolver;                      // unchanged: process-lifetime global scope
+gScope = sResolver.globalScope();               // KEPT (F2): the CALLER installs the alias; run() asserts it.
+                                                // A test-local Resolver (resolver_reuse, parser_no_leak) restores
+                                                // gScope to its saved value on destruction, so re-install per call.
 DiagnosticEngine engine;                        // unchanged: fresh per reparse, never finish()ed
 CompilePlan plan;
 plan.inputs.push_back( { path, kSource, /*inMemory*/ true, text, /*origin*/ "" } );
 plan.combine = false;
 plan.identity = IdentityPolicy::kNone;
 result.context = ProjectCompile::run( plan, sResolver, engine );
-result.module    = result.context->record( 0 ).module;   // may be null (catastrophic parse), as today
+result.module    = result.context->record( 0 ).module;   // null unless recorded; under kNone with no interface
+                                                         // inputs, recorded == parsed, so null only on a catastrophic parse, as today
 result.fileScope = result.context->record( 0 ).scope;    // always non-null, as today
 result.diagnostics = engine.diagnostics();
 ```
 
 - **`CompileResult`** gains `std::shared_ptr<QLang::CompileContext> context`. It is a `shared_ptr` because `Server` stores results in a `std::map` by value. The existing `module`/`fileScope` `SmartPtr`s stay, so `Server.cpp` and `AstLocator` are untouched.
-- **The `gDiag` save/restore** that `compileDocument` does today now happens inside `run`. Its observable effect is identical.
+- **The `gDiag` save/restore** that `compileDocument` does today now happens inside `run`. Its observable effect is identical. The **`gScope` install stays in `compileDocument`** (F2): `run` never writes `gScope`, it only asserts `gScope == resolver.globalScope()` (contract I3).
 - **Why it matches today's blangd exactly:**
   - non-combine, so no prelude scope and no namespaces;
   - no interface inputs, so no import pass ("not authoritative"), no `.bmod` reads and no global-scope namespaces;
@@ -298,12 +344,36 @@ Each case constructs its **own** `Resolver` in a nested block, so the global sco
 
 | Case | Inputs (`stdlibDir = <src>/stdlib`) | Asserts |
 |---|---|---|
-| C1 diag parity | `selectStdlibFiles(stdlib, scanImports(fixture))` + `test_files/project_compile/diag_parity.b` (an `import net;` that is unused → warning; an `import nonesuch;` → error; a Sema type error) | `run` rendered through `DiagnosticEngine(ostringstream)` + `finish()` == stderr of `qcc --parse-only --combine <same paths, same order>` (popen; **qcc is the oracle, not the system under test**). Also: `ctx->hadError()` == (qcc exit ≠ 0). Both human and `--json` renderings are compared (json via `setJson(true)` vs `qcc --json`). |
+| C1 diag parity | `selectStdlibFiles(stdlib, scanImports(fixture))` + `test_files/project_compile/diag_parity.b` (an `import net;` that is unused → warning; an `import nonesuch;` → error; a Sema type error) | `run` rendered through `DiagnosticEngine(ostringstream)` + `finish()` == stderr of `qcc --parse-only --combine <same paths, same order>` (popen; **qcc is the oracle, not the system under test**). Also: `( ctx->hadError() \|\| diag.hasErrors() )` == (qcc exit ≠ 0), the same two-part test qcc's error exit uses (F6). Both human and `--json` renderings are compared (json via `setJson(true)` vs `qcc --json`). |
 | C2 prelude resolution | base stdlib + `prelude_use.b` (zero imports, `Map<string,int>` and `Set<int>` declared) | `ctx->preludeScope()->findType("Map")` and `("Set")` non-null; the user scope has **no own** entry for them (lookup from the user scope resolves to the prelude scope's symbol, pointer-equal); no diagnostics |
 | C3 namespace registration | the same base set | `ctx->userScope()->findNamespace("net")` non-null; `ctx->record(i)` for `stdlib/net.b` has role `kNamespaced`; `codegenPrefix` == `"net"`; buffer/collections have role `kPreludeProvider` and an empty prefix |
 | C4 user shadowing | base stdlib + `prelude_shadow.b` (user `struct Map` with a distinct API) | user-scope lookup of `Map` == the user's `StructDefinition` (pointer-equal to the struct in the user module's struct list); `ctx->suppressedPrelude()` contains `"Map"` and not `"Set"`; no diagnostics |
 | C5 stdlib selection | `scanImports` over a text with `import cli;`, `import timer;`, `// import math;`, `   import   env.x;`, `import zzz_unknown;` | exact ordered `selectStdlibFiles` output: `sys,buffer,collections,fs,net,timer,env,cli` (the commented-out math excluded; the unknown name dropped because no file exists); scan set == `{cli,timer,env,zzz_unknown}` |
+| C7 dropped-module parity (F1) | combine plan: base stdlib + `test_files/project_compile/dropped_user.b` + `test_files/project_compile/wrong_format.bmod`. The `.bmod` has a `// blang-bmod-format: 4` marker (≠ `kFormatVersion` 5), parses cleanly, and contains an `import net;` and an `import nonesuch;` line, so if it were wrongly recorded the import pass would add an unknown-module error and an unused-import warning. The user file uses nothing from it. | rendered text (human and `--json`) == `qcc --parse-only --combine <same paths, same order>` stderr; exactly one error, the format-mismatch diagnostic at `wrong_format.bmod:1:1`; the `.bmod`'s record has `recorded == false` and `module == null`; `moduleIndices()` excludes it; `( hadError() \|\| diag.hasErrors() )` == (qcc exit ≠ 0). The case asserts its own premise first (the fixture's marker differs from `BlangBmod::kFormatVersion`), so a future format bump fails loudly instead of silently voiding the case. |
 | C6 single-file / kNone | one in-memory input at a **nonexistent** path, `kNone` | no `realpath` diagnostic; `record(0).scope` non-null; diagnostics equal those from the pre-unit `lsp::compileDocument` shape (asserted structurally: same count and same messages as a direct `Module::Parse` + `stampDefiningOrigin` + `Sema` on a fresh resolver scope) |
+
+### D-6. `blangd_no_subprocess` ctest (F3, required)
+
+This is a binary-level proof of invariant C4 / I8. It replaces the source grep.
+- **The script.** `tools/check_no_subprocess.sh <binary>` runs `nm -D --undefined-only <binary>` and fails if any imported symbol, ignoring its `@GLIBC_*` version suffix, is exactly one of:
+  - `popen`, `system`, `fork`, `vfork`;
+  - `execl`, `execlp`, `execle`, `execv`, `execvp`, `execvpe`, `execve`, `fexecve`;
+  - `posix_spawn`, `posix_spawnp`;
+  - `socket`, `connect`, `getaddrinfo`.
+- **Static-link guard.** It also fails if the binary has **zero** undefined dynamic symbols, so a static link cannot pass vacuously.
+- **Registration:**
+
+  ```cmake
+  add_test(NAME blangd_no_subprocess COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:blangd>)
+  add_test(NAME blangd_no_subprocess_teeth COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:bcc>)
+  set_tests_properties(blangd_no_subprocess_teeth PROPERTIES WILL_FAIL TRUE)
+  ```
+
+  The teeth leg is real: `bcc` imports `fork`, `execvp`, `popen` and `system` (verified 2026-11-26).
+- **Baseline.** `blangd` imports none of the forbidden symbols today, in either `build/` or `build-asan/` (verified 2026-11-26).
+- **Goldens.** It edits no golden and runs in every build directory.
+- **Why a ctest** rather than a `test_lsp.sh` leg: CI's `runtime-units` job already gates on `ctest` in `build` and `build-asan`.
+- **Scope.** This checks the shipped `blangd` binary, which is what C4 promises. `ProjectCompileTest` legitimately uses `popen` for its oracle and is not checked.
 
 **Oracle availability.** `qcc` is built in every configuration (parse-only included) and `--parse-only --combine` needs no LLVM, so C1 runs in all three build directories. The test fails loudly if the oracle binary is absent; it never skips silently.
 
@@ -311,11 +381,11 @@ Each case constructs its **own** `Resolver` in a nested block, so the global sco
 
 The gates below run at **every phase checkpoint** (after D-1, after D-2+D-3, after D-4, after D-5), on `build` (LLVM), `build-nollvm` (parse-only; `BLANG_ENABLE_LLVM=OFF`) and `build-asan`:
 
-1. `git diff --stat epic/modules-v2-lsp..HEAD -- test_files/` shows only **new** files under `test_files/project_compile/`. Zero modified or deleted files is the zero-golden-edit proof.
+1. The two zero-golden-edit commands in constraint 2 both print nothing (F7).
 2. `./run_tests.sh` in both modes, at the baseline counts (evaluation.md: 251/0 LLVM, 244/0 parse-only; re-measured on the base **before** Phase D-1, with any pre-existing red reported and not absorbed).
 3. `./test_codegen.sh` (172/0), `--leak-check` (Leaks: 0), `--selfcheck` (prints `SELFCHECK: OK`, exits non-zero).
 4. `test_build/run_build_tests.sh` passes (this exercises `bcc build`'s stdlib selection, `.bmod` injection, origins, aliasing, diamond, git dep and ASan counter legs).
-5. `ctest --test-dir build` and `ctest --test-dir build-asan` pass. The baseline is 82/82; after D-5 it is 83/83 with `project_compile`. `parser_no_leak`, `resolver_component` and `resolver_reuse` stay unmodified and green.
+5. `ctest --test-dir build` and `ctest --test-dir build-asan` pass. The baseline is 82/82. After D-5 and D-6 it is 85/85, adding `project_compile`, `blangd_no_subprocess` and `blangd_no_subprocess_teeth` (WILL_FAIL). `parser_no_leak`, `resolver_component` and `resolver_reuse` stay unmodified and green.
 6. `./test_lsp.sh` (70/0) and `./test_lsp.sh --selfcheck`.
 7. `tools/check_no_field_reachins.sh` (+ `--selfcheck`), `examples/*/test_*.sh`, `make -C demos run`.
 8. **Byte-identity spot check** (SC-005, quickstart §3): for the six overview files, capture exit code + stderr of `qcc --parse-only <file>` and of the `qcc` line `bcc -v -S <file>` prints, from a **pre-unit** `qcc`/`bcc` built at `epic/modules-v2-lsp`, then `cmp` against the post-unit binaries. Add one `--json` and one `-Werror` run, one `--dump-locations` (`test_files/pass/func_simple.b`) and one `--emit-bmod` (`test_build/mathlib` sources), all `cmp`-identical.
@@ -329,9 +399,9 @@ Any red is handled under the stop rule (constraint 3).
 3. **`StringLexerReader` relocation**: root header plus the `lsp/` alias, then checkpoint (pure move).
 4. **D-2 + D-3**: create `ProjectCompile` by lifting the loop out of `qcc.cpp` verbatim, then make `qcc` a caller in the same commit so there is never a duplicate. Checkpoint.
 5. **D-4**: blangd through `run`, then checkpoint (gate 6 especially, and gate 5's `parser_no_leak`).
-6. **D-5**: the `project_compile` ctest and fixtures, then checkpoint.
+6. **D-5 + D-6**: the `project_compile` ctest (C1–C7) and fixtures, plus the `blangd_no_subprocess` ctest and its teeth, then checkpoint.
 7. **Docs**: `CLAUDE.md` entries for `ProjectCompile.*`, `StdlibSelect.*`, root `StringLexerReader.h` and the new ctest. Update the `lsp/Compile.cpp` comment that says the module-graph methods are dormant. The CLAUDE.md single-file wording stays until U5.
-8. **SC-003 greps** and the final full checkpoint.
+8. **SC-003 greps** and the final full checkpoint. (The ProjectCompile.cpp/StdlibSelect.cpp source grep for popen/fork/exec is superseded by D-6's binary check, F3.)
 
 ## Assumptions (carried forward for the design audit to weigh)
 

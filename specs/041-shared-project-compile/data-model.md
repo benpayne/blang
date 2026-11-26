@@ -47,10 +47,19 @@ One record per input that reached the parse step, in processing order.
 | `path` | `std::string` | The input path. |
 | `moduleName` | `std::string` | `moduleNameOf(path)`. |
 | `role` | `ModuleRole` | See above. |
-| `scope` | `Scope *` (non-owning; the context owns it, see Ownership) | The scope the input parsed into. It is non-null whenever a record exists. |
-| `module` | `SmartPtr<Module>` | The parsed module. **May be null**: a record is created at routing time so blangd always has its file scope (today's `CompileResult.fileScope` is non-null even on catastrophic parse failure). |
+| `scope` | `Scope *` (non-owning; the context owns it, see Ownership) | The scope the input was routed to. It is **set at routing time** and is non-null whenever a record exists, so blangd always has its file scope (today's `CompileResult.fileScope` is non-null even on a catastrophic parse failure). |
+| `recorded` | `bool` | **Set only at the recorded step (audit F1)**, i.e. after the parse, the origin/digest stamping and, for an interface, the format check and injection. That is the exact point where today's code pushes onto `modules` (qcc.cpp L737). It stays `false` for a dropped input: a malformed foreign-type header, the post-pre-scan `hadError` skip, a catastrophic parse, a `realpath` failure (L640–656) or a wrong-format `.bmod` (L670–700). |
+| `module` | `SmartPtr<Module>` | **Assigned only at the recorded step**, together with `recorded = true`. Null for every dropped input, *including one that parsed successfully and was dropped later*. That module's AST is released at the end of its iteration, as today's local `mod` is. |
 
-The `modules()` view holds only the non-null modules, in order. It is exactly qcc's `modules` vector today, parallel to `moduleScopes` and `moduleNames`.
+**The recorded-only view (F1).** `moduleIndices()` lists the indices of records with `recorded == true`, in order. It is exactly qcc's `modules` vector today, parallel to `moduleScopes` and `moduleNames`. **Every** downstream consumer reads only this view, never `records()` directly:
+- Sema;
+- eager PROMOTE;
+- the import-diagnostics pass;
+- the prelude-shadow set;
+- `bmodEmitScope`;
+- qcc's dump-locations, emit-bmod, emit-schema and codegen stages.
+
+So an error path can never add diagnostics. `records()` is for callers that need the routed scope of a possibly-dropped input (blangd `record(0).scope`) and for tests.
 
 ## CompileContext
 
@@ -59,11 +68,11 @@ The result of `ProjectCompile::run`. It is move-only (`std::unique_ptr` from `ru
 | Accessor | Returns | Consumer |
 |---|---|---|
 | `records()` / `record(i)` | `const std::vector<ModuleRecord>&` | blangd (`record(0)`), tests |
-| `modules()` | the parsed, non-null modules in order, each with its record index | qcc dump/emit/codegen |
-| `hadError()` | `bool`: today's `hadError` (not including `diag.hasErrors()`, which the caller still checks, as today) | qcc exit |
+| `moduleIndices()` | indices of **recorded** records, in order (the recorded-only view, F1) | qcc dump/emit/codegen; all internal post-loop passes |
+| `hadError()` | `bool`: today's `hadError`. It does **not** include `diag.hasErrors()`. Callers test `ctx->hadError() \|\| diag.hasErrors()`, as qcc's error exit does today (F6). | qcc exit; ctest C1/C7 |
 | `userScope()` / `preludeScope()` | `Scope *`, null outside combine mode | tests; U2+ |
-| `bmodEmitScope()` | `Scope *`: the scope of the last recorded source module, else the global scope | qcc `--emit-bmod` |
-| `isPreludeProvider(i)`, `codegenPrefix(i)` | **Name-keyed, exactly as today** (not role-keyed). `codegenPrefix(i)` = `moduleName(i)` iff that name is in the set of namespace-registered names (`moduleNamespaces`) and not in the prefix-exempt set; else `""`. `isPreludeProvider(i)` = `moduleName(i)` ∈ the prelude-provider name set. The shadow filter's "routed to the user scope" is likewise name-keyed. This matters for neutrality when a user or interface file shares a basename with a stdlib module (e.g. a user `net.b`): today's name lookup would prefix it too, and a role-based rule would not. | qcc LLVM codegen |
+| `bmodEmitScope()` | `Scope *`: the scope of the last **recorded** source module, else the global scope | qcc `--emit-bmod` |
+| `isPreludeProvider(i)`, `codegenPrefix(i)` | **Name-keyed, exactly as today** (not role-keyed). `codegenPrefix(i)` = `moduleName(i)` iff that name is in the set of namespace-registered names (`moduleNamespaces`) and not in the prefix-exempt set; else `""`. `isPreludeProvider(i)` = `moduleName(i)` ∈ the prelude-provider name set. The shadow filter's "routed to the user scope" test is likewise name-keyed and verbatim: `!preludeModuleNames.count(mn) && !moduleNamespaces.count(mn)`, over recorded modules. It therefore also admits `.bmod` interface modules and the combine user file (F6). This matters for neutrality when a user or interface file shares a basename with a stdlib module (e.g. a user `net.b`): today's name lookup would prefix it too, and a role-based rule would not. | qcc LLVM codegen |
 | `suppressedPrelude()` | `const std::set<std::string>&` (research R10) | qcc `allStructs` filter; test C4 |
 
 ## Ownership (KG-7)
@@ -84,20 +93,21 @@ CompileContext
   - **blangd**: the `CompileResult` is released before the process-static `Resolver`;
   - **ctest**: a nested block per case.
 - **What is not owned.** Nothing the context creates is adopted by the global scope, **except** the dependency namespaces from `.bmod` injection. That exception is preserved for neutrality (A3) and is inert in U1's blangd, which has no interface inputs.
-- **What `run` restores.** On return, `run` restores `gDiag` to its value on entry. `gScope` is the resolver's alias, which `run` reads and never reassigns.
+- **What `run` restores.** On return, `run` restores `gDiag` to its value on entry.
+- **The `gScope` alias (F2).** The **caller** installs it: qcc via `Resolver`'s constructor, and blangd via `gScope = sResolver.globalScope()` on every `compileDocument` call, kept verbatim. `run` asserts `gScope == resolver.globalScope()` and never writes it.
 
 ## State transitions
 
 `run` is a single pass. Per input, in order:
 
 ```text
-routed ──▶ (interface pre-scan: fail → skip)
-       ──▶ parsed (fail → skip)
-       ──▶ stamped (realpath fail → skip)
-       ──▶ (interface: format check → skip; inject)
-       ──▶ recorded
+routed (record.scope set) ──▶ (interface pre-scan: fail → DROP)
+       ──▶ parsed (fail → DROP)
+       ──▶ stamped (realpath fail → DROP)
+       ──▶ (interface: format check fail → DROP; else extern/from-interface + inject)
+       ──▶ RECORDED (record.module set, recorded = true, appended to moduleIndices)
        ──▶ analyzed (source)
        ──▶ promoted (prelude provider)
 ```
 
-After the loop: the import-diagnostics pass (gated), then the shadow-set computation. Every "skip" sets `hadError`. This matches research R3.
+After the loop: the import-diagnostics pass (gated, recorded only), then the shadow-set computation (recorded only). Every DROP sets `hadError`, leaves `recorded == false` and `module == null`, and emits only the one diagnostic it emits today. This matches research R3.

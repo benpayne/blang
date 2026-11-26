@@ -38,6 +38,7 @@ Each item becomes a review checkbox in tasks.md.
 11. Record the module, its scope and its name. `bmodEmitScope` is updated for each source input.
 12. `PARSE_TRACE("Completed parse")`, then `Sema::analyze` (source inputs only), then eager PROMOTE (combine mode only, prelude-provider modules only, prelude-manifest names only, into `preludeScope`, via `addSymbol` + `addType(new Type)`).
 13. After the loop, the import-diagnostics pass is gated on `combine || !bmodFiles.empty()`. It iterates modules in order and skips extern/null ones. Within a module it walks imports in order. It emits an unknown-module **error** (`findNamespace(realName)`) or else an unused-import **warning** (`wasModuleUsed(localQ)`, slug `unused-import`), with the exact message text.
+13a. **Recorded vs. dropped (audit F1).** A module can parse successfully and still be dropped by a `realpath` failure (L640–656) or a wrong-format `.bmod` (L670–700), before it reaches `modules.push_back` (L737). The extraction keeps that distinction explicit: `ModuleRecord::recorded` / `module` are set only at the L737-equivalent step, and every post-loop pass reads only recorded modules. Locked by ctest C7.
 14. `bmodMap` is write-only today. It stays as a context field only if something reads it. It is dropped if not, which is neutral because nothing reads it.
 
 ## R4. blangd's single-file behavior and `IdentityPolicy::kNone`
@@ -93,6 +94,9 @@ Each item becomes a review checkbox in tasks.md.
 
 ## R10. Prelude-shadow set and module prefix as context data
 
-- **Decision**: `run` computes `suppressedPrelude` as today's L918–L935 does: the names of structs in modules routed to the user scope (not prelude providers, not namespaced), intersected with the prelude manifest. It also exposes per-record `role` and `codegenPrefix()`. The LLVM block in `qcc.cpp` consumes these. `codegenPrefix` and the shadow filter's "routed to the user scope" test stay **name-keyed** (they look up `moduleNamespaces` / `preludeModuleNames` by basename, as today), not role-keyed. A role-keyed rule would differ when two inputs share a basename, e.g. a user file named `net.b`.
+- **Decision**: `run` computes `suppressedPrelude` exactly as today's L918–L935 does (F6):
+  - over the **recorded** modules, take each module `mn` for which `!preludeModuleNames.count(mn) && !moduleNamespaces.count(mn)` holds. That is a name-keyed test, so it admits `.bmod` interface modules and the combine user file, not just "the user file";
+  - collect those modules' struct names;
+  - intersect them with the prelude manifest. It also exposes per-record `role` and `codegenPrefix()`. The LLVM block in `qcc.cpp` consumes these. `codegenPrefix` and the shadow filter's "routed to the user scope" test stay **name-keyed** (they look up `moduleNamespaces` / `preludeModuleNames` by basename, as today), not role-keyed. A role-keyed rule would differ when two inputs share a basename, e.g. a user file named `net.b`.
 - **Rationale**: These are non-LLVM routing facts. Leaving them in qcc would keep a second copy of "what is a namespaced module", which is the SC-002 "one implementation" rule.
 - **Neutrality note**: today the shadow set is computed only on the LLVM path, after the error exit. Computing it earlier, unconditionally, is side-effect free: it reads struct lists and writes a set. Codegen consumes the identical set.

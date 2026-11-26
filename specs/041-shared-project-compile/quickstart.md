@@ -23,20 +23,22 @@ cmake -S /tmp/u1-base -B /tmp/u1-base/build -DCMAKE_BUILD_TYPE=Debug && make -C 
 ## 2. Gates after each phase (both modes + sanitizer)
 
 ```bash
-git diff --stat epic/modules-v2-lsp..HEAD -- test_files/   # ONLY new files under test_files/project_compile/
+git diff --no-renames --name-only --diff-filter=MDTRC epic/modules-v2-lsp...HEAD -- test_files/        # must print nothing
+git diff --no-renames --name-only --diff-filter=A epic/modules-v2-lsp...HEAD -- test_files/ \
+  | grep -v '^test_files/project_compile/'                                                         # must print nothing
 ./run_tests.sh                                            # LLVM build: baseline count, 0 fail
 BUILD_DIR=build-nollvm ./run_tests.sh                     # parse-only: baseline count, 0 fail
 ./test_codegen.sh && ./test_codegen.sh --leak-check       # Leaks: 0
 ./test_codegen.sh --selfcheck                             # prints SELFCHECK: OK (exits non-zero by design)
 test_build/run_build_tests.sh
-ctest --test-dir build && ctest --test-dir build-asan     # includes project_compile, parser_no_leak
+ctest --test-dir build && ctest --test-dir build-asan     # includes project_compile, blangd_no_subprocess(+_teeth), parser_no_leak
 ./test_lsp.sh && ./test_lsp.sh --selfcheck
 tools/check_no_field_reachins.sh
 for t in examples/*/test_*.sh; do (cd "$(dirname "$t")" && "./$(basename "$t")"); done
 make -C demos run
 ```
 
-**Expected**: every command green at the baseline counts, with ctest +1 (`project_compile`) after phase D-5. **If anything is red, do not update a golden. Stop and raise a `BLOCKER:`** (plan constraint 3).
+**Expected**: every command green at the baseline counts. After phases D-5/D-6, ctest has 3 more tests: `project_compile`, `blangd_no_subprocess` and `blangd_no_subprocess_teeth`, the last of which is WILL_FAIL and counts as passed. **If anything is red, do not update a golden. Stop and raise a `BLOCKER:`** (plan constraint 3).
 
 ## 3. Byte-identity spot check (SC-005)
 
@@ -66,8 +68,9 @@ Repeat with the `qcc` command line that `bcc -v -S <file>` prints. Run each bina
 grep -n "ProjectCompile::run" qcc.cpp lsp/Compile.cpp              # one call in each
 grep -nE "isUserFile|isPreludeModule|injectBmodSymbols|authoritativeModules|Sema::analyze" qcc.cpp   # no output
 grep -nE "resolveStdlibFiles|parseImports" bcc.cpp                  # no output
-grep -n "BlangStdlib::" bcc.cpp                                     # the four call sites
-grep -nE "popen|system\(|fork|exec" ProjectCompile.cpp StdlibSelect.cpp   # no output (I8 / S2)
+grep -n "BlangStdlib::" bcc.cpp                                     # the four call sites: compileAndRunTestFile, runMigrate, buildProject, main
+sh tools/check_no_subprocess.sh build/blangd        # exit 0 (I8, binary-level; F3)
+sh tools/check_no_subprocess.sh build/bcc; test $? -ne 0   # teeth: bcc imports fork/execvp/popen/system
 ```
 
 ## 5. The new test on its own
@@ -77,4 +80,4 @@ ctest --test-dir build -R project_compile --output-on-failure
 ctest --test-dir build-asan -R project_compile --output-on-failure   # LSan-clean
 ```
 
-**Expected**: C1–C6 report OK. A missing `qcc` oracle is a hard failure, never a skip.
+**Expected**: C1–C7 report OK. A missing `qcc` oracle is a hard failure, never a skip.
