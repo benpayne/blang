@@ -53,3 +53,12 @@ These failures are **pre-existing**. The same 8 fail identically on the 043 base
 |------|----:|----:|----:|----:|--------|
 | LLVM | 172 | 233 | 9 | 10 | `EQUIV: 424/424 identical (llvm)` |
 | parse-only | 172 | 233 | 9 | 10 | `EQUIV: 424/424 identical (parse-only)` |
+
+## Corpus count reconciliation (converge)
+
+T050 originally cited "179/179" for the stdlib corpus, which was U2's count. The
+harness prints `corpus stdlib: 177 passed, 0 failed`, and that is correct. U3
+(`c77fae2`) moved `test_build/myapp/main.b` and `test_build/counterapp/main.b`
+from the stdlib list into the project corpus, as documented in the
+`test_files/lsp/corpus.txt` header. Those 2 pass in `corpus project: 29 passed,
+0 failed`, so 177 + 2 = 179 accounted. T050's text is corrected accordingly.

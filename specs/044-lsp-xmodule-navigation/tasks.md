@@ -236,7 +236,7 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
   - `test_build/run_build_tests.sh`;
   - `tools/check_no_field_reachins.sh examples test_build`;
   - the `.bmod`-URI scan over **every** `xmod_*` golden (F3): `grep -l '\.bmod"' test_files/lsp/xmod_*.expected.out` must print nothing;
-  - both diagnostic-corpus legs, as the proof that type-reference recording changes no diagnostic (F5): `tools/lsp_diag_corpus.py --corpus stdlib` must report 179/179, and `--corpus project` must equal `bcc build`. The project leg needs `llc`, so run it on the LLVM `build/`;
+  - both diagnostic-corpus legs, as the proof that type-reference recording changes no diagnostic (F5): `tools/lsp_diag_corpus.py --corpus stdlib` must report `177 passed, 0 failed` (179 accounted: U3 moved `test_build/{myapp,counterapp}/main.b` from the stdlib list into the project corpus, per `test_files/lsp/corpus.txt`; the 179/179 figure was U2's pre-move count — corrected at converge), and `--corpus project` must equal `bcc build`. The project leg needs `llc`, so run it on the LLVM `build/`;
   - the `PASS git-shim: ... git never invoked` line must be present in the `test_lsp.sh` output (L1).
 
   Record the counts. The test totals may only grow.
