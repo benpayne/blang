@@ -34,7 +34,7 @@ The plan adds the `stdlib_locate` ctest. Every behavior task below is backed by 
    - Any cache MUST be a `shared_ptr` held by every result built against it. Adding a cache is a STOP-and-ask.
 3. **No process, no network.** Use only `stat`, `access`, read-only opens and `readlink`. The `blangd_no_subprocess` ctest must keep passing.
 4. **`qcc`/`bcc` frozen.** Zero `qcc`/`bcc` golden or diagnostic-text change.
-   - After every commit, `git diff --name-only epic/modules-v2-lsp...HEAD -- test_files/` may show only *new* files: `test_files/lsp/stdlib_*`, `test_files/lsp/src/prelude_use.b`, `test_files/lsp/corpus.txt` and `test_files/lsp/sema_no_prelude.txt`.
+   - After every commit, `git diff --name-only 041-shared-project-compile...HEAD -- test_files/` (U1's tip `5d9b7b6`; analyze F1) may show only *new* files: `test_files/lsp/stdlib_*` (including `stdlib_didchange_import`), `test_files/lsp/src/prelude_use.b`, `test_files/lsp/src/timer_use.b`, `test_files/lsp/corpus.txt` and `test_files/lsp/sema_no_prelude.txt`.
    - A pre-existing LSP golden diff needs a per-file justification. A text-only diff is a STOP (FR-015).
 5. House style: tabs, spaces inside parentheses, Allman braces, `m` members. The Python tools use the stdlib only.
 
@@ -148,6 +148,8 @@ The plan adds the `stdlib_locate` ctest. Every behavior task below is backed by 
     - the diagnostics are filtered to `location.file == path || location.file.empty()`;
     - when the stdlib is not usable, insert at the front a `Diagnostic { Severity::Warning, {path, 1, 1}, stdlibNotFoundMessage( stdlib ), code "stdlib-not-found" }`.
   - keep the existing two-argument overload byte-for-byte in behavior, so tests that call it are unaffected. Factor the shared tail (run → result) into one static helper so the two overloads share code instead of duplicating it.
+  - **One shared Resolver (analyze F2).** Both overloads MUST use the single function-local `static Resolver` reached through one helper (e.g. `static Resolver &sharedResolver()`). Never declare a second `static Resolver`: two would fight over the `gScope` alias.
+  - **Destruction order (analyze F4, KG-7).** Declare `std::shared_ptr<QLang::CompileContext> context` as the **first** member of `CompileResult`, so it is destroyed **last**. The `module`/`fileScope` co-owners are then released first, and the stdlib modules that the user AST's non-owning links point into outlive them. The comment cites KG-7. T024's ASan loop locks this.
   - update the header comment: documents now compile in stdlib context; the KG-7 invariant (standing rule 2) is stated verbatim at `CompileResult::context`.
 - [ ] T013 [US1] In `lsp/Server.cpp` `publishDiagnostics`, call `compileDocument( uriToPath( uri ), text, mStdlib )`. There is no other change: the JSON rendering already maps Warning to severity 2.
 - [ ] T014 [US1] Run `./test_lsp.sh`. Per research R3, all 70 pre-existing transcripts must still match **without regeneration**.
@@ -246,7 +248,15 @@ The plan adds the `stdlib_locate` ctest. Every behavior task below is backed by 
   Each `stdlib-not-found` warning has severity 2, code `stdlib-not-found` and range 0:0.
 - [ ] T028 [US2] Run the full `./test_lsp.sh` and `./test_lsp.sh --selfcheck`. The total is 75 transcripts plus the sema leg plus the corpus leg, and selfcheck prints `SELFCHECK: OK`. Run the same suite with `BUILD_DIR=build-nollvm` as well. Commit.
 
-**Checkpoint**: US2 complete. Precedence, no fall-through, and the fallback are each pinned.
+- [ ] T038 [US2] Add the transcript golden `stdlib_didchange_import` (analyze F3, proving FR-002: imports are re-scanned from in-memory text on every change).
+  - Create `test_files/lsp/src/timer_use.b`, which uses `timer.after(...)` **without** `import timer;`. Under stdlib context its reference compile reports an error at the use site.
+  - Create `test_files/lsp/stdlib_didchange_import.lsp.jsonl`:
+    - initialize, then `open` `timer_use.b`, then `wait_method` publishDiagnostics (an error is pinned);
+    - send a `didChange` whose full text is the same file with `import timer;` prepended, then `wait_method` (`diagnostics: []` is pinned);
+    - shutdown, exit.
+  - Generate only this golden with `--update-goldens`, then hand-check both publishes.
+
+**Checkpoint**: US2 complete. Precedence, no fall-through, the fallback, and the in-memory import rescan are each pinned.
 
 ---
 
@@ -304,7 +314,7 @@ The plan adds the `stdlib_locate` ctest. Every behavior task below is backed by 
   - `test_build/run_build_tests.sh`;
   - the reach-in gate (+ `--selfcheck`), `examples/*/test_*.sh` and `make -C demos run`;
   - the T006 `bcc` `cmp` re-check;
-  - standing rule 4's `git diff` check, where the only `test_files/` changes are the new files.
+  - standing rule 4's `git diff 041-shared-project-compile...HEAD -- test_files/` check (analyze F1), where the only `test_files/` changes are the allowlisted new files.
 
   Record the post-unit counts in `specs/042-lsp-stdlib-context/checklists/baseline.md`. Confirm `git diff 3b093f6 HEAD -- specs/042-lsp-stdlib-context/spec.md` is empty. Commit.
 - [ ] T036 Structural greps, recorded in `specs/042-lsp-stdlib-context/checklists/baseline.md`:
