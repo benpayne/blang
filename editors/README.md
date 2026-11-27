@@ -123,10 +123,27 @@ client and asserts diagnostics arrive; SKIPs when nvim is not installed).
 
 ## VS Code
 
-`editors/blang-vscode/` is currently a **TextMate grammar only** (syntax
-highlighting, no language-server client). Until a client extension exists,
-a generic LSP bridge extension can run blangd; point it at the binary with
-language id `blang` and file pattern `*.b`.
+`editors/blang-vscode/` is a VS Code extension: the TextMate grammar plus an
+LSP client that starts `blangd` for `.b` files, so diagnostics,
+go-to-definition (F12) and hover work, including across modules.
+
+```bash
+cd editors/blang-vscode && npm install          # once: fetches vscode-languageclient
+# try it without installing (opens an Extension Development Host window):
+code --extensionDevelopmentPath="$PWD" /path/to/your/blang/project
+# or install it: ln -s "$PWD" ~/.vscode/extensions/blang
+```
+
+Settings:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `blang.serverPath` | empty: `build/blangd` in the workspace, else `blangd` on `PATH` | the blangd binary |
+| `blang.stdlibPath` | empty: blangd's own fallback (`BLANG_STDLIB_DIR`, then `stdlib/` next to blangd) | sent as `initializationOptions.stdlibPath` |
+| `blang.trace.server` | `off` | `messages`/`verbose` log LSP traffic to the "BLang Language Server" output channel |
+
+`BLang: Restart Language Server` (command palette) restarts blangd, e.g. after
+rebuilding it.
 
 ## Any other LSP client
 
