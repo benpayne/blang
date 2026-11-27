@@ -200,30 +200,6 @@ static string getDirName( const string &path )
 	return ".";
 }
 
-// Get directory of the bcc executable itself
-static string getExeDir( const char *argv0 )
-{
-	// Try /proc/self/exe first (Linux)
-	char buf[4096];
-	ssize_t len = readlink( "/proc/self/exe", buf, sizeof( buf ) - 1 );
-	if ( len > 0 )
-	{
-		buf[len] = '\0';
-		string exePath = buf;
-		size_t slash = exePath.rfind( '/' );
-		if ( slash != string::npos )
-			return exePath.substr( 0, slash );
-	}
-
-	// Fallback: assume qcc is in the same directory as bcc
-	string arg0 = argv0;
-	size_t slash = arg0.rfind( '/' );
-	if ( slash != string::npos )
-		return arg0.substr( 0, slash );
-
-	return ".";
-}
-
 // Run a command and return its exit code.
 //
 // Executed WITHOUT a shell: fork + execvp with the args passed as a literal
@@ -780,7 +756,7 @@ static int runMigrate( int argc, char *argv[] )
 
 	// 1. Obtain the current schema by parsing the sources with qcc and having
 	//    it emit the table-struct schema as JSON (qcc owns the parser).
-	string exeDir = getExeDir( argv[0] );
+	string exeDir = BlangStdlib::executableDir( argv[0] );
 	string qcc = exeDir + "/qcc";
 
 	mkdir( ".blang", 0755 );
@@ -1553,7 +1529,7 @@ static int runClean()
 
 int main( int argc, char *argv[] )
 {
-	string exeDir = getExeDir( argv[0] );
+	string exeDir = BlangStdlib::executableDir( argv[0] );
 
 	// Intercept subcommands before normal option parsing
 	if ( argc >= 2 && string( argv[1] ) == "build" )
