@@ -253,7 +253,7 @@ void Server::openDocument( const Json &params )
 	const std::string &uri = doc.get( "uri" ).asString();
 	if ( uri.empty() )
 		return;
-	mDocs.open( uri, doc.get( "text" ).asString() );
+	mDocs.open( uri, doc.get( "text" ).asString(), uriToPath( uri ) );
 	publishDiagnostics( uri, mDocs.text( uri ) );
 }
 
@@ -291,7 +291,7 @@ void Server::publishDiagnostics( const std::string &uri, const std::string &text
 	// `context` before its `module`/`fileScope` co-owners (declaration order),
 	// while destruction releases them in reverse order — `context` last, the
 	// KG-7 order CompileResult documents (analyze F4 / review L1).
-	CompileResult fresh = compileDocument( uriToPath( uri ), text, mStdlib );
+	CompileResult fresh = compileDocument( uriToPath( uri ), text, mStdlib, mDocs );
 	mCompiles.erase( uri );
 	auto inserted = mCompiles.emplace( uri, std::move( fresh ) );
 	const std::vector<QLang::Diagnostic> &diags = inserted.first->second.diagnostics;

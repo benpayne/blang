@@ -27,6 +27,7 @@ NC='\033[0m'
 VERBOSE=0
 UPDATE_GOLDENS=0
 SELFCHECK=0
+NO_PROJECT_CORPUS=0
 FILE_ARGS=()
 
 for arg in "$@"; do
@@ -34,6 +35,7 @@ for arg in "$@"; do
 		--verbose) VERBOSE=1 ;;
 		--update-goldens) UPDATE_GOLDENS=1 ;;
 		--selfcheck) SELFCHECK=1 ;;
+		--no-project-corpus) NO_PROJECT_CORPUS=1 ;;
 		--help)
 			echo "Usage: $0 [--verbose] [--update-goldens] [--selfcheck] [fixture...]"
 			echo "  --verbose         Show the transcript diff on failure (full)"
@@ -42,6 +44,8 @@ for arg in "$@"; do
 			echo "                    real golden, require the suite to go red, print"
 			echo "                    'SELFCHECK: OK', and exit non-zero. Never mutates a"
 			echo "                    committed golden."
+			echo "  --no-project-corpus  Skip the U3 project-corpus leg (CI runs it in the"
+			echo "                    LLVM build-system job: its reference needs llc)"
 			exit 0
 			;;
 		*) FILE_ARGS+=("$arg") ;;
@@ -302,6 +306,39 @@ if [ ${#FILE_ARGS[@]} -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
 		echo -e "  ${RED}FAIL${NC}  corpus stdlib"
 		printf '%s\n' "$corpus_out" | grep -E '^FAIL|corpus |lsp_diag_corpus' | head -20 | sed 's/^/    /'
 		FAIL_COUNT=$((FAIL_COUNT + 1))
+	fi
+
+	# modules-v2-lsp U3: the PROJECT corpus — blangd vs the project reference
+	# compile (the final qcc line `bcc build -v <dir>` prints) for every
+	# test_build/* binary, examples/* project and the multi-file fixture, plus the
+	# 11 fail/xmodule fixtures as synthesized lib+bin layouts and the dependency
+	# interface byte-parity check. The reference needs an LLVM qcc and llc (bcc
+	# build archives each library dependency), so it is skipped elsewhere — a FAIL
+	# under CI=true (CI runs it in the LLVM build-system job; research R2).
+	echo ""
+	echo "--- LSP project corpus (tools/lsp_diag_corpus.py --corpus project) ---"
+	have_llc=0
+	if command -v llc-18 >/dev/null 2>&1 || command -v llc >/dev/null 2>&1; then have_llc=1; fi
+	if [ "$NO_PROJECT_CORPUS" -eq 1 ]; then
+		echo -e "  ${YELLOW}SKIP${NC}: project corpus (--no-project-corpus; runs in CI build-system)"
+	elif [ $have_llc -eq 1 ] && "$BUILD_DIR/qcc" --help 2>&1 | grep -q -- "--emit-ir"; then
+		TOTAL=$((TOTAL + 1))
+		project_out="$(python3 "$SCRIPT_DIR/tools/lsp_diag_corpus.py" --build-dir "$BUILD_DIR" \
+			--root "$SCRIPT_DIR" --corpus project --check-list 2>&1)"
+		if [ $? -eq 0 ]; then
+			echo -e "  ${GREEN}PASS${NC}  $(printf '%s\n' "$project_out" | tail -1)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		else
+			echo -e "  ${RED}FAIL${NC}  corpus project"
+			printf '%s\n' "$project_out" | grep -E 'FAIL|corpus |lsp_diag_corpus' | head -20 | sed 's/^/    /'
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		fi
+	elif [ "${CI:-}" = "true" ]; then
+		TOTAL=$((TOTAL + 1))
+		echo -e "  ${RED}FAIL${NC}  project corpus skipped under CI=true (needs llc + an LLVM qcc)"
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	else
+		echo -e "  ${YELLOW}SKIP${NC}: project corpus (needs llc + an LLVM qcc; runs in CI build-system)"
 	fi
 
 	echo ""

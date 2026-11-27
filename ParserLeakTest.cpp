@@ -16,6 +16,8 @@
 #include <cassert>
 #include <cstdio>
 #include <string>
+#include <sstream>
+#include <fstream>
 
 #include "Resolver.h"
 #include "Type.h"
@@ -132,6 +134,33 @@ int main()
 			assert( res.diagnostics.empty() && "stdlib-context fixture is clean" );
 			assert( res.context != nullptr && res.context->records().size() > 1 &&
 				"the stdlib modules are part of this result's context" );
+		}
+	}
+
+	// modules-v2-lsp U3 (spec FR-020/SC-006): the PROJECT-context reparse loop.
+	// usebox's main.b imports midx, which returns boqx's Box<int>, so each reparse
+	// derives two dependency interfaces from source (two isolated dependency Runs)
+	// and compiles the document against them. Ownership order (plan D-4): the
+	// result's `resolver` is destroyed LAST, after `context` (which owns the
+	// re-parsed interfaces the document's non-owning resolution links point into),
+	// `deps` (the dependency source compiles) and the document's module/scope.
+	// LeakSanitizer (build-asan) fails the process if any reparse leaks.
+	{
+		lsp::StdlibLocation loc = lsp::locateStdlib( BLANG_SOURCE_STDLIB_DIR, "", "" );   // fresh (analyze L2)
+		assert( loc.usable && "source stdlib is usable" );
+		const std::string mainPath = std::string( BLANG_SOURCE_ROOT ) + "/test_build/usebox/main.b";
+		std::ifstream in( mainPath );
+		std::ostringstream ss;
+		ss << in.rdbuf();
+		const std::string mainText = ss.str();
+		assert( !mainText.empty() && "usebox/main.b readable" );
+		lsp::EmptyOverlay overlay;
+		for ( int i = 0; i < 50; i++ )
+		{
+			lsp::CompileResult res = lsp::compileDocument( mainPath, mainText, loc, overlay );
+			assert( res.module != nullptr && "project-context document parses" );
+			assert( res.deps.size() >= 2 && "boxq + midx derived from source" );
+			assert( res.diagnostics.empty() && "usebox is clean in project context" );
 		}
 	}
 

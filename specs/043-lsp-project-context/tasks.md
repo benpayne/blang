@@ -170,16 +170,16 @@ The binding audit order is applied in Phase 2, before any story:
 
 ### Core
 
-- [ ] T015 [US1] In `lsp/DocumentStore.h`, add path-keyed overlay lookup: `const std::string *textForPath( const std::string &realPath ) const`. Maintain a `realpath( uriToPath( uri ) )` → uri index on open, change and close, falling back to the literal path when `realpath` fails. Add a small `Overlay` view type passed by reference to `compileDocument` (FR-011).
-- [ ] T016 [US1] Create `lsp/ProjectContext.h` and `lsp/ProjectContext.cpp`, following data-model.md "Project" and contract project-context.md "Discovery and membership":
+- [X] T015 [US1] In `lsp/DocumentStore.h`, add path-keyed overlay lookup: `const std::string *textForPath( const std::string &realPath ) const`. Maintain a `realpath( uriToPath( uri ) )` → uri index on open, change and close, falling back to the literal path when `realpath` fails. Add a small `Overlay` view type passed by reference to `compileDocument` (FR-011).
+- [X] T016 [US1] Create `lsp/ProjectContext.h` and `lsp/ProjectContext.cpp`, following data-model.md "Project" and contract project-context.md "Discovery and membership":
   - `locateProject( docPath, overlay )` → `Project{root, config, issues, sources, isMember, origin, kind}`;
   - it uses `BlangProject::findProjectRoot`, `ProjectConfig::loadFromText` (with the overlay text when the toml is open) and `BlangProject::discoverSourceFiles`;
   - `isMember` is decided by `realpath` equality (R5; FR-001, FR-002);
   - for a member, the document's `CompileInput::path` is the **URI path exactly** (`uriToPath( uri )`), so the publish filter (`location.file == path`) and the `module`/`fileScope` lookup always match it, even through symlinks or unnormalized paths. Sibling sources keep their `discoverSourceFiles` path. Overlay lookups are keyed by `realpath`; the D-3 provider is keyed by `CompileInput::path` (analyze M6; C1/C5).
-- [ ] T017 [US1] In `lsp/ProjectContext.cpp`, implement the dependency graph (data-model "Dependency node"; plan D-4 step 3; FR-004, FR-006):
+- [X] T017 [US1] In `lsp/ProjectContext.cpp`, implement the dependency graph (data-model "Dependency node"; plan D-4 step 3; FR-004, FR-006):
   - implement the blangd `WalkVisitor` over `BlangProject::walkDependencies( root, nullptr, v )`. `load` = `loadFromText` from the overlay or disk with the issue sink. No DFS, on-path set or fold code in `lsp/`. Grep gate: `grep -nE 'onPath|mergeByOrigin|building' lsp/*.cpp` matches only calls to and fields of the shared API. *(Audit addendum H1.)* The visitor's `onDepError`/`onCycle` return 0 so the walk continues; `leave` derives the interface (T018), memoized by origin for this compile only;
   - each failure recorded as `unresolvable{reason}`, where the reason is missing-path, unfetched-git, unpinned-git, no-path-or-git or cycle. The failed node, and nodes reachable only through it, are excluded from the closure.
-- [ ] T018 [US1] In `lsp/ProjectContext.cpp`, implement interface derivation (plan D-3; FR-005, FR-011), leaves first in fold order. For each resolved dependency:
+- [X] T018 [US1] In `lsp/ProjectContext.cpp`, implement interface derivation (plan D-3; FR-005, FR-011), leaves first in fold order. For each resolved dependency:
   - **(a)** Build its plan:
     - non-combine, `kCanonical`, `moduleOrigin = origin`;
     - its sources as **in-memory** `kSource` inputs, with text from `overlay.textForPath( p )` or else a disk read;
@@ -187,7 +187,7 @@ The binding audit order is applied in Phase 2, before any story:
   - **(b)** Run it with `runPlan` (T011). If `ctx->hadError() || diag.hasErrors()`, mark the dependency `compile-failed{first error}` (R6).
   - **(c)** Emit with `BmodEmitter::emit( recorded non-extern modules, ostringstream, ctx->bmodEmitScope(), &provider, &missing )`, **inside** that run's `GlobalAliasScope` (analyze L3). The provider is a per-run `map<path, const std::string*>` over **every** `CompileInput` of that dependency's run: each source path and each closure-interface path (`<depDir>/<name>.bmod`), keyed exactly by `CompileInput::path` (the string `SourceLocation.file` carries). If `emit`'s `missing` is non-empty, mark the dependency `compile-failed` with `internal error: no source text for '<path>' while deriving the interface of '<name>'` (published per D-5, R6). It is never a crash or a silent fallback. *(Audit addendum H3.)*
   - **(d)** Store the interface text and keep the `Run` for `CompileResult::deps` (U4 navigation).
-- [ ] T019 [US1] In `lsp/Compile.cpp`, add the project branch of `compileDocument( path, text, stdlib, overlay )` (plan D-4 steps 1, 2, 5, 6; FR-003):
+- [X] T019 [US1] In `lsp/Compile.cpp`, add the project branch of `compileDocument( path, text, stdlib, overlay )` (plan D-4 steps 1, 2, 5, 6; FR-003):
   - **Not a member or no project:** the U2 path, unchanged.
   - **Binary:**
     - combine, iff `BlangStdlib::selectStdlibFiles( stdlib.path, BlangStdlib::scanImportsAll( per-file texts of all project sources ) )` is non-empty, where each text is the overlay text or the disk text, and the document's own text is `text`. **Never concatenate** (audit addendum H2);
@@ -200,14 +200,14 @@ The binding audit order is applied in Phase 2, before any story:
   - **Library:** non-combine, no stdlib (R4).
 
   Run with `runPlan`. Fill `resolver`, `context` and `deps`. Take `module` and `fileScope` from the record whose path is the document's path, not `records().back()`, because any member file may be open. Publish the run diagnostics located in `path`.
-- [ ] T020 [US1] In `lsp/Server.cpp`, pass the overlay from `mDocs` into `compileDocument`. Keep U2's erase-and-emplace replacement. Run `./test_lsp.sh`: U2's 78 must still pass.
+- [X] T020 [US1] In `lsp/Server.cpp`, pass the overlay from `mDocs` into `compileDocument`. Keep U2's erase-and-emplace replacement. Run `./test_lsp.sh`: U2's 78 must still pass.
 
 ### Fixtures, corpus and CI
 
-- [ ] T021 [P] [US1] Create the multi-file sibling fixture `test_files/lsp/projects/multifile/` (`blang.toml` with `type = "bin"` and two root `.b` sources) per research R8.
+- [X] T021 [P] [US1] Create the multi-file sibling fixture `test_files/lsp/projects/multifile/` (`blang.toml` with `type = "bin"` and two root `.b` sources) per research R8.
   - Author it so that `bcc build` (scratch copy, scratch cache) succeeds and its final `qcc` reference exits 0 with a **real cross-file resolution**, using the cross-file call shape `bcc`'s routing accepts.
   - Record a manual teeth check in `specs/043-lsp-project-context/checklists/corpus-run.md`: deleting the callee makes both `bcc` and blangd report an error.
-- [ ] T022 [US1] Extend `tools/lsp_diag_corpus.py` with `--corpus project` per contract lsp-test-tools-u3.md:
+- [X] T022 [US1] Extend `tools/lsp_diag_corpus.py` with `--corpus project` per contract lsp-test-tools-u3.md:
   - **Scratch tree:** copy `test_build/`, `examples/` and the needed `test_files` subtrees into `mkdtemp()`, set `XDG_CACHE_HOME=<scratch>/cache` for **both** `bcc` and blangd, and never write to the repository.
   - **`project <dir>` entries:**
     - the reference is `bcc build -v <abs scratch dir>`; its **last** `/qcc ` line is split with `shlex`, `--json` is appended, and it runs with `cwd = <scratch dir>`;
@@ -221,14 +221,14 @@ The binding audit order is applied in Phase 2, before any story:
     - every reference **error** located in `consumer.b` must be present in blangd's publish, **and** blangd must publish no **error** in `consumer.b` that the reference lacks (SC-002 "the same located diagnostic"; analyze M4). Extra warnings are tolerated and reported (research R9);
     - built-in teeth: on a copy of one fixture with the reach-in line removed, the reference must have no error. That shows the assertion is not vacuous.
   - **Exit code 2** when there is no LLVM `qcc` or no `llc`/`llc-18`.
-- [ ] T023 [US1] In `tools/lsp_diag_corpus.py`, change the **stdlib** qualifying rule: exclude files whose `findProjectRoot` project has `[deps]` and that are members (the `test_build/*` binaries). The six `examples/*/main.b` stay (research R1). Extend `--check-list` for the project and xmodule sets (contract).
+- [X] T023 [US1] In `tools/lsp_diag_corpus.py`, change the **stdlib** qualifying rule: exclude files whose `findProjectRoot` project has `[deps]` and that are members (the `test_build/*` binaries). The six `examples/*/main.b` stay (research R1). Extend `--check-list` for the project and xmodule sets (contract).
 
   Then update `test_files/lsp/corpus.txt`:
   - remove `stdlib test_build/myapp/main.b` and `stdlib test_build/counterapp/main.b`;
   - add `project` entries for the 10 binaries, the 6 `examples` and `test_files/lsp/projects/multifile`;
   - add `xmodule` entries for all 11 fixtures;
   - update the header comment.
-- [ ] T024 [US1] Run the project corpus:
+- [X] T024 [US1] Run the project corpus:
   - `python3 tools/lsp_diag_corpus.py --build-dir build --root "$PWD" --corpus project --check-list` must have every entry PASS;
   - `myapp` and `counterapp` must show 0 diagnostics (SC-001);
   - all 11 xmodule entries must PASS (SC-002).
@@ -236,10 +236,10 @@ The binding audit order is applied in Phase 2, before any story:
   Also run `--corpus stdlib --check-list` in `build` and `build-nollvm`: 177 PASS. SC-007 evidence = stdlib corpus **177/177** + `myapp` and `counterapp` **PASS in the project corpus** = **179/179 accounted**. Name the two moved entries in `checklists/corpus-run.md`. A file that drops out of both sets is a STOP (audit addendum M1).
 
   Fix any FAIL in `lsp/` plan assembly only. A FAIL that seems to need a new rule is a STOP. Record the per-entry output in `specs/043-lsp-project-context/checklists/corpus-run.md`.
-- [ ] T025 [US1] Add an interface byte-parity check (plan D-3 parity argument; FR-005) to the `project_layout` ctest, or as a `--interface-parity` mode of the corpus tool:
+- [X] T025 [US1] Add an interface byte-parity check (plan D-3 parity argument; FR-005) to the `project_layout` ctest, or as a `--interface-parity` mode of the corpus tool:
   - for every `test_build` **library**, the blangd-derived interface text must equal the `.bmod` that a cold in-place `bcc build` produced under a scratch cache, byte for byte;
   - run it in the LLVM build and record the result in `corpus-run.md`.
-- [ ] T026 [US1] Wire the project corpus into `test_lsp.sh` and CI (research R2; plan D-7):
+- [X] T026 [US1] Wire the project corpus into `test_lsp.sh` and CI (research R2; plan D-7):
   - **`test_lsp.sh`**: add a project-corpus leg after the stdlib corpus leg. It runs only when `$BUILD_DIR/CMakeCache.txt` shows LLVM enabled and `llc-18`/`llc` is on `PATH`. Otherwise it prints `SKIP: project corpus (needs llc + an LLVM qcc; runs in CI build-system)`, and when `CI=true` the skip counts as a FAIL. It accepts `--no-project-corpus`.
   - **`.github/workflows/ci.yml`**:
     - the `lsp` job's `./test_lsp.sh` invocations pass `--no-project-corpus`;
@@ -247,7 +247,7 @@ The binding audit order is applied in Phase 2, before any story:
 
 ### Ownership lock
 
-- [ ] T027 [US1] In `ParserLeakTest.cpp`, **append** a project-context loop (FR-020, SC-006); existing blocks stay unmodified.
+- [X] T027 [US1] In `ParserLeakTest.cpp`, **append** a project-context loop (FR-020, SC-006); existing blocks stay unmodified.
   - Create a **fresh** `lsp::StdlibLocation loc = lsp::locateStdlib( BLANG_SOURCE_STDLIB_DIR, "", "" )` in the new block; U2's `loc` is scoped to its own block (analyze L2).
   - Run 50 iterations of `lsp::compileDocument( BLANG_SOURCE_ROOT "/test_build/usebox/main.b", <file text>, loc, emptyOverlay )`.
   - Assert in each that `res.deps.size() >= 2` (boxq and midx) and `res.diagnostics.empty()`, then drop the result.

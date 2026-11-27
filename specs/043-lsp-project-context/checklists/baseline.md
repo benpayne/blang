@@ -42,3 +42,7 @@
 - **ctest**: 87/87 in each of `build`, `build-nollvm` and `build-asan` (86 + `project_layout`). The `parser_no_leak` U2 loop is LSan-clean in `build-asan`.
 - **`grep -n gScope lsp/*.cpp lsp/*.h lsp/AstLocator.cpp Sema.cpp`**: the only hits outside comments are `GlobalAliasScope`'s save, install and restore (`lsp/Run.h:38-39`). No post-compile code reads the alias.
 - **No cached builtin-scope pointers**: `grep` for `static` `Type*`/`Scope*`/`SmartPtr` caches of `gScope` lookups in `Q*.cpp`, `Sema.cpp`, `Type.h` and `Expression.h` found none. A fresh global scope per run is therefore safe.
+
+## T017 / N5: blangd derives no project rule
+
+`grep -nE 'onPath|mergeByOrigin|building' lsp/*.cpp lsp/*.h` returns one hit, `lsp/ProjectContext.cpp:118: for ( const auto &d : *node.onPath )`. It sits inside `BlangdVisitor::onCycle`, which only **renders** the cycle message from the walk's own on-path list. The cycle detection, the fold and the merge-by-origin all live in `BlangProject::walkDependencies` (shared with `bcc`). `lsp/` has no `mergeByOrigin` and no `building` set.

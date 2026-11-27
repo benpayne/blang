@@ -19,6 +19,7 @@
 #include "../ProjectCompile.h"
 #include "../Resolver.h"
 #include "StdlibLocation.h"
+#include "DocumentStore.h"
 
 namespace lsp
 {
@@ -67,6 +68,17 @@ CompileResult compileDocument( const std::string &path, const std::string &text 
 // Never prints; never throws for source-level errors; never spawns a process.
 CompileResult compileDocument( const std::string &path, const std::string &text,
 	const StdlibLocation &stdlib );
+
+// modules-v2-lsp U3: the server's entry point. A member of a blang.toml project
+// is compiled with the plan `bcc build`'s final qcc invocation uses — the
+// project's sources, its path/already-fetched git dependencies resolved FROM
+// SOURCE (interfaces derived by the one exporter), the stdlib for a binary — with
+// every open buffer in `overlay` taking precedence over the disk copy. Anything
+// else falls back to the stdlib overload above. Setup problems (missing path,
+// unfetched/unpinned git dep, a failing dependency, a cycle, blang.toml lines)
+// are located diagnostics; never a crash, never a process, never the network.
+CompileResult compileDocument( const std::string &path, const std::string &text,
+	const StdlibLocation &stdlib, const Overlay &overlay );
 
 } // namespace lsp
 
