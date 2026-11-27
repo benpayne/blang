@@ -1,0 +1,7 @@
+[project]
+name = "cycle_b"
+version = "0.1.0"
+type = "lib"
+
+[deps]
+cycle_a = { path = "../cycle_a" }

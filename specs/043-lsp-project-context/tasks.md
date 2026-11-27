@@ -266,14 +266,14 @@ The binding audit order is applied in Phase 2, before any story:
 
 **Independent Test**: the four `project_*` negative goldens match, and the git-shim leg reports no marker.
 
-- [ ] T028 [US2] In `lsp/ProjectContext.cpp` and `lsp/Compile.cpp`, implement setup diagnostics exactly per plan D-5 and contract project-context.md:
+- [X] T028 [US2] In `lsp/ProjectContext.cpp` and `lsp/Compile.cpp`, implement setup diagnostics exactly per plan D-5 and contract project-context.md:
   - **Unresolvable dependencies:** Error. Use the fixed message per reason. Place it at the document's first parsed `ImportStatement` whose `getModuleName()` equals the import name: the `[project] name` if readable, else the `[deps]` key. Otherwise place it at 1:1 with ` (declared at <toml>:<line>)`.
   - **Dependency compile failure:** Error, with message `dependency '<name>' failed to compile: <file>:<line>:<col>: <message>` (R6).
   - **Cycle:** Error, with message `circular dependency: a -> b -> a`.
   - **`blang.toml` issues:** each one is a Warning at 1:1 with message `<toml>:<line>: parse error: <message>` (R7/R8).
   - **Publish order:** the toml Warnings, then the setup Errors, then the run's diagnostics.
-- [ ] T029 [US2] In `lsp/Compile.cpp`, implement the cascade suppression (research R7; plan D-5). For each unresolvable module name `<n>`, drop run diagnostics whose message contains `'<n>'` or `'<n>.`. Keep everything else.
-- [ ] T030 [P] [US2] Create the negative fixtures under `test_files/lsp/projects/`. Each fixture's `main.b` **also** contains one unrelated real error (e.g. `int x = "s";`), which proves the suppression is narrow.
+- [X] T029 [US2] In `lsp/Compile.cpp`, implement the cascade suppression (research R7; plan D-5). For each unresolvable module name `<n>`, drop run diagnostics whose message contains `'<n>'` or `'<n>.`. Keep everything else.
+- [X] T030 [P] [US2] Create the negative fixtures under `test_files/lsp/projects/`. Each fixture's `main.b` **also** contains one unrelated real error (e.g. `int x = "s";`), which proves the suppression is narrow.
   - **`missing_path/`:** a bin with `nope = { path = "../does_not_exist" }`, and `main.b` that does `import nope;` and uses `nope.f()`.
   - **`gitdep_unfetched/`:** a bin with `greet = { git = "file:///nonexistent/greet.git", tag = "v1" }`, `import greet;`, and `greet.hi()`. Add `empty_cache/.keep`.
   - **`malformed_toml/`:** a bin whose `blang.toml` has one `this is not toml` line plus a valid `[project]`.
@@ -281,18 +281,18 @@ The binding audit order is applied in Phase 2, before any story:
   - **`gitdep_unpinned/`** (analyze M5): a bin with `greet = { git = "file:///nonexistent/greet.git" }` (no tag/rev), `import greet;`.
   - **`dep_failed/{app,lib}/`** (analyze M5): `lib/lib.b` has a Sema error (e.g. `int x = "s";` inside a `pub fn`); `app/main.b` does `import lib;` and calls it.
   - **`cycle_a/` and `cycle_b/`:** two libraries that depend on each other, plus `main.b` in `cycle_a` importing `cycle_b`. If a library cannot hold `main.b` meaningfully, use a bin `cycle_app/` that depends on `cycle_a`.
-- [ ] T031 [US2] In `tools/lsp_client.py`, add `--server-env NAME=VALUE` (repeatable), applied after the script's `server_env` steps and `${ROOT}`-substituted. Update the docstring (contract lsp-test-tools-u3.md).
-- [ ] T032 [US2] Create `test_files/lsp/project_missing_path.lsp.jsonl`, `project_git_unfetched.lsp.jsonl` (with `{"server_env": {"XDG_CACHE_HOME": "${ROOT}/test_files/lsp/projects/empty_cache"}}`), `project_malformed_toml.lsp.jsonl`, `project_cycle.lsp.jsonl`, `project_git_warm.lsp.jsonl` (`server_env XDG_CACHE_HOME=${ROOT}/test_files/lsp/projects/warm_cache`; clean publish, analyze M2), `project_git_unpinned.lsp.jsonl` and `project_dep_compile_failed.lsp.jsonl` (analyze M5). Each opens its fixture's `main.b` and waits for the publish.
+- [X] T031 [US2] In `tools/lsp_client.py`, add `--server-env NAME=VALUE` (repeatable), applied after the script's `server_env` steps and `${ROOT}`-substituted. Update the docstring (contract lsp-test-tools-u3.md).
+- [X] T032 [US2] Create `test_files/lsp/project_missing_path.lsp.jsonl`, `project_git_unfetched.lsp.jsonl` (with `{"server_env": {"XDG_CACHE_HOME": "${ROOT}/test_files/lsp/projects/empty_cache"}}`), `project_malformed_toml.lsp.jsonl`, `project_cycle.lsp.jsonl`, `project_git_warm.lsp.jsonl` (`server_env XDG_CACHE_HOME=${ROOT}/test_files/lsp/projects/warm_cache`; clean publish, analyze M2), `project_git_unpinned.lsp.jsonl` and `project_dep_compile_failed.lsp.jsonl` (analyze M5). Each opens its fixture's `main.b` and waits for the publish.
 
   Generate **only these** with `./test_lsp.sh --update-goldens test_files/lsp/project_*.lsp.jsonl`. Hand-review each against the D-5 table: exactly one setup diagnostic, the right severity and placement, the unrelated real error still present, and no `undefined symbol`/`unknown module` cascade for the bad dependency (FR-009, FR-016, FR-017(a–c), SC-003).
-- [ ] T033 [US2] Add a git-shim leg to `test_lsp.sh` (FR-018, SC-003):
+- [X] T033 [US2] Add a git-shim leg to `test_lsp.sh` (FR-018, SC-003):
   - create `shim=$(mktemp -d)` holding an executable `git` that does `touch "$shim/git-invoked"; exit 1`;
   - run `python3 tools/lsp_client.py --server "$BLANGD" --root "$SCRIPT_DIR" --script test_files/lsp/project_git_unfetched.lsp.jsonl --server-env "PATH=$shim:$PATH"`;
   - FAIL if `$shim/git-invoked` exists, or if the transcript lacks exactly one `git dependency 'greet' is not fetched` diagnostic;
   - remove `$shim`.
 
   Run it in both build modes. Also confirm that `sh tools/check_no_subprocess.sh build/blangd` still prints OK.
-- [ ] T034 [US2] Add a committed hostile-input leg to `test_lsp.sh` (FR-010, Gate 7; analyze M5: committed, not manual). In a `mktemp -d` scratch tree it builds three projects, then opens each one's `main.b` through `lsp_client.py --sema-fixture`-style sessions and FAILs unless the session exits 0 with strict framing (nothing on stderr) and at least one published diagnostic. The three projects are ones whose `blang.toml`:
+- [X] T034 [US2] Add a committed hostile-input leg to `test_lsp.sh` (FR-010, Gate 7; analyze M5: committed, not manual). In a `mktemp -d` scratch tree it builds three projects, then opens each one's `main.b` through `lsp_client.py --sema-fixture`-style sessions and FAILs unless the session exits 0 with strict framing (nothing on stderr) and at least one published diagnostic. The three projects are ones whose `blang.toml`:
   - is 5 MB of garbage;
   - is a directory;
   - names a dependency that is a symlink loop.

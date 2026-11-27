@@ -1,0 +1,7 @@
+[project]
+name = "gitdep_unfetched"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+greet = { git = "file:///nonexistent/greet.git", tag = "v1" }

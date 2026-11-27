@@ -30,6 +30,12 @@ skipped):
                           the server's environment; read BEFORE the server is
                           spawned, a no-op during replay (modules-v2-lsp U2)
 
+--server-env NAME=VALUE (repeatable; modules-v2-lsp U3): set NAME=VALUE in the
+server's environment, ${ROOT}-substituted, applied AFTER the script's
+server_env steps (so the command line wins). Valid with --script and
+--sema-fixture. test_lsp.sh's git-shim leg uses it to put a tripwire `git`
+first on PATH.
+
 Environment hygiene: the server is always spawned WITHOUT BLANG_STDLIB_DIR
 (the caller's value is removed), so a developer's environment can never change
 a golden; a fixture that needs it sets it with a server_env step.
@@ -247,7 +253,17 @@ def main():
     ap.add_argument("--stdlib-path", metavar="DIR",
                     help="with --sema-fixture: send initializationOptions."
                          "stdlibPath=DIR in initialize")
+    ap.add_argument("--server-env", metavar="NAME=VALUE", action="append",
+                    default=[], help="set NAME=VALUE (${ROOT}-substituted) in "
+                    "the server environment, after the script's server_env "
+                    "steps (repeatable)")
     args = ap.parse_args()
+    cli_env = {}
+    for item in args.server_env:
+        if "=" not in item:
+            ap.error("--server-env expects NAME=VALUE, got %r" % item)
+        name, value = item.split("=", 1)
+        cli_env[name] = value
     if bool(args.script) == bool(args.sema_fixture):
         ap.error("exactly one of --script / --sema-fixture is required")
     if args.stdlib_path and not args.sema_fixture:
@@ -256,7 +272,7 @@ def main():
     root = os.path.abspath(args.root)
 
     if args.sema_fixture:
-        driver = Driver(args.server, root)
+        driver = Driver(args.server, root, server_environment(root, cli_env))
         return run_sema_fixture(driver, args.sema_fixture, args.stdlib_path)
 
     # Read the whole script first: server_env steps must be applied before the
@@ -277,6 +293,7 @@ def main():
     for _, _, step in steps:
         if "server_env" in step:
             extra_env.update(step["server_env"])
+    extra_env.update(cli_env)
     driver = Driver(args.server, root, server_environment(root, extra_env))
 
     for lineno, raw, step in steps:

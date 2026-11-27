@@ -341,6 +341,74 @@ if [ ${#FILE_ARGS[@]} -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
 		echo -e "  ${YELLOW}SKIP${NC}: project corpus (needs llc + an LLVM qcc; runs in CI build-system)"
 	fi
 
+	# modules-v2-lsp U3 (FR-018, SC-003): the git-shim leg. A tripwire `git` is put
+	# first on blangd's PATH and the unfetched-git-dependency fixture is opened:
+	# blangd must report the dependency as not fetched and must NEVER run git.
+	echo ""
+	echo "--- LSP git-shim leg (blangd never runs git) ---"
+	TOTAL=$((TOTAL + 1))
+	shim="$(mktemp -d)"
+	printf '#!/bin/sh\ntouch "%s/git-invoked"\nexit 1\n' "$shim" > "$shim/git"
+	chmod +x "$shim/git"
+	shim_out="$(python3 "$SCRIPT_DIR/tools/lsp_client.py" --server "$BLANGD" --root "$SCRIPT_DIR" \
+		--script "$SCRIPT_DIR/test_files/lsp/project_git_unfetched.lsp.jsonl" \
+		--server-env "PATH=$shim:$PATH" 2>&1)"
+	shim_rc=$?
+	shim_hits="$(printf '%s\n' "$shim_out" | grep -o "git dependency 'greet' is not fetched" | wc -l)"
+	if [ $shim_rc -ne 0 ]; then
+		echo -e "  ${RED}FAIL${NC}  git-shim: session failed"
+		printf '%s\n' "$shim_out" | head -5 | sed 's/^/    /'
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	elif [ -e "$shim/git-invoked" ]; then
+		echo -e "  ${RED}FAIL${NC}  git-shim: blangd invoked git"
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	elif [ "$shim_hits" -ne 1 ]; then
+		echo -e "  ${RED}FAIL${NC}  git-shim: expected exactly one 'not fetched' diagnostic, got $shim_hits"
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	else
+		echo -e "  ${GREEN}PASS${NC}  git-shim: one 'not fetched' diagnostic, git never invoked"
+		PASS_COUNT=$((PASS_COUNT + 1))
+	fi
+	rm -rf "$shim"
+
+	# modules-v2-lsp U3 (FR-010, Quality Gate 7): hostile project inputs. Each
+	# session must exit 0 with strict framing (lsp_client fails on any stray
+	# stdout/stderr byte) and publish at least one diagnostic; the directory case
+	# pins the unreadable-blang.toml Warning text (analyze N4).
+	echo ""
+	echo "--- LSP hostile-input leg (garbage / directory / symlink-loop blang.toml) ---"
+	hostile="$(mktemp -d)"
+	mkdir -p "$hostile/garbage" "$hostile/dirtoml/blang.toml" "$hostile/symloop"
+	python3 -c 'import random,sys; r=random.Random(7); sys.stdout.buffer.write(bytes(r.randrange(256) for _ in range(5*1024*1024)))' \
+		> "$hostile/garbage/blang.toml"
+	printf '[project]\nname = "symloop"\ntype = "bin"\n\n[deps]\nloop = { path = "../loop" }\n' > "$hostile/symloop/blang.toml"
+	ln -s loop "$hostile/loop"
+	for p in garbage dirtoml symloop; do
+		printf 'import loop;\nfn main() -> int {\n\tint x = "s";\n\treturn x;\n}\n' > "$hostile/$p/main.b"
+	done
+	for p in garbage dirtoml symloop; do
+		TOTAL=$((TOTAL + 1))
+		h_out="$(python3 "$SCRIPT_DIR/tools/lsp_client.py" --server "$BLANGD" --root "$hostile" \
+			--sema-fixture "$p/main.b" 2>&1)"
+		h_rc=$?
+		h_n="$(printf '%s\n' "$h_out" | grep -c "^$p/main.b:")"
+		h_ok=1
+		[ $h_rc -eq 0 ] && [ "$h_n" -ge 1 ] || h_ok=0
+		if [ "$p" = dirtoml ] && ! printf '%s\n' "$h_out" | \
+			grep -qxF "dirtoml/main.b:1:1: warning: $hostile/dirtoml/blang.toml: cannot read blang.toml"; then
+			h_ok=0
+		fi
+		if [ $h_ok -eq 1 ]; then
+			echo -e "  ${GREEN}PASS${NC}  hostile $p: exit 0, strict framing, $h_n diagnostic(s)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		else
+			echo -e "  ${RED}FAIL${NC}  hostile $p (rc=$h_rc, diagnostics=$h_n)"
+			printf '%s\n' "$h_out" | head -5 | sed 's/^/    /'
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		fi
+	done
+	rm -rf "$hostile"
+
 	echo ""
 	echo "--- LSP latency floor (tools/lsp_latency.py) ---"
 	sanitize="$(grep -m1 '^BLANG_SANITIZE:' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null | sed 's/^[^=]*=//')"
