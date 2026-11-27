@@ -186,4 +186,4 @@ devbot:
     - run_id: 6d49bcb9-82f3-4642-9393-83c73cb157ef
       launched: 2026-11-26
       branch: epic/modules-v2-lsp
-      outcome: pending
+      outcome: completed

@@ -3,7 +3,7 @@
 **Archetype**: evolve (reworks the existing `blangd` compile pipeline on top of
 the Resolver seam Epic B extracted; `qcc`/`bcc` behavior must not change)
 
-**Status**: launched
+**Status**: complete-pending-merge
 
 **Owner**: Ben Payne
 
@@ -227,3 +227,5 @@ and every unit's done condition in workplan.md is met.
 | 2026-11-26 | — | epic planned | Epic C of the modules-v2 split. Owner decisions: evolve; deps resolved from source (not `.bmod`); scope = design record only (diagnostics/definition/hover across modules; no extras); wait for PR #157 then launch fully autonomous with generous limits. Recon on `master` @ `7a68fcd`. Next: `/devbot-review modules-v2-lsp`. |
 | 2026-11-26 | — | review passed | `/devbot-review`: all 12 checks pass after fixes F1–F4 (reference compile defined as the `qcc` line `bcc -v -S` / `bcc build -v` prints, errors+warnings compared; docs done-condition made a grep check; `project_compile` ctest assertions spelled out; latency measured on non-sanitizer `build/` only). Launch still waits on PR #157 merging + rebasing this branch onto the new `master`. Next: `/devbot-launch modules-v2-lsp`. |
 | 2026-11-26 | `6d49bcb9` | launched | Run `6d49bcb9-82f3-4642-9393-83c73cb157ef` on `epic/modules-v2-lsp` (base `master` @ `830557c`, PR #157 merged); fully autonomous, 200 turns / 36h / 50M tokens, no-progress 10; instance-default manager (anthropic/claude-opus-4-8) and worker (claude). |
+| 2026-11-27 | `6d49bcb9` | U1–U5 built | Stacked PRs: U1 #158 (041), U2 #159 (042), U3 #160 (043), U4 #161 (044), U5 #162 (exempt close-out). Two blockers raised and resolved in-run (turn 8: U1 converge gate on an uncommitted KG-7 fix — committed on 041; turn 34: U4 implement not yet run — run, then converged). |
+| 2026-11-27 | `6d49bcb9` | run completed | 39/200 turns, ~4.1M of 50M tokens, ~5.5h. Manager judged all 8 done conditions met; hire-reported gates: run_tests 251/244, test_codegen 172, test_lsp 114, corpus stdlib 177 / project 29, latency todo_app 78 ms / usebox 76 ms, ctest 87/87 both builds, run_build_tests pass; reviewer verified DC7/DC8. Not yet true: GitHub CI has not run on the code (`ci.yml` triggers only on `master`/`main`/`claude/**`/`epic/**` pushes and PRs to `master`/`main`; the stacked PRs got only GitGuardian), and no PR is merged. |
