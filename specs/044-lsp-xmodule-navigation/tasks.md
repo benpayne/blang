@@ -41,7 +41,7 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
   - (c) every `test_build/*` library, via the `qcc --emit-bmod` line that `bcc build -v` prints. This compares the `.bmod` text and, in LLVM mode, the `.ll`;
   - (d) every `test_build/*` binary's final `qcc` line from `bcc build -v`. This compares the `.ll`.
 
-  The script runs each pair in a scratch directory, prints `EQUIV: N/N identical` and exits non-zero on the first difference, naming the file. It has a `--selfcheck` that flips one byte of one reference output and asserts the harness goes red.
+  The `qcc` command lines are taken **once**, from the LLVM build's `bcc` (`build/bcc -v -S` / `bcc build -v`). Each line is replayed against both `qcc` binaries of a pair, with `--parse-only` added for the non-LLVM pair (F4). The script prints a per-category input count for (a), (c) and (d) (`EQUIV(a): n inputs`, …) and **fails if any count is 0**. The script runs each pair in a scratch directory, prints `EQUIV: N/N identical` and exits non-zero on the first difference, naming the file. It has a `--selfcheck` that flips one byte of one reference output and asserts the harness goes red.
 - [ ] T003 [P] Record the pre-U4 navigation baseline in `specs/044-lsp-xmodule-navigation/research.md` (R1 table, already present). Confirm it by running the probe script from research.md against `build/blangd`, and save the transcript as `specs/044-lsp-xmodule-navigation/probe-baseline.txt` for the review record.
 
 ---
@@ -68,11 +68,11 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
   - qualified (`nsScope->findType( memberName )` succeeded): look up `nsScope->findSymbol( memberName )`, with the member-name token's location;
   - bare (`s->findType( symName )` succeeded): look up `s->findSymbol( symName )`, with the name token's location.
 
-  Push `{ location, name length, symbol }` only if the symbol downcasts to `StructDefinition`, `EnumDefinition` or `ProtocolDefinition`. With no sink installed, the code path must do nothing beyond the null check: no lookups and no allocation. Generic type arguments recurse through `Type::Parse`, so each argument is recorded separately.
+  Push `{ location, name length, symbol }` only if the symbol downcasts to `StructDefinition`, `EnumDefinition` or `ProtocolDefinition`. The recording lookup MUST have **no side effects** (F5): call only `findSymbol`. It must not call `markTypeUsed`/`markModuleUsed`, mutate any scope or touch import or usage state, so the unused-import and collision diagnostics cannot move. With no sink installed, the code path must do nothing beyond the null check: no lookups and no allocation. Generic type arguments recurse through `Type::Parse`, so each argument is recorded separately.
 
 ### Byte-for-byte equivalence vs the 043 qcc (both modes)
 
-- [ ] T009 Build `build/` and `build-nollvm/` from this branch. Run `specs/044-lsp-xmodule-navigation/qcc_equivalence.sh --ref /tmp/blang-043/build --new build`, and `... --ref /tmp/blang-043/build-nollvm --new build-nollvm --parse-only`. Both must print `EQUIV: N/N identical`. Run `--selfcheck` once and confirm it goes red. Paste both summaries into `specs/044-lsp-xmodule-navigation/equivalence.md`.
+- [ ] T009 Build `build/` and `build-nollvm/` from this branch. Run `specs/044-lsp-xmodule-navigation/qcc_equivalence.sh --ref /tmp/blang-043/build --new build`, and `... --ref /tmp/blang-043/build-nollvm --new build-nollvm --parse-only`. Both must print `EQUIV: N/N identical` with a non-zero per-category count for (a), (c) and (d); a zero count fails (F4). Record the counts. Run `--selfcheck` once and confirm it goes red. Paste both summaries into `specs/044-lsp-xmodule-navigation/equivalence.md`.
 - [ ] T010 Run the regression gates for changes A and B: `./run_tests.sh`, `BUILD_DIR=build-nollvm ./run_tests.sh`, `./test_codegen.sh`, `./test_codegen.sh --leak-check` (`Leaks: 0`), `test_build/run_build_tests.sh`, `ctest --test-dir build` and `ctest --test-dir build-asan`. Every count must equal the `043` baseline, with zero golden edits. Append the results to `specs/044-lsp-xmodule-navigation/equivalence.md`. **Stop and raise a BLOCKER if any byte or count differs.**
 
 ### blangd navigation skeleton
@@ -86,6 +86,8 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
   - `struct NavigationTarget { const QLang::Symbol *decl; const QLang::ModuleRecord *definingRecord; bool isForeign; }`;
   - `const QLang::ModuleRecord *viewingRecord( const CompileResult &, const std::string &docPath )`, the record whose `path == docPath`;
   - `const QLang::ModuleRecord *recordForFile( const CompileResult &, const std::string &file )`.
+
+  F1: `definingRecord` is always the record **in the document's own compile**. For a dependency declaration this is the **interface** record, whose `moduleName` comes from the `<name>.bmod` path. The dependency's source record (reached through `InterfaceSourceMap`) supplies **only** the location and the signature text, and never the qualifier.
 
   Add `lsp/Navigation.cpp` to the `blangd`, `parserLeakTest` and any other target in `CMakeLists.txt` that links `lsp/Compile.cpp`.
 - [ ] T014 In `lsp/Navigation.cpp`, implement `InterfaceSourceMap::toSource( const QLang::Symbol *interfaceDecl )` per research R2:
@@ -165,7 +167,8 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
   - a prelude-provider record (`CompileContext::isPreludeProvider`), a core type with no record, or the declaration's own generic parameter renders bare;
   - otherwise collect the `ImportStatement::getLocalQualifier()` values over `viewing.module->getImports()` whose `getModuleName() == definingRecord.moduleName`;
   - if that set is non-empty, use the lexicographically smallest qualifier;
-  - otherwise, use `definingRecord.moduleName`;
+  - otherwise (**unbound**, use-capability only; F2, normative per design.md "D4 addendum — settled for U4" and spec FR-008 rule 3), use the defining module's **human name**: the `getDefiningFile()` value of the definition the document's compile resolved (`StructDefinition`/`EnumDefinition::getDefiningFile()`). This is exactly the name a `.bmod` `// foreign-type:` header prints (BmodEmitter.cpp:665). It is **not** the interface record's `moduleName`. If it is empty, the module name is rendered as `?`, as the header does;
+  - F1: for a **bound** module, the match key is the defining record in the document's own compile (the interface record's `moduleName`, from the `<name>.bmod` path). The dependency's source record supplies only the location and the signature text;
   - a member renders as `<owner display>.<member>`.
 - [ ] T036 [US4] In `lsp/Navigation.cpp`, implement nested-type rendering (FR-008 rule 6, R5). For each `Type` name in a foreign signature:
   1. resolve it in the **declaring record's** `scope->findSymbol()`, keeping a struct, enum or protocol;
@@ -188,6 +191,12 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
 - [ ] T039 [P] [US4] Write `test_files/lsp/xmod_hover_alias.lsp.jsonl` (aliasapp, `m.add`). Expect `fn m.add(int a, int b) -> int`.
 - [ ] T040 [P] [US4] Write `test_files/lsp/xmod_hover_namecap.lsp.jsonl` (counterapp, on the type position and on the construction). Both expect `struct counterlib.Counter`.
 - [ ] T041 [P] [US4] Write `test_files/lsp/xmod_hover_usecap.lsp.jsonl` (usebox) with two requests. `b.get()` expects `fn boxq.Box.get(self) -> T`. `midx.get_box` expects `fn midx.get_box(int n) -> boxq.Box<int>`.
+- [ ] T041a [P] [US4] (F2) Add the fixture project `test_files/lsp/projects/usecap_names/` (each part read-only on disk, no build needed):
+  - `app/` (bin): `import mid;`, `var s = mid.make(3);`, and a method call `s.area()`;
+  - `mid/` (lib): `import shapes;` and `pub fn make(int n) -> Sq { ... }`;
+  - a library whose **directory and `blang.toml` name are `shapes`** but whose only **source file is `geometry.b`**, defining `pub struct Sq` with `pub init` and `pub fn area(self) -> int`.
+
+  The app never imports `shapes`, so `Sq` is use-capability only. Write `test_files/lsp/xmod_hover_usecap_names.lsp.jsonl` to hover `s.area()` and `mid.make`. The expected owner qualifier is the struct's `getDefiningFile()` human name: the `<module>` token that `mid`'s `// foreign-type: Sq <module> <digest>` header prints under `bcc build`. Capture it once with `bcc build -v` into a scratch copy and record it in the fixture's header comment. Expect `fn <module>.Sq.area(self) -> int` and `fn mid.make(int n) -> <module>.Sq`. If the header's `<module>` equals the directory name and not the file name, the golden still pins the **header-derived** value, and `research.md` R5 records which of the two names the header carries. If `bcc build` of the fixture is needed for that capture, run it in a scratch copy, never in the committed tree.
 - [ ] T042 [P] [US4] Write `test_files/lsp/xmod_hover_stdlib_fn.lsp.jsonl`, `xmod_hover_stdlib_type.lsp.jsonl`, `xmod_hover_prelude.lsp.jsonl` and `xmod_hover_sibling.lsp.jsonl`, on the same documents and positions as T030–T033. The expected hovers are:
 
   | Fixture | Expected hover |
@@ -209,14 +218,14 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
 **Independent Test**: Every pre-existing `defn_*`, `hover_*`, `symbols_*`, `lifecycle` and other golden passes with no golden file modified.
 
 - [ ] T044 [US5] Run `./test_lsp.sh` and `./test_lsp.sh --selfcheck` (`SELFCHECK: OK`). Run `git diff --stat 043-lsp-project-context -- test_files/lsp/ | grep -v 'xmod_\|src/xmod_stdlib.b'` and confirm it prints nothing. Also run `git diff 043-lsp-project-context -- lsp/AstLocator.h lsp/AstLocator.cpp` and confirm it is empty.
-- [ ] T045 [P] [US5] Add a same-file type-position regression request to `test_files/lsp/xmod_defn_namecap.lsp.jsonl`, or write a new `test_files/lsp/xmod_samefile_typepos.lsp.jsonl`. Open the existing `test_files/lsp/src/defs.b` and request a definition and a hover on the type position `Point` in `Point p = Point(1, 2);` (0-based 25:1). Both expect `null`, which pins the accepted decision that same-file type positions stay `null`.
+- [ ] T045 [P] [US5] Add a same-file type-position regression request to `test_files/lsp/xmod_defn_namecap.lsp.jsonl`, or write a new `test_files/lsp/xmod_samefile_typepos.lsp.jsonl`. Open the existing `test_files/lsp/src/defs.b` and request a definition and a hover on the type position `Point` in `Point p = Point(1, 2);` (0-based 25:1). Both must equal the pre-U4 answer recorded in T003's `probe-baseline.txt`, which is expected to be `null`. Add these two requests to the T003 probe so the baseline actually contains them. This pins the accepted decision that same-file type positions keep their pre-U4 result.
 
 ---
 
 ## Phase 8: Polish & cross-cutting concerns
 
 - [ ] T046 Extend `ParserLeakTest.cpp` (the `parser_no_leak` ctest). Add a loop that runs 50 times: `lsp::compileDocument` on `test_build/usebox/main.b` through the project path, then the navigation calls for `b.get()` (definition and hover) and for a type reference, asserting the boxq source location each time. Also add one assertion that an ambiguous or unmapped target returns null. Run `ctest --test-dir build-asan -R parser_no_leak`; it must be LSan-clean.
-- [ ] T047 [P] Run `ctest --test-dir build -R blangd_no_subprocess` (and its `_teeth` leg) to confirm `blangd` still imports no `popen`/`fork`/`exec*`/`socket`/`connect`.
+- [ ] T047 [P] Run `ctest --test-dir build -R blangd_no_subprocess` (and its `_teeth` leg) to confirm `blangd` still imports no `popen`/`fork`/`exec*`/`socket`/`connect`. Also require `./test_lsp.sh` output to contain the `PASS git-shim: ... git never invoked` line (L1).
 - [ ] T048 [P] Run `./test_lsp.sh` on a sanitizer build (`BUILD_DIR=build-asan ./test_lsp.sh`) and confirm the xmod goldens pass under ASan with no report.
 - [ ] T049 Re-run `specs/044-lsp-xmodule-navigation/qcc_equivalence.sh` in both modes after all edits (`EQUIV: N/N identical`), and append the final result to `equivalence.md`.
 - [ ] T050 Run the full workplan gate list:
@@ -225,7 +234,10 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
   - `./test_lsp.sh`, including the corpus and latency legs (median ≤ 500 ms);
   - `ctest --test-dir build` and `ctest --test-dir build-asan`;
   - `test_build/run_build_tests.sh`;
-  - `tools/check_no_field_reachins.sh examples test_build`.
+  - `tools/check_no_field_reachins.sh examples test_build`;
+  - the `.bmod`-URI scan over **every** `xmod_*` golden (F3): `grep -l '\.bmod"' test_files/lsp/xmod_*.expected.out` must print nothing;
+  - both diagnostic-corpus legs, as the proof that type-reference recording changes no diagnostic (F5): `tools/lsp_diag_corpus.py --corpus stdlib` must report 179/179, and `--corpus project` must equal `bcc build`. The project leg needs `llc`, so run it on the LLVM `build/`;
+  - the `PASS git-shim: ... git never invoked` line must be present in the `test_lsp.sh` output (L1).
 
   Record the counts. The test totals may only grow.
 - [ ] T051 [P] Update `CLAUDE.md`:
