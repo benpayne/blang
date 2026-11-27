@@ -36,5 +36,5 @@
   transcript goldens are the user-facing contract, not implementation detail.
   No code structure, class or algorithm is prescribed.
 - The display-name rule (FR-008) is written out in full, as workplan U4 done
-  condition (d) requires. It is design.md D4 confirmed, plus an UNCONFIRMED
-  member/nested-type amendment that is recorded in Assumptions for the spec audit.
+  condition (d) requires: design.md D4, confirmed, plus the member and nested-type
+  amendment that the manager accepted on 2026-11-26 (design.md "D4 addendum").
