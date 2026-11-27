@@ -5,7 +5,9 @@ owned by that document's `CompileResult` (directly, or through its
 `CompileContext`), and destroyed with it (KG-7 / C3). Nothing persists across
 reparses.
 
-## TypeReference (shared frontend, `ProjectCompile.h`)
+## TypeReference (shared frontend, declared in `Frontend.h`, which `ProjectCompile.h` includes)
+
+As built, the struct lives in `Frontend.h` next to the parse-time sink `gTypeReferenceSink` and its RAII installer `TypeReferenceSinkScope`, because `QType.cpp` needs it without depending on `ProjectCompile.h`. This was corrected at converge.
 
 One type name written in type position, recorded by the parser where it
 resolved the token. Recording happens only when

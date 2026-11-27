@@ -633,7 +633,7 @@ The long-term goals (from README.txt) include integrated threading, eventing, ga
   - **members**: `<owner>.<member>`.
 
   Same-module definition, hover and symbols are byte-identical (the pre-U4 `AstLocator` path; every `defn_*`/`hover_*`/`symbols_*` golden is untouched). Proven by:
-  - 21 `xmod_*` transcript goldens: per-case definition and hover, the not-open, unsaved-buffer, failed-dependency, ambiguous-receiver, same-file-type-position and `usecap_names` (library dir `shapes`, file `geometry.b`) cases;
+  - 22 `xmod_*` transcript goldens: per-case definition and hover, the not-open, unsaved-buffer, failed-dependency, ambiguous-receiver, same-file-type-position and `usecap_names` (library dir `shapes`, file `geometry.b`) cases;
   - a 50-round navigation loop in `parser_no_leak` (LSan);
   - the `qcc_equivalence.sh` byte-for-byte replay vs the 043 `qcc` in both build modes.
 
