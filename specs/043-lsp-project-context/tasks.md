@@ -309,17 +309,17 @@ The binding audit order is applied in Phase 2, before any story:
 
 **Independent Test**: the `project_unsaved_dep` golden matches.
 
-- [ ] T035 [P] [US3] Create `test_files/lsp/projects/unsaved_dep/`, made of `lib/` (a lib whose `lib.b` has `pub fn helper() -> int`, a `pub fn base() -> int`, and one **generic** `pub fn wrap<T>(T v) -> T` whose body calls `base()`) and `app/` (a bin with `lib = { path = "../lib" }`, whose `main.b` calls `lib.helper()` and the generic). With the files on disk it is clean.
-- [ ] T036 [US3] Create `test_files/lsp/project_unsaved_dep.lsp.jsonl`. It runs these steps:
+- [X] T035 [P] [US3] Create `test_files/lsp/projects/unsaved_dep/`, made of `lib/` (a lib whose `lib.b` has `pub fn helper() -> int`, a `pub fn base() -> int`, one **generic** `pub fn wrap<T>(T v) -> T` whose body calls `base()`, and a trailing `pub fn tail() -> int` (the N3 teeth target)) and `app/` (a bin with `lib = { path = "../lib" }`, whose `main.b` calls `lib.helper()` and the generic). With the files on disk it is clean.
+- [X] T036 [US3] Create `test_files/lsp/project_unsaved_dep.lsp.jsonl`. It runs these steps:
   1. open `app/main.b` and wait for the publish, which must be clean;
   2. open `lib/lib.b`;
   3. `didChange` `lib/lib.b` to rename `helper` to `helper2`, without saving;
   4. `didChange` `app/main.b` with an identical full text, and wait for its publish, which must contain the missing-member error;
   5. `didChange` `lib/lib.b` back, then `didChange` `app/main.b`, and wait for its publish, which must be clean again;
-  6. `didChange` `lib/lib.b` (unsaved) so that it **still compiles clean** but differs from disk in two ways: it inserts several comment lines **above** the generic, and it renames `base` to `base2` both at its definition and inside the generic's body. Then `didChange` `app/main.b` and wait: the publish must be **clean**. A slice taken from the disk text would land on the wrong lines and would carry a body calling the now-missing `base`, so the interface would fail to re-parse or resolve and the consumer would show the R6 diagnostic. A clean publish therefore proves the verbatim generic body was sliced from the buffer (audit R1; analyze M3).
+  6. `didChange` `lib/lib.b` (unsaved) so that it **still compiles clean** but differs from disk in two ways: it inserts several comment lines **above** the generic, and it renames `base` to `base2` both at its definition and inside the generic's body. Then `didChange` `app/main.b` and wait: the publish must be **clean**. *(Rationale corrected per analyze N3.)* A slice taken from the disk text would not show the R6 diagnostic: the slice would start at the buffer's line number in the disk text. The fixture puts a second definition, `pub fn tail()`, at exactly that disk line, so the generic's "body" would become `tail()` and `lib.wrap` would drop out of the interface. The publish for `main.b` would then fail **at `lib.wrap`** (`Module 'lib' has no member 'wrap'`); this teeth check was confirmed by forcing a null provider. A clean publish is thus a corroborating end-to-end check that the generic body came from the buffer. **T009 (the `project_compile` C9 lock) remains the main lock on R1** (audit R1; analyze M3).
 
   Generate only this golden and hand-review it (FR-017(d), SC-004).
-- [ ] T037 [US3] Verify FR-012 by checking the golden: no step that only changes `lib/lib.b` produces a publish for `app/main.b`. Only the lib's own publish appears. Commit.
+- [X] T037 [US3] Verify FR-012 by checking the golden: no step that only changes `lib/lib.b` produces a publish for `app/main.b`. Only the lib's own publish appears. Commit.
 
 **Checkpoint**: US3 complete.
 
