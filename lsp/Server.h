@@ -9,6 +9,7 @@
 #include <iosfwd>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "Compile.h"
 #include "DocumentStore.h"
@@ -20,7 +21,10 @@ namespace lsp
 class Server
 {
 public:
-	Server( std::istream &in, std::ostream &out ) : mIn( in ), mOut( out ) {}
+	// `exeDir` is the blangd executable's directory (BlangStdlib::executableDir):
+	// the base of the blangd-relative stdlib route.
+	Server( std::istream &in, std::ostream &out, std::string exeDir = "." )
+		: mIn( in ), mOut( out ), mExeDir( std::move( exeDir ) ) {}
 
 	// Run until `exit` or EOF. Returns the process exit code: 0 when exit
 	// followed a shutdown request (or clean EOF), 1 otherwise (LSP spec).
@@ -62,6 +66,9 @@ private:
 	std::istream &mIn;
 	std::ostream &mOut;
 	DocumentStore mDocs;
+	// Stdlib discovery (modules-v2-lsp U2): resolved ONCE, at `initialize`.
+	std::string mExeDir;
+	StdlibLocation mStdlib;
 	// Last compile per open document, retained for navigation requests.
 	std::map<std::string, CompileResult> mCompiles;
 	bool mInitialized = false;

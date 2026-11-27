@@ -246,8 +246,15 @@ if [ ${#FILE_ARGS[@]} -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
 			[ -z "$f" ] && continue
 			TOTAL=$((TOTAL + 1))
 			rel="${f#"$SCRIPT_DIR"/}"
+			# modules-v2-lsp U2: fixtures that assert no-prelude behavior run via
+			# the stdlib-not-found route (test_files/lsp/sema_no_prelude.txt).
+			stdlib_args=()
+			if grep -v '^[[:space:]]*#' "$SCRIPT_DIR/test_files/lsp/sema_no_prelude.txt" 2>/dev/null \
+				| grep -qxF "$rel"; then
+				stdlib_args=(--stdlib-path "$SCRIPT_DIR/test_files/lsp/src")
+			fi
 			out="$(python3 "$DRIVER" --server "$BLANGD" --root "$SCRIPT_DIR" \
-				--sema-fixture "$rel" 2>&1)"
+				--sema-fixture "$rel" "${stdlib_args[@]}" 2>&1)"
 			drc=$?
 			if [ $drc -ne 0 ]; then
 				echo -e "  ${RED}FAIL${NC}  $rel  (driver failed)"
