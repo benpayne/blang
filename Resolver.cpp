@@ -21,8 +21,22 @@ Resolver::Resolver()
 	gScope = mGlobalRaw;
 }
 
+Resolver::Resolver( AliasMode mode )
+{
+	mGlobalScope = createGlobalScope();
+	mGlobalRaw = (Scope *)mGlobalScope;
+	mInstalledAlias = ( mode == AliasMode::kInstall );
+	if ( mInstalledAlias )
+	{
+		mPrevGScope = gScope;
+		gScope = mGlobalRaw;
+	}
+}
+
 Resolver::~Resolver()
 {
+	if ( !mInstalledAlias )
+		return;   // kManual: the alias was never ours
 	// Restore whatever alias was in place before this Resolver (typically nullptr
 	// for the top-level driver, or an enclosing Resolver's scope). mGlobalScope's
 	// SmartPtr releases the global scope here.

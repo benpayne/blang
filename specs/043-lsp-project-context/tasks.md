@@ -126,15 +126,15 @@ The binding audit order is applied in Phase 2, before any story:
 
 ### R2: one isolated run per compile (FR-013, FR-014; plan D-2; research R6)
 
-- [ ] T010 In `Resolver.h` and `Resolver.cpp`, add `enum class AliasMode { kInstall, kManual };` and `explicit Resolver( AliasMode mode )`. Under `kManual` the resolver neither saves, installs nor restores `gScope`. The existing default constructor is behaviorally identical: it equals `Resolver( AliasMode::kInstall )` and keeps the `mPrevGScope` save/restore. `resolver_component`, `resolver_reuse`, `project_compile` and `parser_no_leak` must stay green and unmodified.
-- [ ] T011 In a new file `lsp/Run.h`:
+- [x] T010 In `Resolver.h` and `Resolver.cpp`, add `enum class AliasMode { kInstall, kManual };` and `explicit Resolver( AliasMode mode )`. Under `kManual` the resolver neither saves, installs nor restores `gScope`. The existing default constructor is behaviorally identical: it equals `Resolver( AliasMode::kInstall )` and keeps the `mPrevGScope` save/restore. `resolver_component`, `resolver_reuse`, `project_compile` and `parser_no_leak` must stay green and unmodified.
+- [x] T011 In a new file `lsp/Run.h`:
   - add `struct Run { std::shared_ptr<QLang::Resolver> resolver; std::shared_ptr<QLang::CompileContext> ctx; };`, with `resolver` declared **first**;
   - add `class GlobalAliasScope`, which saves `gScope`, sets it to `r.globalScope()`, and restores it in its destructor;
   - add a helper `Run runPlan( const QLang::CompilePlan &, QLang::DiagnosticEngine & )` that creates `std::make_shared<Resolver>( AliasMode::kManual )`, opens a `GlobalAliasScope` around exactly one `ProjectCompile::run`, and returns the `Run`.
-- [ ] T012 In `lsp/Compile.cpp`, replace U2's `sharedResolver()` and `runPlan` with the `Run`-based helper for **every** compile: the two-argument single-file overload, the U2 stdlib path and the U2 fallback.
+- [x] T012 In `lsp/Compile.cpp`, replace U2's `sharedResolver()` and `runPlan` with the `Run`-based helper for **every** compile: the two-argument single-file overload, the U2 stdlib path and the U2 fallback.
   - `CompileResult` gains `std::shared_ptr<QLang::Resolver> resolver` as its **first** member, followed by `context`, a new `std::vector<std::shared_ptr<Run>> deps`, then `module`, `fileScope` and `diagnostics`, in plan D-4's order. Update `lsp/Compile.h` with a comment stating the ownership order and the KG-7 invariant. This supersedes U2's analyze F2 per audit R2.
   - Verify by grep that no code outside a `run` reads `gScope`: `grep -n "gScope" lsp/*.cpp lsp/AstLocator.cpp Sema.cpp`. Expect only the guard and the comments.
-- [ ] T013 R2 checkpoint:
+- [x] T013 R2 checkpoint:
   - `./test_lsp.sh` and `BUILD_DIR=build-nollvm ./test_lsp.sh` stay **78/0**, with the stdlib corpus 179/179 and all U2 goldens unchanged;
   - `ctest` is 86/86 in all three trees, and `parser_no_leak`'s U2 loop is LSan-clean in `build-asan`.
 

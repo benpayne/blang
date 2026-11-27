@@ -17,33 +17,38 @@
 #include "../Type.h"
 #include "../Expression.h"   // completes the AST types SmartPtr instantiates
 #include "../ProjectCompile.h"
+#include "../Resolver.h"
 #include "StdlibLocation.h"
 
 namespace lsp
 {
 
+struct Run;   // lsp/Run.h — one isolated compile (fresh resolver + context)
+
+// One document compile. Members are destroyed in REVERSE declaration order, and
+// the order is the KG-7 invariant (specs/041-shared-project-compile/checklists/
+// kg7-resolution-refs.md; U3 plan D-4):
+//   - `resolver` FIRST => destroyed LAST: every scope of `context` parents
+//     (non-owningly) into its global builtin scope (U3 audit R2: one fresh
+//     resolver per compile — nothing is shared across compiles).
+//   - `context` owns EVERY module, scope and AST of the document's compile —
+//     the document's AND every stdlib module and dependency interface. An
+//     expression's link to the definition it resolved to is NON-owning, so a user
+//     AST that resolves `Map` or `mathlib.add` points into modules owned ONLY
+//     here; `context` must therefore outlive `module`/`fileScope`.
+//   - `deps` are the dependency SOURCE compiles (U3), kept for navigation (U4);
+//     nothing in `context` points into them (interfaces are re-parsed text).
+//   - `module`/`fileScope` co-own the document's own module and scope.
+// No state is reused across reparses; any future cache must be held through a
+// shared_ptr that every result built against it also holds. Replace a stored
+// result by destroying it (map erase + emplace, as Server::publishDiagnostics
+// does), never by memberwise move-assignment, which would release `resolver`
+// and `context` first.
 struct CompileResult
 {
-	// The shared compile's context: it owns EVERY module, scope and AST the
-	// compile built — the document's AND, in stdlib context, every stdlib module
-	// (prelude/combine/namespace scopes included). shared_ptr because the Server
-	// stores results by value.
-	//
-	// KG-7 invariant (specs/041-shared-project-compile/checklists/
-	// kg7-resolution-refs.md, U2 plan D-4): an expression's link to the
-	// definition it resolved to is NON-owning, so a user AST that resolves `Map`
-	// points into a stdlib module owned ONLY here. Every stdlib module, scope and
-	// AST a document's AST can resolve into MUST therefore be owned by that
-	// document's CompileResult and outlive it. Declared FIRST so it is destroyed
-	// LAST — after the `module`/`fileScope` co-owners below (analyze F4). Any
-	// future reuse of parsed stdlib state across reparses must be held through a
-	// shared_ptr that every result built against it also holds; U2 reuses none.
-	// Replace a stored result by destroying it (map erase + emplace, as
-	// Server::publishDiagnostics does), never by memberwise move-assignment,
-	// which would release `context` first.
+	std::shared_ptr<QLang::Resolver> resolver;
 	std::shared_ptr<QLang::CompileContext> context;
-	// The parsed user AST (non-null even for documents with errors — the parser
-	// recovers per declaration) and the scope it was parsed in.
+	std::vector<std::shared_ptr<Run>> deps;
 	SmartPtr<QLang::Module> module;
 	SmartPtr<QLang::Scope> fileScope;
 	std::vector<QLang::Diagnostic> diagnostics;

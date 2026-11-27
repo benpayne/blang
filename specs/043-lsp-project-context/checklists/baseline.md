@@ -35,3 +35,10 @@
   - a provider hit slices the **buffer** body, even with the disk cache pre-seeded with different text;
   - a provider miss is reported in `missing` and emits neither the disk body nor the definition.
   - Teeth: forcing the emitter to ignore the provider makes C9 fail 3 checks.
+
+## T013: R2 checkpoint (one isolated run per compile; U2's `sharedResolver` superseded)
+
+- **`test_lsp.sh`**: 78/0 in `build` and in `build-nollvm`. The stdlib corpus is 179/179, and all U2 goldens are unchanged.
+- **ctest**: 87/87 in each of `build`, `build-nollvm` and `build-asan` (86 + `project_layout`). The `parser_no_leak` U2 loop is LSan-clean in `build-asan`.
+- **`grep -n gScope lsp/*.cpp lsp/*.h lsp/AstLocator.cpp Sema.cpp`**: the only hits outside comments are `GlobalAliasScope`'s save, install and restore (`lsp/Run.h:38-39`). No post-compile code reads the alias.
+- **No cached builtin-scope pointers**: `grep` for `static` `Type*`/`Scope*`/`SmartPtr` caches of `gScope` lookups in `Q*.cpp`, `Sema.cpp`, `Type.h` and `Expression.h` found none. A fresh global scope per run is therefore safe.

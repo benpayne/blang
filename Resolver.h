@@ -35,6 +35,14 @@ public:
 	Resolver();
 	~Resolver();
 
+	// modules-v2-lsp U3 (audit R2): kManual neither installs nor restores the
+	// `gScope` alias — the owner sets it around each ProjectCompile::run (blangd's
+	// GlobalAliasScope). Needed when resolvers are owned by results that die in
+	// arbitrary order (one fresh resolver per compile). kInstall == the default
+	// constructor (qcc, tests): unchanged.
+	enum class AliasMode { kInstall, kManual };
+	explicit Resolver( AliasMode mode );
+
 	Resolver( const Resolver & ) = delete;
 	Resolver &operator=( const Resolver & ) = delete;
 
@@ -61,6 +69,7 @@ private:
 	SmartPtr<Scope> mGlobalScope;              // owns the builtin scope
 	Scope *mGlobalRaw = nullptr;               // raw alias (const-friendly getter)
 	Scope *mPrevGScope = nullptr;              // saved gScope alias (restored on ~)
+	bool mInstalledAlias = true;               // false under AliasMode::kManual
 	std::map<std::string, Scope *> mNamespaces;
 };
 
