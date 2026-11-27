@@ -38,6 +38,9 @@ struct CompileResult
 	// LAST — after the `module`/`fileScope` co-owners below (analyze F4). Any
 	// future reuse of parsed stdlib state across reparses must be held through a
 	// shared_ptr that every result built against it also holds; U2 reuses none.
+	// Replace a stored result by destroying it (map erase + emplace, as
+	// Server::publishDiagnostics does), never by memberwise move-assignment,
+	// which would release `context` first.
 	std::shared_ptr<QLang::CompileContext> context;
 	// The parsed user AST (non-null even for documents with errors — the parser
 	// recovers per declaration) and the scope it was parsed in.
