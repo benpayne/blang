@@ -1,4 +1,5 @@
 #include "Server.h"
+#include "Navigation.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -355,32 +356,43 @@ void Server::publishDiagnostics( const std::string &uri, const std::string &text
 // ---------------------------------------------------------------------------
 // Navigation
 
-const QLang::Statement *Server::nodeAt( const Json &params )
+// Cursor of a navigation request: the open document's compile and its 1-based
+// position (LSP positions are 0-based; SourceLocation is 1-based).
+static bool navigationCursor( const std::map<std::string, CompileResult> &compiles,
+	const Json &params, const CompileResult *&result, std::string &docPath,
+	uint32_t &line, uint32_t &col )
 {
 	const std::string &uri = params.get( "textDocument" ).get( "uri" ).asString();
-	auto it = mCompiles.find( uri );
-	if ( it == mCompiles.end() || it->second.module == nullptr )
-		return nullptr; // unopened document
-
-	// LSP positions are 0-based; SourceLocation is 1-based.
+	auto it = compiles.find( uri );
+	if ( it == compiles.end() || it->second.module == nullptr )
+		return false; // unopened document
+	result = &it->second;
+	docPath = uriToPath( uri );
 	const Json &pos = params.get( "position" );
-	uint32_t line = (uint32_t)pos.get( "line" ).asInt() + 1;
-	uint32_t col = (uint32_t)pos.get( "character" ).asInt() + 1;
-	return QLang::AstLocator::locate( (QLang::Module *)it->second.module, line, col );
+	line = (uint32_t)pos.get( "line" ).asInt() + 1;
+	col = (uint32_t)pos.get( "character" ).asInt() + 1;
+	return true;
 }
 
 void Server::definition( const Json &id, const Json &params )
 {
-	const QLang::Statement *node = nodeAt( params );
-	SourceLocation target;
-	if ( !QLang::AstLocator::definitionLocation( node, target ) )
+	// modules-v2-lsp U4: lsp/Navigation answers. A same-module target goes through
+	// the unchanged pre-U4 AstLocator path; a foreign one resolves to its SOURCE
+	// declaration (never a .bmod — contract G1), else null.
+	const CompileResult *result = nullptr;
+	std::string docPath;
+	uint32_t line = 0, col = 0;
+	NavigationAnswer answer;
+	if ( navigationCursor( mCompiles, params, result, docPath, line, col ) )
+		answer = definitionAt( *result, docPath, line, col );
+	if ( !answer.found )
 	{
 		sendResult( id, Json() ); // no definition pointer / builtin target
 		return;
 	}
+	const SourceLocation &target = answer.location;
 
-	// Single-file semantics: the definition is in this document (target.file
-	// equals the compiled path). Zero-length range at the definition site.
+	// Zero-length range at the definition site (its file need not be open).
 	Json start = Json::object();
 	start.set( "line", (int)target.line - 1 );
 	start.set( "character", (int)target.col - 1 );
@@ -485,7 +497,14 @@ void Server::documentSymbol( const Json &id, const Json &params )
 
 void Server::hover( const Json &id, const Json &params )
 {
-	std::string text = QLang::AstLocator::hoverText( nodeAt( params ) );
+	// modules-v2-lsp U4: same-module targets render through the unchanged
+	// AstLocator::hoverText; foreign ones with the FR-008 display names.
+	const CompileResult *result = nullptr;
+	std::string docPath;
+	uint32_t line = 0, col = 0;
+	std::string text;
+	if ( navigationCursor( mCompiles, params, result, docPath, line, col ) )
+		text = hoverAt( *result, docPath, line, col ).hover;
 	if ( text.empty() )
 	{
 		sendResult( id, Json() ); // nothing known under the cursor
@@ -494,9 +513,9 @@ void Server::hover( const Json &id, const Json &params )
 	Json contents = Json::object();
 	contents.set( "kind", "markdown" );
 	contents.set( "value", "```blang\n" + text + "\n```" );
-	Json result = Json::object();
-	result.set( "contents", contents );
-	sendResult( id, result );
+	Json reply = Json::object();
+	reply.set( "contents", contents );
+	sendResult( id, reply );
 }
 
 // ---------------------------------------------------------------------------

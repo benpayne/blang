@@ -102,6 +102,12 @@ names per module, so kind+name is unique within one library module. The
 - *Map by line number into the `.bmod` text.* Fragile, and it re-derives the
   emitter's layout.
 
+**Observed (T026, implement)**: `b.get()` in `usebox` resolves to the `Box`
+struct of the **boxq.bmod** interface record. `midx.bmod` carries only a
+`// foreign-type: Box boxq …` header and no `Box` struct, so the direct key
+matches and the all-runs fallback is not needed. The result is
+`test_build/boxq/boxq.b` 0-based 4:5.
+
 ## R3 — Use-capability method resolution (Story 2) comes from the shared use-capability type set
 
 **Finding**: `b.get()` gets no `mResolvedMethod`. `Sema::structForType`
@@ -227,6 +233,16 @@ records and AST:
 
 **Rationale**: Every value is deterministic and derived from data the compile
 already holds. No new name table is introduced.
+
+**Observed (T041a, F2)**: The `usecap_names` fixture has the library directory
+and project name `shapes`, and its only source file is `geometry.b`. `mid`'s
+`.bmod`, as `bcc build` emits it, carries `// foreign-type: Sq shapes 2afb7540f099`.
+The header's `<module>` token is therefore the defining interface's
+**project/`.bmod` name**, not the source file name: a struct that arrives through
+`shapes.bmod` is stamped by `stampDefiningOrigin` with that basename. The
+unbound hover renders `fn shapes.Sq.area(self) -> int`, while its definition
+lands on `shapes/geometry.b`. The golden therefore pins both name sources:
+`shapes` in the hover and `geometry.b` in the URI.
 
 ## R6 — Hover format
 

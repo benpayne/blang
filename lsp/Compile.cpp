@@ -24,7 +24,11 @@ using namespace QLang;
 static CompileResult runDocumentPlan( const CompilePlan &plan, const std::string &docPath )
 {
 	DiagnosticEngine engine;   // fresh per reparse; never finish()ed
-	Run run = runPlan( plan, engine );
+	// U4 (research R4): the DOCUMENT's compile records its type-position names
+	// for navigation (dependency-derivation runs never do; qcc never does).
+	CompilePlan docPlan = plan;
+	docPlan.recordTypeReferences = true;
+	Run run = runPlan( docPlan, engine );
 
 	CompileResult result;
 	result.resolver = run.resolver;
@@ -204,6 +208,8 @@ CompileResult compileDocument( const std::string &path, const std::string &text,
 
 	CompileResult result = runDocumentPlan( plan, path );
 	result.deps = pc.depRuns;
+	for ( const auto &ir : pc.interfaceRuns )
+		result.interfaces.byInterfacePath[ ir.first ] = ir.second;
 
 	std::vector<Diagnostic> published;
 	if ( !pc.isLibrary && !stdlib.usable )

@@ -9,6 +9,7 @@
 // file.b` uses (the three-argument overload); U3 adds project context through
 // the same entry point.
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,6 +27,27 @@ namespace lsp
 
 struct Run;   // lsp/Run.h — one isolated compile (fresh resolver + context)
 
+// modules-v2-lsp U4 (research R2): the document compile's dependency interfaces
+// (each at its nominal `<depDir>/<name>.bmod` CompileInput path) -> that
+// dependency's kept SOURCE compile. Navigation maps an interface declaration back
+// to the source declaration it was exported from (lsp/Navigation.cpp) so a
+// definition never lands in a generated .bmod. Shares the Runs `deps` owns.
+struct InterfaceSourceMap
+{
+	std::map<std::string, std::shared_ptr<Run>> byInterfacePath;
+
+	bool isInterfacePath( const std::string &file ) const
+	{
+		return byInterfacePath.count( file ) > 0;
+	}
+	// The unique source declaration (same kind, name and owning type) in the
+	// dependency compile for `file`, else in any dependency compile; null when
+	// none or more than one matches — never a guess, never the interface decl.
+	// `owner` is the owning struct's name for a method/init ('' for top level).
+	const QLang::Symbol *toSource( const QLang::Symbol *interfaceDecl, const std::string &file,
+		const std::string &owner ) const;
+};
+
 // One document compile. Members are destroyed in REVERSE declaration order, and
 // the order is the KG-7 invariant (specs/041-shared-project-compile/checklists/
 // kg7-resolution-refs.md; U3 plan D-4):
@@ -39,6 +61,7 @@ struct Run;   // lsp/Run.h — one isolated compile (fresh resolver + context)
 //     here; `context` must therefore outlive `module`/`fileScope`.
 //   - `deps` are the dependency SOURCE compiles (U3), kept for navigation (U4);
 //     nothing in `context` points into them (interfaces are re-parsed text).
+//   - `interfaces` (U4) shares those same Runs, keyed by interface path.
 //   - `module`/`fileScope` co-own the document's own module and scope.
 // No state is reused across reparses; any future cache must be held through a
 // shared_ptr that every result built against it also holds. Replace a stored
@@ -50,6 +73,7 @@ struct CompileResult
 	std::shared_ptr<QLang::Resolver> resolver;
 	std::shared_ptr<QLang::CompileContext> context;
 	std::vector<std::shared_ptr<Run>> deps;
+	InterfaceSourceMap interfaces;   // U4: shares `deps`' Runs (declared after them)
 	SmartPtr<QLang::Module> module;
 	SmartPtr<QLang::Scope> fileScope;
 	std::vector<QLang::Diagnostic> diagnostics;

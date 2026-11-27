@@ -1,0 +1,4 @@
+[project]
+name = "pa"
+version = "0.1.0"
+type = "lib"

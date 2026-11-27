@@ -56,7 +56,6 @@ private:
 
 	// Shared lookup: the AST node under params.position in params.textDocument
 	// (null when the document is not open or nothing is under the cursor).
-	const QLang::Statement *nodeAt( const Json &params );
 
 	void sendResult( const Json &id, Json result );
 	void sendError( const Json &id, int code, const std::string &message );

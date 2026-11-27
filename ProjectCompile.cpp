@@ -47,6 +47,31 @@ std::string moduleNameOf( const std::string &path )
 	return fname;
 }
 
+void CompileContext::useCapabilityTypes( std::vector<SmartPtr<StructDefinition>> &structs,
+	std::vector<SmartPtr<EnumDefinition>> &enums ) const
+{
+	// Lifted verbatim from qcc.cpp (modules-v2-lsp U4, research R3) — the
+	// collection qcc hands CodeGen::registerExternalTypes. modules-v2-graph U3
+	// (D13, §5b): the prelude provider's struct of a name a USER module shadows
+	// (suppressedPrelude()) is filtered out, making CodeGen's flat mStructDefMap
+	// agree with the scope registries (the user's definition wins in all three).
+	for ( std::size_t ri : mModuleIndices )
+	{
+		const ModuleRecord &rec = mRecords[ri];
+		bool isProvider = isPreludeProvider( ri );
+		for ( auto &st : rec.module->getStructList() )
+		{
+			// Shadowed prelude struct: drop it so mStructDefMap holds the
+			// user's same-named definition (the scope registries already do).
+			if ( isProvider && mSuppressedPrelude.count( st->getName() ) )
+				continue;
+			structs.push_back( st );
+		}
+		for ( auto &e : rec.module->getEnumList() )
+			enums.push_back( e );
+	}
+}
+
 bool CompileContext::isPreludeProvider( std::size_t recordIndex ) const
 {
 	return mPreludeModuleNames.count( mRecords[recordIndex].moduleName ) > 0;
@@ -401,7 +426,18 @@ std::unique_ptr<CompileContext> ProjectCompile::run( const CompilePlan &plan,
 		// Per-token "Symbol …" trace only under -v, never in --dump-locations.
 		l.setTraceEnabled( plan.lexerTrace );
 
-		SmartPtr<Module> mod = Module::Parse( l, fileScope );
+		// modules-v2-lsp U4 (research R4): blangd's navigation records each
+		// resolved type-position name; qcc never sets the flag, so its parse is
+		// untouched (the sink stays null). Collected locally and attached to the
+		// record below (KG-7: the context owns it).
+		std::vector<TypeReference> typeRefs;
+		SmartPtr<Module> mod;
+		{
+			TypeReferenceSinkScope sinkScope( plan.recordTypeReferences ? &typeRefs : nullptr );
+			mod = Module::Parse( l, fileScope );
+		}
+		if ( mod != nullptr )
+			ctx->mRecords[recIdx].typeReferences = std::move( typeRefs );
 		if ( mod == nullptr )
 		{
 			// Catastrophic (unrecoverable) parse failure for this file. The
