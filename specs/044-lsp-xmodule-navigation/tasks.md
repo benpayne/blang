@@ -73,7 +73,7 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
 ### Byte-for-byte equivalence vs the 043 qcc (both modes)
 
 - [X] T009 Build `build/` and `build-nollvm/` from this branch. Run `specs/044-lsp-xmodule-navigation/qcc_equivalence.sh --ref /tmp/blang-043/build --new build`, and `... --ref /tmp/blang-043/build-nollvm --new build-nollvm --parse-only`. Both must print `EQUIV: N/N identical` with a non-zero per-category count for (a), (c) and (d); a zero count fails (F4). Record the counts. Run `--selfcheck` once and confirm it goes red. Paste both summaries into `specs/044-lsp-xmodule-navigation/equivalence.md`.
-- [ ] T010 Run the regression gates for changes A and B: `./run_tests.sh`, `BUILD_DIR=build-nollvm ./run_tests.sh`, `./test_codegen.sh`, `./test_codegen.sh --leak-check` (`Leaks: 0`), `test_build/run_build_tests.sh`, `ctest --test-dir build` and `ctest --test-dir build-asan`. Every count must equal the `043` baseline, with zero golden edits. Append the results to `specs/044-lsp-xmodule-navigation/equivalence.md`. **Stop and raise a BLOCKER if any byte or count differs.**
+- [X] T010 Run the regression gates for changes A and B: `./run_tests.sh`, `BUILD_DIR=build-nollvm ./run_tests.sh`, `./test_codegen.sh`, `./test_codegen.sh --leak-check` (`Leaks: 0`), `test_build/run_build_tests.sh`, `ctest --test-dir build` and `ctest --test-dir build-asan`. Every count must equal the `043` baseline, with zero golden edits. Append the results to `specs/044-lsp-xmodule-navigation/equivalence.md`. **Stop and raise a BLOCKER if any byte or count differs.**
 
 ### blangd navigation skeleton
 
@@ -217,18 +217,18 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
 
 **Independent Test**: Every pre-existing `defn_*`, `hover_*`, `symbols_*`, `lifecycle` and other golden passes with no golden file modified.
 
-- [ ] T044 [US5] Run `./test_lsp.sh` and `./test_lsp.sh --selfcheck` (`SELFCHECK: OK`). Run `git diff --stat 043-lsp-project-context -- test_files/lsp/ | grep -v 'xmod_\|src/xmod_stdlib.b'` and confirm it prints nothing. Also run `git diff 043-lsp-project-context -- lsp/AstLocator.h lsp/AstLocator.cpp` and confirm it is empty.
+- [X] T044 [US5] Run `./test_lsp.sh` and `./test_lsp.sh --selfcheck` (`SELFCHECK: OK`). Run `git diff --stat 043-lsp-project-context -- test_files/lsp/ | grep -v 'xmod_\|src/xmod_stdlib.b'` and confirm it prints nothing. Also run `git diff 043-lsp-project-context -- lsp/AstLocator.h lsp/AstLocator.cpp` and confirm it is empty.
 - [X] T045 [P] [US5] Add a same-file type-position regression request to `test_files/lsp/xmod_defn_namecap.lsp.jsonl`, or write a new `test_files/lsp/xmod_samefile_typepos.lsp.jsonl`. Open the existing `test_files/lsp/src/defs.b` and request a definition and a hover on the type position `Point` in `Point p = Point(1, 2);` (0-based 25:1). Both must equal the pre-U4 answer recorded in T003's `probe-baseline.txt`, which is expected to be `null`. Add these two requests to the T003 probe so the baseline actually contains them. This pins the accepted decision that same-file type positions keep their pre-U4 result.
 
 ---
 
 ## Phase 8: Polish & cross-cutting concerns
 
-- [ ] T046 Extend `ParserLeakTest.cpp` (the `parser_no_leak` ctest). Add a loop that runs 50 times: `lsp::compileDocument` on `test_build/usebox/main.b` through the project path, then the navigation calls for `b.get()` (definition and hover) and for a type reference, asserting the boxq source location each time. Also add one assertion that an ambiguous or unmapped target returns null. Run `ctest --test-dir build-asan -R parser_no_leak`; it must be LSan-clean.
-- [ ] T047 [P] Run `ctest --test-dir build -R blangd_no_subprocess` (and its `_teeth` leg) to confirm `blangd` still imports no `popen`/`fork`/`exec*`/`socket`/`connect`. Also require `./test_lsp.sh` output to contain the `PASS git-shim: ... git never invoked` line (L1).
-- [ ] T048 [P] Run `./test_lsp.sh` on a sanitizer build (`BUILD_DIR=build-asan ./test_lsp.sh`) and confirm the xmod goldens pass under ASan with no report.
-- [ ] T049 Re-run `specs/044-lsp-xmodule-navigation/qcc_equivalence.sh` in both modes after all edits (`EQUIV: N/N identical`), and append the final result to `equivalence.md`.
-- [ ] T050 Run the full workplan gate list:
+- [X] T046 Extend `ParserLeakTest.cpp` (the `parser_no_leak` ctest). Add a loop that runs 50 times: `lsp::compileDocument` on `test_build/usebox/main.b` through the project path, then the navigation calls for `b.get()` (definition and hover) and for a type reference, asserting the boxq source location each time. Also add one assertion that an ambiguous or unmapped target returns null. Run `ctest --test-dir build-asan -R parser_no_leak`; it must be LSan-clean.
+- [X] T047 [P] Run `ctest --test-dir build -R blangd_no_subprocess` (and its `_teeth` leg) to confirm `blangd` still imports no `popen`/`fork`/`exec*`/`socket`/`connect`. Also require `./test_lsp.sh` output to contain the `PASS git-shim: ... git never invoked` line (L1).
+- [X] T048 [P] Run `./test_lsp.sh` on a sanitizer build (`BUILD_DIR=build-asan ./test_lsp.sh`) and confirm the xmod goldens pass under ASan with no report.
+- [X] T049 Re-run `specs/044-lsp-xmodule-navigation/qcc_equivalence.sh` in both modes after all edits (`EQUIV: N/N identical`), and append the final result to `equivalence.md`.
+- [X] T050 Run the full workplan gate list:
   - `./run_tests.sh` and `BUILD_DIR=build-nollvm ./run_tests.sh`;
   - `./test_codegen.sh` and `--leak-check`;
   - `./test_lsp.sh`, including the corpus and latency legs (median ≤ 500 ms);
@@ -244,7 +244,7 @@ description: "Task list for U4 — cross-module go-to-definition and hover in bl
   - the `lsp/` repository-structure entry gains `Navigation.{h,cpp}`, with cross-module definition and hover and the D4 display rule;
   - the `ProjectCompile.h` entry gains `useCapabilityTypes` and type-reference recording;
   - add a Known-Issues/status bullet for modules-v2-lsp U4 that cites `specs/044-lsp-xmodule-navigation/`.
-- [ ] T052 Remove the `/tmp/blang-043` worktree (`git worktree remove /tmp/blang-043`). Commit the code, the goldens, `equivalence.md` and `probe-baseline.txt` on `044-lsp-xmodule-navigation`, staging by explicit path.
+- [X] T052 Remove the `/tmp/blang-043` worktree (`git worktree remove /tmp/blang-043`). Commit the code, the goldens, `equivalence.md` and `probe-baseline.txt` on `044-lsp-xmodule-navigation`, staging by explicit path.
 
 ---
 
