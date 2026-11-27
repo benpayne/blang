@@ -390,3 +390,12 @@ T035 CLAUDE.md   ∥   T036 checklists/neutrality.md
 | F5 verbatim `isspace` / literal-space scan | T007, T009, T030 C5 (tab case) |
 | F6 name-keyed shadow test; `hadError() \|\| diag.hasErrors()` | T018, T021, T030 C1/C7 |
 | F7 precise zero-golden-edit `git diff --diff-filter` gate | standing rule 2, T012, T022, T025, T034, T037 |
+
+---
+
+## Phase 7: Convergence
+
+- [x] T039 Record a design note `specs/041-shared-project-compile/checklists/kg7-resolution-refs.md` for the expression→definition ownership change (`Expression.h` `CallExpression`/`FunctionRefExpression::mFunction`, `ConstructExpression::mStructDef`, `EnumConstructExpression::mEnumDef` now non-owning; `QExpression.cpp` `CallExpression::Parse` frees its speculative node on backtrack): the ownership invariant, why it is needed for SC-004, pre-unit leak evidence, and neutrality evidence per Constitution VI (unrequested)
+- [x] T040 Write `specs/041-shared-project-compile/checklists/baseline.md` with the base ref, reference build paths, per-gate counts for pre-unit vs. final tree, and the byte-identity sweep results per T001/T002/T003/T026/T027/T037 (partial)
+- [x] T041 Justify ctest case C8 (KG-7 regression lock beyond C1–C7) in the T039 note per FR-019 (unrequested)
+- [x] T042 Remove the `/tmp/u1-base` worktree once the last byte-identity sweep has run, and confirm `git worktree list` shows only the main tree per T038 (partial)
