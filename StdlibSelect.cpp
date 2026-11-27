@@ -48,6 +48,17 @@ set<string> scanImports( const string &sourceText )
 	return imports;
 }
 
+set<string> scanImportsAll( const vector<string> &texts )
+{
+	set<string> all;
+	for ( const string &t : texts )
+	{
+		set<string> one = scanImports( t );
+		all.insert( one.begin(), one.end() );
+	}
+	return all;
+}
+
 // Given the user's imports, return the stdlib `.b` files to combine, in a
 // dependency-safe order. Only modules the program actually imports are pulled
 // in, so an unused module never pollutes the namespace. (Moved verbatim from

@@ -40,13 +40,13 @@ The binding audit order is applied in Phase 2, before any story:
 
 ## Phase 1: Setup (baseline + neutrality reference)
 
-- [ ] T001 Confirm the starting state and record it in `specs/043-lsp-project-context/checklists/baseline.md`:
+- [x] T001 Confirm the starting state and record it in `specs/043-lsp-project-context/checklists/baseline.md`:
   - the branch is `043-lsp-project-context`;
   - `git merge-base --is-ancestor dc39603 HEAD` succeeds;
   - the HEAD SHA.
 
   Also record U2's final gate counts as the pre-unit baseline: ctest 86/86 ×3, `run_tests` 251/244/251, `test_lsp` 78/0, `test_codegen` 172/0 with Leaks: 0, `run_build_tests` all pass, stdlib corpus 179/179 (FR-021, SC-007).
-- [ ] T002 Capture the pre-unit `bcc` reference for the shared-helper move (FR-021, SC-007).
+- [x] T002 Capture the pre-unit `bcc` reference for the shared-helper move (FR-021, SC-007).
   1. Copy `build/bcc`, `build/qcc` and `build/stdlib/` to `/tmp/u3-ref/bin/`.
   2. Copy `test_build/` to `/tmp/u3-ref/tree/` and set `XDG_CACHE_HOME=/tmp/u3-ref/cache-before`.
   3. For each of the 10 binaries (`aliasapp boxapp counterapp diamondapp myapp printapp sizeapp timerapp todoapp usebox`), save `bcc build -v <abs dir>` stdout, stderr and exit code to `/tmp/u3-ref/before/<name>.*`.
@@ -63,7 +63,7 @@ The binding audit order is applied in Phase 2, before any story:
 
 ### R3: shared project helpers that `bcc` itself calls (FR-007; plan D-1; contract project-layout-api.md)
 
-- [ ] T003 Create `ProjectLayout.h` and `ProjectLayout.cpp` (`namespace BlangProject`). Move these **verbatim** from `bcc.cpp`, keeping their comments:
+- [x] T003 Create `ProjectLayout.h` and `ProjectLayout.cpp` (`namespace BlangProject`). Move these **verbatim** from `bcc.cpp`, keeping their comments:
   - `discoverSourceFiles` (bcc.cpp ~L899);
   - `resolvePath` (~L936);
   - `gitCacheRoot` (~L956);
@@ -83,23 +83,23 @@ The binding audit order is applied in Phase 2, before any story:
   - **`mergeByOrigin`**, which is `mergeDep` made generic.
 
   Includes are POSIX `dirent`, `stat`, `limits`, `cstdlib` and `sha256.h` only. There is **no** process call.
-- [ ] T004 In `bcc.cpp`:
+- [x] T004 In `bcc.cpp`:
   - delete the moved bodies and `#include "ProjectLayout.h"`;
   - `buildProject`'s dependency loop calls `BlangProject::resolveDependencyDir( projectDir, dep, &fetcher )`. The fetcher is a lambda that wraps the remaining fetch half of `resolveGitDependency` (`runCommand` git clone / checkout / rename), with every `cerr` text unchanged;
   - `mergeDep` becomes `BlangProject::mergeByOrigin( outClosure, d, []( const DepArtifact &a ){ return a.origin; } )`;
   - `discoverSourceFiles` calls become `BlangProject::discoverSourceFiles`.
 
   Error paths keep `bcc`'s exact `cerr` messages and return codes.
-- [ ] T004b Extract `walkDependencies` + `WalkVisitor` into `ProjectLayout.{h,cpp}`. Rewrite `bcc.cpp buildProject` as a visitor with no recursion of its own. Grep gate: `grep -n 'buildProject(' bcc.cpp` shows only the definition and the `runBuild` call; `grep -nE 'building\.(insert|count|erase)' bcc.cpp` prints nothing. *(Audit addendum H1; FR-007, FR-021. Semantics 1–6 in contracts/project-layout-api.md: `bcc`'s texts and stop-at-first-failure stay in its visitor; the shared walk prints nothing.)* Also add `BlangStdlib::scanImportsAll( const std::vector<std::string> &texts )` to `StdlibSelect.h/.cpp`, and replace `buildProject`'s `projImports` loop with `scanImportsAll( texts-of(sources) )`, the texts read as today with `readFileToString` (audit addendum H2; byte-neutral, covered by T007).
-- [ ] T005 [P] In `ProjectConfig.h` and `ProjectConfig.cpp`:
+- [x] T004b Extract `walkDependencies` + `WalkVisitor` into `ProjectLayout.{h,cpp}`. Rewrite `bcc.cpp buildProject` as a visitor with no recursion of its own. Grep gate: `grep -n 'buildProject(' bcc.cpp` shows only the definition and the `runBuild` call; `grep -nE 'building\.(insert|count|erase)' bcc.cpp` prints nothing. *(Audit addendum H1; FR-007, FR-021. Semantics 1–6 in contracts/project-layout-api.md: `bcc`'s texts and stop-at-first-failure stay in its visitor; the shared walk prints nothing.)* Also add `BlangStdlib::scanImportsAll( const std::vector<std::string> &texts )` to `StdlibSelect.h/.cpp`, and replace `buildProject`'s `projImports` loop with `scanImportsAll( texts-of(sources) )`, the texts read as today with `readFileToString` (audit addendum H2; byte-neutral, covered by T007).
+- [x] T005 [P] In `ProjectConfig.h` and `ProjectConfig.cpp`:
   - add `struct ConfigIssue { int line; std::string message; }`;
   - add `static ProjectConfig *loadFromText( const std::string &path, const std::string &text, std::vector<ConfigIssue> *issues )`;
   - add `int line = 0` to `Dependency`, set to the toml line of the entry.
 
   The parsing loop moves into `loadFromText`, which reads from an `istringstream`. Each of the two `cerr` sites (~L124, ~L179) becomes "append a `ConfigIssue` if `issues`, else print the identical `cerr` line". `loadFromFile` reads the file (still returning `nullptr` if it cannot be opened) and calls `loadFromText( path, text, nullptr )`.
-- [ ] T005b [P] (`project_layout` ctest) two texts, `"import a;"` with no trailing newline followed by `"import b;\n"`, and `"x\n// c"` followed by `"import d;\n"`. `scanImportsAll` yields `{a,b}` and `{d}`. A teeth leg asserts that the concatenated-scan form yields a different set. *(Audit addendum H2; FR-003, FR-007.)*
-- [ ] T006 In `CMakeLists.txt`, add `ProjectLayout.cpp` and `ProjectConfig.cpp` to `BLANG_FRONTEND_SOURCES`, and `ProjectLayout.cpp` to the `bcc` target, which already has `ProjectConfig.cpp` and `sha256.c`. Rebuild `build`, `build-nollvm` and `build-asan`.
-- [ ] T007 R3 neutrality checkpoint (FR-021, SC-007):
+- [x] T005b [P] (`project_layout` ctest) two texts, `"import a;"` with no trailing newline followed by `"import b;\n"`, and `"x\n// c"` followed by `"import d;\n"`. `scanImportsAll` yields `{a,b}` and `{d}`. A teeth leg asserts that the concatenated-scan form yields a different set. *(Audit addendum H2; FR-003, FR-007.)*
+- [x] T006 In `CMakeLists.txt`, add `ProjectLayout.cpp` and `ProjectConfig.cpp` to `BLANG_FRONTEND_SOURCES`, and `ProjectLayout.cpp` to the `bcc` target, which already has `ProjectConfig.cpp` and `sha256.c`. Rebuild `build`, `build-nollvm` and `build-asan`.
+- [x] T007 R3 neutrality checkpoint (FR-021, SC-007):
   - re-run the T002 commands with the new `bcc`, under the same directory layout and stdlib path and a fresh `XDG_CACHE_HOME=/tmp/u3-ref/cache-after`;
   - `cmp` every output against `/tmp/u3-ref/before/`, normalizing only the cache-directory prefix; it must be identical;
   - `test_build/run_build_tests.sh` passes all legs, including the git dependency, diamond and `.bmod` goldens;
@@ -142,7 +142,7 @@ The binding audit order is applied in Phase 2, before any story:
 
 ### Shared-helper unit test
 
-- [ ] T014 [P] Create `ProjectLayoutTest.cpp`, an assert harness that does not compile out under NDEBUG. It takes `argv[1] = <source root>`, uses scratch directories made with `mkdtemp`, and cleans up. It covers (FR-007):
+- [x] T014 [P] Create `ProjectLayoutTest.cpp`, an assert harness that does not compile out under NDEBUG. It takes `argv[1] = <source root>`, uses scratch directories made with `mkdtemp`, and cleans up. It covers (FR-007):
   - **(a)** `findProjectRoot`: walk-up from a nested directory, stop at the first `blang.toml`, return `""` when there is none;
   - **(b)** `discoverSourceFiles`: root-only, sorted;
   - **(c)** `resolvePath`: relative, absolute and nonexistent paths;

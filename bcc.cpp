@@ -32,6 +32,7 @@
 #include "ProjectConfig.h"
 #include "BuildCache.h"
 #include "StdlibSelect.h"
+#include "ProjectLayout.h"
 #include "Type.h"
 #include "Expression.h"
 #include "SchemaMigration.h"
@@ -896,31 +897,6 @@ static int runMigrate( int argc, char *argv[] )
 }
 
 // Discover all .b files in a directory (non-recursive, project root only)
-static vector<string> discoverSourceFiles( const string &dir )
-{
-	vector<string> files;
-	DIR *d = opendir( dir.c_str() );
-	if ( !d )
-		return files;
-
-	struct dirent *entry;
-	while ( ( entry = readdir( d ) ) != nullptr )
-	{
-		string name = entry->d_name;
-		if ( name.size() > 2 && name.substr( name.size() - 2 ) == ".b" )
-		{
-			string path = dir;
-			if ( !path.empty() && path.back() != '/' )
-				path += '/';
-			path += name;
-			files.push_back( path );
-		}
-	}
-	closedir( d );
-	sort( files.begin(), files.end() );
-	return files;
-}
-
 // Read file content as string for cache key computation
 static string readFileToString( const string &path )
 {
@@ -932,76 +908,22 @@ static string readFileToString( const string &path )
 	return ss.str();
 }
 
-// Resolve absolute path from a possibly relative path
-static string resolvePath( const string &basePath, const string &relPath )
-{
-	if ( !relPath.empty() && relPath[0] == '/' )
-		return relPath;
-	// basePath is the directory containing blang.toml
-	string base = basePath;
-	if ( !base.empty() && base.back() != '/' )
-		base += '/';
-	// Resolve with realpath
-	string combined = base + relPath;
-	char resolved[PATH_MAX];
-	if ( realpath( combined.c_str(), resolved ) )
-		return string( resolved );
-	return combined;
-}
-
 // --- Git dependency fetching ------------------------------------------------
-
-// Checkout cache root, sibling of BuildCache's objects/ dir so `bcc clean`
-// (which removes the whole blang cache directory) clears checkouts too.
-static string gitCacheRoot()
+//
+// modules-v2-lsp U3 (audit R3): the LOCATE half (pin check, checkout path, warm
+// test) is shared (BlangProject::locateGitCheckout); this FETCH half — the only
+// subprocess path for dependencies — stays in bcc. A warm checkout is reused
+// without touching the network (the cache key is url@pin). The clone lands in a
+// ".part" temp dir and is renamed into place only on success, so an interrupted
+// fetch never poisons the cache.
+static int fetchGitDependency( const Dependency &dep, const BlangProject::GitLocation &loc,
+	bool verbose, string &outDir )
 {
-	const char *xdg = getenv( "XDG_CACHE_HOME" );
-	if ( xdg != nullptr && xdg[0] != '\0' )
-		return string( xdg ) + "/blang/git";
-	const char *home = getenv( "HOME" );
-	if ( home != nullptr && home[0] != '\0' )
-		return string( home ) + "/.cache/blang/git";
-	return "/tmp/.cache/blang/git";
-}
+	const string &pin = loc.pin;
+	string root = BlangProject::gitCacheRoot();
+	const string &dir = loc.dir;
 
-static string shortHashHex( const string &s )
-{
-	SHA256_CTX ctx;
-	uint8_t h[32];
-	sha256_init( &ctx );
-	sha256_update( &ctx, (const uint8_t *)s.data(), s.size() );
-	sha256_final( &ctx, h );
-	static const char *hex = "0123456789abcdef";
-	string out;
-	for ( int i = 0; i < 8; i++ )
-	{
-		out += hex[h[i] >> 4];
-		out += hex[h[i] & 0xf];
-	}
-	return out;
-}
-
-// Resolve a git dependency to a local checkout under the cache, fetching it
-// with the git CLI on first use. The pin (rev, else tag) is REQUIRED — an
-// unpinned git dep would make the build irreproducible. A warm checkout is
-// reused without touching the network (the cache key is url@pin). The clone
-// lands in a ".part" temp dir and is renamed into place only on success, so
-// an interrupted fetch never poisons the cache.
-static int resolveGitDependency( const Dependency &dep, bool verbose, string &outDir )
-{
-	string pin = !dep.rev.empty() ? dep.rev : dep.tag;
-	if ( pin.empty() )
-	{
-		cerr << "error: git dependency '" << dep.name
-			 << "' must pin a version: add tag = \"...\" or rev = \"...\"" << endl;
-		return 1;
-	}
-
-	string root = gitCacheRoot();
-	string dir = root + "/" + dep.name + "-" + shortHashHex( dep.gitUrl + "@" + pin );
-
-	struct stat st;
-	if ( stat( ( dir + "/blang.toml" ).c_str(), &st ) == 0 )
+	if ( loc.warm )
 	{
 		if ( verbose )
 			cerr << "  git dep '" << dep.name << "' cached at " << dir << endl;
@@ -1074,59 +996,99 @@ static void addOriginFlags( vector<string> &cmd, const string &moduleOrigin,
 // closure grants D7 use-capability for INDIRECTLY-reached types: a consumer that
 // imports X (which imports Q) receives Q's .bmod/.a even though it never named Q,
 // so it can monomorphize a foreign generic X returns from Q.
-struct DepArtifact { string aFile, bmodFile, origin; };
+struct DepArtifact { string aFile, bmodFile, origin, hash; };
 
-// Merge a dep into a closure, deduped by canonical origin (a diamond dep reached by
-// two paths appears once — matching D6: one origin is one module).
-static void mergeDep( vector<DepArtifact> &into, const DepArtifact &d )
+// modules-v2-lsp U3 (audit addendum H1): the dependency WALK — the on-path cycle
+// guard (KG-8 RAII), dependency resolution, always-recurse and the closure-then-
+// self fold — is BlangProject::walkDependencies, shared with blangd. bcc is a
+// visitor: its messages, its stop-at-first-failure and its per-project build
+// (leave) stay here. bcc.cpp keeps no recursion of its own.
+struct BccBuildVisitor : BlangProject::WalkVisitor<DepArtifact>
 {
-	for ( const auto &e : into )
-		if ( e.origin == d.origin )
-			return;
-	into.push_back( d );
+	const string &exeDir;
+	bool verbose;
+	BlangProject::Fetcher fetcher;
+
+	BccBuildVisitor( const string &exe, bool v ) : exeDir( exe ), verbose( v )
+	{
+		fetcher = [this]( const Dependency &dep, const BlangProject::GitLocation &loc,
+			string &outDir ) { return fetchGitDependency( dep, loc, verbose, outDir ); };
+	}
+
+	ProjectConfig *load( const string &dir ) override
+	{
+		return ProjectConfig::loadFromDirectory( dir );
+	}
+
+	int onRootLoadError( const string &dir ) override
+	{
+		cerr << "error: no blang.toml found in " << dir << endl;
+		return 1;
+	}
+
+	int enter( const BlangProject::WalkNode &node ) override
+	{
+		if ( verbose )
+			cerr << "--- Building " << node.config->getName() << " (" << node.dir << ") ---" << endl;
+		return 0;
+	}
+
+	int onDepError( const BlangProject::WalkNode &, const Dependency &,
+		const BlangProject::DepDir &dd ) override
+	{
+		using E = BlangProject::DepDir::Error;
+		switch ( dd.error )
+		{
+		case E::kNoBlangToml:
+			cerr << "error: no blang.toml found in " << dd.dir << endl;
+			break;
+		case E::kUnpinned:
+		case E::kNoPathOrGit:
+			cerr << "error: " << dd.message << endl;
+			break;
+		case E::kFetchFailed:   // the fetcher printed its own message
+		case E::kUnfetched:     // unreachable: bcc always passes its fetcher
+		case E::kNone:
+			break;
+		}
+		return 1;
+	}
+
+	int onCycle( const BlangProject::WalkNode &node ) override
+	{
+		cerr << "error: circular dependency detected: " << node.canonDir << endl;
+		return 1;
+	}
+
+	string originOf( const DepArtifact &a ) const override { return a.origin; }
+
+	int leave( const BlangProject::WalkNode &node, const vector<DepArtifact> &closure,
+		const vector<DepArtifact> &direct, DepArtifact &self ) override;
+};
+
+// Build a single project directory (all its dependencies first, via the shared
+// walk). Returns 0 on success.
+static int buildProject( const string &projectDir, const string &exeDir, bool verbose )
+{
+	BccBuildVisitor visitor( exeDir, verbose );
+	vector<DepArtifact> closure;   // U5: transitive dep closure (unused at top level)
+	DepArtifact self;
+	return BlangProject::walkDependencies( projectDir, &visitor.fetcher, visitor, closure, self );
 }
 
-// Outputs: fills aFile and bmodFile if type=lib; outClosure gets this project's
-// TRANSITIVE dependency closure (its direct deps + their closures, deduped, self
-// excluded) so the caller can propagate it further up the graph.
-static int buildProject( const string &projectDir, const string &exeDir,
-	bool verbose, set<string> &building,
-	string &outAFile, string &outBmodFile, string &cacheHash,
-	vector<DepArtifact> &outClosure )
+// The per-project build, post-order (deps already built; `closure` is the
+// TRANSITIVE dependency closure, deduped, in topological order).
+int BccBuildVisitor::leave( const BlangProject::WalkNode &node, const vector<DepArtifact> &outClosure,
+	const vector<DepArtifact> &direct, DepArtifact &self )
 {
-	// Circular dependency detection
-	char resolvedDir[PATH_MAX];
-	string canonDir = projectDir;
-	if ( realpath( projectDir.c_str(), resolvedDir ) )
-		canonDir = resolvedDir;
+	const string &projectDir = node.dir;
+	const string &canonDir = node.canonDir;
+	const ProjectConfig *config = node.config;
+	self.origin = canonDir;
+	string &outAFile = self.aFile;
+	string &outBmodFile = self.bmodFile;
+	string &cacheHash = self.hash;
 
-	if ( building.count( canonDir ) )
-	{
-		cerr << "error: circular dependency detected: " << canonDir << endl;
-		return 1;
-	}
-	building.insert( canonDir );
-	// `building` is the DFS on-current-path set: it must be cleared on EVERY exit,
-	// or a node that returns early (the lib cache-hit path) stays "on the path"
-	// and a diamond's second visit to it is misread as a cycle (KG-8).
-	struct OnPathGuard
-	{
-		set<string> &mSet;
-		const string mKey;
-		~OnPathGuard() { mSet.erase( mKey ); }
-	} onPathGuard{ building, canonDir };
-
-	ProjectConfig *config = ProjectConfig::loadFromDirectory( projectDir );
-	if ( !config )
-	{
-		cerr << "error: no blang.toml found in " << projectDir << endl;
-		return 1;
-	}
-
-	if ( verbose )
-		cerr << "--- Building " << config->getName() << " (" << projectDir << ") ---" << endl;
-
-	// Recursively build dependencies first
 	vector<string> depBmodFiles;
 	vector<string> depAFiles;
 	vector<string> depHashes;
@@ -1135,63 +1097,8 @@ static int buildProject( const string &projectDir, const string &exeDir,
 	// dep's .bmod generics are stamped with the DEP's identity — identical to the
 	// dep's own build — keeping linkonce_odr dedup correct across the boundary.
 	vector<string> depOrigins;
-
-	for ( const auto &dep : config->getDependencies() )
-	{
-		string depDir;
-		if ( !dep.gitUrl.empty() )
-		{
-			// Fetch (or reuse) a pinned checkout, then treat it as a path dep.
-			if ( resolveGitDependency( dep, verbose, depDir ) != 0 )
-			{
-				delete config;
-				return 1;
-			}
-		}
-		else if ( dep.path.empty() )
-		{
-			cerr << "error: dependency '" << dep.name << "' has neither a path nor a git url" << endl;
-			delete config;
-			return 1;
-		}
-		else
-		{
-			depDir = resolvePath( projectDir, dep.path );
-		}
-
-		// Canonical origin of this dep = realpath of its project dir (D5). The same
-		// value the dep's OWN build stamps via --module-origin, so digests agree.
-		string depOrigin = depDir;
-		{
-			char depResolved[PATH_MAX];
-			if ( realpath( depDir.c_str(), depResolved ) )
-				depOrigin = depResolved;
-		}
-
-		// Build the dependency (buildProject caches internally, so this is cheap on
-		// a warm cache). Always recurse — its dep loop assembles the dep's OWN
-		// transitive closure, which we fold into ours (U5). buildProject
-		// insert/erases `building` around itself, so a diamond dep reached twice is
-		// not a false circular error; mergeDep dedups the artifacts by origin.
-		string depA, depBmod, depHash;
-		vector<DepArtifact> depClosure;
-		int ret = buildProject( depDir, exeDir, verbose, building,
-			depA, depBmod, depHash, depClosure );
-		if ( ret != 0 )
-		{
-			delete config;
-			return ret;
-		}
-
-		depHashes.push_back( depHash );
-		// TOPOLOGICAL order: a dependency must precede its dependent in the .bmod
-		// list so qcc parses a foreign type's definition BEFORE the interface that
-		// references it. So fold the dep's transitive closure (its deps) in FIRST,
-		// then the dep itself.
-		for ( const auto &d : depClosure )
-			mergeDep( outClosure, d );
-		mergeDep( outClosure, { depA, depBmod, depOrigin } );
-	}
+	for ( const auto &d : direct )
+		depHashes.push_back( d.hash );
 
 	// The consumer typechecks against and links the FULL transitive closure (U5),
 	// not just direct deps — so an indirectly-reached foreign type resolves.
@@ -1203,11 +1110,10 @@ static int buildProject( const string &projectDir, const string &exeDir,
 	}
 
 	// Discover source files
-	vector<string> sources = discoverSourceFiles( projectDir );
+	vector<string> sources = BlangProject::discoverSourceFiles( projectDir );
 	if ( sources.empty() )
 	{
 		cerr << "error: no .b source files found in " << projectDir << endl;
-		delete config;
 		return 1;
 	}
 
@@ -1217,12 +1123,13 @@ static int buildProject( const string &projectDir, const string &exeDir,
 	// Libraries intentionally do NOT embed stdlib (it would duplicate symbols
 	// when a downstream binary imports the same module) — they reference stdlib
 	// declarations and the final binary supplies the bodies.
-	set<string> projImports;
+	// modules-v2-lsp U3 (audit addendum H2): each source scanned SEPARATELY and the
+	// results unioned — the one shared rule (BlangStdlib::scanImportsAll), never a
+	// scan of concatenated text.
+	vector<string> sourceTexts;
 	for ( const auto &src : sources )
-	{
-		set<string> imp = BlangStdlib::scanImports( readFileToString( src ) );
-		projImports.insert( imp.begin(), imp.end() );
-	}
+		sourceTexts.push_back( readFileToString( src ) );
+	set<string> projImports = BlangStdlib::scanImportsAll( sourceTexts );
 	vector<string> stdlibFiles = BlangStdlib::selectStdlibFiles( exeDir + "/stdlib", projImports );
 	bool useCombine = !stdlibFiles.empty() && !config->isLibrary();
 
@@ -1240,7 +1147,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 				cerr << "  cache hit for " << config->getName() << " (" << cacheHash.substr( 0, 12 ) << "...)" << endl;
 			outAFile = cachedA;
 			outBmodFile = cachedBmod;
-			delete config;
 			return 0;
 		}
 	}
@@ -1269,7 +1175,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		if ( ret != 0 )
 		{
 			cerr << "error: compilation failed for " << config->getName() << endl;
-			delete config;
 			return 1;
 		}
 
@@ -1278,7 +1183,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		if ( llc.empty() )
 		{
 			cerr << "error: llc not found" << endl;
-			delete config;
 			return 1;
 		}
 
@@ -1297,8 +1201,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( ret != 0 )
 			{
 				cerr << "error: IR compilation failed for " << base << endl;
-				delete config;
-				return 1;
+					return 1;
 			}
 			remove( llFile.c_str() );
 			objFiles.push_back( objFile );
@@ -1314,8 +1217,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( ret != 0 )
 			{
 				cerr << "error: archive creation failed" << endl;
-				delete config;
-				return 1;
+					return 1;
 			}
 			for ( const auto &obj : objFiles )
 				remove( obj.c_str() );
@@ -1374,7 +1276,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		if ( ret != 0 )
 		{
 			cerr << "error: compilation failed for " << config->getName() << endl;
-			delete config;
 			return 1;
 		}
 
@@ -1383,7 +1284,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 		if ( llc.empty() )
 		{
 			cerr << "error: llc not found" << endl;
-			delete config;
 			return 1;
 		}
 
@@ -1420,8 +1320,7 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			if ( ret != 0 )
 			{
 				cerr << "error: IR compilation failed for " << getBaseName( llFile ) << endl;
-				delete config;
-				return 1;
+					return 1;
 			}
 			remove( llFile.c_str() );
 			objFiles.push_back( objFile );
@@ -1473,7 +1372,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			cerr << "error: linking failed for " << config->getName() << endl;
 			for ( const auto &obj : objFiles )
 				remove( obj.c_str() );
-			delete config;
 			return 1;
 		}
 		for ( const auto &obj : objFiles )
@@ -1483,7 +1381,6 @@ static int buildProject( const string &projectDir, const string &exeDir,
 			cerr << "  built " << config->getName() << " -> " << projectDir + "/" + outName << endl;
 	}
 
-	delete config;
 	return 0;
 }
 
@@ -1502,10 +1399,7 @@ static int runBuild( int argc, char *argv[], const string &exeDir )
 			projectDir = arg;
 	}
 
-	set<string> building;
-	string outA, outBmod, hash;
-	vector<DepArtifact> closure;   // U5: transitive dep closure (unused at top level)
-	return buildProject( projectDir, exeDir, verbose, building, outA, outBmod, hash, closure );
+	return buildProject( projectDir, exeDir, verbose );
 }
 
 // bcc clean subcommand
@@ -1520,7 +1414,7 @@ static int runClean()
 	}
 	// Git dependency checkouts live beside the object cache; clean removes
 	// them too so a stale/moved pin can always be re-fetched.
-	string gitDir = gitCacheRoot();
+	string gitDir = BlangProject::gitCacheRoot();
 	cerr << "Removing git checkouts: " << gitDir << endl;
 	runCommand( { "rm", "-rf", gitDir }, false, true );
 	cerr << "Done." << endl;

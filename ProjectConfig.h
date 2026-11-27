@@ -11,6 +11,16 @@ struct Dependency
 	std::string gitUrl;
 	std::string tag;   // git: tag or branch name (cloned with --branch)
 	std::string rev;   // git: exact commit hash (full clone + checkout)
+	int line = 0;      // blang.toml line of this [deps] entry (modules-v2-lsp U3: located diagnostics)
+};
+
+// A blang.toml problem the parser recovered from (modules-v2-lsp U3). With no
+// issue sink, loadFromText prints "<path>:<line>: parse error: <message>" to
+// cerr exactly as bcc always has; with one, it appends here and prints nothing.
+struct ConfigIssue
+{
+	int line;
+	std::string message;
 };
 
 // A named database connection from [database.<name>].
@@ -25,6 +35,10 @@ class ProjectConfig
 {
 public:
 	static ProjectConfig *loadFromFile( const std::string &path );
+	// Parse blang.toml TEXT (an editor buffer, or a file loadFromFile read).
+	// `issues` == nullptr keeps bcc's cerr output byte-identical.
+	static ProjectConfig *loadFromText( const std::string &path, const std::string &text,
+		std::vector<ConfigIssue> *issues );
 	static ProjectConfig *loadFromDirectory( const std::string &dir );
 
 	const std::string &getName() const { return mName; }

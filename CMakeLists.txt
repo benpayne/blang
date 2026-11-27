@@ -95,6 +95,8 @@ set(BLANG_FRONTEND_SOURCES
 	Resolver.cpp
 	ProjectCompile.cpp
 	StdlibSelect.cpp
+	ProjectLayout.cpp
+	ProjectConfig.cpp
 	FormatString.cpp)
 
 # The qcc driver = frontend + the CLI main.
@@ -324,7 +326,7 @@ set_target_properties(blang_sqlgen PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUI
 target_include_directories(blang_sqlgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # bcc - BLang compiler driver (orchestrates qcc -> llc -> cc pipeline)
-add_executable(bcc bcc.cpp ProjectConfig.cpp BuildCache.cpp StdlibSelect.cpp sha256.c)
+add_executable(bcc bcc.cpp ProjectConfig.cpp ProjectLayout.cpp BuildCache.cpp StdlibSelect.cpp sha256.c)
 set_target_properties(bcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # Bake tool paths into bcc at build time so it works regardless of runtime PATH/arch
@@ -430,6 +432,13 @@ target_compile_definitions(parserLeakTest PRIVATE BLANG_SOURCE_STDLIB_DIR="${CMA
 add_executable(stdlibLocateTest lsp/StdlibLocateTest.cpp lsp/StdlibLocation.cpp StdlibSelect.cpp)
 set_target_properties(stdlibLocateTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(stdlibLocateTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# modules-v2-lsp U3: the shared project rules (ProjectLayout walk/locate/resolve,
+# ProjectConfig::loadFromText sink, BlangStdlib::scanImportsAll), driver-free.
+add_executable(projectLayoutTest ProjectLayoutTest.cpp ProjectLayout.cpp ProjectConfig.cpp StdlibSelect.cpp sha256.c)
+set_target_properties(projectLayoutTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(projectLayoutTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME project_layout COMMAND projectLayoutTest ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_test(NAME stdlib_locate
          COMMAND stdlibLocateTest ${CMAKE_CURRENT_SOURCE_DIR}/stdlib ${CMAKE_CURRENT_SOURCE_DIR}/test_files/lsp/src)
 
