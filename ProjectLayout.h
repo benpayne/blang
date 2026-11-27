@@ -96,6 +96,11 @@ struct WalkNode
 	std::string canonDir;                     // realpath(dir), else dir
 	const ProjectConfig *config = nullptr;    // loaded by the walk via WalkVisitor::load
 	const std::vector<std::string> *onPath = nullptr;   // DFS stack of canonDirs
+	// The edge that reached this node (both null at the root): the declaring
+	// project and its [deps] entry. bcc ignores them; blangd locates setup
+	// diagnostics with them (converge T046).
+	const WalkNode *parent = nullptr;
+	const Dependency *viaDep = nullptr;
 };
 
 template <class A>
@@ -139,6 +144,8 @@ int visit( const std::string &dir, const WalkNode *parent, const Dependency *via
 	node.dir = dir;
 	node.canonDir = canonicalPath( dir );
 	node.onPath = &onPath;
+	node.parent = parent;
+	node.viaDep = viaDep;
 
 	// 1. Cycle: membership in the realpath'd on-path set (bcc's `building`).
 	if ( onPathSet.count( node.canonDir ) )

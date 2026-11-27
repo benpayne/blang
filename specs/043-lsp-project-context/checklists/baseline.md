@@ -84,3 +84,32 @@ The other gates:
 - `grep -nE "runCommand|popen|fork\(|exec[lv]p?\(|system\(" ProjectLayout.cpp lsp/*.cpp lsp/*.h` matches only the comment `ProjectLayout.cpp:3` ("Process-free: no fork/exec/system/popen, no network.").
 - `grep -nE "opendir|\"blang.toml\"" lsp/*.cpp` matches only the diagnostic **codes** `"blang-toml"` (`lsp/Compile.cpp:118,167`). There is no `opendir` and no toml-name rule in `lsp/`: discovery, listing and resolution are `BlangProject::`'s.
 - `grep -rn "sharedResolver" lsp/` prints nothing.
+
+## T046 (converge cycle 1): declared-at fallback for dependency-compile-failure and cycle diagnostics
+
+- **Change.**
+  - The shared `BlangProject::WalkNode` gains `parent` and `viaDep`, the edge that reached the node. `detail::visit` already held both. The change is additive and `bcc`'s visitor never reads them.
+  - `BlangdVisitor::derive` sets `declaredAt` from the first edge that reached the dependency.
+  - `BlangdVisitor::onCycle` sets `declaredAt` from the edge that closes the cycle.
+  - So when such a diagnostic falls back to 1:1, it names `<toml>:<line>` (FR-009 / D-5).
+- **Locks.**
+  - **New golden `project_dep_failed_unimported`**: the document does not import the failing `lib`. It publishes one 1:1 Error, `… failed to compile: …lib.b:2:12: … (declared at …/dep_failed_unimported/blang.toml:7)`, plus the unrelated error at 6:10.
+  - **`project_cycle`**: re-generated and hand-reviewed. The only change is that the 1:1 message gains `(declared at ${ROOT}/test_files/lsp/projects/cycle_b/blang.toml:7)`. This golden was added by U3, so no pre-existing golden changed.
+  - **`project_layout`**: asserts each node's edge (`leaf<-l:leaf:4`, `r<-top:r:5`, `top<-root`, …) and the cycle-closing edge `cycle<-cb:ca:4`. Teeth: a wrong line number fails the check.
+  - A transitive failure (`app -> mid -> leaf`) names `mid/blang.toml:6`.
+- **Re-verification on the final tree.**
+
+  | Gate | `build` | `build-nollvm` | `build-asan` |
+  |---|---|---|---|
+  | ctest | 87/87 | 87/87 | 87/87 |
+  | `run_tests.sh` | 251/0 | 244/0 | 251/0 |
+  | `test_lsp.sh` | 92/0, with the stdlib corpus 177/177 and the project corpus 29/29 | 91/0 | 83/8 |
+  | `test_lsp.sh --selfcheck` | OK | OK | OK |
+
+  - The `build-asan` 8 are U2's known parse-error-recovery leak: `diag_open`, `diag_change`, `stdlib_missing`, `stdlib_missing_env`, three `fail/sema` fixtures and the project-corpus session exit. The stdlib-corpus session is **not** among them (177/177 PASS under ASan).
+  - Opened individually, the **17/17** clean projects are LSan-clean, and all 9 `project_*` goldens run clean under `build-asan/blangd`.
+  - **`test_codegen.sh`**: `--leak-check` 172/0 with Leaks: 0; `--selfcheck` OK; plain 172/0.
+  - **`run_build_tests.sh`**: rc 0.
+  - **Reach-in gate, examples, demos**: OK; 6/6; 10/0.
+  - **T007**: `bcc build -v` against a fresh full build of `042-lsp-stdlib-context` gives **28/28 `cmp`-identical** (11 builds rc 0, 3 negatives rc 1).
+  - **T009**: `--emit-bmod`, **17/17** identical.

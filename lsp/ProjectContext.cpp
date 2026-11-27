@@ -128,6 +128,7 @@ public:
 				return 0;
 		SetupDiagnostic s;
 		s.message = msg;
+		s.declaredAt = declaredAt( node );   // the edge that closes the cycle
 		mOut.setup.push_back( s );
 		return 0;
 	}
@@ -151,6 +152,15 @@ public:
 	}
 
 private:
+	// "<declaring toml>:<line>" of the [deps] entry that reached `node` (D-5's
+	// 1:1 fallback), or "" at the root.
+	static std::string declaredAt( const BlangProject::WalkNode &node )
+	{
+		if ( node.parent == nullptr || node.viaDep == nullptr )
+			return "";
+		return node.parent->dir + "/blang.toml:" + std::to_string( node.viaDep->line );
+	}
+
 	// D-3: the dependency's own bcc lib compile (non-combine, no stdlib, its
 	// closure interfaces, its canonical origin), then its interface emitted IN
 	// MEMORY by the one exporter, slicing generic bodies from the exact parsed
@@ -220,6 +230,7 @@ private:
 
 		SetupDiagnostic s;
 		s.importName = self.name;
+		s.declaredAt = declaredAt( node );   // first edge reaching it (memoized after)
 		if ( failed )
 		{
 			std::string first = "unknown error";

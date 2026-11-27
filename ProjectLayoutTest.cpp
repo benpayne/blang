@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <fstream>
 #include <map>
 #include <set>
@@ -55,7 +56,20 @@ struct RecVisitor : WalkVisitor<std::string>
 			std::to_string( (int)dd.error ) );
 		return continueOnError ? 0 : 1;
 	}
-	int onCycle( const WalkNode &n ) override { events.push_back( "cycle:" + n.canonDir ); return continueOnError ? 0 : 1; }
+	int onCycle( const WalkNode &n ) override
+	{
+		events.push_back( "cycle:" + n.canonDir );
+		edges.push_back( "cycle<-" + edgeOf( n ) );
+		return continueOnError ? 0 : 1;
+	}
+	// The declaring edge the walk exposes on WalkNode (converge T046).
+	static std::string edgeOf( const WalkNode &n )
+	{
+		if ( n.parent == nullptr || n.viaDep == nullptr )
+			return "root";
+		return n.parent->config->getName() + ":" + n.viaDep->name + ":" + std::to_string( n.viaDep->line );
+	}
+	std::vector<std::string> edges;
 	int leave( const WalkNode &n, const std::vector<std::string> &closure,
 		const std::vector<std::string> &direct, std::string &self ) override
 	{
@@ -64,6 +78,7 @@ struct RecVisitor : WalkVisitor<std::string>
 			c += ( c.empty() ? "" : "," ) + x.substr( x.rfind( '/' ) + 1 );
 		events.push_back( "leave:" + n.config->getName() + "[" + c + "]#" + std::to_string( direct.size() ) );
 		self = n.canonDir;
+		edges.push_back( n.config->getName() + "<-" + edgeOf( n ) );
 		return 0;
 	}
 	std::string originOf( const std::string &a ) const override { return a; }
@@ -229,6 +244,10 @@ int main( int argc, char *argv[] )
 		CHECK( all.find( "deperr:top:miss:5;" ) != std::string::npos );
 		CHECK( all.find( "leave:top[leaf,l,r]#2;" ) != std::string::npos );
 		CHECK( closure.size() == 3 );
+		// T046: every node carries the [deps] entry that reached it (line = its
+		// line in the declaring blang.toml); the root has none.
+		CHECK( ( v.edges == std::vector<std::string>{ "leaf<-l:leaf:4", "l<-top:l:4", "leaf<-r:leaf:4",
+			"r<-top:r:5", "top<-root" } ) );
 
 		proj( "ca", "cb = { path = \"../cb\" }\n" );
 		proj( "cb", "ca = { path = \"../ca\" }\n" );
@@ -239,6 +258,8 @@ int main( int argc, char *argv[] )
 		for ( auto &e : cv.events )
 			sawCycle = sawCycle || e == "cycle:" + canonicalPath( w + "/ca" );
 		CHECK( sawCycle );
+		// T046: the cycle is reported with the edge that closes it (cb's entry for ca).
+		CHECK( ( std::find( cv.edges.begin(), cv.edges.end(), "cycle<-cb:ca:4" ) != cv.edges.end() ) );
 
 		RecVisitor sv;            // a stopping visitor aborts with the code (bcc)
 		sv.continueOnError = false;
