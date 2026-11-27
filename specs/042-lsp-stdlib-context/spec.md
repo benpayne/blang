@@ -170,7 +170,7 @@ A developer types in a real program (`examples/todo_app/main.b`). Each edit now 
 
 ### Measurable Outcomes
 
-- **SC-001**: On every file in the committed stdlib corpus, blangd and the reference compile report identical diagnostics, with a 100% match. The corpus includes the six overview files, all 6 `examples/*/main.b`, and every exit-0 `test_files/codegen_*.b`. The four overview files whose reference compile is clean show **zero** diagnostics in the editor, down from the 4–16 false errors each measured before this unit.
+- **SC-001**: On every file in the committed stdlib corpus, blangd and the reference compile report identical diagnostics, with a 100% match. The corpus includes the six overview files, all 6 `examples/*/main.b`, and every exit-0 `test_files/codegen_*.b`. A file is **clean** when its reference compile exits 0 (the overview's definition). For the four clean overview files, the editor shows **exactly** the reference compile's diagnostics, errors and warnings both, and **zero errors**. Before this unit each showed 4–16 false errors. (`examples/todo_app/main.b` correctly keeps the 2 `unused variable` warnings that `bcc` itself reports.)
 - **SC-002**: Each of the four stdlib-discovery routes is pinned by a passing transcript golden, and the precedence case (configured path beats environment) is pinned too.
 - **SC-003**: The median edit-to-diagnostics time on `examples/todo_app/main.b` is ≤ 500 ms over 20 edits on the non-sanitizer build.
 - **SC-004**: Memory stays bounded across edits. At least 50 stdlib-context reparses report zero leaks under LeakSanitizer.
