@@ -146,6 +146,18 @@ void Server::handleRequest( const Json &id, const std::string &method, const Jso
 		std::string initOpt = opt.isString() ? opt.asString() : std::string();
 		const char *env = std::getenv( "BLANG_STDLIB_DIR" );
 		mStdlib = locateStdlib( initOpt, env != nullptr ? env : "", mExeDir );
+		// Position encoding (LSP 3.17): the server may only choose one the
+		// client offered in general.positionEncodings; absent that, utf-16 is
+		// mandatory. Prefer utf-8 (blangd columns are byte offsets); otherwise
+		// fall back to utf-16 (VS Code), which is identical on ASCII lines.
+		mPositionEncoding = "utf-16";
+		const Json &encs = params.get( "capabilities" ).get( "general" ).get( "positionEncodings" );
+		for ( std::size_t i = 0; i < encs.size(); ++i )
+		{
+			const Json &e = encs.at( i );
+			if ( e.isString() && e.asString() == "utf-8" )
+				mPositionEncoding = "utf-8";
+		}
 		mInitialized = true;
 		sendResult( id, initializeResult() );
 		return;
@@ -227,9 +239,8 @@ Json Server::initializeResult() const
 	sync.set( "change", 1 ); // TextDocumentSyncKind.Full
 
 	Json caps = Json::object();
-	// utf-8 keeps server columns byte-accurate (LSP 3.17; fixtures stay
-	// ASCII so utf-16 clients see identical positions).
-	caps.set( "positionEncoding", "utf-8" );
+	// Negotiated at initialize (see handleRequest).
+	caps.set( "positionEncoding", mPositionEncoding );
 	caps.set( "textDocumentSync", sync );
 	caps.set( "definitionProvider", true );
 	caps.set( "hoverProvider", true );

@@ -68,6 +68,8 @@ private:
 	// Stdlib discovery (modules-v2-lsp U2): resolved ONCE, at `initialize`.
 	std::string mExeDir;
 	StdlibLocation mStdlib;
+	// Negotiated LSP position encoding ("utf-8" if offered, else "utf-16").
+	std::string mPositionEncoding = "utf-16";
 	// Last compile per open document, retained for navigation requests.
 	std::map<std::string, CompileResult> mCompiles;
 	bool mInitialized = false;
