@@ -111,13 +111,13 @@ The binding audit order is applied in Phase 2, before any story:
 
 ### R1: emitter slices from the parsed text (FR-005, FR-011; plan D-3(c); research R5)
 
-- [ ] T008 In `BmodEmitter.h` and `BmodEmitter.cpp`:
+- [x] T008 In `BmodEmitter.h` and `BmodEmitter.cpp`:
   - add `using SourceTextProvider = std::function<const std::string *( const std::string &path )>;`;
   - change the signature to `static void emit( const std::vector<Module*> &modules, std::ostream &out, Scope *scope, const SourceTextProvider *text = nullptr );`;
   - thread the provider to `sliceDefinitionSource( loc, text )` through a file-static `const SourceTextProvider *gActiveProvider`, set for the duration of `emit` with an RAII reset (no global state survives the call).
 
   **No provider** (`qcc`): today's disk-cache path, byte-identical. **With a provider**, `gSourceLineCache` is never read or written. A provider hit splits that text for this call only. A provider **miss** for a slice location is an emitter failure: `emit` records the path in `std::vector<std::string> *missing` (a new out-parameter, default `nullptr`) and emits nothing further for that definition. The caller must treat any non-empty `missing` as a failed derivation. The `qcc` call passes neither argument. *(Audit addendum H3.)*
-- [ ] T009 R1 neutrality checkpoint:
+- [x] T009 R1 neutrality checkpoint:
   - `test_build/run_build_tests.sh` passes, with the `.bmod` goldens under `test_files/golden/bmod/` unchanged;
   - for every `test_files/fail/xmodule/*/lib.b` and for `test_build/mathlib/*.b`, `qcc --parse-only --emit-bmod` output is `cmp`-identical against `/tmp/u3-ref/bin/qcc` (U1 method);
   - a `project_layout` or `project_compile` case where the provider deliberately omits one generic-defining source. It asserts `missing == {that path}` and that `gSourceLineCache` is untouched: a pre-seeded different disk text for the same path is **not** what was emitted (audit addendum H3).

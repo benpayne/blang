@@ -26,3 +26,12 @@
   - `grep -nE "^static .*(discoverSourceFiles|resolvePath|gitCacheRoot|shortHashHex|mergeDep)" bcc.cpp` → nothing.
 - **`blangd_no_subprocess`**: OK.
 - **ctest**: 86/86 in `build`. `project_layout` was added separately (`ProjectLayoutTest: OK`).
+
+## T009: R1 neutrality (emitter source-text provider)
+
+- **`--emit-bmod` outputs**: **17/17** `cmp`-identical, pre-unit `qcc` vs. post-change `qcc` (no provider: the default path). The set is every `fail/xmodule/*/lib.b` plus the `mathlib`, `boxq`, `midx`, `counterlib`, `todolib` and `printlib` sources.
+- **`run_build_tests.sh`**: all pass. The `test_files/golden/bmod/` goldens are unchanged.
+- **H3 lock (`project_compile` C9)**:
+  - a provider hit slices the **buffer** body, even with the disk cache pre-seeded with different text;
+  - a provider miss is reported in `missing` and emits neither the disk body nor the definition.
+  - Teeth: forcing the emitter to ignore the provider makes C9 fail 3 checks.
