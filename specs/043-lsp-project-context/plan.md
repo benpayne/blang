@@ -159,6 +159,8 @@ CLAUDE.md, editors/README.md EDIT docs
   - `origin = realpath(dir)`, else `dir`;
   - `bcc`'s "neither a path nor a git url" text is kept.
 - `mergeByOrigin( std::vector<T> &, const T &, origin-of )`, which is `mergeDep` made generic.
+- `walkDependencies( projectDir, Fetcher*, WalkVisitor<A>& )`: `buildProject`'s on-path/KG-8 DFS, resolution, always-recurse and closure-then-self `mergeByOrigin` fold, lifted verbatim. `bcc`'s `buildProject` becomes a `WalkVisitor<DepArtifact>` whose `leave` holds the build body. Messages stay in the visitors. *(Audit addendum H1, binding; semantics 1–6 in [contracts/project-layout-api.md](contracts/project-layout-api.md).)*
+- `BlangStdlib::scanImportsAll( texts )` (in `StdlibSelect`), the union of `scanImports(t)` over the texts in order. `bcc`'s `buildProject` calls it instead of its `projImports` loop. *(Audit addendum H2.)*
 
 `bcc.cpp` deletes those bodies and calls them. `resolveGitDependency` keeps only the fetch, which is the only `runCommand` path, and runs it after `locateGitCheckout` says the checkout is cold.
 
@@ -191,7 +193,7 @@ For each dependency, leaves first, in `bcc`'s fold order (each dependency's clos
   - the dependency's `discoverSourceFiles` as **in-memory** `kSource` inputs. The text is the overlay buffer if the file is open, else the disk read;
   - its closure's interfaces as in-memory `kInterface` inputs: path `<depDir>/<name>.bmod`, `origin` set, text from (c).
 - **(b) Run.** `ProjectCompile::run` with a fresh `Run` (D-2). If `ctx->hadError() || diag.hasErrors()`, the dependency is **unresolvable (compile failed)** (R6). Its first error is kept for the message.
-- **(c) Emit.** `BmodEmitter::emit( recorded non-extern modules, os, ctx->bmodEmitScope(), &provider )`, where `provider(path)` returns the exact text that module was parsed from. The `ostringstream` is the interface text.
+- **(c) Emit.** `BmodEmitter::emit( recorded non-extern modules, os, ctx->bmodEmitScope(), &provider )`, where `provider(path)` returns the exact text that module was parsed from. The `ostringstream` is the interface text. A provider miss is a failed derivation (internal-error diagnostic), never a fallback. *(Audit addendum H3.)* The emit runs **inside** the run's `GlobalAliasScope` (analyze L3).
 - **(d) Keep.** The `Run` is kept in the result, because its source AST is the navigation target for U4 (C6).
 
 **Parity argument.** The audit's §1 table holds: the same plan, the same emitter, the same closure order, the same interface path and the same origin. Interface parity is checked directly by an equality test: for every `test_build` library, the blangd-derived interface text must equal the `.bmod` that `run_build_tests.sh` builds in place (cold), byte for byte. The test is a `ProjectLayoutTest`/corpus helper.
@@ -203,13 +205,12 @@ For each dependency, leaves first, in `bcc`'s fold order (each dependency's clos
 1. **Locate.**
    - `BlangProject::findProjectRoot( dirname(path) )` walks up and stops at the first `blang.toml`.
    - With no project, or when the document is not a member (`path ∉ discoverSourceFiles(root)`, compared by `realpath`; R5), the U2 path is used unchanged.
+   - For a member, the document's own `CompileInput::path` is the **URI path exactly** (the string the publish filter and the `module`/`fileScope` lookup use), not the `discoverSourceFiles` string. The other sources keep their `discoverSourceFiles` paths. The overlay is keyed by `realpath`, and the D-3 provider by `CompileInput::path` (analyze M6).
 2. **Load** `blang.toml` with `loadFromText`, from the overlay buffer if it is open, collecting issues. Each issue becomes one `blang.toml` Warning (R7/R8, D-5).
-3. **Resolve the graph.** Run DFS over `[deps]` with an on-path set (cycle → one setup diagnostic) and the `bcc` fold.
-   - Resolution uses `resolveDependencyDir( …, allowFetch = false )`.
-   - Each failure (missing path, unfetched, unpinned, failed compile, cycle) marks that dependency **unresolvable**, records one setup diagnostic, and removes it and everything only it reached from the closure.
+3. **Resolve the graph.** Resolve the graph with `BlangProject::walkDependencies( root, nullptr, visitor )`. blangd's visitor turns `onDepError`/`onCycle` into setup diagnostics (D-5), returns 0 so the walk continues, and derives the interface in `leave` (D-3), memoized by origin for this compile only. *(Audit addendum H1.)*
 4. **Derive interfaces** per D-3.
 5. **Plan.**
-   - **Binary:** combine; `selectStdlibFiles( stdlib.path, scanImports( all project sources' texts ) )` (iff non-empty, as `bcc`); the sources (in-memory); the resolved closure interfaces; `moduleOrigin = realpath(root)`; `kCanonical`.
+   - **Binary:** combine; `selectStdlibFiles( stdlib.path, BlangStdlib::scanImportsAll( per-file texts of all project sources ) )`, where each text is the overlay text or the disk text and the document's own text is `text`. **Never concatenate** (audit addendum H2) (iff non-empty, as `bcc`); the sources (in-memory); the resolved closure interfaces; `moduleOrigin = realpath(root)`; `kCanonical`.
    - **Library** (R4): non-combine, no stdlib.
    - **Unusable stdlib** (U2) for a binary: the plan omits the stdlib, and U2's warning still leads.
 6. **Run** `ProjectCompile::run` (D-2) and keep it.
@@ -276,6 +277,8 @@ The stdlib keeps U2's disk reads, which is unchanged behavior: the stdlib is not
 - `project_git_unfetched` (`server_env XDG_CACHE_HOME=${ROOT}/test_files/lsp/projects/empty_cache`);
 - `project_malformed_toml`;
 - `project_cycle`;
+- `project_git_warm`: an **already-fetched** git dependency resolves end to end. `server_env XDG_CACHE_HOME=${ROOT}/test_files/lsp/projects/warm_cache`, a committed fake checkout at `warm_cache/blang/git/greet-<shortHashHex(url@tag)>/`; the publish is clean and no git runs (analyze M2);
+- `project_git_unpinned` (placement of the unpinned error) and `project_dep_compile_failed` (R6's failed-dependency diagnostic) (analyze M5);
 - `project_unsaved_dep`: open `app/main.b` (clean), open `lib/lib.b`, `didChange` the lib to remove the called `pub fn`, then `didChange` main to trigger a publish with the error, then restore the lib and publish clean.
 
 **Git-shim leg.** In `test_lsp.sh` (research R10), plus `lsp_client.py --server-env`.
@@ -322,7 +325,7 @@ Each item will be recorded in `checklists/security.md`, with citations.
 | SC-004 (unsaved dependency) | `project_unsaved_dep` golden |
 | SC-005 (latency) | `lsp_latency.py` on usebox |
 | SC-006 (leaks) | `parser_no_leak` project loop under `build-asan` |
-| SC-007 (no regressions) | the full gate list, the `bcc build -v` and `--emit-bmod` byte-identity, and the U2 stdlib corpus (now 177 entries plus the 2 that moved) |
+| SC-007 (no regressions) | the full gate list, the `bcc build -v` and `--emit-bmod` byte-identity, and SC-007 evidence = stdlib corpus **177/177** + `myapp` and `counterapp` **PASS in the project corpus** = **179/179 accounted**. Name the two moved entries in `checklists/corpus-run.md`. A file that drops out of both sets is a STOP (audit addendum M1). |
 
 ## Verification protocol
 

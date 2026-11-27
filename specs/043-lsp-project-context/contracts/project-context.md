@@ -12,7 +12,7 @@ The plan is passed to U1's `ProjectCompile::run`.
 
 **Binary project.**
 - combine;
-- the stdlib from `selectStdlibFiles( stdlib, scanImports( all source texts ) )`;
+- the stdlib from `selectStdlibFiles( stdlib, scanImportsAll( per-file source texts ) )` (never a concatenation; audit addendum H2);
 - the sources;
 - the closure interfaces;
 - `moduleOrigin = realpath(root)`.
@@ -33,6 +33,7 @@ The plan is passed to U1's `ProjectCompile::run`.
 | git dependency not pinned | Error | the same | `git dependency '<key>' must pin a version: add tag = "..." or rev = "..."` |
 | dependency fails to compile | Error | the same | `dependency '<name>' failed to compile: <file>:<line>:<col>: <message>` |
 | dependency cycle | Error | the same | `circular dependency: <a> -> <b> -> … -> <a>` |
+| interface derivation failed (provider miss) | Error | the same | `internal error: no source text for '<path>' while deriving the interface of '<name>'` (via the compile-failed path, R6; audit addendum H3) |
 | malformed `blang.toml` line | Warning | the document at 1:1 | `<toml>:<line>: parse error: <message>` |
 
 - **Suppression.** While a dependency `<name>` is unresolvable, document diagnostics whose message contains `'<name>'` or `'<name>.` are not published. All others are.
@@ -40,7 +41,7 @@ The plan is passed to U1's `ProjectCompile::run`.
 
 ## Overlay
 
-Every project source, dependency source and `blang.toml` is read from the open editor buffer when one exists, and from disk otherwise. That includes the text the interface's verbatim generic bodies are sliced from. Opening or changing a document never re-publishes other documents.
+Every project source, dependency source and `blang.toml` is read from the open editor buffer when one exists, and from disk otherwise. That includes the text the interface's verbatim generic bodies are sliced from. A provider miss is a failed derivation (internal-error diagnostic), never a fallback (audit addendum H3). The open member document's compile input uses its URI path exactly, so its own diagnostics are always published (analyze M6). Opening or changing a document never re-publishes other documents.
 
 ## Guarantees
 

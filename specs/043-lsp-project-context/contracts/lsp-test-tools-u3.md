@@ -11,11 +11,11 @@ lsp_diag_corpus.py --build-dir DIR --root ROOT --corpus project [--list FILE] [-
   - **Reference:** `DIR/bcc build -v <scratch>/<dir>`; the **last** line containing `/qcc ` is split with `shlex` and run with `--json`, with `cwd = <scratch>/<dir>`.
   - **blangd:** `didOpen <scratch>/<dir>/main.b` (disk text), in one session whose environment has `XDG_CACHE_HOME` set and `BLANG_STDLIB_DIR` removed.
   - **Compare:** sorted multisets of `(severity, line, col, message)` for entries located in `main.b`.
-  - **Premise:** the reference exits 0.
+  - **Premise:** the reference exits 0 and reports no diagnostic located outside `main.b` (analyze L4).
 - **`xmodule <fixture>` entries.**
   - **Layout:** synthesize `<scratch>/xm/<f>/lib/{blang.toml(name="lib", type="lib"), lib.b}` and `<scratch>/xm/<f>/app/{blang.toml(type="bin", [deps] lib={path="../lib"}), consumer.b}`.
   - **Reference:** `qcc --emit-bmod lib.bmod lib.b`, then `qcc --parse-only --json consumer.b lib.bmod`.
-  - **Assertion:** every reference **error** located in `consumer.b` is in blangd's publish for `consumer.b`.
+  - **Assertion:** every reference **error** located in `consumer.b` is in blangd's publish for `consumer.b`, and blangd publishes no **error** in `consumer.b` that the reference lacks (analyze M4). Extra warnings are tolerated and reported.
 - **`--check-list`.**
   - **Project entries** must cover every `test_build/*` with `type = "bin"`, every `examples/*`, and `test_files/lsp/projects/multifile`.
   - **xmodule entries** must cover every `test_files/fail/xmodule/*`.
@@ -30,7 +30,8 @@ The option is applied after the script's `server_env` steps, with values `${ROOT
 
 | Leg | When | Pass condition |
 |---|---|---|
-| project goldens `project_*` | always (both modes) | the transcripts match |
+| project goldens `project_*` (incl. `project_git_warm`, `project_git_unpinned`, `project_dep_compile_failed`) | always (both modes) | the transcripts match |
+| hostile-input leg (5 MB garbage toml, toml-is-a-directory, symlink-loop dependency; built in a scratch dir) | always | each session exits 0 with strict framing and ≥ 1 published diagnostic (analyze M5) |
 | git-shim | always | no `git-invoked` marker, and the transcript has exactly one `git dependency 'greet' is not fetched` diagnostic |
 | project corpus | `$BUILD_DIR/qcc` has LLVM and `llc` is on PATH, and no `--no-project-corpus`; otherwise `SKIP` (a FAIL under `CI=true`) | `lsp_diag_corpus.py --corpus project --check-list` exits 0 |
 | latency | non-sanitizer builds | `examples/todo_app/main.b` and `test_build/usebox/main.b` medians ≤ 500 ms |

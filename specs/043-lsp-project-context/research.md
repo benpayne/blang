@@ -44,7 +44,7 @@ Measured on `043-lsp-project-context` @ `285b362`. The base is U2 at `dc39603`, 
 - `resolveGitDependency` becomes `locateGitCheckout` (shared) plus the fetch (still in `bcc`, the only `runCommand` user).
 - `mergeDep` becomes `BlangProject::mergeByOrigin`.
 
-The fold order (closure then self) stays in each caller's loop, but both callers go through one `resolveDependencyDir` helper that covers path, git-locate and the error text.
+**Superseded by audit addendum H1:** the whole walk (on-path/KG-8 guard, resolution, always-recurse, closure-then-self fold) is extracted as `BlangProject::walkDependencies`, and both `bcc` and blangd are visitors of it. Neither keeps its own DFS. The per-file import scan is likewise shared as `BlangStdlib::scanImportsAll` (addendum H2).
 
 Neutrality is proven by `run_build_tests.sh` (all legs, including the git-dependency leg and the `.bmod` goldens), plus a `bcc build -v` byte-identity check before and after on all 10 binaries. This follows U1's method.
 

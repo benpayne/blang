@@ -31,7 +31,7 @@ The binding audit order is applied in Phase 2, before any story:
 3. **`qcc`/`bcc` frozen** (FR-021).
    - There are no `qcc`/`bcc` golden edits.
    - After every commit, `git diff --name-only --diff-filter=MDTRC 042-lsp-stdlib-context...HEAD -- test_files/` may list only `test_files/lsp/corpus.txt`. This is the U2 file whose entries legitimately change here (research R1).
-   - Added files may appear only under `test_files/lsp/projects/` and `test_files/lsp/project_*`.
+   - Added files may appear only under `test_files/lsp/projects/` (including `warm_cache/`, analyze M2) and `test_files/lsp/project_*`.
 4. **KG-7 ownership** (FR-014). Each `Run` is a resolver plus a context. Its resolver is declared first and destroyed last. `CompileResult` follows plan D-4's member order. Nothing is reused across reparses. Adding any cache is a STOP-and-ask (R10).
 5. **Never crash, never write to stderr** (FR-010). Everything is reported as a published diagnostic.
 6. House style: tabs, spaces inside parentheses, Allman braces, `m` members. The tools use python3 stdlib only.
@@ -51,6 +51,7 @@ The binding audit order is applied in Phase 2, before any story:
   2. Copy `test_build/` to `/tmp/u3-ref/tree/` and set `XDG_CACHE_HOME=/tmp/u3-ref/cache-before`.
   3. For each of the 10 binaries (`aliasapp boxapp counterapp diamondapp myapp printapp sizeapp timerapp todoapp usebox`), save `bcc build -v <abs dir>` stdout, stderr and exit code to `/tmp/u3-ref/before/<name>.*`.
   4. Also save `bcc build` stderr for a scratch project whose `blang.toml` has a malformed line and an unpinned git dependency. This pins the warning and error texts.
+  5. Save `bcc build` exit code and stderr for a scratch cycle pair (a↔b) and a scratch path dependency to a non-existent directory, and `bcc build -v` for `test_build/diamondapp`. These are the before-outputs for T007's audit-addendum H1 legs.
 
   These are scratch files and are not committed.
 
@@ -89,19 +90,22 @@ The binding audit order is applied in Phase 2, before any story:
   - `discoverSourceFiles` calls become `BlangProject::discoverSourceFiles`.
 
   Error paths keep `bcc`'s exact `cerr` messages and return codes.
+- [ ] T004b Extract `walkDependencies` + `WalkVisitor` into `ProjectLayout.{h,cpp}`. Rewrite `bcc.cpp buildProject` as a visitor with no recursion of its own. Grep gate: `grep -n 'buildProject(' bcc.cpp` shows only the definition and the `runBuild` call; `grep -nE 'building\.(insert|count|erase)' bcc.cpp` prints nothing. *(Audit addendum H1; FR-007, FR-021. Semantics 1–6 in contracts/project-layout-api.md: `bcc`'s texts and stop-at-first-failure stay in its visitor; the shared walk prints nothing.)* Also add `BlangStdlib::scanImportsAll( const std::vector<std::string> &texts )` to `StdlibSelect.h/.cpp`, and replace `buildProject`'s `projImports` loop with `scanImportsAll( texts-of(sources) )`, the texts read as today with `readFileToString` (audit addendum H2; byte-neutral, covered by T007).
 - [ ] T005 [P] In `ProjectConfig.h` and `ProjectConfig.cpp`:
   - add `struct ConfigIssue { int line; std::string message; }`;
   - add `static ProjectConfig *loadFromText( const std::string &path, const std::string &text, std::vector<ConfigIssue> *issues )`;
   - add `int line = 0` to `Dependency`, set to the toml line of the entry.
 
   The parsing loop moves into `loadFromText`, which reads from an `istringstream`. Each of the two `cerr` sites (~L124, ~L179) becomes "append a `ConfigIssue` if `issues`, else print the identical `cerr` line". `loadFromFile` reads the file (still returning `nullptr` if it cannot be opened) and calls `loadFromText( path, text, nullptr )`.
+- [ ] T005b [P] (`project_layout` ctest) two texts, `"import a;"` with no trailing newline followed by `"import b;\n"`, and `"x\n// c"` followed by `"import d;\n"`. `scanImportsAll` yields `{a,b}` and `{d}`. A teeth leg asserts that the concatenated-scan form yields a different set. *(Audit addendum H2; FR-003, FR-007.)*
 - [ ] T006 In `CMakeLists.txt`, add `ProjectLayout.cpp` and `ProjectConfig.cpp` to `BLANG_FRONTEND_SOURCES`, and `ProjectLayout.cpp` to the `bcc` target, which already has `ProjectConfig.cpp` and `sha256.c`. Rebuild `build`, `build-nollvm` and `build-asan`.
 - [ ] T007 R3 neutrality checkpoint (FR-021, SC-007):
   - re-run the T002 commands with the new `bcc`, under the same directory layout and stdlib path and a fresh `XDG_CACHE_HOME=/tmp/u3-ref/cache-after`;
   - `cmp` every output against `/tmp/u3-ref/before/`, normalizing only the cache-directory prefix; it must be identical;
   - `test_build/run_build_tests.sh` passes all legs, including the git dependency, diamond and `.bmod` goldens;
   - `grep -nE "^static .*(discoverSourceFiles|resolvePath|gitCacheRoot|shortHashHex|mergeDep)" bcc.cpp` prints nothing;
-  - `blangd_no_subprocess` passes.
+  - `blangd_no_subprocess` passes;
+  - the cycle and missing-dependency negative legs (scratch toml pair a↔b; a path dependency to a non-existent dir): `bcc build` exit code and stderr `cmp`-identical to `/tmp/u3-ref`. The diamond leg (KG-8) is `cmp`-identical under `-v` (audit addendum H1). T002 captures the matching before-outputs for these three scratch projects too.
 
   Commit.
 
@@ -112,10 +116,11 @@ The binding audit order is applied in Phase 2, before any story:
   - change the signature to `static void emit( const std::vector<Module*> &modules, std::ostream &out, Scope *scope, const SourceTextProvider *text = nullptr );`;
   - thread the provider to `sliceDefinitionSource( loc, text )` through a file-static `const SourceTextProvider *gActiveProvider`, set for the duration of `emit` with an RAII reset (no global state survives the call).
 
-  When a provider returns text for `loc.file`, split that text into lines **for this call only**, with no use of `gSourceLineCache`. When there is no provider, or it returns `nullptr`, take today's disk-cache path unchanged. `qcc.cpp`'s call stays as it is, using the default.
+  **No provider** (`qcc`): today's disk-cache path, byte-identical. **With a provider**, `gSourceLineCache` is never read or written. A provider hit splits that text for this call only. A provider **miss** for a slice location is an emitter failure: `emit` records the path in `std::vector<std::string> *missing` (a new out-parameter, default `nullptr`) and emits nothing further for that definition. The caller must treat any non-empty `missing` as a failed derivation. The `qcc` call passes neither argument. *(Audit addendum H3.)*
 - [ ] T009 R1 neutrality checkpoint:
   - `test_build/run_build_tests.sh` passes, with the `.bmod` goldens under `test_files/golden/bmod/` unchanged;
-  - for every `test_files/fail/xmodule/*/lib.b` and for `test_build/mathlib/*.b`, `qcc --parse-only --emit-bmod` output is `cmp`-identical against `/tmp/u3-ref/bin/qcc` (U1 method).
+  - for every `test_files/fail/xmodule/*/lib.b` and for `test_build/mathlib/*.b`, `qcc --parse-only --emit-bmod` output is `cmp`-identical against `/tmp/u3-ref/bin/qcc` (U1 method);
+  - a `project_layout` or `project_compile` case where the provider deliberately omits one generic-defining source. It asserts `missing == {that path}` and that `gSourceLineCache` is untouched: a pre-seeded different disk text for the same path is **not** what was emitted (audit addendum H3).
 
   Commit.
 
@@ -146,6 +151,7 @@ The binding audit order is applied in Phase 2, before any story:
     - the directory format `<root>/<name>-<16 hex>` under a scratch `XDG_CACHE_HOME`;
     - `warm` is false, then true after creating `<dir>/blang.toml`;
     - `rev` takes precedence over `tag`;
+    - the committed `test_files/lsp/projects/warm_cache/blang/git/greet-<hash>/` directory name equals `locateGitCheckout` for `gitdep_warm`'s dependency under that `XDG_CACHE_HOME` (analyze M2: the fixture cannot drift from the shared rule);
   - **(e)** `mergeByOrigin` deduplicates by origin;
   - **(f)** `resolveDependencyDir` with a null fetcher: a cold git dependency gives `unfetched == true` and no fetch;
   - **(g)** `ProjectConfig::loadFromText`: issues are collected for a malformed line, nothing is written to `cerr`, `Dependency::line` is correct, and a `blang.toml` that `loadFromFile` opens still parses identically.
@@ -168,12 +174,10 @@ The binding audit order is applied in Phase 2, before any story:
 - [ ] T016 [US1] Create `lsp/ProjectContext.h` and `lsp/ProjectContext.cpp`, following data-model.md "Project" and contract project-context.md "Discovery and membership":
   - `locateProject( docPath, overlay )` → `Project{root, config, issues, sources, isMember, origin, kind}`;
   - it uses `BlangProject::findProjectRoot`, `ProjectConfig::loadFromText` (with the overlay text when the toml is open) and `BlangProject::discoverSourceFiles`;
-  - `isMember` is decided by `realpath` equality (R5; FR-001, FR-002).
+  - `isMember` is decided by `realpath` equality (R5; FR-001, FR-002);
+  - for a member, the document's `CompileInput::path` is the **URI path exactly** (`uriToPath( uri )`), so the publish filter (`location.file == path`) and the `module`/`fileScope` lookup always match it, even through symlinks or unnormalized paths. Sibling sources keep their `discoverSourceFiles` path. Overlay lookups are keyed by `realpath`; the D-3 provider is keyed by `CompileInput::path` (analyze M6; C1/C5).
 - [ ] T017 [US1] In `lsp/ProjectContext.cpp`, implement the dependency graph (data-model "Dependency node"; plan D-4 step 3; FR-004, FR-006):
-  - DFS from the project's `[deps]`, with an on-path set cleared on every exit (as in KG-8);
-  - resolution via `BlangProject::resolveDependencyDir( declaringRoot, dep, nullptr )`;
-  - each dependency's `blang.toml` loaded with `loadFromText`, which yields its `[project] name` (the import name);
-  - `bcc`'s fold order: closure, then self, deduplicated with `mergeByOrigin`;
+  - implement the blangd `WalkVisitor` over `BlangProject::walkDependencies( root, nullptr, v )`. `load` = `loadFromText` from the overlay or disk with the issue sink. No DFS, on-path set or fold code in `lsp/`. Grep gate: `grep -nE 'onPath|mergeByOrigin|building' lsp/*.cpp` matches only calls to and fields of the shared API. *(Audit addendum H1.)* The visitor's `onDepError`/`onCycle` return 0 so the walk continues; `leave` derives the interface (T018), memoized by origin for this compile only;
   - each failure recorded as `unresolvable{reason}`, where the reason is missing-path, unfetched-git, unpinned-git, no-path-or-git or cycle. The failed node, and nodes reachable only through it, are excluded from the closure.
 - [ ] T018 [US1] In `lsp/ProjectContext.cpp`, implement interface derivation (plan D-3; FR-005, FR-011), leaves first in fold order. For each resolved dependency:
   - **(a)** Build its plan:
@@ -181,12 +185,12 @@ The binding audit order is applied in Phase 2, before any story:
     - its sources as **in-memory** `kSource` inputs, with text from `overlay.textForPath( p )` or else a disk read;
     - its closure interfaces as in-memory `kInterface` inputs with path `<depDir>/<name>.bmod`, `origin` set, and the text derived earlier.
   - **(b)** Run it with `runPlan` (T011). If `ctx->hadError() || diag.hasErrors()`, mark the dependency `compile-failed{first error}` (R6).
-  - **(c)** Emit with `BmodEmitter::emit( recorded non-extern modules, ostringstream, ctx->bmodEmitScope(), &provider )`. The provider returns the exact input text by path.
+  - **(c)** Emit with `BmodEmitter::emit( recorded non-extern modules, ostringstream, ctx->bmodEmitScope(), &provider, &missing )`, **inside** that run's `GlobalAliasScope` (analyze L3). The provider is a per-run `map<path, const std::string*>` over **every** `CompileInput` of that dependency's run: each source path and each closure-interface path (`<depDir>/<name>.bmod`), keyed exactly by `CompileInput::path` (the string `SourceLocation.file` carries). If `emit`'s `missing` is non-empty, mark the dependency `compile-failed` with `internal error: no source text for '<path>' while deriving the interface of '<name>'` (published per D-5, R6). It is never a crash or a silent fallback. *(Audit addendum H3.)*
   - **(d)** Store the interface text and keep the `Run` for `CompileResult::deps` (U4 navigation).
 - [ ] T019 [US1] In `lsp/Compile.cpp`, add the project branch of `compileDocument( path, text, stdlib, overlay )` (plan D-4 steps 1, 2, 5, 6; FR-003):
   - **Not a member or no project:** the U2 path, unchanged.
   - **Binary:**
-    - combine, iff `BlangStdlib::selectStdlibFiles( stdlib.path, scanImports( concatenated texts of all project sources ) )` is non-empty;
+    - combine, iff `BlangStdlib::selectStdlibFiles( stdlib.path, BlangStdlib::scanImportsAll( per-file texts of all project sources ) )` is non-empty, where each text is the overlay text or the disk text, and the document's own text is `text`. **Never concatenate** (audit addendum H2);
     - stdlib inputs come from disk;
     - project sources are in-memory, with the document's own text being `text`;
     - the resolved closure interfaces are in-memory;
@@ -209,11 +213,12 @@ The binding audit order is applied in Phase 2, before any story:
     - the reference is `bcc build -v <abs scratch dir>`; its **last** `/qcc ` line is split with `shlex`, `--json` is appended, and it runs with `cwd = <scratch dir>`;
     - the premise is that the reference exits 0;
     - blangd opens `<scratch dir>/main.b` in one session;
-    - compare sorted multisets for entries located in `main.b`.
+    - compare sorted multisets for entries located in `main.b`;
+    - premise: the reference reports no diagnostic located outside `main.b` (so a sibling source such as `multifile`'s cannot hide a mismatch; analyze L4).
   - **`xmodule <fixture>` entries:**
     - synthesize the lib and app layout (research R9);
     - the reference is `qcc --emit-bmod lib.bmod lib.b`, then `qcc --parse-only --json consumer.b lib.bmod`;
-    - every reference **error** located in `consumer.b` must be present in blangd's publish;
+    - every reference **error** located in `consumer.b` must be present in blangd's publish, **and** blangd must publish no **error** in `consumer.b` that the reference lacks (SC-002 "the same located diagnostic"; analyze M4). Extra warnings are tolerated and reported (research R9);
     - built-in teeth: on a copy of one fixture with the reach-in line removed, the reference must have no error. That shows the assertion is not vacuous.
   - **Exit code 2** when there is no LLVM `qcc` or no `llc`/`llc-18`.
 - [ ] T023 [US1] In `tools/lsp_diag_corpus.py`, change the **stdlib** qualifying rule: exclude files whose `findProjectRoot` project has `[deps]` and that are members (the `test_build/*` binaries). The six `examples/*/main.b` stay (research R1). Extend `--check-list` for the project and xmodule sets (contract).
@@ -228,7 +233,7 @@ The binding audit order is applied in Phase 2, before any story:
   - `myapp` and `counterapp` must show 0 diagnostics (SC-001);
   - all 11 xmodule entries must PASS (SC-002).
 
-  Also run `--corpus stdlib --check-list` in `build` and `build-nollvm`: 177 PASS (SC-007).
+  Also run `--corpus stdlib --check-list` in `build` and `build-nollvm`: 177 PASS. SC-007 evidence = stdlib corpus **177/177** + `myapp` and `counterapp` **PASS in the project corpus** = **179/179 accounted**. Name the two moved entries in `checklists/corpus-run.md`. A file that drops out of both sets is a STOP (audit addendum M1).
 
   Fix any FAIL in `lsp/` plan assembly only. A FAIL that seems to need a new rule is a STOP. Record the per-entry output in `specs/043-lsp-project-context/checklists/corpus-run.md`.
 - [ ] T025 [US1] Add an interface byte-parity check (plan D-3 parity argument; FR-005) to the `project_layout` ctest, or as a `--interface-parity` mode of the corpus tool:
@@ -243,6 +248,7 @@ The binding audit order is applied in Phase 2, before any story:
 ### Ownership lock
 
 - [ ] T027 [US1] In `ParserLeakTest.cpp`, **append** a project-context loop (FR-020, SC-006); existing blocks stay unmodified.
+  - Create a **fresh** `lsp::StdlibLocation loc = lsp::locateStdlib( BLANG_SOURCE_STDLIB_DIR, "", "" )` in the new block; U2's `loc` is scoped to its own block (analyze L2).
   - Run 50 iterations of `lsp::compileDocument( BLANG_SOURCE_ROOT "/test_build/usebox/main.b", <file text>, loc, emptyOverlay )`.
   - Assert in each that `res.deps.size() >= 2` (boxq and midx) and `res.diagnostics.empty()`, then drop the result.
   - Add a comment stating the D-4 ownership order.
@@ -271,9 +277,12 @@ The binding audit order is applied in Phase 2, before any story:
   - **`missing_path/`:** a bin with `nope = { path = "../does_not_exist" }`, and `main.b` that does `import nope;` and uses `nope.f()`.
   - **`gitdep_unfetched/`:** a bin with `greet = { git = "file:///nonexistent/greet.git", tag = "v1" }`, `import greet;`, and `greet.hi()`. Add `empty_cache/.keep`.
   - **`malformed_toml/`:** a bin whose `blang.toml` has one `this is not toml` line plus a valid `[project]`.
+  - **`gitdep_warm/` + `warm_cache/blang/git/greet-<hash>/`** (analyze M2): a bin with `greet = { git = "file:///nonexistent/greet.git", tag = "v1" }` (the same dependency as `gitdep_unfetched`, so the hash matches), whose `main.b` uses `greet.hi()` cleanly; the committed fake checkout holds a `blang.toml` (`name = "greet"`, `type = "lib"`) and `lib.b` with `pub fn hi() -> int`. No git ever runs.
+  - **`gitdep_unpinned/`** (analyze M5): a bin with `greet = { git = "file:///nonexistent/greet.git" }` (no tag/rev), `import greet;`.
+  - **`dep_failed/{app,lib}/`** (analyze M5): `lib/lib.b` has a Sema error (e.g. `int x = "s";` inside a `pub fn`); `app/main.b` does `import lib;` and calls it.
   - **`cycle_a/` and `cycle_b/`:** two libraries that depend on each other, plus `main.b` in `cycle_a` importing `cycle_b`. If a library cannot hold `main.b` meaningfully, use a bin `cycle_app/` that depends on `cycle_a`.
 - [ ] T031 [US2] In `tools/lsp_client.py`, add `--server-env NAME=VALUE` (repeatable), applied after the script's `server_env` steps and `${ROOT}`-substituted. Update the docstring (contract lsp-test-tools-u3.md).
-- [ ] T032 [US2] Create `test_files/lsp/project_missing_path.lsp.jsonl`, `project_git_unfetched.lsp.jsonl` (with `{"server_env": {"XDG_CACHE_HOME": "${ROOT}/test_files/lsp/projects/empty_cache"}}`), `project_malformed_toml.lsp.jsonl` and `project_cycle.lsp.jsonl`. Each opens its fixture's `main.b` and waits for the publish.
+- [ ] T032 [US2] Create `test_files/lsp/project_missing_path.lsp.jsonl`, `project_git_unfetched.lsp.jsonl` (with `{"server_env": {"XDG_CACHE_HOME": "${ROOT}/test_files/lsp/projects/empty_cache"}}`), `project_malformed_toml.lsp.jsonl`, `project_cycle.lsp.jsonl`, `project_git_warm.lsp.jsonl` (`server_env XDG_CACHE_HOME=${ROOT}/test_files/lsp/projects/warm_cache`; clean publish, analyze M2), `project_git_unpinned.lsp.jsonl` and `project_dep_compile_failed.lsp.jsonl` (analyze M5). Each opens its fixture's `main.b` and waits for the publish.
 
   Generate **only these** with `./test_lsp.sh --update-goldens test_files/lsp/project_*.lsp.jsonl`. Hand-review each against the D-5 table: exactly one setup diagnostic, the right severity and placement, the unrelated real error still present, and no `undefined symbol`/`unknown module` cascade for the bad dependency (FR-009, FR-016, FR-017(a–c), SC-003).
 - [ ] T033 [US2] Add a git-shim leg to `test_lsp.sh` (FR-018, SC-003):
@@ -283,12 +292,12 @@ The binding audit order is applied in Phase 2, before any story:
   - remove `$shim`.
 
   Run it in both build modes. Also confirm that `sh tools/check_no_subprocess.sh build/blangd` still prints OK.
-- [ ] T034 [US2] Run robustness smoke checks, without goldens (FR-010). Using scratch projects, open a document whose `blang.toml`:
+- [ ] T034 [US2] Add a committed hostile-input leg to `test_lsp.sh` (FR-010, Gate 7; analyze M5: committed, not manual). In a `mktemp -d` scratch tree it builds three projects, then opens each one's `main.b` through `lsp_client.py --sema-fixture`-style sessions and FAILs unless the session exits 0 with strict framing (nothing on stderr) and at least one published diagnostic. The three projects are ones whose `blang.toml`:
   - is 5 MB of garbage;
   - is a directory;
   - names a dependency that is a symlink loop.
 
-  Also open a document in a project whose dependency source has a parse error, which is the `compile-failed` path. Each must give a published diagnostic set, no crash, and nothing on stderr: the `lsp_client.py` strict framing passes. Record the results in `specs/043-lsp-project-context/checklists/security.md`. Commit.
+  The dependency-compile-failure path is pinned by the `project_dep_compile_failed` golden (T032). Record the leg's output in `specs/043-lsp-project-context/checklists/security.md`. Commit.
 
 **Checkpoint**: US2 complete.
 
@@ -300,14 +309,14 @@ The binding audit order is applied in Phase 2, before any story:
 
 **Independent Test**: the `project_unsaved_dep` golden matches.
 
-- [ ] T035 [P] [US3] Create `test_files/lsp/projects/unsaved_dep/`, made of `lib/` (a lib whose `lib.b` has `pub fn helper() -> int` and one **generic** `pub fn`) and `app/` (a bin with `lib = { path = "../lib" }`, whose `main.b` calls `lib.helper()` and the generic). With the files on disk it is clean.
+- [ ] T035 [P] [US3] Create `test_files/lsp/projects/unsaved_dep/`, made of `lib/` (a lib whose `lib.b` has `pub fn helper() -> int`, a `pub fn base() -> int`, and one **generic** `pub fn wrap<T>(T v) -> T` whose body calls `base()`) and `app/` (a bin with `lib = { path = "../lib" }`, whose `main.b` calls `lib.helper()` and the generic). With the files on disk it is clean.
 - [ ] T036 [US3] Create `test_files/lsp/project_unsaved_dep.lsp.jsonl`. It runs these steps:
   1. open `app/main.b` and wait for the publish, which must be clean;
   2. open `lib/lib.b`;
   3. `didChange` `lib/lib.b` to rename `helper` to `helper2`, without saving;
   4. `didChange` `app/main.b` with an identical full text, and wait for its publish, which must contain the missing-member error;
   5. `didChange` `lib/lib.b` back, then `didChange` `app/main.b`, and wait for its publish, which must be clean again;
-  6. `didChange` the lib's **generic** body to a version that fails to type-check. The consumer's next publish reflects the buffer text. This proves the verbatim generic body is sliced from the buffer (audit R1).
+  6. `didChange` `lib/lib.b` (unsaved) so that it **still compiles clean** but differs from disk in two ways: it inserts several comment lines **above** the generic, and it renames `base` to `base2` both at its definition and inside the generic's body. Then `didChange` `app/main.b` and wait: the publish must be **clean**. A slice taken from the disk text would land on the wrong lines and would carry a body calling the now-missing `base`, so the interface would fail to re-parse or resolve and the consumer would show the R6 diagnostic. A clean publish therefore proves the verbatim generic body was sliced from the buffer (audit R1; analyze M3).
 
   Generate only this golden and hand-review it (FR-017(d), SC-004).
 - [ ] T037 [US3] Verify FR-012 by checking the golden: no step that only changes `lib/lib.b` produces a publish for `app/main.b`. Only the lib's own publish appears. Commit.
@@ -345,7 +354,7 @@ The binding audit order is applied in Phase 2, before any story:
   - the issue sink, with no stderr;
   - the absence of process calls (grep plus `blangd_no_subprocess` output);
   - the T034 robustness results.
-- [ ] T042 Run the project corpus under the ASan blangd with `build-asan` (plan Verification §5). Every clean project must be LSan-clean. Record the result. Documents with parse errors carry U2's known pre-existing parser leak, which is out of scope; note it if it is hit.
+- [ ] T042 Run the project corpus under the ASan blangd with `build-asan` (plan Verification §5). This is a local leg only; CI's `build-system` job runs the plain `build` corpus (analyze L5, accepted). Every clean project must be LSan-clean. Record the result. Documents with parse errors carry U2's known pre-existing parser leak, which is out of scope; note it if it is hit.
 - [ ] T043 Final verification, the whole plan §Verification protocol on `build`, `build-nollvm` and `build-asan`:
   - `test_lsp.sh` and `--selfcheck` in each tree;
   - ctest 87/87 ×3;
@@ -353,7 +362,7 @@ The binding audit order is applied in Phase 2, before any story:
   - `test_codegen.sh` with `--leak-check` (Leaks: 0) and `--selfcheck`;
   - `run_build_tests.sh`;
   - the T007 `bcc build -v` `cmp` and the T009 `--emit-bmod` `cmp`;
-  - stdlib corpus 177/177 in both modes;
+  - stdlib corpus 177/177 in both modes, and SC-007 evidence = stdlib corpus **177/177** + `myapp` and `counterapp` **PASS in the project corpus** = **179/179 accounted** (audit addendum M1);
   - the project corpus;
   - the reach-in gate, examples and demos;
   - standing rule 3's `git diff`.
@@ -372,7 +381,7 @@ The binding audit order is applied in Phase 2, before any story:
 
 - **Phase 1** (T001, T002) runs first.
 - **Phase 2**, in the audit order. It blocks every story.
-  - **R3:** T003 → T004, with T005 in parallel with both, then T006 → T007, one commit.
+  - **R3:** T003 → T004 → T004b (shared walk + `scanImportsAll`), with T005 and T005b in parallel, then T006 → T007, one commit.
   - **R1:** T008 → T009.
   - **R2:** T010 → T011 → T012 → T013.
   - **T014** runs in parallel after T006.
@@ -416,10 +425,10 @@ T039 CLAUDE.md   ∥   T040 editors/README.md   ∥   T041 security.md
 |---|---|
 | FR-001/002 discovery, membership (R5) | T016, T014(a,b) |
 | FR-003 plan (bin/lib, R4) | T019, T024 |
-| FR-004 path + fetched git, transitive | T003, T017, T014(c,d,f) |
+| FR-004 path + fetched git, transitive | T003, T004b, T017, T014(c,d,f), `project_git_warm` (T030/T032) |
 | FR-005 interface parity | T018, T025 |
 | FR-006 identities | T017, T018, T019, T024 |
-| FR-007 one rule, one copy (R3) | T003–T007, T044 |
+| FR-007 one rule, one copy (R3) | T003–T007, T004b, T005b, T017 grep gate, T044 |
 | FR-008 no process / network | T003 (no process call), T033, T044, `blangd_no_subprocess` |
 | FR-009 one diagnostic, no cascade (R6) | T017, T028, T029, T032 |
 | FR-010 never crash / no stderr | T005, T034, T041 |

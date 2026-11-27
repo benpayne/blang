@@ -56,4 +56,4 @@ ctest --test-dir build-asan -R "parser_no_leak|project_layout|blangd_no_subproce
 ./test_lsp.sh --selfcheck; BUILD_DIR=build-nollvm ./test_lsp.sh
 ```
 
-**Expected**: all green. The U2 stdlib corpus stays green, now with 177 entries, because the two `test_build` files moved to the project corpus.
+**Expected**: all green. SC-007 reads: stdlib corpus **177/177** + `test_build/myapp/main.b` and `test_build/counterapp/main.b` **PASS in the project corpus** = **179/179 accounted** (audit addendum M1).
