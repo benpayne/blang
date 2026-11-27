@@ -46,3 +46,41 @@
 ## T017 / N5: blangd derives no project rule
 
 `grep -nE 'onPath|mergeByOrigin|building' lsp/*.cpp lsp/*.h` returns one hit, `lsp/ProjectContext.cpp:118: for ( const auto &d : *node.onPath )`. It sits inside `BlangdVisitor::onCycle`, which only **renders** the cycle message from the walk's own on-path list. The cycle detection, the fold and the merge-by-origin all live in `BlangProject::walkDependencies` (shared with `bcc`). `lsp/` has no `mergeByOrigin` and no `building` set.
+
+## T043: final verification (HEAD before this record: f717adc)
+
+| Gate | `build` | `build-nollvm` | `build-asan` |
+|---|---|---|---|
+| `run_tests.sh` | 251/0 | 244/0 | 251/0 |
+| ctest | 87/87 | 87/87 | 87/87 |
+| `test_lsp.sh` | **91/0**, with the stdlib corpus 177/177 and the project corpus 29/29 | **90/0**, with the stdlib corpus 177/177; the project corpus SKIPs (no LLVM, per R2) | 82/8, see the note below |
+| `test_lsp.sh --selfcheck` | `SELFCHECK: OK` | `SELFCHECK: OK` | `SELFCHECK: OK` |
+
+**The build-asan `test_lsp` 8** are U2's documented pre-existing parse-error-recovery leak: a raw `new` in `ReturnStatement::Parse`/`StringInterpolation::Parse` is lost on a `COMPILE_ERROR` throw (`specs/042-lsp-stdlib-context/checklists/baseline.md`). The entries are `diag_open`, `diag_change`, `stdlib_missing`, `stdlib_missing_env`, the three `fail/sema` fixtures (`interp_unknown_base`, `undefined_function`, `undefined_variable`) and one corpus session exit.
+
+- The count matches U2's 8.
+- The session-exit entry is now the **project** corpus, from the xmodule consumers whose compile takes the parse-error path. The **stdlib** corpus is now LSan-clean (177/177).
+- Every new `project_*` golden and the 17 clean projects are LSan-clean (`corpus-run.md` T042).
+
+The other gates:
+
+- **`test_codegen.sh`**:
+  - `--leak-check`: 172 passed, 0 failed, **Leaks: 0**;
+  - `--selfcheck`: `SELFCHECK: OK`;
+  - plain: 172/0, with 165 golden-checked and 7 quarantined.
+- **`run_build_tests.sh`**: rc 0, 107 PASS lines.
+- **T007** (`bcc build -v` on the 10 binaries, the negative legs and diamond `-v`): pre-unit vs. final `bcc`/`qcc`, **28/28 `cmp`-identical**.
+- **T009** (`--emit-bmod`, 11 xmodule libs plus mathlib, boxq, counterlib, todolib, printlib and midx): pre-unit vs. final `qcc`, **17/17 `cmp`-identical**.
+- **SC-007 / M1**: the stdlib corpus is 177/177 in both modes, and `myapp` and `counterapp` PASS in the project corpus, so **179/179 are accounted for**.
+- **Reach-in gate**: `OK: no field reach-ins found in: examples/ test_build/`.
+- **Examples**: 6/6 `test_*.sh` rc 0.
+- **Demos**: `make -C demos run` gives 10 passed, 0 failed.
+- **Standing rule 3** (`git diff --name-status 042-lsp-stdlib-context HEAD -- test_files/`): one `M`, `test_files/lsp/corpus.txt`, and 44 `A`, all under `test_files/lsp/projects/` or `test_files/lsp/project_*`. No other golden or `.expected` file changed anywhere.
+- **`git diff 285b362 HEAD -- specs/043-lsp-project-context/spec.md`**: empty.
+
+## T044: structural greps
+
+- `grep -n "ProjectCompile::run" lsp/Run.h lsp/*.cpp` has exactly one call, `lsp/Run.h:56` (`runPlan`). Every blangd compile goes through it.
+- `grep -nE "runCommand|popen|fork\(|exec[lv]p?\(|system\(" ProjectLayout.cpp lsp/*.cpp lsp/*.h` matches only the comment `ProjectLayout.cpp:3` ("Process-free: no fork/exec/system/popen, no network.").
+- `grep -nE "opendir|\"blang.toml\"" lsp/*.cpp` matches only the diagnostic **codes** `"blang-toml"` (`lsp/Compile.cpp:118,167`). There is no `opendir` and no toml-name rule in `lsp/`: discovery, listing and resolution are `BlangProject::`'s.
+- `grep -rn "sharedResolver" lsp/` prints nothing.

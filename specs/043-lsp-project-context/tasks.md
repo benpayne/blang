@@ -355,7 +355,7 @@ The binding audit order is applied in Phase 2, before any story:
   - the absence of process calls (grep plus `blangd_no_subprocess` output);
   - the T034 robustness results.
 - [X] T042 Run the project corpus under the ASan blangd with `build-asan` (plan Verification §5). This is a local leg only; CI's `build-system` job runs the plain `build` corpus (analyze L5, accepted). Every clean project must be LSan-clean. Record the result. Documents with parse errors carry U2's known pre-existing parser leak, which is out of scope; note it if it is hit.
-- [ ] T043 Final verification, the whole plan §Verification protocol on `build`, `build-nollvm` and `build-asan`:
+- [X] T043 Final verification, the whole plan §Verification protocol on `build`, `build-nollvm` and `build-asan`:
   - `test_lsp.sh` and `--selfcheck` in each tree;
   - ctest 87/87 ×3;
   - `run_tests.sh` ×3;
@@ -368,12 +368,12 @@ The binding audit order is applied in Phase 2, before any story:
   - standing rule 3's `git diff`.
 
   Record the counts in `baseline.md`. Confirm `git diff 285b362 HEAD -- specs/043-lsp-project-context/spec.md` is empty. Commit.
-- [ ] T044 Structural greps, recorded in `baseline.md`:
+- [X] T044 Structural greps, recorded in `baseline.md`:
   - `grep -n "ProjectCompile::run" lsp/Run.h lsp/*.cpp` finds the single call;
   - `grep -nE "runCommand|popen|fork\(|exec[lv]p?\(|system\(" ProjectLayout.cpp lsp/*.cpp lsp/*.h` prints nothing;
   - `grep -nE "opendir|\"blang.toml\"" lsp/*.cpp` finds no project rule copy (only calls into `BlangProject::`/`ProjectConfig::`);
   - `grep -n "sharedResolver" lsp/` prints nothing.
-- [ ] T045 Remove `/tmp/u3-ref` and any scratch directories. Confirm `git status` is clean.
+- [X] T045 Remove `/tmp/u3-ref` and any scratch directories. Confirm `git status` is clean.
 
 ---
 
