@@ -449,3 +449,11 @@ T039 CLAUDE.md   ∥   T040 editors/README.md   ∥   T041 security.md
 | SC-005 | T038 |
 | SC-006 | T027, T042 |
 | SC-007 | T007, T009, T013, T024, T043 |
+
+## Phase 8: Convergence
+
+- [ ] T046 Give the dependency-compile-failure and cycle setup diagnostics the `(declared at <toml>:<line>)` fallback when they are placed at 1:1, per FR-009 / plan D-5 placement (partial). Today only the missing-path, unfetched and unpinned errors carry the declaring `blang.toml` line. A failed dependency or a cycle the open document does not itself import is published at 1:1 with no declaring entry. This happens for a transitive `leaf` reached via `mid`, a sibling-only import, or the `cycle_a` <-> `cycle_b` edge. Fix it as follows:
+  - expose the declaring edge on the shared `BlangProject::WalkNode`: `parent` and `viaDep`, which `detail::visit` already holds. The change is additive, and `bcc`'s visitor ignores both fields, so it stays byte-identical (re-run the T007 `cmp` sweep);
+  - in `BlangdVisitor::derive`, set `declaredAt` from the node's first-reaching edge;
+  - in `BlangdVisitor::onCycle`, set `declaredAt` from the edge that closes the cycle;
+  - lock both with a committed golden in which the open document does not import the failing dependency, plus a `project_layout` assertion that the edge fields are populated. The existing `project_*` goldens must stay unchanged, except `project_cycle`, whose 1:1 message gains the declared-at suffix (hand-review).
