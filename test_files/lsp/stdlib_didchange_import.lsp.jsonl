@@ -1,0 +1,14 @@
+# modules-v2-lsp U2 (FR-002): imports are re-scanned from the IN-MEMORY text on every change.
+# Open timer_use.b (timer.after without the import -> error), then didChange to prepend
+# `import timer;` -> the import-gated module joins the context -> no diagnostics.
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/timer_use.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/timer_use.b", "version": 2}, "contentChanges": [{"text": "import timer;\n// modules-v2-lsp U2 stdlib_didchange_import golden: uses timer.after WITHOUT\n// `import timer;` \u2014 the import-gated module is not in the context, so the use\n// is an error; the golden then adds the import via didChange.\nfn main() -> int {\n\tint t = timer.after(10);\n\treturn t;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "shutdown"}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}
