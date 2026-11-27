@@ -101,6 +101,40 @@ int main()
 		assert( res.module != nullptr && "lsp path parses the fixture" );
 	}
 
+	// modules-v2-lsp U2 (spec FR-012/FR-013): the stdlib-context reparse loop.
+	// KG-7 invariant: an expression's link to the definition it resolved to is
+	// NON-owning, so this document's AST (net.http_ok, Map, Set, Buffer) points
+	// into stdlib modules owned ONLY by res.context. Each iteration builds a full
+	// stdlib + document context and drops it; under build-asan LeakSanitizer
+	// fails the process if any reparse leaks (a long-running blangd reparses on
+	// every edit), and ASan traps a use-after-free if the context were released
+	// before the AST that points into it.
+	{
+		lsp::StdlibLocation loc = lsp::locateStdlib( BLANG_SOURCE_STDLIB_DIR, "", "" );
+		assert( loc.usable && "source stdlib is usable" );
+		static const char *kStdlibFixture =
+			"import net;\n"
+			"\n"
+			"fn main() -> int {\n"
+			"\tMap<string, int> m = Map<string, int>();\n"
+			"\tm.set(\"a\", 1);\n"
+			"\tSet<int> s = Set<int>();\n"
+			"\ts.add(2);\n"
+			"\tBuffer b = Buffer(8);\n"
+			"\tb.append_byte(65);\n"
+			"\tnet.HttpResponse r = net.http_ok(\"hi\");\n"
+			"\treturn m.length() + s.length() + b.get_length() + r.status();\n"
+			"}\n";
+		for ( int i = 0; i < 50; i++ )
+		{
+			lsp::CompileResult res = lsp::compileDocument( "leak_stdlib.b", kStdlibFixture, loc );
+			assert( res.module != nullptr && "stdlib-context document parses" );
+			assert( res.diagnostics.empty() && "stdlib-context fixture is clean" );
+			assert( res.context != nullptr && res.context->records().size() > 1 &&
+				"the stdlib modules are part of this result's context" );
+		}
+	}
+
 	printf( "ParserLeakTest: OK\n" );
 	return 0;
 }
