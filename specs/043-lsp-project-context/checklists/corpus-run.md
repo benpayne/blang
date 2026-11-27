@@ -47,3 +47,12 @@ All **9/9** library interfaces are byte-identical to the `.bmod` that a cold in-
 |---|---|---|---|
 | `examples/todo_app/main.b` | 78.1 ms | 77.5 / 87.7 | ≤ 500 ms: OK |
 | `test_build/usebox/main.b` (two dependencies derived from source on every reparse) | 75.9 ms | 75.3 / 80.6 | ≤ 500 ms: OK |
+
+## T042: project corpus under the ASan blangd (`build-asan`, local leg only)
+
+- `lsp_diag_corpus.py --build-dir build-asan --corpus project`:
+  - all 17 project entries PASS;
+  - all 11 xmodule entries PASS;
+  - the tool exits 1 for one reason only: the **shared** blangd session reports a LeakSanitizer leak when it closes.
+- **Attribution.** The 17 clean projects were each re-opened in their own `build-asan/blangd` session (`lsp_client --sema-fixture <proj>/main.b`): **all 17 exit 0 with no LeakSanitizer output**, so the project context (dependency Runs, in-memory interfaces, per-run resolvers) is LSan-clean.
+- **The leak is U2's known pre-existing parse-error-recovery leak** (`specs/042-lsp-stdlib-context/checklists/baseline.md`): a raw `new` in `QLang::ReturnStatement::Parse` is lost when `COMPILE_ERROR` throws. U3 does not touch the parser. Xmodule consumers whose compiles take that error path reproduce it on their own, even single-file: `private_init`, `name_capability_requires_import`, `imported_struct_literal`, `imported_generic_field_access`. It remains filed as the U2 follow-up and is out of scope here (per T042).

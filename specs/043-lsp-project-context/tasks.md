@@ -337,24 +337,24 @@ The binding audit order is applied in Phase 2, before any story:
 
 ## Phase 7: Polish & cross-cutting
 
-- [ ] T039 [P] Update `CLAUDE.md`:
+- [X] T039 [P] Update `CLAUDE.md`:
   - **Repository Structure**: add `ProjectLayout.{h,cpp}`, `ProjectLayoutTest.cpp`, `lsp/ProjectContext.{h,cpp}` and `lsp/Run.h`, and note `ProjectConfig::loadFromText`, the `BmodEmitter` text provider and `Resolver( AliasMode::kManual )`;
   - **Known Issues**: one U3 bullet covering blangd's project context (walk-up and membership, dependencies from source, interfaces via the shared emitter, per-run isolation closing U1 I6, setup diagnostics and suppression, the project corpus in CI `build-system`).
 
   The epic's docs-check wording, which removes "single-file" from the blangd lines, is U5's. Do not do it here, except where a line becomes factually wrong.
-- [ ] T040 [P] Update `editors/README.md` with a "Projects" section covering:
+- [X] T040 [P] Update `editors/README.md` with a "Projects" section covering:
   - `blang.toml` discovery and membership;
   - path and already-fetched git dependencies, with the note that the git cache is located from blangd's own `XDG_CACHE_HOME`/`HOME` (R9);
   - unsaved buffers;
   - the setup diagnostics.
-- [ ] T041 Complete `specs/043-lsp-project-context/checklists/security.md` (plan D-9; Quality Gate 7), citing file and line for:
+- [X] T041 Complete `specs/043-lsp-project-context/checklists/security.md` (plan D-9; Quality Gate 7), citing file and line for:
   - read-only access;
   - `resolvePath` parity;
   - git URL and pin used only as hash input and text;
   - the issue sink, with no stderr;
   - the absence of process calls (grep plus `blangd_no_subprocess` output);
   - the T034 robustness results.
-- [ ] T042 Run the project corpus under the ASan blangd with `build-asan` (plan Verification §5). This is a local leg only; CI's `build-system` job runs the plain `build` corpus (analyze L5, accepted). Every clean project must be LSan-clean. Record the result. Documents with parse errors carry U2's known pre-existing parser leak, which is out of scope; note it if it is hit.
+- [X] T042 Run the project corpus under the ASan blangd with `build-asan` (plan Verification §5). This is a local leg only; CI's `build-system` job runs the plain `build` corpus (analyze L5, accepted). Every clean project must be LSan-clean. Record the result. Documents with parse errors carry U2's known pre-existing parser leak, which is out of scope; note it if it is hit.
 - [ ] T043 Final verification, the whole plan §Verification protocol on `build`, `build-nollvm` and `build-asan`:
   - `test_lsp.sh` and `--selfcheck` in each tree;
   - ctest 87/87 ×3;
