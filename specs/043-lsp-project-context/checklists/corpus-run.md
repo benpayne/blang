@@ -40,3 +40,10 @@ All **9/9** library interfaces are byte-identical to the `.bmod` that a cold in-
 - 50 reparses of `test_build/usebox/main.b` using a fresh `StdlibLocation` and an `EmptyOverlay`. Each reparse asserts `deps >= 2` and zero diagnostics.
 - **`build-asan`**: `ParserLeakTest: OK`, LSan-clean, about 20 s.
 - **Teeth (not committed)**: leaking one `CompileResult` per iteration fails the run with `LeakSanitizer: detected memory leaks` (37 MB in 453k allocations). Reverted afterwards.
+
+## T038: latency (`tools/lsp_latency.py`, `build`, 20 edits each)
+
+| File | Median | Min / max | Budget |
+|---|---|---|---|
+| `examples/todo_app/main.b` | 78.1 ms | 77.5 / 87.7 | ≤ 500 ms: OK |
+| `test_build/usebox/main.b` (two dependencies derived from source on every reparse) | 75.9 ms | 75.3 / 80.6 | ≤ 500 ms: OK |

@@ -329,7 +329,7 @@ The binding audit order is applied in Phase 2, before any story:
 
 **Goal**: FR-019; SC-005.
 
-- [ ] T038 [US4] In `test_lsp.sh`, append `test_build/usebox/main.b` to `LATENCY_FILES`. Run `./test_lsp.sh` on `build` and record both medians in `corpus-run.md`; each must be ≤ 500 ms. If the `usebox` median is over budget, STOP and raise a question before adding any cache (R10). Commit.
+- [X] T038 [US4] In `test_lsp.sh`, append `test_build/usebox/main.b` to `LATENCY_FILES`. Run `./test_lsp.sh` on `build` and record both medians in `corpus-run.md`; each must be ≤ 500 ms. If the `usebox` median is over budget, STOP and raise a question before adding any cache (R10). Commit.
 
 **Checkpoint**: US4 complete.
 

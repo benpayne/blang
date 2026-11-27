@@ -416,7 +416,7 @@ if [ ${#FILE_ARGS[@]} -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
 		echo -e "  ${YELLOW}SKIP${NC}: latency leg (sanitizer build: $BUILD_DIR)"
 	else
 		TOTAL=$((TOTAL + 1))
-		LATENCY_FILES=(examples/todo_app/main.b)
+		LATENCY_FILES=(examples/todo_app/main.b test_build/usebox/main.b)
 		latency_out="$(python3 "$SCRIPT_DIR/tools/lsp_latency.py" --server "$BLANGD" \
 			--root "$SCRIPT_DIR" "${LATENCY_FILES[@]}" 2>&1)"
 		if [ $? -eq 0 ]; then
