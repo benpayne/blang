@@ -51,11 +51,17 @@ def die(msg, code=2):
 def reference_compile(build_dir, abs_path):
     """Run the reference compile; return (exit_code, [diagnostic dicts])."""
     tmp = tempfile.mkdtemp(prefix="lsp_corpus_")
+    # The reference tools are the ORACLE, not the system under test: under a
+    # sanitizer build their own pre-existing error-exit leak report would land
+    # in the stderr parsed as JSON, so leak detection is off for these children
+    # only (the same rule U1's project_compile oracle uses). blangd keeps it.
+    env = dict(os.environ)
+    env["ASAN_OPTIONS"] = "detect_leaks=0"
     try:
         out = subprocess.run(
             [os.path.join(build_dir, "bcc"), "-v", "-S", abs_path,
              "-o", os.path.join(tmp, "r.ll")],
-            cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            cwd=tmp, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         line = None
         for raw in out.stdout.decode(errors="replace").splitlines():
             if "/qcc " in raw:
@@ -64,7 +70,7 @@ def reference_compile(build_dir, abs_path):
         if line is None:
             die("bcc -v -S printed no qcc line for %s" % abs_path)
         argv = shlex.split(line) + ["--json"]
-        ref = subprocess.run(argv, cwd=tmp, stdout=subprocess.DEVNULL,
+        ref = subprocess.run(argv, cwd=tmp, env=env, stdout=subprocess.DEVNULL,
                              stderr=subprocess.PIPE)
         text = ref.stderr.decode(errors="replace").strip()
         diags = json.loads(text) if text else []
