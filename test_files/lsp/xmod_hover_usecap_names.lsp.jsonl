@@ -1,0 +1,22 @@
+# modules-v2-lsp U4 (specs/044-lsp-xmodule-navigation) T041a (F2): use-capability-only hover where the library's
+# DIRECTORY/project name (`shapes`) differs from its SOURCE FILE name (`geometry.b`). app imports mid only;
+# `s.area()` (7:17) and `mid.make` (6:13). The owner qualifier is Sq's getDefiningFile() human name — the
+# <module> token mid's `// foreign-type: Sq <module> <digest>` header prints under `bcc build`, captured
+# 2026-11-26 in a scratch copy: `// foreign-type: Sq shapes 2afb7540f099`. So the expected qualifier is
+# `shapes` (the interface's project/.bmod name), NOT the file name `geometry`.
+# stdlibPath=${ROOT}/stdlib pins stdlib URIs to the repository stdlib/ (no build dir in a golden).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/stdlib"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/projects/usecap_names/app/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/usecap_names/app/main.b"}, "position": {"line": 7, "character": 17}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/usecap_names/app/main.b"}, "position": {"line": 6, "character": 13}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/usecap_names/app/main.b"}, "position": {"line": 7, "character": 17}}}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "id": 5, "method": "shutdown"}}
+{"wait_id": 5}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

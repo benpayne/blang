@@ -357,6 +357,17 @@ int Lexer::getSymbolInternal()
 	return sym;
 }
 
+SourceLocation Lexer::getPrevTokenLocation() const
+{
+	int prev = mCurrentPos - 1;
+	if ( prev >= 0 && (std::size_t)prev < mSymbolList.size() )
+	{
+		const SymbolInfo &info = mSymbolList[ prev ];
+		return SourceLocation( mReader->getFileName(), info.line, info.col );
+	}
+	return SourceLocation();
+}
+
 SourceLocation Lexer::getTokenLocation()
 {
 	// Ensure the token at the current parse position has been scanned into

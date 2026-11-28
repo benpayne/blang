@@ -1,6 +1,7 @@
 #include "BmodEmitter.h"
 #include "Expression.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -30,11 +31,46 @@ static const vector<string> *sourceLines( const string &path )
 	return &res.first->second;
 }
 
+// modules-v2-lsp U3 (audit R1/H3): the provider active for the current emit()
+// call (null for qcc), its miss sink, and whether the last slice missed. Set by
+// an RAII guard in emit() only — no state survives the call.
+static const BmodEmitter::SourceTextProvider *gActiveProvider = nullptr;
+static vector<string> *gActiveMissing = nullptr;
+static bool gLastSliceMissed = false;
+
+static void splitLines( const string &text, vector<string> &lines )
+{
+	istringstream in( text );
+	string line;
+	while ( getline( in, line ) )
+		lines.push_back( line );
+}
+
 string BmodEmitter::sliceDefinitionSource( const SourceLocation &loc )
 {
+	gLastSliceMissed = false;
 	if ( loc.file.empty() || loc.line == 0 )
 		return "";
-	const vector<string> *lines = sourceLines( loc.file );
+	vector<string> providedLines;   // provider text, split for THIS call only
+	const vector<string> *lines = nullptr;
+	if ( gActiveProvider != nullptr )
+	{
+		const string *text = ( *gActiveProvider )( loc.file );
+		if ( text == nullptr )
+		{
+			// A miss is LOUD: never the disk cache, never a fresh read (either
+			// could differ from the parsed text).
+			gLastSliceMissed = true;
+			if ( gActiveMissing != nullptr &&
+				 find( gActiveMissing->begin(), gActiveMissing->end(), loc.file ) == gActiveMissing->end() )
+				gActiveMissing->push_back( loc.file );
+			return "";
+		}
+		splitLines( *text, providedLines );
+		lines = &providedLines;
+	}
+	else
+		lines = sourceLines( loc.file );
 	if ( lines == nullptr || (size_t)loc.line > lines->size() )
 		return "";
 
@@ -192,6 +228,8 @@ void BmodEmitter::emitFunction( FunctionDefinition *func, ostream &out )
 			out << src;
 			return;
 		}
+		if ( gLastSliceMissed )
+			return;   // provider miss: emit nothing further for this definition (H3)
 		// fall through to signature-only if the source is unavailable
 	}
 
@@ -542,8 +580,24 @@ static void collectTypeNames( Type *t, std::set<std::string> &names )
 		collectTypeNames( t->getTypeParam( i ), names );
 }
 
-void BmodEmitter::emit( const vector<Module*> &modules, ostream &out, Scope *scope )
+void BmodEmitter::emit( const vector<Module*> &modules, ostream &out, Scope *scope,
+	const SourceTextProvider *text, vector<string> *missing )
 {
+	struct ActiveProviderGuard
+	{
+		ActiveProviderGuard( const SourceTextProvider *t, vector<string> *m )
+		{
+			gActiveProvider = t;
+			gActiveMissing = m;
+		}
+		~ActiveProviderGuard()
+		{
+			gActiveProvider = nullptr;
+			gActiveMissing = nullptr;
+			gLastSliceMissed = false;
+		}
+	} activeProvider( text, missing );
+
 	out << "// auto-generated .bmod interface file — do not edit" << endl;
 	// Format version, deliberately a COMMENT: a compiler that predates the
 	// marker still parses the file. A version mismatch should cost a cache miss

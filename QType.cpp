@@ -6,6 +6,7 @@
 #include "Expression.h"
 
 #include "CompilerHelpers.h"
+#include "Frontend.h"
 
 #include "logging.h"
 
@@ -26,6 +27,26 @@ std::ostream &QLang::operator<<(std::ostream &out, const Type &type)
 		out << ">";
 	}
 	return out;
+}
+
+// modules-v2-lsp U4 (research R4): record a resolved type-position name for
+// blangd navigation. Called only when gTypeReferenceSink is installed (never by
+// qcc). SIDE-EFFECT FREE: a findSymbol lookup on the scope that resolved the
+// token — no markTypeUsed/markModuleUsed, no scope or import-state mutation — so
+// no unused-import/collision diagnostic can move. Only struct/enum/protocol
+// targets are recorded (generic parameters and core types are not symbols).
+static void recordTypeReference( Lexer &l, Scope *resolvedIn, const string &name )
+{
+	Symbol *sym = resolvedIn->findSymbol( name );
+	if ( dynamic_cast<StructDefinition *>( sym ) == nullptr &&
+	     dynamic_cast<EnumDefinition *>( sym ) == nullptr &&
+	     dynamic_cast<ProtocolDefinition *>( sym ) == nullptr )
+		return;
+	TypeReference ref;
+	ref.location = l.getPrevTokenLocation();
+	ref.length = (uint32_t)name.size();
+	ref.target = sym;
+	gTypeReferenceSink->push_back( ref );
 }
 
 Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
@@ -126,6 +147,8 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 			t = nsScope->findType( memberName );
 			if ( t == nullptr )
 				COMPILE_ERROR( l, "Module '" + symName + "' has no type '" + memberName + "'" );
+			if ( gTypeReferenceSink != nullptr )
+				recordTypeReference( l, nsScope, memberName );
 		}
 		else
 		{
@@ -134,6 +157,8 @@ Type *Type::Parse( Lexer &l, Scope *s, bool allow_void )
 			// `Pair<int>` after `import mathlib;`) marks its owning module used.
 			if ( t != nullptr )
 				s->markTypeUsed( symName );
+			if ( t != nullptr && gTypeReferenceSink != nullptr )
+				recordTypeReference( l, s, symName );
 			else
 			{
 				// A name exported by two imported modules is UNBOUND (ambiguous):

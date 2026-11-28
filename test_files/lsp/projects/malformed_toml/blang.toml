@@ -1,0 +1,5 @@
+[project]
+name = "malformed_toml"
+version = "0.1.0"
+type = "bin"
+this is not toml

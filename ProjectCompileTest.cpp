@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "BmodEmitter.h"
 #include "BmodFormat.h"
 #include "DiagnosticEngine.h"
 #include "Expression.h"
@@ -435,6 +436,78 @@ static void caseC8()
 			std::fprintf( stderr, "C8 unexpected: %s\n", d.message.c_str() );
 }
 
+// C9 (modules-v2-lsp U3, audit R1 + addendum H3): the emitter's source-text
+// provider. A generic body is sliced from the PROVIDED (parsed) text, never from
+// the process-global disk line cache; a provider MISS is reported in `missing`,
+// never silently filled from the cache or a fresh disk read.
+static void caseC9()
+{
+	char tmpl[] = "/tmp/u3_c9_XXXXXX";
+	const std::string dir = mkdtemp( tmpl );
+	const std::string path = dir + "/lib.b";
+	const std::string diskText =
+		"pub fn wrap<T>(T v) -> T {\n    return v; // DISK-BODY\n}\n";
+	const std::string bufText =
+		"// buffer line 1\n// buffer line 2\npub fn wrap<T>(T v) -> T {\n    return v; // BUFFER-BODY\n}\n";
+	{
+		std::ofstream( path ) << diskText;
+	}
+	auto emitWith = [&]( const std::string &parseText, const QLang::BmodEmitter::SourceTextProvider *prov,
+		std::vector<std::string> *missing ) -> std::string
+	{
+		std::string out;
+		Resolver resolver;
+		DiagnosticEngine diag;
+		CompilePlan plan;
+		CompileInput in;
+		in.path = path;
+		in.inMemory = true;
+		in.text = parseText;
+		plan.inputs.push_back( in );
+		plan.identity = IdentityPolicy::kNone;
+		{
+			std::unique_ptr<CompileContext> ctx = ProjectCompile::run( plan, resolver, diag );
+			CHECK( !ctx->hadError() && !diag.hasErrors() );
+			std::vector<Module *> mods;
+			for ( std::size_t ri : ctx->moduleIndices() )
+				mods.push_back( const_cast<Module *>( (const Module *)ctx->record( ri ).module ) );
+			std::ostringstream os;
+			QLang::BmodEmitter::emit( mods, os, ctx->bmodEmitScope(), prov, missing );
+			out = os.str();
+		}
+		return out;
+	};
+
+	// Seed the process-global cache from DISK (the qcc path, no provider).
+	std::string viaDisk = emitWith( diskText, nullptr, nullptr );
+	CHECK( viaDisk.find( "DISK-BODY" ) != std::string::npos );
+
+	// A provider HIT: the buffer body, even though the cache holds the disk text
+	// and the buffer's line numbers differ from the disk file's.
+	QLang::BmodEmitter::SourceTextProvider hit = [&]( const std::string &p ) -> const std::string * {
+		return p == path ? &bufText : nullptr;
+	};
+	std::vector<std::string> missing;
+	std::string viaBuf = emitWith( bufText, &hit, &missing );
+	CHECK( missing.empty() );
+	CHECK( viaBuf.find( "BUFFER-BODY" ) != std::string::npos );
+	CHECK( viaBuf.find( "DISK-BODY" ) == std::string::npos );
+
+	// A provider MISS for the generic-defining source: reported, and the cache's
+	// (pre-seeded, different) disk text is NOT what was emitted.
+	QLang::BmodEmitter::SourceTextProvider miss = []( const std::string & ) -> const std::string * {
+		return nullptr;
+	};
+	missing.clear();
+	std::string viaMiss = emitWith( bufText, &miss, &missing );
+	CHECK( missing.size() == 1 && missing[0] == path );
+	CHECK( viaMiss.find( "DISK-BODY" ) == std::string::npos );
+	CHECK( viaMiss.find( "wrap" ) == std::string::npos );
+
+	unlink( path.c_str() );
+	rmdir( dir.c_str() );
+}
+
 int main( int argc, char *argv[] )
 {
 	if ( argc < 3 )
@@ -457,6 +530,7 @@ int main( int argc, char *argv[] )
 	caseC6();
 	caseC7();
 	caseC8();
+	caseC9();
 
 	if ( gFailures != 0 )
 	{

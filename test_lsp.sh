@@ -27,6 +27,7 @@ NC='\033[0m'
 VERBOSE=0
 UPDATE_GOLDENS=0
 SELFCHECK=0
+NO_PROJECT_CORPUS=0
 FILE_ARGS=()
 
 for arg in "$@"; do
@@ -34,6 +35,7 @@ for arg in "$@"; do
 		--verbose) VERBOSE=1 ;;
 		--update-goldens) UPDATE_GOLDENS=1 ;;
 		--selfcheck) SELFCHECK=1 ;;
+		--no-project-corpus) NO_PROJECT_CORPUS=1 ;;
 		--help)
 			echo "Usage: $0 [--verbose] [--update-goldens] [--selfcheck] [fixture...]"
 			echo "  --verbose         Show the transcript diff on failure (full)"
@@ -42,6 +44,8 @@ for arg in "$@"; do
 			echo "                    real golden, require the suite to go red, print"
 			echo "                    'SELFCHECK: OK', and exit non-zero. Never mutates a"
 			echo "                    committed golden."
+			echo "  --no-project-corpus  Skip the U3 project-corpus leg (CI runs it in the"
+			echo "                    LLVM build-system job: its reference needs llc)"
 			exit 0
 			;;
 		*) FILE_ARGS+=("$arg") ;;
@@ -304,6 +308,107 @@ if [ ${#FILE_ARGS[@]} -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
 		FAIL_COUNT=$((FAIL_COUNT + 1))
 	fi
 
+	# modules-v2-lsp U3: the PROJECT corpus — blangd vs the project reference
+	# compile (the final qcc line `bcc build -v <dir>` prints) for every
+	# test_build/* binary, examples/* project and the multi-file fixture, plus the
+	# 11 fail/xmodule fixtures as synthesized lib+bin layouts and the dependency
+	# interface byte-parity check. The reference needs an LLVM qcc and llc (bcc
+	# build archives each library dependency), so it is skipped elsewhere — a FAIL
+	# under CI=true (CI runs it in the LLVM build-system job; research R2).
+	echo ""
+	echo "--- LSP project corpus (tools/lsp_diag_corpus.py --corpus project) ---"
+	have_llc=0
+	if command -v llc-18 >/dev/null 2>&1 || command -v llc >/dev/null 2>&1; then have_llc=1; fi
+	if [ "$NO_PROJECT_CORPUS" -eq 1 ]; then
+		echo -e "  ${YELLOW}SKIP${NC}: project corpus (--no-project-corpus; runs in CI build-system)"
+	elif [ $have_llc -eq 1 ] && "$BUILD_DIR/qcc" --help 2>&1 | grep -q -- "--emit-ir"; then
+		TOTAL=$((TOTAL + 1))
+		project_out="$(python3 "$SCRIPT_DIR/tools/lsp_diag_corpus.py" --build-dir "$BUILD_DIR" \
+			--root "$SCRIPT_DIR" --corpus project --check-list 2>&1)"
+		if [ $? -eq 0 ]; then
+			echo -e "  ${GREEN}PASS${NC}  $(printf '%s\n' "$project_out" | tail -1)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		else
+			echo -e "  ${RED}FAIL${NC}  corpus project"
+			printf '%s\n' "$project_out" | grep -E 'FAIL|corpus |lsp_diag_corpus' | head -20 | sed 's/^/    /'
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		fi
+	elif [ "${CI:-}" = "true" ]; then
+		TOTAL=$((TOTAL + 1))
+		echo -e "  ${RED}FAIL${NC}  project corpus skipped under CI=true (needs llc + an LLVM qcc)"
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	else
+		echo -e "  ${YELLOW}SKIP${NC}: project corpus (needs llc + an LLVM qcc; runs in CI build-system)"
+	fi
+
+	# modules-v2-lsp U3 (FR-018, SC-003): the git-shim leg. A tripwire `git` is put
+	# first on blangd's PATH and the unfetched-git-dependency fixture is opened:
+	# blangd must report the dependency as not fetched and must NEVER run git.
+	echo ""
+	echo "--- LSP git-shim leg (blangd never runs git) ---"
+	TOTAL=$((TOTAL + 1))
+	shim="$(mktemp -d)"
+	printf '#!/bin/sh\ntouch "%s/git-invoked"\nexit 1\n' "$shim" > "$shim/git"
+	chmod +x "$shim/git"
+	shim_out="$(python3 "$SCRIPT_DIR/tools/lsp_client.py" --server "$BLANGD" --root "$SCRIPT_DIR" \
+		--script "$SCRIPT_DIR/test_files/lsp/project_git_unfetched.lsp.jsonl" \
+		--server-env "PATH=$shim:$PATH" 2>&1)"
+	shim_rc=$?
+	shim_hits="$(printf '%s\n' "$shim_out" | grep -o "git dependency 'greet' is not fetched" | wc -l)"
+	if [ $shim_rc -ne 0 ]; then
+		echo -e "  ${RED}FAIL${NC}  git-shim: session failed"
+		printf '%s\n' "$shim_out" | head -5 | sed 's/^/    /'
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	elif [ -e "$shim/git-invoked" ]; then
+		echo -e "  ${RED}FAIL${NC}  git-shim: blangd invoked git"
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	elif [ "$shim_hits" -ne 1 ]; then
+		echo -e "  ${RED}FAIL${NC}  git-shim: expected exactly one 'not fetched' diagnostic, got $shim_hits"
+		FAIL_COUNT=$((FAIL_COUNT + 1))
+	else
+		echo -e "  ${GREEN}PASS${NC}  git-shim: one 'not fetched' diagnostic, git never invoked"
+		PASS_COUNT=$((PASS_COUNT + 1))
+	fi
+	rm -rf "$shim"
+
+	# modules-v2-lsp U3 (FR-010, Quality Gate 7): hostile project inputs. Each
+	# session must exit 0 with strict framing (lsp_client fails on any stray
+	# stdout/stderr byte) and publish at least one diagnostic; the directory case
+	# pins the unreadable-blang.toml Warning text (analyze N4).
+	echo ""
+	echo "--- LSP hostile-input leg (garbage / directory / symlink-loop blang.toml) ---"
+	hostile="$(mktemp -d)"
+	mkdir -p "$hostile/garbage" "$hostile/dirtoml/blang.toml" "$hostile/symloop"
+	python3 -c 'import random,sys; r=random.Random(7); sys.stdout.buffer.write(bytes(r.randrange(256) for _ in range(5*1024*1024)))' \
+		> "$hostile/garbage/blang.toml"
+	printf '[project]\nname = "symloop"\ntype = "bin"\n\n[deps]\nloop = { path = "../loop" }\n' > "$hostile/symloop/blang.toml"
+	ln -s loop "$hostile/loop"
+	for p in garbage dirtoml symloop; do
+		printf 'import loop;\nfn main() -> int {\n\tint x = "s";\n\treturn x;\n}\n' > "$hostile/$p/main.b"
+	done
+	for p in garbage dirtoml symloop; do
+		TOTAL=$((TOTAL + 1))
+		h_out="$(python3 "$SCRIPT_DIR/tools/lsp_client.py" --server "$BLANGD" --root "$hostile" \
+			--sema-fixture "$p/main.b" 2>&1)"
+		h_rc=$?
+		h_n="$(printf '%s\n' "$h_out" | grep -c "^$p/main.b:")"
+		h_ok=1
+		[ $h_rc -eq 0 ] && [ "$h_n" -ge 1 ] || h_ok=0
+		if [ "$p" = dirtoml ] && ! printf '%s\n' "$h_out" | \
+			grep -qxF "dirtoml/main.b:1:1: warning: $hostile/dirtoml/blang.toml: cannot read blang.toml"; then
+			h_ok=0
+		fi
+		if [ $h_ok -eq 1 ]; then
+			echo -e "  ${GREEN}PASS${NC}  hostile $p: exit 0, strict framing, $h_n diagnostic(s)"
+			PASS_COUNT=$((PASS_COUNT + 1))
+		else
+			echo -e "  ${RED}FAIL${NC}  hostile $p (rc=$h_rc, diagnostics=$h_n)"
+			printf '%s\n' "$h_out" | head -5 | sed 's/^/    /'
+			FAIL_COUNT=$((FAIL_COUNT + 1))
+		fi
+	done
+	rm -rf "$hostile"
+
 	echo ""
 	echo "--- LSP latency floor (tools/lsp_latency.py) ---"
 	sanitize="$(grep -m1 '^BLANG_SANITIZE:' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null | sed 's/^[^=]*=//')"
@@ -311,7 +416,7 @@ if [ ${#FILE_ARGS[@]} -eq 0 ] && [ "$UPDATE_GOLDENS" -eq 0 ]; then
 		echo -e "  ${YELLOW}SKIP${NC}: latency leg (sanitizer build: $BUILD_DIR)"
 	else
 		TOTAL=$((TOTAL + 1))
-		LATENCY_FILES=(examples/todo_app/main.b)
+		LATENCY_FILES=(examples/todo_app/main.b test_build/usebox/main.b)
 		latency_out="$(python3 "$SCRIPT_DIR/tools/lsp_latency.py" --server "$BLANGD" \
 			--root "$SCRIPT_DIR" "${LATENCY_FILES[@]}" 2>&1)"
 		if [ $? -eq 0 ]; then

@@ -23,10 +23,12 @@ static string unquote( const string &s )
 	return t;
 }
 
-static void parseInlineTable( const string &name, const string &body, vector<Dependency> &deps )
+static void parseInlineTable( const string &name, const string &body, vector<Dependency> &deps,
+	int lineNum )
 {
 	Dependency dep;
 	dep.name = name;
+	dep.line = lineNum;
 
 	// Split on commas, parse each key = "value" pair
 	string content = body;
@@ -79,9 +81,29 @@ static void parseInlineTable( const string &name, const string &body, vector<Dep
 
 ProjectConfig *ProjectConfig::loadFromFile( const string &path )
 {
-	ifstream file( path );
-	if ( !file.is_open() )
+	ifstream in( path );
+	if ( !in.is_open() )
 		return nullptr;
+	ostringstream ss;
+	ss << in.rdbuf();
+	return loadFromText( path, ss.str(), nullptr );
+}
+
+// A recovered parse problem: appended to the sink when there is one, else printed
+// to cerr exactly as bcc always printed it.
+static void reportIssue( vector<ConfigIssue> *issues, const string &path, int lineNum,
+	const string &message )
+{
+	if ( issues != nullptr )
+		issues->push_back( ConfigIssue{ lineNum, message } );
+	else
+		cerr << path << ":" << lineNum << ": parse error: " << message << endl;
+}
+
+ProjectConfig *ProjectConfig::loadFromText( const string &path, const string &text,
+	vector<ConfigIssue> *issues )
+{
+	istringstream file( text );
 
 	ProjectConfig *config = new ProjectConfig();
 	string currentSection;
@@ -121,7 +143,7 @@ ProjectConfig *ProjectConfig::loadFromFile( const string &path )
 		size_t eq = line.find( '=' );
 		if ( eq == string::npos )
 		{
-			cerr << path << ":" << lineNum << ": parse error: expected key = value" << endl;
+			reportIssue( issues, path, lineNum, "expected key = value" );
 			continue;
 		}
 
@@ -172,11 +194,12 @@ ProjectConfig *ProjectConfig::loadFromFile( const string &path )
 			if ( braceOpen != string::npos && braceClose != string::npos && braceClose > braceOpen )
 			{
 				string body = value.substr( braceOpen + 1, braceClose - braceOpen - 1 );
-				parseInlineTable( key, body, config->mDeps );
+				parseInlineTable( key, body, config->mDeps, lineNum );
 			}
 			else
 			{
-				cerr << path << ":" << lineNum << ": parse error: expected inline table for dependency '" << key << "'" << endl;
+				reportIssue( issues, path, lineNum,
+					"expected inline table for dependency '" + key + "'" );
 			}
 		}
 	}

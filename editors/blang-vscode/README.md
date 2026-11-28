@@ -4,6 +4,7 @@ Syntax highlighting and language support for the BLang programming language.
 
 ## Features
 
+- **Language server** (`blangd`): live diagnostics, go-to-definition (F12) and hover, across modules (stdlib, prelude, `blang.toml` project sources and dependencies). Configure with `blang.serverPath` / `blang.stdlibPath`; see `editors/README.md`.
 - Syntax highlighting for all BLang keywords, types, and operators
 - String interpolation highlighting (`"hello {name}"`)
 - Annotation highlighting (`@json`, `@grpc("service")`)
@@ -12,6 +13,8 @@ Syntax highlighting and language support for the BLang programming language.
 - Auto-indentation on `{` / `}`
 
 ## Installation
+
+Run `npm install` in this directory first (it fetches `vscode-languageclient`, which the LSP client needs).
 
 ### Quick install (symlink)
 

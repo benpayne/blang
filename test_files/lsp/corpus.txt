@@ -5,14 +5,20 @@
 # examples/*/main.b, and every test_files/codegen_*.b whose reference compile
 # (the qcc line 'bcc -v -S <file>' prints) exits 0.
 # Regenerate: python3 tools/lsp_diag_corpus.py --build-dir build --root "$PWD" --corpus stdlib --print-qualifying
+# U3: 'project <dir>' entries = the project reference compile (the final qcc line
+# 'bcc build -v <dir>' prints) for every test_build/* binary, every examples/*
+# project and test_files/lsp/projects/multifile; 'xmodule <fixture>' entries =
+# every test_files/fail/xmodule/* fixture as a synthesized lib+bin layout vs
+# 'qcc consumer.b lib.bmod'. test_build/{myapp,counterapp}/main.b moved from
+# 'stdlib' to 'project' (project members with [deps]; research R1): SC-007 =
+# 177/177 stdlib + those 2 PASS in the project corpus = 179/179 accounted.
+# Regenerate project/xmodule: ... --corpus project --print-qualifying
 stdlib examples/calculator/main.b
 stdlib examples/chat/main.b
 stdlib examples/kv/main.b
 stdlib examples/todo_app/main.b
 stdlib examples/wordfreq/main.b
 stdlib examples/worker_pool/main.b
-stdlib test_build/counterapp/main.b
-stdlib test_build/myapp/main.b
 stdlib test_files/codegen_and_call.b
 stdlib test_files/codegen_arc_aggregate_return.b
 stdlib test_files/codegen_arc_array_field_reassign.b
@@ -184,3 +190,31 @@ stdlib test_files/codegen_try_operator.b
 stdlib test_files/codegen_type_coercion.b
 stdlib test_files/codegen_wait.b
 stdlib test_files/codegen_wait_all.b
+project examples/calculator
+project examples/chat
+project examples/kv
+project examples/todo_app
+project examples/wordfreq
+project examples/worker_pool
+project test_build/aliasapp
+project test_build/boxapp
+project test_build/counterapp
+project test_build/diamondapp
+project test_build/myapp
+project test_build/printapp
+project test_build/sizeapp
+project test_build/timerapp
+project test_build/todoapp
+project test_build/usebox
+project test_files/lsp/projects/multifile
+xmodule test_files/fail/xmodule/alias_rebind
+xmodule test_files/fail/xmodule/imported_datacontract_field
+xmodule test_files/fail/xmodule/imported_field_access
+xmodule test_files/fail/xmodule/imported_generic_field_access
+xmodule test_files/fail/xmodule/imported_generic_struct_literal
+xmodule test_files/fail/xmodule/imported_struct_literal
+xmodule test_files/fail/xmodule/name_capability_requires_import
+xmodule test_files/fail/xmodule/private_init
+xmodule test_files/fail/xmodule/private_method
+xmodule test_files/fail/xmodule/unknown_module_import
+xmodule test_files/fail/xmodule/unqualified_import_call

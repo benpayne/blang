@@ -1,0 +1,7 @@
+[project]
+name = "dep_failed_unimported"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+lib = { path = "../dep_failed/lib" }

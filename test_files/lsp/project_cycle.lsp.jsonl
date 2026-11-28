@@ -1,0 +1,11 @@
+# modules-v2-lsp U3 setup diagnostics: cycle_a <-> cycle_b -> one 'circular dependency' Error, then the unrelated error.
+{"server_env": {"XDG_CACHE_HOME": "${ROOT}/test_files/lsp/projects/empty_cache"}}
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/projects/cycle_a/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "shutdown"}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

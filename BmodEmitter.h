@@ -2,6 +2,7 @@
 #define BLANG_BMOD_EMITTER_H_
 
 #include "BmodFormat.h"
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -25,8 +26,18 @@ public:
 	// module — so U5 can emit `// foreign-type:` headers carrying that type's
 	// defining-module identity (digest) + human name, letting this interface parse
 	// standalone and mangle the foreign type with the DEFINING module's identity.
+	//
+	// modules-v2-lsp U3 (audit R1 + addendum H3): `text`, when given, supplies the
+	// exact text each module was PARSED from (an editor buffer), and generic
+	// bodies are sliced from it — the process-global disk line cache is then
+	// neither read nor written. A provider MISS (nullptr for a slice location) is
+	// a failure: the path is recorded in `missing` and that definition is not
+	// emitted; the caller must treat a non-empty `missing` as a failed
+	// derivation. With no provider (qcc) behavior is byte-identical to before.
+	using SourceTextProvider = std::function<const std::string *( const std::string &path )>;
 	static void emit( const std::vector<Module*> &modules, std::ostream &out,
-		Scope *scope = nullptr );
+		Scope *scope = nullptr, const SourceTextProvider *text = nullptr,
+		std::vector<std::string> *missing = nullptr );
 
 private:
 	static void emitFunction( FunctionDefinition *func, std::ostream &out );

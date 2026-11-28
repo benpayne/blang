@@ -1,0 +1,4 @@
+[project]
+name = "greet"
+version = "1.0.0"
+type = "lib"

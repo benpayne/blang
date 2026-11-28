@@ -27,6 +27,12 @@ namespace BlangStdlib
 // path is taken ("env.x" -> "env").
 std::set<std::string> scanImports( const std::string &sourceText );
 
+// modules-v2-lsp U3 (audit addendum H2): the union of scanImports(t) over SEPARATE
+// per-file texts, in order — how bcc build scans a project's sources. Never scan
+// a concatenation: a file without a trailing newline (or ending in a // comment)
+// would merge its last line with the next file's first line and drop an import.
+std::set<std::string> scanImportsAll( const std::vector<std::string> &texts );
+
 // bcc's former resolveStdlibFiles rule: the base modules
 // {sys, buffer, collections, fs, net} always, then the gated
 // {timer, math, time, random, env, cli} in that order when imported, then any

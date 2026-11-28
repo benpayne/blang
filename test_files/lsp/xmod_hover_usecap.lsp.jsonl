@@ -1,0 +1,17 @@
+# modules-v2-lsp U4 (specs/044-lsp-xmodule-navigation): hover (FR-008 display name) through a value held by USE-CAPABILITY only:
+# usebox imports midx (never boxq); `b.get()` (14:18) resolves through the compiler's use-capability
+# type set to boxq's SOURCE test_build/boxq/boxq.b; `midx.get_box` (13:15) -> midx/midx.b.
+# stdlibPath=${ROOT}/stdlib pins stdlib URIs to the repository stdlib/ (no build dir in a golden).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/stdlib"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_build/usebox/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_build/usebox/main.b"}, "position": {"line": 14, "character": 18}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_build/usebox/main.b"}, "position": {"line": 13, "character": 15}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "shutdown"}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

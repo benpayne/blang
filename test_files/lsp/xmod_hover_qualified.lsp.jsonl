@@ -1,0 +1,15 @@
+# modules-v2-lsp U4 (specs/044-lsp-xmodule-navigation) FR-001/FR-006: hover (FR-008 display name) on a qualified
+# dependency call `mathlib.add(3, 4)` (0-based 5:23) -> mathlib's SOURCE test_build/mathlib/math.b,
+# never the generated mathlib.bmod.
+# stdlibPath=${ROOT}/stdlib pins stdlib URIs to the repository stdlib/ (no build dir in a golden).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/stdlib"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_build/myapp/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_build/myapp/main.b"}, "position": {"line": 5, "character": 23}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "shutdown"}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

@@ -1,0 +1,7 @@
+[project]
+name = "mid"
+version = "0.1.0"
+type = "lib"
+
+[deps]
+shapes = { path = "../shapes" }

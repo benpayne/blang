@@ -55,6 +55,7 @@ std::ostream &QLang::parseTrace()
 }
 
 Scope *gScope;
+std::vector<TypeReference> *gTypeReferenceSink = nullptr;
 
 // The single diagnostic reporting path, owned by main() and referenced here so
 // the top-level parse-catch (inside Module::Parse) renders through it. Null

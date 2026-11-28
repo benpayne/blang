@@ -1,0 +1,7 @@
+[project]
+name = "missing_path"
+version = "0.1.0"
+type = "bin"
+
+[deps]
+nope = { path = "../does_not_exist" }
