@@ -16,9 +16,17 @@ cmake --build build --target blangd
   on every keystroke (full-document sync); errors and warnings appear as you
   type, same messages as `qcc`.
 - **Go to definition** — variables, functions, struct constructors, enum
-  variants, fields, and methods.
+  variants, fields, and methods; **across modules** too. A qualified
+  dependency call (`mathlib.add`, or `m.add` after `import mathlib as m;`), a
+  dependency type, a method on a value you hold but never named, a stdlib
+  symbol (`net.http_ok`), the prelude `Map`, or a sibling project file all
+  jump to the defining **source** file, even when it is not open. They never
+  jump to a generated `.bmod`.
 - **Hover** — declaration/signature text (`fn add(int a, int b) -> int`,
-  `Array<int> nums`) or the expression's resolved type.
+  `Array<int> nums`) or the expression's resolved type. A declaration from
+  another module is qualified the way you would write it, using the import
+  name or alias (`fn mathlib.add(...)`, `fn m.add(...)`). Prelude and core
+  types stay bare (`struct Map<K, V>`).
 - **Document symbols** — outline of structs (fields/methods), enums
   (variants), protocols, functions, and test blocks.
 
