@@ -5,14 +5,18 @@
 #include <iostream>
 
 #include "Server.h"
+#include "../StdlibSelect.h"
 
-int main()
+int main( int argc, char *argv[] )
 {
 	// stdout is the protocol channel; keep it un-tied from cin (writeFrame
 	// flushes explicitly after every frame).
 	std::ios::sync_with_stdio( false );
 	std::cin.tie( nullptr );
 
-	lsp::Server server( std::cin, std::cout );
+	// The blangd-relative stdlib route (<blangd-dir>/stdlib) locates the binary
+	// with bcc's own rule (modules-v2-lsp U2).
+	lsp::Server server( std::cin, std::cout,
+		BlangStdlib::executableDir( argc > 0 ? argv[0] : "" ) );
 	return server.run();
 }

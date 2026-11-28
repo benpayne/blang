@@ -1,0 +1,33 @@
+# modules-v2-lsp U3 (FR-011/FR-012, SC-004): an open, UNSAVED dependency buffer is what the
+# consumer compiles against. Every publish is waited for: lib/lib.b's own publish follows each
+# lib edit, and app/main.b is published ONLY when app/main.b itself changes (FR-012: no fan-out).
+#  1 open app/main.b -> clean              2 open lib/lib.b -> clean
+#  3 lib: helper -> helper2 (unsaved)      4 app re-sent identical -> missing-member error
+#  5 lib back, app re-sent -> clean
+#  6 lib (unsaved, still clean): 7 comment lines above the generic + base -> base2 in its definition
+#    AND in wrap's body; app re-sent -> clean. Sliced from the DISK text at the buffer's line, the
+#    generic's "body" would be tail() (disk line 16), so lib.wrap would vanish and main.b would fail
+#    AT lib.wrap; a clean publish shows the verbatim body came from the buffer (audit R1; T009 is R1's main lock).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/projects/unsaved_dep/app/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"open": "test_files/lsp/projects/unsaved_dep/lib/lib.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b", "version": 2}, "contentChanges": [{"text": "pub fn base() -> int {\n\treturn 40;\n}\n\npub fn helper2() -> int {\n\treturn 1;\n}\n\npub fn wrap<T>(T v) -> T {\n\tif base() > 0 {\n\t\treturn v;\n\t}\n\treturn v;\n}\n\npub fn tail() -> int {\n\treturn 3;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b", "version": 2}, "contentChanges": [{"text": "// modules-v2-lsp U3 fixture: the consumer of an open, unsaved dependency.\nimport lib;\n\nfn main() -> int {\n\tint a = lib.helper();\n\tint b = lib.wrap(a);\n\tprintln(\"{}\", a + b);\n\treturn 0;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b", "version": 3}, "contentChanges": [{"text": "pub fn base() -> int {\n\treturn 40;\n}\n\npub fn helper() -> int {\n\treturn 1;\n}\n\npub fn wrap<T>(T v) -> T {\n\tif base() > 0 {\n\t\treturn v;\n\t}\n\treturn v;\n}\n\npub fn tail() -> int {\n\treturn 3;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b", "version": 3}, "contentChanges": [{"text": "// modules-v2-lsp U3 fixture: the consumer of an open, unsaved dependency.\nimport lib;\n\nfn main() -> int {\n\tint a = lib.helper();\n\tint b = lib.wrap(a);\n\tprintln(\"{}\", a + b);\n\treturn 0;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b", "version": 4}, "contentChanges": [{"text": "pub fn base2() -> int {\n\treturn 40;\n}\n\npub fn helper() -> int {\n\treturn 1;\n}\n\n// unsaved comment line 1\n// unsaved comment line 2\n// unsaved comment line 3\n// unsaved comment line 4\n// unsaved comment line 5\n// unsaved comment line 6\n// unsaved comment line 7\npub fn wrap<T>(T v) -> T {\n\tif base2() > 0 {\n\t\treturn v;\n\t}\n\treturn v;\n}\n\npub fn tail() -> int {\n\treturn 3;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b", "version": 4}, "contentChanges": [{"text": "// modules-v2-lsp U3 fixture: the consumer of an open, unsaved dependency.\nimport lib;\n\nfn main() -> int {\n\tint a = lib.helper();\n\tint b = lib.wrap(a);\n\tprintln(\"{}\", a + b);\n\treturn 0;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "shutdown"}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

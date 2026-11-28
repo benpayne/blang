@@ -256,6 +256,11 @@ jobs:
           cmake --build build-asan -j"$(nproc)"
       - name: Build-system integration suite
         run: ./test_build/run_build_tests.sh
+      - name: LSP project corpus (blangd == bcc build, modules-v2-lsp U3)
+        # The project reference compile is the final qcc line `bcc build -v`
+        # prints, which needs llc (each library dependency is archived) — so it
+        # runs here, in the LLVM job, not in the parse-only lsp job (research R2).
+        run: python3 tools/lsp_diag_corpus.py --build-dir build --root "$PWD" --corpus project --check-list
       - name: Build-cache key unit test (.bmod format-version salt)
         run: ctest --test-dir build -R build_cache_key --output-on-failure
       - name: Golden .bmod files are committed and current
@@ -433,18 +438,18 @@ jobs:
           sudo apt-get update
           # No LLVM: blangd is parse+sema only and must build without it.
           sudo apt-get install -y cmake build-essential libuv1-dev pkg-config libsqlite3-dev neovim
-      - name: Build blangd + jsonTest (no LLVM)
+      - name: Build blangd + jsonTest + qcc/bcc for the corpus reference (no LLVM)
         run: |
           cmake -S . -B build -DBLANG_ENABLE_LLVM=OFF
-          cmake --build build -j"$(nproc)" --target blangd jsonTest
+          cmake --build build -j"$(nproc)" --target blangd jsonTest qcc bcc
       - name: Protocol-layer unit tests (jsonTest)
         run: ./build/jsonTest
       - name: Golden transcript suite (test_lsp.sh)
-        run: ./test_lsp.sh
+        run: ./test_lsp.sh --no-project-corpus
       - name: Inverted self-check — corrupted golden MUST go red (teeth)
         run: |
           set +e
-          out="$(./test_lsp.sh --selfcheck 2>&1)"
+          out="$(./test_lsp.sh --selfcheck --no-project-corpus 2>&1)"
           ret=$?
           set -e
           echo "$out"

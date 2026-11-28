@@ -22,6 +22,7 @@
 #include "Sema.h"
 #include "Frontend.h"
 #include "Resolver.h"
+#include "ProjectCompile.h"
 #include "SchemaMigration.h"
 
 #ifdef BLANG_HAS_LLVM
@@ -253,601 +254,76 @@ int main( int argc, char *argv[] )
 	gDiag = &diagnostics;
 
 	// modules-v2-graph U4: resolution runs through the standalone Resolver
-	// component (Resolver.h) — the same class lsp/Compile.cpp constructs (the
-	// Epic C seam). It OWNS the global builtin scope and installs the `gScope`
-	// alias the parser/sema read (replacing the inline createGlobalScope() +
-	// SmartPtr owner). Behavior-neutral: the same builtin scope, the same alias.
-	// The combine routing policy and the .bmod flat-merge injection stay in this
-	// driver (their removal is done-condition 6 / U6).
+	// component (Resolver.h) — the same class lsp/Compile.cpp constructs. It OWNS
+	// the global builtin scope and installs the `gScope` alias the parser/sema read.
 	Resolver resolver;
-	// KG-7: the driver OWNS every module scope the resolver hands out (a scope no
-	// longer retains its parent, and the global scope does not adopt module
-	// scopes). Declared right after `resolver` so the scopes — and the parser
-	// scopes/AST they own — are released before the global scope.
-	std::vector<SmartPtr<Scope>> ownedModuleScopes;
-	auto adoptModuleScope = [&]( Scope *sc ) -> Scope *
-	{
-		ownedModuleScopes.push_back( sc );
-		return sc;
-	};
 
-	// Parse each input file into its own Module. Each module gets its own
-	// module-level scope parented to the shared global scope so that built-in
-	// types are visible everywhere but top-level symbols remain per-file.
-	// Cross-module symbol resolution (pub visibility enforcement) will be
-	// layered on top once multi-module linking is implemented (Task 63).
-	// Phase 1: Parse .bmod files first (they provide type info for .b files).
-	// Build a map from module name to its parsed scope for import resolution.
-	std::vector<SmartPtr<Module>> modules;
-	// U6b-2 (DC8): the file scope each module parsed into, parallel to `modules`,
-	// so the post-parse import-diagnostics pass can read each module's import table
-	// + usage marks.
-	std::vector<Scope*> moduleScopes;
-	std::map<std::string, Module*> bmodMap;
-
-	// modules-v2-graph U6a: a .bmod dependency's public interface is registered so
-	// resolution runs through the IMPORT GRAPH, not a flat merge into gScope.
-	//
-	//   - FREE FUNCTIONS land in a PER-MODULE NAMESPACE scope keyed by the dep's
-	//     import name and registered on gScope (the common ancestor of both the
-	//     combine user scope and a non-combine module scope, so `mathlib.add`
-	//     resolves in either build). They are NO LONGER added to gScope's symbol
-	//     list, so an UNQUALIFIED `add(3,4)` no longer resolves — that is the
-	//     import-enforcement half of done-condition 6: a dep symbol is reachable
-	//     only as `module.name` after `import module;` (D1). The namespace path is
-	//     the same one the namespaced stdlib already uses (QExpression.cpp:251).
-	//
-	//   - TYPES (struct/enum + their Type entries) and PROTOCOLS still land in
-	//     gScope. This is the deliberate U6a/U6b SPLIT: naming a foreign type
-	//     (declare a variable of it, construct one) is D7 *name-capability*, whose
-	//     enforcement + the accompanying capability/collision diagnostics are U6b.
-	//     Keeping type names resolvable here is the bridge that lets the type-using
-	//     consumers (Pair/Counter/Point/Box/Todo construction, methods, to_json,
-	//     query) stay green while U6a lands only the FUNCTION mechanism + migration.
-	//     It also preserves U5's parse-time foreign-type resolution (midx.bmod's
-	//     `-> Box<int>` where Box is defined in boxq.bmod), since this is still
-	//     called INCREMENTALLY in topological order (a dependency before its
-	//     dependent).
-	auto injectBmodSymbols = [&]( Module *bmod, const std::string &moduleName )
-	{
-		// Per-module export namespace for this dep's free functions. Registered on
-		// gScope so a consumer in either build mode reaches it up the parent chain.
-		Scope *depNs = gScope->findNamespace( moduleName );
-		if ( depNs == nullptr )
-		{
-			depNs = new Scope( Scope::kScope_Namespace );
-			depNs->setParent( gScope );
-			// U6b: a .bmod dep namespace grants D7 name-capability on import — its
-			// exported TYPE names become namable (unqualified) in an importer. (A
-			// combine-mode stdlib namespace is NOT marked, so `import net;` keeps
-			// net's types qualified-only, never dumped into the user scope.)
-			depNs->setGrantsNameCapability( true );
-			gScope->addNamespace( moduleName, depNs );
-		}
-		for ( const auto &sp : bmod->getFunctionList() )
-		{
-			FunctionDefinition *f = const_cast<FunctionDefinition*>( (const FunctionDefinition*)sp );
-			if ( f->isPublic() )
-			{
-				if ( !f->isGeneric() )
-					f->setFunctionExtern( true );
-				// Namespace only — NOT gScope. Qualified access resolves it here;
-				// unqualified access is a located error (enforcement).
-				depNs->addSymbol( f );
-			}
-		}
-		// modules-v2-graph U6b: TYPES (struct/enum) and PROTOCOLS also land in the
-		// per-module namespace, NOT gScope. A foreign type is namable in ordinary
-		// source only through D7 *name-capability* — granted when the module is
-		// imported (the import handler in QModule.cpp copies these namespace entries
-		// into the importing scope). *Use-capability* (holding a foreign value,
-		// calling its pub methods, monomorphizing a foreign generic returned by an
-		// imported function) needs NO import: it rides on CodeGen's flat
-		// mStructDefMap/mEnumDefMap (populated by registerExternalTypes from every
-		// module's struct/enum list), never on this scope. This is the retirement of
-		// the gScope type-injection bridge — all name resolution now runs through the
-		// import graph (done-condition 6).
-		for ( const auto &sp : bmod->getStructList() )
-		{
-			StructDefinition *s = const_cast<StructDefinition*>( (const StructDefinition*)sp );
-			if ( s->isPublic() )
-			{
-				depNs->addSymbol( s );
-				depNs->addType( new Type( s->getName() ) );
-			}
-		}
-		for ( const auto &sp : bmod->getEnumList() )
-		{
-			EnumDefinition *e = const_cast<EnumDefinition*>( (const EnumDefinition*)sp );
-			if ( e->isPublic() )
-			{
-				depNs->addSymbol( e );
-				depNs->addType( new Type( e->getName() ) );
-			}
-		}
-		for ( const auto &sp : bmod->getProtocolList() )
-		{
-			ProtocolDefinition *p = const_cast<ProtocolDefinition*>( (const ProtocolDefinition*)sp );
-			if ( p->isPublic() )
-				depNs->addSymbol( p );
-		}
-	};
-
-	// Separate input files into .bmod and .b
+	// Separate input files into .bmod and .b (the combined IR name below uses the
+	// last source file). ProjectCompile::run applies the same .bmod-first reorder
+	// to the plan's inputs.
 	std::vector<std::string> bmodFiles, sourceFiles;
 	for ( const auto &f : inputFiles )
 	{
-		if ( f.size() >= 5 && f.substr( f.size() - 5 ) == ".bmod" )
+		if ( classifyInput( f ) == CompileInput::Kind::kInterface )
 			bmodFiles.push_back( f );
 		else
 			sourceFiles.push_back( f );
 	}
-	// Reorder: .bmod first, then .b
-	std::vector<std::string> orderedFiles;
-	orderedFiles.insert( orderedFiles.end(), bmodFiles.begin(), bmodFiles.end() );
-	orderedFiles.insert( orderedFiles.end(), sourceFiles.begin(), sourceFiles.end() );
-	inputFiles = orderedFiles;
-
-	// In combine mode, create a shared scope for all .b files.
-	// Stdlib .b files get their own namespace scopes registered on combineScope.
-	// The user's .b file (last in order) uses combineScope directly.
-	Scope *combineScope = nullptr;
-	// Track module names for namespace scopes in combine mode
-	std::map<std::string, Scope*> moduleNamespaces;
-	// modules-v2-graph U3 (D12/D13): prelude LOAD/PROMOTE tracking.
-	//   preludeModuleNames  — stdlib modules that PROVIDE prelude types (buffer,
-	//                         collections). LOADED into a holding namespace scope
-	//                         (never combineScope), then a post-parse PROMOTE pass
-	//                         injects their prelude TYPES into combineScope.
-	//   preludePrefixExempt — those same modules compile PREFIX-FREE (Option B): a
-	//                         prelude type used unqualified must not carry a module
-	//                         prefix (esp. non-generic Buffer).
-	//   suppressedPrelude   — prelude type names shadowed by a user definition; the
-	//                         prelude one is suppressed uniformly (not promoted; and
-	//                         filtered from allStructs so mStructDefMap gets the
-	//                         user's) so "user definition wins" across all three
-	//                         registries (mTypeList, mSymbolList, mStructDefMap).
-	std::set<std::string> preludeModuleNames;
-	std::set<std::string> preludePrefixExempt;
-	std::set<std::string> suppressedPrelude;
-	// Module name (basename, no extension) parallel to `modules`, for the PROMOTE
-	// pass and the allStructs shadow filter.
-	std::vector<std::string> moduleNames;
-	// modules-v2-graph U3 (D13): the PRELUDE scope sits between core (gScope) and
-	// the user scope (combineScope). Promoted prelude types (Map/Set/Buffer) live
-	// here — "base scope like int," never imported. Because combineScope is its
-	// CHILD, a user's own `struct Map` in combineScope shadows the prelude Map by
-	// normal child-first lookup, UNIFORMLY across both scope registries (mTypeList
-	// and mSymbolList) with no addSymbol/addType disagreement. (mStructDefMap, a
-	// flat CodeGen map, is reconciled separately by the allStructs shadow filter.)
-	Scope *preludeScope = nullptr;
-	if ( combineMode )
-	{
-		// U4: module scopes come from the resolver (parented into its environment).
-		preludeScope = adoptModuleScope( resolver.newModuleScope() );   // parent = global
-		combineScope = adoptModuleScope( resolver.newModuleScope( preludeScope ) );
-	}
 
 	// Quiet by default (FR-007): parser progress is a gated trace on STDERR
 	// (Frontend.h), enabled by -v. stdout carries only machine output (the
-	// --dump-locations node dump), so no cout redirection games are needed —
-	// the old rdbuf-swap hack (and the process-teardown SIGSEGV it once
-	// caused) is gone with the unconditional couts it was hiding.
+	// --dump-locations node dump), so no cout redirection games are needed.
 	setParseTraceEnabled( verbose && !dumpLocations );
 
-	// U1: accumulate failure across all files instead of aborting at the first,
-	// so one compile reports every file's diagnostics. Buffered diagnostics are
-	// rendered once by gDiag->finish() after the loop; codegen runs only if no
-	// errors remain (Constitution III).
-	bool hadError = false;
-
-	// modules-v2-graph U6b: the scope BmodEmitter reads to resolve a FOREIGN type
-	// referenced in an exported signature (to emit its `// foreign-type:` header).
-	// A foreign type now lands in the importing MODULE's scope (via the import
-	// handler's name-capability copy), not gScope — so emit must read that scope,
-	// not the global one. Captured as the last compiled non-.bmod module's scope
-	// (the module whose interface is being emitted).
-	Scope *bmodEmitScope = gScope;
-
-	for ( std::size_t fileIdx = 0; fileIdx < inputFiles.size(); fileIdx++ )
+	// modules-v2-lsp U1 (REQ-001): every compile rule — per-input scope routing,
+	// prelude LOAD/PROMOTE, the .bmod pre-scan/format check/injection, origin and
+	// digest stamping, Sema, and the import-diagnostics pass — runs through the ONE
+	// shared entry point ProjectCompile::run, the same call lsp/Compile.cpp makes.
+	// This driver only builds the plan from its arguments and runs its own output
+	// stages on the returned context.
+	CompilePlan plan;
+	for ( const auto &f : inputFiles )
 	{
-		const auto &inputFile = inputFiles[fileIdx];
-		bool isBmod = ( inputFile.size() >= 5 &&
-			inputFile.substr( inputFile.size() - 5 ) == ".bmod" );
-
-		Scope *fileScope;
-		if ( combineMode && !isBmod )
+		CompileInput in;
+		in.path = f;
+		in.kind = classifyInput( f );
+		if ( in.kind == CompileInput::Kind::kInterface )
 		{
-			// Derive module name from filename: "stdlib/sys.b" -> "sys"
-			std::string moduleName;
-			{
-				std::string fname = inputFile;
-				size_t slash = fname.rfind( '/' );
-				if ( slash != std::string::npos )
-					fname = fname.substr( slash + 1 );
-				size_t dot = fname.rfind( '.' );
-				if ( dot != std::string::npos )
-					fname = fname.substr( 0, dot );
-				moduleName = fname;
-			}
-
-			// Last source file is the user's code — use combineScope directly.
-			// Stdlib files (not last) get their own namespace scope.
-			//
-			// modules-v2-graph U3 (D12/D13): three type tiers.
-			//   - PRELUDE modules (buffer, collections) PROVIDE prelude TYPES
-			//     (Map/Set/Buffer). They are LOADED into a holding namespace scope
-			//     (prefix-exempt), NOT combineScope: their parse-time addSymbol/
-			//     addType land in the namespace, never combineScope's registries.
-			//     A post-parse PROMOTE pass then injects only their prelude types
-			//     into combineScope, suppression-checked (§5b) — so "user wins"
-			//     shadowing is uniform. collections' free function `sort` stays in
-			//     the `collections` namespace: qualified `collections.sort` (library
-			//     tier). This LOAD-vs-PROMOTE split closes the mSymbolList seam at
-			//     its source (B2-a): no prelude symbol is ever committed to
-			//     combineScope at parse time.
-			//   - `cli` is an ORDINARY namespaced library module (modules-v2-graph
-			//     U6, closes KG-6): qualified `cli.has_flag(...)`, module-prefixed
-			//     like every other stdlib namespace (net/fs/timer). Its former
-			//     promotion into combineScope was a CODEGEN special case — the
-			//     module-prefix string-ARC double-free workaround — now that U2 has
-			//     fixed+regression-locked that path (F3), the promotion is retired
-			//     and `cli` falls through to the plain namespace routing below. Its
-			//     internal string-returning calls (has_flag -> flag_name_of) are the
-			//     exact prefixed shape U2's nsarc fixture proves --leak-check clean.
-			bool isUserFile = ( fileIdx == inputFiles.size() - 1 );
-			bool isPreludeModule =
-				( moduleName == "buffer" || moduleName == "collections" );
-			if ( isUserFile )
-			{
-				fileScope = combineScope;
-			}
-			else if ( isPreludeModule )
-			{
-				// LOAD into a prefix-free holding namespace scope; PROMOTE later.
-				Scope *nsScope = new Scope( Scope::kScope_Namespace );
-				nsScope->setParent( combineScope );
-				combineScope->addNamespace( moduleName, nsScope );
-				moduleNamespaces[moduleName] = nsScope;
-				preludeModuleNames.insert( moduleName );
-				preludePrefixExempt.insert( moduleName );
-				fileScope = nsScope;
-			}
-			else
-			{
-				// Create a namespace scope for this stdlib module
-				Scope *nsScope = new Scope( Scope::kScope_Namespace );
-				nsScope->setParent( combineScope );
-				combineScope->addNamespace( moduleName, nsScope );
-				moduleNamespaces[moduleName] = nsScope;
-				fileScope = nsScope;
-			}
+			auto oit = bmodOrigins.find( f );
+			if ( oit != bmodOrigins.end() )
+				in.origin = oit->second;
 		}
-		else
-		{
-			// U4: non-combine module scope from the resolver (parent = global).
-			fileScope = adoptModuleScope( resolver.newModuleScope() );
-		}
-
-		// modules-v2-graph U5/U6a/U6b: a .bmod's public interface is registered
-		// INCREMENTALLY as each .bmod parses (injectBmodSymbols, above), in the
-		// transitive-closure's topological order — so a later .bmod referencing an
-		// earlier one's foreign types resolves at parse time. U6a moved the FREE
-		// FUNCTIONS into a per-module namespace keyed by the dep's import name
-		// (qualified `module.fn` after `import module;`); U6b moved the TYPES there
-		// too and made naming a foreign type require `import` (D7 name-capability).
-		// NOTHING lands in gScope now — all name resolution runs through the import
-		// graph (done-condition 6). Use-capability (holding a foreign value, calling
-		// its pub methods) rides on CodeGen's mStructDefMap, not this scope.
-
-		// modules-v2-graph U5 (done-condition 7): pre-scan a .bmod for FOREIGN-TYPE
-		// headers and register each named type BEFORE parsing, so signatures that
-		// reference a type owned by another module (`-> Box<int>`, Box from boxq)
-		// resolve — the interface parses STANDALONE (the bmod_parses check) even
-		// when the defining .bmod is not also on the command line. In a real build
-		// the transitive closure has already injected the real definition (with its
-		// digest); this only supplies a placeholder type name when it has not.
-		// SECURITY: the .bmod is untrusted parsed input — a malformed foreign-ref is
-		// a LOCATED error, never a crash (Quality Gate 7).
-		if ( isBmod )
-		{
-			std::ifstream fin( inputFile );
-			std::string fline;
-			int lineNo = 0;
-			while ( std::getline( fin, fline ) )
-			{
-				lineNo++;
-				const std::string tag = "// foreign-type:";
-				size_t at = fline.find( tag );
-				if ( at == std::string::npos )
-					continue;
-				std::istringstream fs( fline.substr( at + tag.size() ) );
-				std::string fname2, fhuman, fdigest, extra;
-				fs >> fname2 >> fhuman >> fdigest;
-				if ( fname2.empty() || fhuman.empty() || fdigest.empty() ||
-					 ( fs >> extra ) )
-				{
-					SourceLocation floc;
-					floc.file = inputFile;
-					floc.line = lineNo;
-					floc.col = 1;
-					gDiag->error( floc,
-						"malformed foreign-type reference in interface file "
-						"(expected '// foreign-type: <name> <module> <digest>')" );
-					hadError = true;
-					continue;
-				}
-				// U6b: register the placeholder in THIS .bmod's own fileScope, not
-				// gScope — so a foreign type referenced only in an interface signature
-				// stays parseable HERE without leaking into a consumer's namable scope
-				// (which would silently grant name-capability the consumer never
-				// imported). The real definition still reaches CodeGen via the
-				// transitive closure + registerExternalTypes (use-capability).
-				if ( fileScope->findType( fname2 ) == nullptr )
-					fileScope->addType( new Type( fname2 ) );
-			}
-			if ( hadError )
-				continue;
-		}
-
-		LexerReader reader( inputFile.c_str() );
-		Lexer l( &reader );
-		// Per-token "Symbol …" trace only under -v, never in --dump-locations.
-		l.setTraceEnabled( verbose && !dumpLocations );
-
-		SmartPtr<Module> mod = Module::Parse( l, fileScope );
-		if ( mod == nullptr )
-		{
-			// Catastrophic (unrecoverable) parse failure for this file. The
-			// located diagnostic was already buffered; record failure and move on
-			// so remaining files still report their errors.
-			hadError = true;
-			continue;
-		}
-
-		// Stamp each struct with the SOURCE FILE that defines it. Applied to .b
-		// and .bmod inputs alike, because the namespaced stdlib modules have a
-		// real module boundary but arrive as .b source. Shared with blangd via
-		// stampDefiningOrigin so the compiler and the editor cannot disagree.
-		//
-		// Populated here, enforced by a later unit. Nothing reads it yet — and
-		// nothing may, until the file -> module mapping exists (M-3).
-		stampDefiningOrigin( (Module *)mod, inputFile );
-
-		// modules-v2-graph U1: stamp each struct with its DEFINING module's
-		// canonical-identity digest (D5/D10) so generic mangling can key on it.
-		// Origin source (clarity-note source (a), driver-side):
-		//   - a dependency's .bmod: the dep's origin passed via --bmod-origin
-		//     (so its generics mangle identically to the dep's own build => dedup);
-		//   - a compiled .b module: --module-origin when bcc supplies it, else
-		//     realpath(inputFile) in single-file/combine mode (self-consistent —
-		//     no cross-.bmod reference exists there to disagree with).
-		{
-			std::string origin;
-			if ( isBmod )
-			{
-				auto oit = bmodOrigins.find( inputFile );
-				if ( oit != bmodOrigins.end() )
-					origin = oit->second;
-			}
-			else if ( !moduleOrigin.empty() )
-			{
-				origin = moduleOrigin;
-			}
-			if ( origin.empty() )
-			{
-				char resolved[PATH_MAX];
-				if ( realpath( inputFile.c_str(), resolved ) )
-					origin = resolved;
-				else
-				{
-					// realpath failure is a located hard error, NEVER an empty
-					// identity (design-audit-U1 §2.1): an empty/degenerate digest
-					// would collapse distinct modules onto one symbol (a P10-class
-					// miscompile through the back door).
-					SourceLocation oloc;
-					oloc.file = inputFile;
-					oloc.line = 1;
-					oloc.col = 1;
-					gDiag->error( oloc,
-						"cannot resolve a canonical origin for module identity "
-						"(realpath failed for '" + inputFile + "')" );
-					hadError = true;
-					continue;
-				}
-			}
-			stampModuleDigest( (Module *)mod, blangModuleDigest( origin ) );
-		}
-
-		if ( isBmod )
-		{
-			// Validate the interface FORMAT VERSION before trusting the file.
-			// Without this the marker is write-only: a format-2 .bmod read by a
-			// format-3 compiler would silently invert the meaning of every
-			// unmarked `init` (exported in 2, private in 3) — the exact inversion
-			// the marker exists to prevent. A mismatch is a located error naming
-			// the fix, not a mysterious downstream failure.
-			{
-				std::ifstream bin( inputFile );
-				std::string bline;
-				int fileVersion = -1;
-				for ( int probe = 0; probe < 8 && std::getline( bin, bline ); probe++ )
-				{
-					const std::string marker = "// blang-bmod-format:";
-					size_t at = bline.find( marker );
-					if ( at != std::string::npos )
-					{
-						fileVersion = atoi( bline.c_str() + at + marker.size() );
-						break;
-					}
-				}
-				// No marker at all == format 1 (pre-versioned, emitted before the
-				// marker existed).
-				if ( fileVersion < 0 )
-					fileVersion = 1;
-				if ( fileVersion != BlangBmod::kFormatVersion )
-				{
-					SourceLocation bloc;
-					bloc.file = inputFile;
-					bloc.line = 1;
-					bloc.col = 1;
-					gDiag->error( bloc,
-						"interface file was produced by a different compiler version "
-						"(.bmod format " + std::to_string( fileVersion ) +
-						", this compiler expects " +
-						std::to_string( BlangBmod::kFormatVersion ) +
-						"); rebuild the dependency" );
-					hadError = true;
-					continue;
-				}
-			}
-
-			mod->setExtern( true );
-
-			// Stamp ABI provenance on every struct this interface declares.
-			// Construction of a struct that arrived through a .bmod must go
-			// through the library-emitted factory (the consumer has no field
-			// layout to size or destroy it with); construction of a struct
-			// defined in this compilation keeps the inline path. This is
-			// deliberately NOT the flat-merge injection below — it only marks
-			// where a definition came from.
-			for ( const auto &sp : mod->getStructList() )
-			{
-				StructDefinition *s = const_cast<StructDefinition*>(
-					(const StructDefinition*)sp );
-				s->setFromInterface( true );
-			}
-
-			// Extract module name: "/path/to/foo.bmod" -> "foo"
-			std::string fname = inputFile;
-			size_t slash = fname.rfind( '/' );
-			if ( slash != std::string::npos )
-				fname = fname.substr( slash + 1 );
-			size_t dot = fname.rfind( '.' );
-			if ( dot != std::string::npos )
-				fname = fname.substr( 0, dot );
-			bmodMap[fname] = mod;
-			// U5/U6a: register NOW (topological order) so a subsequent .bmod
-			// referencing this one's foreign types resolves at parse time. `fname`
-			// (the .bmod basename) is the dep's import name — the key for its
-			// per-module function namespace.
-			injectBmodSymbols( (Module *)mod, fname );
-		}
-
-		modules.push_back( mod );
-		moduleScopes.push_back( fileScope );
-		if ( !isBmod )
-			// U6b: the interface being emitted is a compiled .b module's; capture
-			// its scope so BmodEmitter can resolve foreign types this module imported.
-			bmodEmitScope = fileScope;
-		{
-			// Parallel module name (basename, no extension) for the U3 PROMOTE
-			// pass and the allStructs shadow filter. Kept in lockstep with
-			// `modules` so index alignment holds even if a file fails to parse.
-			std::string bn = inputFile;
-			size_t sl = bn.rfind( '/' );
-			if ( sl != std::string::npos )
-				bn = bn.substr( sl + 1 );
-			size_t dt = bn.rfind( '.' );
-			if ( dt != std::string::npos )
-				bn = bn.substr( 0, dt );
-			moduleNames.push_back( bn );
-		}
-		PARSE_TRACE( "Completed parse" );
-		// Semantic analysis (U3): runs in ALL build modes, immediately after a
-		// non-extern module parses and before any code generation, resolving
-		// member references and annotating expression types through the single
-		// DiagnosticEngine. Extern .bmod modules provide types only and are not
-		// analyzed (Sema::analyze skips them). On any sema error the compile
-		// fails (non-zero exit) and codegen is not reached for this file.
-		if ( !isBmod && !Sema::analyze( (Module *)mod, fileScope, *gDiag ) )
-			hadError = true;
-
-		// modules-v2-graph U3 EAGER PROMOTE (D13): if the just-parsed module is a
-		// prelude PROVIDER (buffer/collections), inject its prelude TYPES into
-		// preludeScope NOW — before the user file (parsed last) reaches its own
-		// sema — so `Map`/`Set`/`Buffer` resolve unqualified with zero imports.
-		// Only prelude-manifest types are promoted; a mixed module's free functions
-		// (collections.sort) stay in its namespace scope for qualified access
-		// (library tier). Shadowing is uniform and automatic: combineScope is a
-		// CHILD of preludeScope, so a user's own same-named struct wins by
-		// child-first lookup in BOTH scope registries — no addSymbol/addType
-		// disagreement (that is B2-a closed at its source).
-		if ( combineMode && preludeScope != nullptr && !moduleNames.empty() &&
-			 preludeModuleNames.count( moduleNames.back() ) )
-		{
-			for ( const auto &sp : mod->getStructList() )
-			{
-				StructDefinition *s = const_cast<StructDefinition*>(
-					(const StructDefinition*)sp );
-				if ( isPreludeTypeName( s->getName() ) )
-				{
-					preludeScope->addSymbol( s );
-					preludeScope->addType( new Type( s->getName() ) );
-				}
-			}
-		}
+		plan.inputs.push_back( in );
 	}
+	plan.combine = combineMode;
+	plan.moduleOrigin = moduleOrigin;
+	plan.identity = IdentityPolicy::kCanonical;
+	plan.lexerTrace = verbose && !dumpLocations;
 
-	// U1: stop before any output-producing stage if the compile had errors —
-	// never codegen a rejected program (Constitution III). finish() renders all
-	// buffered diagnostics once (human text or --json array). On the success
-	// path finish() is DEFERRED to the exit points below so the codegen phase
-	// can buffer its own located errors through the same engine (U-last) and
-	// everything — codegen errors and warnings alike — still renders exactly
-	// once, in one JSON array under --json.
-	// modules-v2-graph U6b-2 (DC8) — import diagnostics through the shared
-	// DiagnosticEngine: an UNKNOWN-module import is a located error; an UNUSED
-	// import is a located warning. Gated on an AUTHORITATIVE module set — a real
-	// build (combine mode, or dependency .bmods provided) where the set of
-	// importable modules is known. A bare single-file parse (a syntax-only fixture
-	// like `import std;` with no deps) has no authoritative set, so imports there
-	// stay lenient (unchanged). Duplicate-exported-name collisions are reported at
-	// import time in QModule.cpp; this pass covers the whole-program checks.
-	{
-		bool authoritativeModules = combineMode || !bmodFiles.empty();
-		if ( authoritativeModules )
-		{
-			for ( std::size_t mi = 0; mi < modules.size(); mi++ )
-			{
-				Module *m = (Module *)modules[mi];
-				if ( m == nullptr || m->isExtern() )
-					continue;
-				Scope *msc = ( mi < moduleScopes.size() ) ? moduleScopes[mi] : nullptr;
-				if ( msc == nullptr )
-					continue;
-				for ( const auto &impSp : m->getImports() )
-				{
-					ImportStatement *imp = const_cast<ImportStatement *>(
-						(const ImportStatement *)impSp );
-					if ( imp == nullptr )
-						continue;
-					// The unknown-module check verifies the REAL module exists; the
-					// unused check + its message key on the LOCAL qualifier (the
-					// alias `y` in `import x as y;`, which is what usage marks).
-					const std::string &realName = imp->getModuleName();
-					const std::string &localQ = imp->getLocalQualifier();
-					if ( msc->findNamespace( realName ) == nullptr )
-					{
-						gDiag->error( imp->getLocation(),
-							"unknown module '" + realName + "' — no such dependency or "
-							"stdlib module is available to import" );
-						hadError = true;
-					}
-					else if ( !msc->wasModuleUsed( localQ ) )
-					{
-						gDiag->warning( imp->getLocation(),
-							"unused import '" + localQ + "'", "unused-import" );
-					}
-				}
-			}
-		}
-	}
+	// KG-7: declared AFTER `resolver` so the context — every module scope and the
+	// parser scopes/AST they own — is released before the global scope.
+	std::unique_ptr<CompileContext> ctx = ProjectCompile::run( plan, resolver, diagnostics );
 
-	if ( hadError || gDiag->hasErrors() )
+	// U1 (multi-error): stop before any output-producing stage if the compile had
+	// errors — never codegen a rejected program (Constitution III). finish()
+	// renders all buffered diagnostics once (human text or --json array). On the
+	// success path finish() is DEFERRED to the exit points below so the codegen
+	// phase can buffer its own located errors through the same engine and
+	// everything still renders exactly once.
+	if ( ctx->hadError() || gDiag->hasErrors() )
 	{
 		gDiag->finish();
 		return 1;
+	}
+
+	// The RECORDED modules (ProjectCompile's recorded-only view, in processing
+	// order) that every output stage below reads, plus each one's record index.
+	std::vector<SmartPtr<Module>> modules;
+	std::vector<std::size_t> moduleRecords;
+	for ( std::size_t ri : ctx->moduleIndices() )
+	{
+		modules.push_back( ctx->record( ri ).module );
+		moduleRecords.push_back( ri );
 	}
 
 	// --dump-locations: restore stdout and print one line per AST node for
@@ -882,7 +358,7 @@ int main( int argc, char *argv[] )
 			gDiag->finish();
 			return -1;
 		}
-		QLang::BmodEmitter::emit( modPtrs, bmodOut, bmodEmitScope );
+		QLang::BmodEmitter::emit( modPtrs, bmodOut, ctx->bmodEmitScope() );
 		PARSE_TRACE( "Wrote .bmod to " << emitBmodFile );
 	}
 
@@ -916,43 +392,16 @@ int main( int argc, char *argv[] )
 	{
 		// Collect all struct and enum definitions across all modules for
 		// cross-module type sharing (Task 67).
-		// modules-v2-graph U3 (D13, §5b): compute which prelude type names a USER
-		// module shadows, so the prelude provider's struct of that name is filtered
-		// out of allStructs below — making CodeGen's flat mStructDefMap agree with
-		// the scope registries (the user's definition wins in all three). A "user
-		// module" is one routed to combineScope: not a prelude provider and not a
-		// namespaced stdlib module (i.e. the user file, or cli).
-		std::set<std::string> userTypeNames;
-		for ( std::size_t idx = 0; idx < modules.size() && idx < moduleNames.size(); idx++ )
-		{
-			const std::string &mn = moduleNames[idx];
-			bool routedToCombine =
-				!preludeModuleNames.count( mn ) && !moduleNamespaces.count( mn );
-			if ( routedToCombine )
-				for ( auto &s : modules[idx]->getStructList() )
-					userTypeNames.insert( s->getName() );
-		}
-		for ( const auto &n : userTypeNames )
-			if ( isPreludeTypeName( n ) )
-				suppressedPrelude.insert( n );
-
+		// modules-v2-graph U3 (D13, §5b): ProjectCompile computed which prelude type
+		// names a USER module shadows (suppressedPrelude()); the prelude provider's
+		// struct of that name is filtered out of allStructs below — making CodeGen's
+		// flat mStructDefMap agree with the scope registries (the user's definition
+		// wins in all three).
+		// modules-v2-lsp U4: the collection is CompileContext::useCapabilityTypes
+		// (lifted verbatim, shared with blangd's use-capability navigation).
 		std::vector<SmartPtr<StructDefinition>> allStructs;
 		std::vector<SmartPtr<EnumDefinition>> allEnums;
-		for ( std::size_t idx = 0; idx < modules.size(); idx++ )
-		{
-			bool isPreludeProvider =
-				( idx < moduleNames.size() ) && preludeModuleNames.count( moduleNames[idx] );
-			for ( auto &s : modules[idx]->getStructList() )
-			{
-				// Shadowed prelude struct: drop it so mStructDefMap holds the
-				// user's same-named definition (the scope registries already do).
-				if ( isPreludeProvider && suppressedPrelude.count( s->getName() ) )
-					continue;
-				allStructs.push_back( s );
-			}
-			for ( auto &e : modules[idx]->getEnumList() )
-				allEnums.push_back( e );
-		}
+		ctx->useCapabilityTypes( allStructs, allEnums );
 
 		if ( combineMode )
 		{
@@ -986,24 +435,10 @@ int main( int argc, char *argv[] )
 				// Determine module prefix for namespace name mangling.
 				// Stdlib modules (those with a registered namespace) get a prefix;
 				// the user's code (last source file) gets no prefix.
-				std::string modPrefix;
-				{
-					std::string fname = inputFiles[idx];
-					size_t slash = fname.rfind( '/' );
-					if ( slash != std::string::npos )
-						fname = fname.substr( slash + 1 );
-					size_t dot = fname.rfind( '.' );
-					if ( dot != std::string::npos )
-						fname = fname.substr( 0, dot );
-					// Prelude providers (buffer/collections) are namespaced for
-					// resolution (qualified collections.sort) but compile PREFIX-FREE
-					// (modules-v2-graph U3, Option B): a prelude type used unqualified
-					// must not carry a module prefix — decisive for non-generic
-					// Buffer, whose methods would otherwise mangle `buffer__Buffer_*`.
-					if ( moduleNamespaces.count( fname ) > 0 &&
-						 !preludePrefixExempt.count( fname ) )
-						modPrefix = fname;
-				}
+				// Prelude providers (buffer/collections) are namespaced for
+				// resolution but compile PREFIX-FREE (modules-v2-graph U3, Option B);
+				// the rule lives in CompileContext::codegenPrefix.
+				std::string modPrefix = ctx->codegenPrefix( moduleRecords[idx] );
 				codegen.setModulePrefix( modPrefix );
 
 				if ( !codegen.generate( modules[idx] ) )
@@ -1011,7 +446,7 @@ int main( int argc, char *argv[] )
 					// The located diagnostics say what failed; add the generic
 					// line only if codegen somehow failed without buffering one.
 					if ( !gDiag->hasErrors() )
-						cerr << "Code generation failed for " << inputFiles[idx] << endl;
+						cerr << "Code generation failed for " << ctx->record( moduleRecords[idx] ).path << endl;
 					gDiag->finish();
 					return 1;
 				}
@@ -1096,7 +531,7 @@ int main( int argc, char *argv[] )
 				if ( modules[idx]->isExtern() )
 					continue;
 
-				const std::string &inputFile = inputFiles[ idx ];
+				const std::string &inputFile = ctx->record( moduleRecords[ idx ] ).path;
 				QLang::CodeGen codegen( inputFile.c_str() );
 				codegen.setTestMode( emitTestMain );
 				codegen.setDebugInfo( debugInfo );

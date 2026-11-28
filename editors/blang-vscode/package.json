@@ -1,14 +1,19 @@
 {
 	"name": "blang",
 	"displayName": "BLang",
-	"description": "Syntax highlighting for the BLang programming language",
-	"version": "0.1.0",
+	"description": "BLang language support: syntax highlighting plus the blangd language server (diagnostics, go-to-definition, hover)",
+	"version": "0.2.0",
 	"publisher": "blang",
+	"license": "UNLICENSED",
 	"engines": {
-		"vscode": "^1.75.0"
+		"vscode": "^1.82.0"
 	},
 	"categories": [
 		"Programming Languages"
+	],
+	"main": "./extension.js",
+	"activationEvents": [
+		"onLanguage:blang"
 	],
 	"contributes": {
 		"languages": [
@@ -21,11 +26,7 @@
 				"extensions": [
 					".b"
 				],
-				"configuration": "./language-configuration.json",
-				"icon": {
-					"light": "./icon.png",
-					"dark": "./icon.png"
-				}
+				"configuration": "./language-configuration.json"
 			}
 		],
 		"grammars": [
@@ -34,6 +35,40 @@
 				"scopeName": "source.blang",
 				"path": "./syntaxes/blang.tmLanguage.json"
 			}
-		]
+		],
+		"commands": [
+			{
+				"command": "blang.restartServer",
+				"title": "BLang: Restart Language Server"
+			}
+		],
+		"configuration": {
+			"title": "BLang",
+			"properties": {
+				"blang.serverPath": {
+					"type": "string",
+					"default": "",
+					"description": "Path to the blangd executable. Empty: use build/blangd in the workspace if present, else blangd from PATH."
+				},
+				"blang.stdlibPath": {
+					"type": "string",
+					"default": "",
+					"description": "BLang stdlib directory, sent to blangd as initializationOptions.stdlibPath. Empty: blangd falls back to BLANG_STDLIB_DIR, then the stdlib/ directory next to the blangd binary."
+				},
+				"blang.trace.server": {
+					"type": "string",
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "off",
+					"description": "Trace LSP traffic between VS Code and blangd in the 'BLang Language Server' output channel."
+				}
+			}
+		}
+	},
+	"dependencies": {
+		"vscode-languageclient": "9.0.1"
 	}
 }

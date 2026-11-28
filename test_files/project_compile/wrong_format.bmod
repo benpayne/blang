@@ -1,0 +1,9 @@
+// blang-bmod-format: 4
+// modules-v2-lsp U1 project_compile ctest, case C7: a syntactically valid
+// interface whose format marker (4) differs from the compiler's. It parses, then
+// is dropped at the format check; if it were wrongly recorded, the import pass
+// would add an unknown-module error and an unused-import warning below.
+import net;
+import nonesuch;
+
+pub fn helper(int a) -> int;

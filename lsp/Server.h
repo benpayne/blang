@@ -9,6 +9,7 @@
 #include <iosfwd>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "Compile.h"
 #include "DocumentStore.h"
@@ -20,7 +21,10 @@ namespace lsp
 class Server
 {
 public:
-	Server( std::istream &in, std::ostream &out ) : mIn( in ), mOut( out ) {}
+	// `exeDir` is the blangd executable's directory (BlangStdlib::executableDir):
+	// the base of the blangd-relative stdlib route.
+	Server( std::istream &in, std::ostream &out, std::string exeDir = "." )
+		: mIn( in ), mOut( out ), mExeDir( std::move( exeDir ) ) {}
 
 	// Run until `exit` or EOF. Returns the process exit code: 0 when exit
 	// followed a shutdown request (or clean EOF), 1 otherwise (LSP spec).
@@ -52,7 +56,6 @@ private:
 
 	// Shared lookup: the AST node under params.position in params.textDocument
 	// (null when the document is not open or nothing is under the cursor).
-	const QLang::Statement *nodeAt( const Json &params );
 
 	void sendResult( const Json &id, Json result );
 	void sendError( const Json &id, int code, const std::string &message );
@@ -62,6 +65,11 @@ private:
 	std::istream &mIn;
 	std::ostream &mOut;
 	DocumentStore mDocs;
+	// Stdlib discovery (modules-v2-lsp U2): resolved ONCE, at `initialize`.
+	std::string mExeDir;
+	StdlibLocation mStdlib;
+	// Negotiated LSP position encoding ("utf-8" if offered, else "utf-16").
+	std::string mPositionEncoding = "utf-16";
 	// Last compile per open document, retained for navigation requests.
 	std::map<std::string, CompileResult> mCompiles;
 	bool mInitialized = false;

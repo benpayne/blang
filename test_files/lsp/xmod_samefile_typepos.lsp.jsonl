@@ -1,0 +1,16 @@
+# modules-v2-lsp U4 (specs/044-lsp-xmodule-navigation) FR-007 + accepted decision: a type name in TYPE position whose
+# type is declared in the SAME file keeps its pre-U4 answer (T003 probe-baseline.txt: null for both
+# definition and hover on `Point` in `Point p = Point(1, 2);`, 0-based 25:1).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/stdlib"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/defs.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 25, "character": 1}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/src/defs.b"}, "position": {"line": 25, "character": 1}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "shutdown"}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

@@ -264,7 +264,10 @@ namespace QLang
 		FunctionDefinition *getFunction() { return mFunction; }
 
 	private:
-		SmartPtr<FunctionDefinition> mFunction;
+		// Non-owning (KG-7): the definition is owned by the scope it was resolved
+		// from; an owning link here closes a cycle (e.g. a recursive function, or a
+		// method that constructs its own struct) so the AST was never freed.
+		FunctionDefinition *mFunction = nullptr;
 		std::vector<SmartPtr<Type>> mTypeArgs;
 		std::vector<SmartPtr<Expression> > mParams;
 		std::string mMangledName;  // namespace-mangled name, empty if not mangled
@@ -635,12 +638,17 @@ namespace QLang
 	class ConstructExpression : public Expression
 	{
 	public:
+		// modules-v2-lsp U4: read-only navigation access (lsp/Navigation).
+		StructDefinition *getStructDef() const { return mStructDef; }
 		ConstructExpression( StructDefinition *structDef ) : mStructDef( structDef ) {}
 		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
 		void addTypeArg( Type *typeArg ) { mTypeArgs.push_back( typeArg ); }
 
 	private:
-		SmartPtr<StructDefinition> mStructDef;
+		// Non-owning (KG-7): the definition is owned by the scope it was resolved
+		// from; an owning link here closes a cycle (e.g. a recursive function, or a
+		// method that constructs its own struct) so the AST was never freed.
+		StructDefinition *mStructDef = nullptr;
 		std::vector<SmartPtr<Type>> mTypeArgs;
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
@@ -652,13 +660,18 @@ namespace QLang
 	class EnumConstructExpression : public Expression
 	{
 	public:
+		// modules-v2-lsp U4: read-only navigation access (lsp/Navigation).
+		EnumDefinition *getEnumDef() const { return mEnumDef; }
 		EnumConstructExpression( EnumDefinition *enumDef, int variantIndex )
 			: mEnumDef( enumDef ), mVariantIndex( variantIndex ) {}
 
 		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
 
 	private:
-		SmartPtr<EnumDefinition> mEnumDef;
+		// Non-owning (KG-7): the definition is owned by the scope it was resolved
+		// from; an owning link here closes a cycle (e.g. a recursive function, or a
+		// method that constructs its own struct) so the AST was never freed.
+		EnumDefinition *mEnumDef = nullptr;
 		int mVariantIndex;
 		std::vector<SmartPtr<Expression>> mArgs;
 		friend class CodeGen;
@@ -731,10 +744,15 @@ namespace QLang
 	class FunctionRefExpression : public Expression
 	{
 	public:
+		// modules-v2-lsp U4: read-only navigation access (lsp/Navigation).
+		FunctionDefinition *getFunction() const { return mFunction; }
 		FunctionRefExpression( FunctionDefinition *func ) : mFunction( func ) {}
 
 	private:
-		SmartPtr<FunctionDefinition> mFunction;
+		// Non-owning (KG-7): the definition is owned by the scope it was resolved
+		// from; an owning link here closes a cycle (e.g. a recursive function, or a
+		// method that constructs its own struct) so the AST was never freed.
+		FunctionDefinition *mFunction = nullptr;
 		friend class CodeGen;
 		friend class LocationDumper;
 		friend class AstLocator;

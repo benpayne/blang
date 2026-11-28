@@ -1425,6 +1425,15 @@ Type *Sema::visitExpr( Expression *expr )
 // Member resolution (U3)
 // ---------------------------------------------------------------------------
 
+Type *Sema::receiverType( const MethodCallExpression *mc )
+{
+	// visitExpr returns the receiver's type AND stamps it as the receiver's
+	// resolved type; this reads the stamp back (no re-derivation).
+	if ( mc == nullptr || mc->mObject == nullptr )
+		return nullptr;
+	return mc->mObject->getResolvedType();
+}
+
 StructDefinition *Sema::structForType( Type *baseType )
 {
 	if ( baseType == nullptr )
@@ -1712,9 +1721,8 @@ void Sema::resolveMethodCall( MethodCallExpression *mc, Type *baseType )
 
 	const string &name = mc->mMethodName;
 
-	for ( auto &method : structDef->mMethods )
+	if ( FunctionDefinition *method = structDef->findMethod( name ) )
 	{
-		if ( method->getName() == name )
 		{
 			mc->mResolvedMethod = method;
 			Type *rt = method->getReturnType();

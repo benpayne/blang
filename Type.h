@@ -753,6 +753,16 @@ namespace QLang
 		const std::vector<AnnotationNode> &getAnnotations() const { return mAnnotations; }
 
 		const std::vector<SmartPtr<FunctionDefinition> > &getMethods() const { return mMethods; }
+		// The method named `name` (first in declaration order), or null — the
+		// member rule Sema's method-call resolution applies; shared with blangd's
+		// use-capability navigation (modules-v2-lsp U4, research R3).
+		FunctionDefinition *findMethod( const std::string &name ) const
+		{
+			for ( const auto &method : mMethods )
+				if ( method->getName() == name )
+					return const_cast<SmartPtr<FunctionDefinition> &>( method );
+			return nullptr;
+		}
 		const std::vector<SmartPtr<VariableDefinition> > &getFields() const { return mFields; }
 
 	private:

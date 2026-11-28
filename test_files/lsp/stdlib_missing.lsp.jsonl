@@ -1,0 +1,12 @@
+# modules-v2-lsp U2 stdlib discovery: the not-found fallback. stdlibPath names a directory
+# without the base modules -> one stdlib-not-found Warning at 1:1 (route + path), then today's
+# single-file diagnostics.
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/test_files/lsp/src"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/prelude_use.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "shutdown"}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

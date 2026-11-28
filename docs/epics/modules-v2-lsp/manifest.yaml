@@ -1,0 +1,189 @@
+# manifest.yaml — machine-readable compilation of the modules-v2-lsp epic.
+# v0: compiled by /devbot-launch into devbot REST calls.
+
+manifest_version: 0
+epic: modules-v2-lsp
+entry: overview.md
+archetype: evolve
+constitution: .specify/memory/constitution.md
+
+run:
+  # Epic-level done condition — duplicated from overview.md verbatim.
+  done_condition: |
+    All of the following hold on the epic branch `epic/modules-v2-lsp` after its spec
+    PRs merge, each backed by a committed test that CI runs (the `lsp` job, plus the
+    existing jobs for regression):
+
+    1. **One shared project-compile entry point.** The combine-mode routing that
+       today lives inline in `qcc.cpp` `main()` (stdlib/prelude LOAD-vs-PROMOTE,
+       namespaced-module scopes, user scope, origin + digest stamping, `.bmod`
+       injection, the whole-program import-diagnostics pass, Sema) and `bcc`'s stdlib
+       set selection (`resolveStdlibFiles`) live in shared frontend code that is
+       called from **both** `qcc.cpp` and `lsp/Compile.cpp` (grep-verifiable), and a
+       `ctest` drives it independent of either driver. `qcc`/`bcc` behavior is
+       unchanged: every pre-existing gate (`run_tests.sh` both build modes,
+       `test_codegen.sh` + `--leak-check`, `test_build/run_build_tests.sh`,
+       `ctest`, existing `test_lsp.sh` goldens) stays green with no golden edits
+       other than ones the PR explicitly justifies.
+    2. **No false diagnostics in stdlib/prelude context.** With no `blang.toml`
+       (single-file), blangd compiles an open document with the same stdlib set and
+       prelude `bcc file.b` uses. A committed corpus check
+       (`tools/lsp_diag_corpus.py`, run by `test_lsp.sh`) opens every file in its
+       listed corpus — at minimum the six files in this overview's table, every
+       `examples/*/main.b`, and every `test_files/codegen_*.b` whose reference compile exits 0 — and asserts blangd
+       publishes **exactly the diagnostics of the reference compile**. The **reference compile** for a single file is the `qcc` command line that
+       `bcc -v -S <file>` prints; for a project it is the final `qcc` command
+       `bcc build -v` prints. "Same diagnostics" means the same errors **and
+       warnings** (severity, line, column, message); a file is *clean* when its
+       reference compile exits 0. The stdlib
+       location is discoverable (blangd-relative `stdlib/`, an LSP
+       `initializationOptions.stdlibPath`, and `BLANG_STDLIB_DIR`), each covered by
+       a transcript golden.
+    3. **No false diagnostics in project context.** blangd finds the document's
+       `blang.toml` (walking up from the file), includes the project's other `.b`
+       sources, and resolves `[deps]` path dependencies and **already-fetched** git
+       dependencies **from source**, transitively, with the same module identities
+       and D7 use/name capabilities `bcc build` applies. The corpus check covers
+       every `test_build/*` binary project that `run_build_tests.sh` builds
+       successfully (blangd's diagnostics on its `main.b` equal its reference compile's) and every `test_files/fail/xmodule/*` fixture
+       (blangd reports the same located diagnostic `qcc` does: same line, column and
+       message). An unresolvable dependency (missing path, unfetched git dep,
+       malformed `blang.toml`) yields **one located diagnostic** at the import
+       statement or toml, never a crash, and blangd **never spawns a process or
+       touches the network** (a test runs blangd with a `PATH` shim that fails the
+       test if `git` is invoked). An open document's **unsaved buffer** takes
+       precedence over the on-disk copy wherever that file is part of another
+       document's context (transcript golden).
+    4. **Cross-module go-to-definition.** `textDocument/definition` returns a
+       location in the **defining file** (a `file://` URI that need not be open) for:
+       a qualified dependency function (`mathlib.add`), an aliased one
+       (`import mathlib as m; m.add`), a dependency type named via name-capability
+       (`Counter`), a method called on a foreign value held via use-capability only
+       (`var b = midx.get_box(7); b.get()` → `boxq`'s source), a stdlib symbol
+       (`net.http_ok` → `stdlib/net.b`), a prelude type (`Map` →
+       `stdlib/collections.b`), and a symbol from a sibling source file of the same
+       project. Each case is a transcript golden under `test_files/lsp/`; a
+       definition never points into a generated `.bmod`.
+    5. **Cross-module hover.** `textDocument/hover` on each of the done-condition 4
+       cases returns the foreign declaration's signature with a **deterministic
+       display name** for the type/module (the D3 rule stated in `design.md` D4),
+       pinned by transcript goldens.
+    6. **Latency floor.** `tools/lsp_latency.py` (committed, run by `test_lsp.sh`)
+       drives 20 `didChange` edits on `examples/todo_app/main.b` and on
+       `test_build/usebox/main.b` and asserts the **median** `didChange` →
+       `publishDiagnostics` time is ≤ 500 ms each.
+    7. **Real-client smoke.** `ci/nvim_smoke.lua` additionally opens a project
+       fixture with a dependency and asserts zero error diagnostics and a
+       cross-module definition result (still a yellow SKIP when `nvim` is absent).
+    8. **Docs.** `grep -n "blangd" CLAUDE.md | grep -i "single-file"` prints nothing
+       (no line still describes blangd as single-file), and `grep -c` finds each of
+       `stdlibPath`, `BLANG_STDLIB_DIR` and `blang.toml` in `editors/README.md`.
+
+    and every unit's done condition in workplan.md is met.
+  guidance: >
+    Start by reading docs/epics/modules-v2-lsp/overview.md, then workplan.md,
+    design.md and evaluation.md in that directory. The binding module design
+    record is docs/epics/modules-v2/overview.md (decisions D1-D17); do not
+    reopen it. LAUNCH PRECONDITION: the epic branch must contain PR #157
+    (commit efb099a, the KG-7 scope-ownership fix); if it does not, stop and
+    raise a question before U1. Run units U1-U5 strictly in order. U1 is a
+    behavior-neutral extraction: any golden or diagnostic-text change in U1
+    means stop and raise a question. The editor and the compiler must never
+    disagree, so every rule blangd applies comes from the shared entry point,
+    never a blangd-only copy. blangd must never spawn a process or touch the
+    network. Honor the constitution's audit pattern (design audit before U1
+    and U3; a distinct reviewer hire on every PR; security review on U2/U3)
+    and raise questions instead of guessing on anything in the overview's
+    Open questions table or the workplan's sequencing notes.
+  oversight_level: fully_autonomous
+  # Limits ~2x honest estimates, plus usage-window headroom (BLang run-limits
+  # practice: no_progress_threshold 10, a large token cap). Epic B
+  # (9 units) completed within 160 manager turns / 36h; this epic has 5 units,
+  # one of them large (U3).
+  limits:
+    max_turns: 200
+    max_runtime_seconds: 129600      # 36h
+    session_token_limit: 50000000
+  no_progress_threshold: 10
+  manager:
+    provider: null
+    model: null
+  worker:
+    backend: null
+    model: null
+
+units:
+  - id: U1
+    reqs: [REQ-001]
+    summary: Extract qcc's combine routing + bcc's stdlib selection into one shared frontend entry point called by qcc and blangd (behavior-neutral)
+    depends_on: []
+    done: >
+      Shared entry point called from qcc.cpp and lsp/Compile.cpp (grep); qcc.cpp
+      no longer contains the isUserFile/isPreludeModule routing or its own
+      import-diagnostics pass; bcc selects stdlib via the shared function; new project_compile ctest passes (diagnostics == qcc --combine; prelude
+      Map/Set, net namespace, user Map shadowing asserted); all gates green with zero golden edits;
+      parser_no_leak LSan-clean; converge gate for specs/041-shared-project-compile.
+    speckit: 041-shared-project-compile
+  - id: U2
+    reqs: [REQ-002, REQ-003, REQ-009]
+    summary: blangd compiles each document with bcc's stdlib set + prelude; stdlib discovery; corpus + latency harnesses
+    depends_on: [U1]
+    done: >
+      tools/lsp_diag_corpus.py --corpus stdlib passes on the committed corpus
+      (incl. the overview table files, every examples/*/main.b, every
+      test_files/codegen_*.b whose bcc -v -S reference qcc compile exits 0;
+      diagnostics == reference, errors and warnings); goldens for each stdlib discovery route + the
+      missing-stdlib fallback; lsp_latency median <= 500 ms on examples/todo_app/main.b (non-sanitizer
+      build/); parser_no_leak stdlib-context loop LSan-clean;
+      pre-existing LSP golden diffs individually justified; converge gate for
+      specs/042-lsp-stdlib-context.
+    speckit: 042-lsp-stdlib-context
+  - id: U3
+    reqs: [REQ-004, REQ-005, REQ-006, REQ-009]
+    summary: blangd project context — blang.toml walk-up, sibling sources, path + fetched git deps from source with .bmod-equivalent interfaces; no subprocess
+    depends_on: [U2]
+    done: >
+      lsp_diag_corpus --corpus project passes on every test_build bin project
+      that run_build_tests builds (diagnostics == the bcc build -v reference
+      qcc compile, errors and warnings) and every
+      test_files/fail/xmodule fixture (same line/col/message as qcc); negative
+      goldens for missing path dep, unfetched git dep, malformed blang.toml;
+      git-shim no-subprocess test passes; unsaved-buffer overlay golden;
+      lsp_latency median <= 500 ms on test_build/usebox/main.b; parser_no_leak
+      project-context loop LSan-clean; converge gate for
+      specs/043-lsp-project-context.
+    speckit: 043-lsp-project-context
+  - id: U4
+    reqs: [REQ-007, REQ-008]
+    summary: Cross-module go-to-definition and hover (into dep/stdlib/sibling source, never .bmod) with a deterministic D3 display name
+    depends_on: [U3]
+    done: >
+      One definition golden and one hover golden per case (qualified dep fn,
+      alias, name-capability type, use-capability method, stdlib fn + type,
+      prelude type, sibling-file symbol); unopened-target URI golden; existing
+      defn_/hover_/symbols_ goldens unchanged; D3 rule written in the spec and
+      matching the hover output; converge gate for
+      specs/044-lsp-xmodule-navigation.
+    speckit: 044-lsp-xmodule-navigation
+  - id: U5
+    reqs: [REQ-010, REQ-011]
+    summary: Close-out — nvim smoke on a project fixture, CLAUDE.md + editors/README.md, CI green, done-condition evidence map
+    depends_on: [U4]
+    done: >
+      test_lsp_nvim.sh passes with nvim (or CI lsp job green); `grep -n blangd CLAUDE.md | grep -i single-file` prints nothing;
+      editors/README.md contains stdlibPath, BLANG_STDLIB_DIR and blang.toml; epic-branch CI
+      green on every job; PR body maps every overview done-condition bullet to
+      its committed test.
+    speckit: null   # exempt — docs + CI smoke + close-out evidence
+
+foldback:
+  status_into: overview.md
+
+devbot:
+  endpoint: http://localhost:8201
+  directory_id: a6b2f628-f546-4a5f-a22b-ff73e1dae54b
+  runs:
+    - run_id: 6d49bcb9-82f3-4642-9393-83c73cb157ef
+      launched: 2026-11-26
+      branch: epic/modules-v2-lsp
+      outcome: completed

@@ -26,6 +26,19 @@ skipped):
   {"wait_method": "m"}    block until a notification with method m arrives
   {"wait_id": N}          block until the response with id N arrives
   {"expect_exit": N}      drain remaining frames to EOF, require exit code N
+  {"server_env": {...}}   set these variables (after ${ROOT} substitution) in
+                          the server's environment; read BEFORE the server is
+                          spawned, a no-op during replay (modules-v2-lsp U2)
+
+--server-env NAME=VALUE (repeatable; modules-v2-lsp U3): set NAME=VALUE in the
+server's environment, ${ROOT}-substituted, applied AFTER the script's
+server_env steps (so the command line wins). Valid with --script and
+--sema-fixture. test_lsp.sh's git-shim leg uses it to put a tripwire `git`
+first on PATH.
+
+Environment hygiene: the server is always spawned WITHOUT BLANG_STDLIB_DIR
+(the caller's value is removed), so a developer's environment can never change
+a golden; a fixture that needs it sets it with a server_env step.
 """
 
 import argparse
@@ -83,14 +96,25 @@ def substitute_root(value, root):
     return value
 
 
+def server_environment(root, extra=None):
+    """The child environment: the caller's, minus BLANG_STDLIB_DIR, plus
+    `extra` (values ${ROOT}-substituted)."""
+    env = dict(os.environ)
+    env.pop("BLANG_STDLIB_DIR", None)
+    for key, value in (extra or {}).items():
+        env[key] = substitute_root(value, root)
+    return env
+
+
 class Driver:
-    def __init__(self, server, root):
+    def __init__(self, server, root, env=None):
         self.root = root
         self.transcript = []
         self.pending = []  # received but not yet matched by a wait
         self.proc = subprocess.Popen(
             [server], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
+            stderr=subprocess.PIPE,
+            env=env if env is not None else server_environment(root))
 
     def fail(self, message):
         self.proc.kill()
@@ -186,13 +210,16 @@ class Driver:
             print(line.replace(self.root, "${ROOT}"))
 
 
-def run_sema_fixture(driver, rel_path):
+def run_sema_fixture(driver, rel_path, stdlib_path=None):
     """Compile one .b file through the live server and render its published
     diagnostics as canonical `file:line:col: severity: message` lines — the
     exact format run_tests.sh's expected-error patterns match against. This
     piggybacks every test_files/fail/sema/ fixture as an LSP regression test."""
+    params = {"processId": None, "capabilities": {}}
+    if stdlib_path:
+        params["initializationOptions"] = {"stdlibPath": stdlib_path}
     driver.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                 "params": {"processId": None, "capabilities": {}}})
+                 "params": params})
     driver.wait_id(1)
     driver.send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
     driver.open_document(rel_path)
@@ -223,37 +250,67 @@ def main():
     ap.add_argument("--sema-fixture", metavar="FILE_B",
                     help="compile one .b file (root-relative) and print its "
                          "diagnostics as file:line:col: error: message lines")
+    ap.add_argument("--stdlib-path", metavar="DIR",
+                    help="with --sema-fixture: send initializationOptions."
+                         "stdlibPath=DIR in initialize")
+    ap.add_argument("--server-env", metavar="NAME=VALUE", action="append",
+                    default=[], help="set NAME=VALUE (${ROOT}-substituted) in "
+                    "the server environment, after the script's server_env "
+                    "steps (repeatable)")
     args = ap.parse_args()
+    cli_env = {}
+    for item in args.server_env:
+        if "=" not in item:
+            ap.error("--server-env expects NAME=VALUE, got %r" % item)
+        name, value = item.split("=", 1)
+        cli_env[name] = value
     if bool(args.script) == bool(args.sema_fixture):
         ap.error("exactly one of --script / --sema-fixture is required")
+    if args.stdlib_path and not args.sema_fixture:
+        ap.error("--stdlib-path is only valid with --sema-fixture")
 
     root = os.path.abspath(args.root)
-    driver = Driver(args.server, root)
 
     if args.sema_fixture:
-        return run_sema_fixture(driver, args.sema_fixture)
+        driver = Driver(args.server, root, server_environment(root, cli_env))
+        return run_sema_fixture(driver, args.sema_fixture, args.stdlib_path)
 
+    # Read the whole script first: server_env steps must be applied before the
+    # server process is spawned.
+    steps = []
     with open(args.script, "r") as f:
         for lineno, raw in enumerate(f, 1):
             raw = raw.strip()
             if not raw or raw.startswith("#"):
                 continue
             try:
-                step = json.loads(raw)
+                steps.append((lineno, raw, json.loads(raw)))
             except ValueError as e:
-                driver.fail("bad step at %s:%d: %s" % (args.script, lineno, e))
-            if "send" in step:
-                driver.send(step["send"])
-            elif "open" in step:
-                driver.open_document(step["open"])
-            elif "wait_method" in step:
-                driver.wait_method(step["wait_method"])
-            elif "wait_id" in step:
-                driver.wait_id(step["wait_id"])
-            elif "expect_exit" in step:
-                driver.expect_exit(step["expect_exit"])
-            else:
-                driver.fail("unknown step at %s:%d: %r" % (args.script, lineno, raw))
+                sys.stderr.write("lsp_client: FAIL: bad step at %s:%d: %s\n"
+                                 % (args.script, lineno, e))
+                return 1
+    extra_env = {}
+    for _, _, step in steps:
+        if "server_env" in step:
+            extra_env.update(step["server_env"])
+    extra_env.update(cli_env)
+    driver = Driver(args.server, root, server_environment(root, extra_env))
+
+    for lineno, raw, step in steps:
+        if "server_env" in step:
+            pass
+        elif "send" in step:
+            driver.send(step["send"])
+        elif "open" in step:
+            driver.open_document(step["open"])
+        elif "wait_method" in step:
+            driver.wait_method(step["wait_method"])
+        elif "wait_id" in step:
+            driver.wait_id(step["wait_id"])
+        elif "expect_exit" in step:
+            driver.expect_exit(step["expect_exit"])
+        else:
+            driver.fail("unknown step at %s:%d: %r" % (args.script, lineno, raw))
 
     if driver.proc.poll() is None:
         driver.fail("script ended without expect_exit and server still running")

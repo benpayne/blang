@@ -1,0 +1,10 @@
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"definitionProvider": true, "documentSymbolProvider": true, "hoverProvider": true, "positionEncoding": "utf-16", "textDocumentSync": {"change": 1, "openClose": true}}, "serverInfo": {"name": "blangd", "version": "0.1"}}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b"}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b"}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b"}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [{"code": "syntax", "message": "Module 'lib' has no member 'helper'", "range": {"end": {"character": 19, "line": 4}, "start": {"character": 19, "line": 4}}, "severity": 1, "source": "blang"}], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b"}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b"}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b"}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b"}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b"}}
+{"id": 2, "jsonrpc": "2.0", "result": null}
