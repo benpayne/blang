@@ -93,6 +93,8 @@ set(BLANG_FRONTEND_SOURCES
 	DiagnosticEngine.cpp
 	Sema.cpp
 	Resolver.cpp
+	ProjectCompile.cpp
+	StdlibSelect.cpp
 	FormatString.cpp)
 
 # The qcc driver = frontend + the CLI main.
@@ -321,7 +323,7 @@ set_target_properties(blang_sqlgen PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUI
 target_include_directories(blang_sqlgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # bcc - BLang compiler driver (orchestrates qcc -> llc -> cc pipeline)
-add_executable(bcc bcc.cpp ProjectConfig.cpp BuildCache.cpp sha256.c)
+add_executable(bcc bcc.cpp ProjectConfig.cpp BuildCache.cpp StdlibSelect.cpp sha256.c)
 set_target_properties(bcc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # Bake tool paths into bcc at build time so it works regardless of runtime PATH/arch
@@ -419,6 +421,30 @@ set_target_properties(parserLeakTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQ
 target_include_directories(parserLeakTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(parserLeakTest blang_sqlgen blang_sha256)
 add_test(NAME parser_no_leak COMMAND parserLeakTest)
+
+# modules-v2-lsp U1 (FR-019): the shared project-compile entry point
+# (ProjectCompile::run) and the shared stdlib selection (StdlibSelect), driven
+# directly — independent of the qcc/bcc/blangd drivers. qcc is the ORACLE for the
+# expected rendered diagnostics (never the system under test), so it is a build
+# dependency; a missing oracle FAILS the test, never skips it.
+add_executable(projectCompileTest ProjectCompileTest.cpp ${BLANG_FRONTEND_SOURCES})
+set_target_properties(projectCompileTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(projectCompileTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(projectCompileTest blang_sqlgen blang_sha256)
+add_dependencies(projectCompileTest qcc)
+add_test(NAME project_compile
+         COMMAND projectCompileTest $<TARGET_FILE:qcc> ${CMAKE_CURRENT_SOURCE_DIR})
+
+# modules-v2-lsp U1 (invariant C4/I8, audit F3): blangd must never spawn a process
+# or touch the network — checked on the shipped BINARY (its undefined dynamic
+# symbols), not by grepping source. The teeth leg runs the same check on bcc,
+# which really does fork/exec, and passes only when the offender listing names
+# `fork` (so a script failing for an unrelated reason cannot satisfy it).
+add_test(NAME blangd_no_subprocess
+         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:blangd>)
+add_test(NAME blangd_no_subprocess_teeth
+         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_subprocess.sh $<TARGET_FILE:bcc>)
+set_tests_properties(blangd_no_subprocess_teeth PROPERTIES PASS_REGULAR_EXPRESSION "fork")
 
 add_executable(test_array runtime/tests/test_array.c)
 target_link_libraries(test_array blang_array blang_string)

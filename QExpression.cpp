@@ -1112,7 +1112,12 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 
 			sym = l.getSymbol();
 			if ( sym != '(' )
+			{
+				// Not a call (the caller backtracks): release the speculative node
+				// instead of leaking it (KG-7).
+				SmartPtr<CallExpression> drop( exp );
 				return nullptr;
+			}
 
 			// Empty argument list
 			if ( l.peekSymbol() == ')' )
@@ -1127,7 +1132,10 @@ CallExpression *CallExpression::Parse( Lexer &l, Scope *scope )
 					if ( param != nullptr )
 						exp->mParams.push_back( param );
 					else
+					{
+						SmartPtr<CallExpression> drop( exp );   // KG-7: no leak on backtrack
 						return nullptr;
+					}
 
 					sym = l.getSymbol();
 				} while ( sym == ',' );

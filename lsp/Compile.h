@@ -2,17 +2,20 @@
 #define BLANG_LSP_COMPILE_H_
 
 // The LSP reparse pipeline: compile one in-memory document through the shared
-// frontend (lexer -> parser -> Sema) and return the buffered diagnostics plus
-// the parsed module (retained for navigation requests: definition, hover,
-// documentSymbol). Single-file semantics, same as `qcc file.b` (cross-file
-// import resolution is bcc's --combine mode and out of scope for v1).
+// project-compile entry point (ProjectCompile::run — the same call qcc makes)
+// and return the buffered diagnostics plus the parsed module (retained for
+// navigation requests: definition, hover, documentSymbol). Still single-file
+// semantics in modules-v2-lsp U1, same as `qcc file.b`; U2/U3 add the stdlib
+// and project context through the same entry point.
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "../DiagnosticEngine.h"
 #include "../Type.h"
 #include "../Expression.h"   // completes the AST types SmartPtr instantiates
+#include "../ProjectCompile.h"
 
 namespace lsp
 {
@@ -25,6 +28,9 @@ struct CompileResult
 	SmartPtr<QLang::Module> module;
 	SmartPtr<QLang::Scope> fileScope;
 	std::vector<QLang::Diagnostic> diagnostics;
+	// The shared compile's context (owns every scope and AST the compile built;
+	// KG-7). shared_ptr because the Server stores results by value.
+	std::shared_ptr<QLang::CompileContext> context;
 };
 
 // Compile `text` as the document at `path` (used in diagnostic locations).
