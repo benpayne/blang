@@ -1,0 +1,13 @@
+# modules-v2-lsp U2 stdlib discovery: BLANG_STDLIB_DIR set to an UNUSABLE directory beats the
+# (usable) blangd-relative default -- no fall-through: one stdlib-not-found warning naming
+# BLANG_STDLIB_DIR, then the single-file diagnostics.
+{"server_env": {"BLANG_STDLIB_DIR": "${ROOT}/test_files/lsp/src"}}
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/src/prelude_use.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "shutdown"}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

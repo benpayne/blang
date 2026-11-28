@@ -108,6 +108,7 @@ add_executable(blangd
 	lsp/Json.cpp
 	lsp/Transport.cpp
 	lsp/Compile.cpp
+	lsp/StdlibLocation.cpp
 	lsp/AstLocator.cpp
 	lsp/Server.cpp
 	lsp/blangd_main.cpp)
@@ -407,7 +408,7 @@ target_include_directories(resolverTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(resolverTest blang_sqlgen blang_sha256)
 add_test(NAME resolver_component COMMAND resolverTest)
 
-add_executable(resolverReuseTest ResolverReuseTest.cpp lsp/Compile.cpp ${BLANG_FRONTEND_SOURCES})
+add_executable(resolverReuseTest ResolverReuseTest.cpp lsp/Compile.cpp lsp/StdlibLocation.cpp ${BLANG_FRONTEND_SOURCES})
 set_target_properties(resolverReuseTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(resolverReuseTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(resolverReuseTest blang_sqlgen blang_sha256)
@@ -416,11 +417,21 @@ add_test(NAME resolver_reuse COMMAND resolverReuseTest)
 # KG-7 regression: parsing function bodies / extern params / impl methods /
 # lambdas / match arms must not leak the parser's AST or scopes. Meaningful under
 # build-asan (LeakSanitizer fails the process at exit on any leak).
-add_executable(parserLeakTest ParserLeakTest.cpp lsp/Compile.cpp ${BLANG_FRONTEND_SOURCES})
+add_executable(parserLeakTest ParserLeakTest.cpp lsp/Compile.cpp lsp/StdlibLocation.cpp ${BLANG_FRONTEND_SOURCES})
 set_target_properties(parserLeakTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(parserLeakTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(parserLeakTest blang_sqlgen blang_sha256)
 add_test(NAME parser_no_leak COMMAND parserLeakTest)
+# modules-v2-lsp U2: the stdlib rule the KG-7 loop resolves against (the source tree's stdlib).
+target_compile_definitions(parserLeakTest PRIVATE BLANG_SOURCE_STDLIB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/stdlib")
+
+# modules-v2-lsp U2: blangd's stdlib discovery rule (precedence, no fall-through,
+# base-module usability, the not-found text) — lsp/StdlibLocation, driver-free.
+add_executable(stdlibLocateTest lsp/StdlibLocateTest.cpp lsp/StdlibLocation.cpp StdlibSelect.cpp)
+set_target_properties(stdlibLocateTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(stdlibLocateTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME stdlib_locate
+         COMMAND stdlibLocateTest ${CMAKE_CURRENT_SOURCE_DIR}/stdlib ${CMAKE_CURRENT_SOURCE_DIR}/test_files/lsp/src)
 
 # modules-v2-lsp U1 (FR-019): the shared project-compile entry point
 # (ProjectCompile::run) and the shared stdlib selection (StdlibSelect), driven

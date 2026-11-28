@@ -22,10 +22,35 @@ cmake --build build --target blangd
 - **Document symbols** — outline of structs (fields/methods), enums
   (variants), protocols, functions, and test blocks.
 
-v1 scope notes: each file compiles alone (cross-file `import` resolution is
-`bcc build`'s combine mode, not yet in the server); ranges are zero-length
+Scope notes: each open file compiles in the same **stdlib/prelude context**
+`bcc file.b` uses (the prelude `Map`/`Set`/`Buffer`, the base stdlib modules,
+and any stdlib module the file imports), so blangd reports exactly the
+compiler's diagnostics — see "Stdlib discovery" below. `blang.toml` project
+context (sibling sources, dependencies) is not yet in the server. Ranges are zero-length
 (the compiler tracks start positions only); position encoding is negotiated
 as `utf-8` (LSP 3.17).
+
+## Stdlib discovery
+
+blangd finds the stdlib directory once, when the editor sends `initialize`, by
+this precedence — the **first route that is set wins**:
+
+1. `initializationOptions.stdlibPath` (a string, from your editor config);
+2. the `BLANG_STDLIB_DIR` environment variable;
+3. `stdlib/` next to the blangd executable (the build tree's `build/stdlib/`,
+   which CMake populates, works out of the box).
+
+A directory is usable only if it contains the five base modules (`sys.b`,
+`buffer.b`, `collections.b`, `fs.b`, `net.b`). If the selected route is not
+usable, blangd does **not** try the next one (that would silently use a stdlib
+you did not configure): every file instead shows one warning at line 1,
+
+```text
+stdlib not found: <route> '<path>' is not a usable stdlib directory (missing <what>); set initializationOptions.stdlibPath or BLANG_STDLIB_DIR, or install stdlib/ next to blangd — this file is checked without the stdlib
+```
+
+and is checked alone, without the stdlib. blangd only reads files there; it
+never runs a process or touches the network.
 
 ## Neovim (>= 0.8)
 
@@ -39,6 +64,8 @@ vim.api.nvim_create_autocmd("FileType", {
 			name = "blangd",
 			cmd = { "/path/to/blang/build/blangd" },
 			root_dir = vim.fs.dirname(vim.fs.find({ "blang.toml", ".git" }, { upward = true })[1]),
+			-- Optional: only needed when blangd is not next to its stdlib/.
+			-- init_options = { stdlibPath = "/path/to/blang/stdlib" },
 		})
 	end,
 })
@@ -62,6 +89,8 @@ blangd is a plain stdio server:
 - **command**: `/path/to/blang/build/blangd` (no arguments)
 - **transport**: stdio (`Content-Length` framed JSON-RPC)
 - **language**: `blang`, files `*.b`
+- **stdlib**: optional `initializationOptions: { "stdlibPath": "/path/to/stdlib" }`
+  in `initialize`, or `BLANG_STDLIB_DIR` in its environment (see above)
 
 ## Testing without an editor
 

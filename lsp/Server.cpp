@@ -1,6 +1,7 @@
 #include "Server.h"
 
 #include <cctype>
+#include <cstdlib>
 #include <cstdio>
 #include <istream>
 #include <ostream>
@@ -136,6 +137,14 @@ void Server::handleRequest( const Json &id, const std::string &method, const Jso
 
 	if ( method == "initialize" )
 	{
+		// Stdlib discovery, once per session (design D3; spec FR-006):
+		// initializationOptions.stdlibPath > BLANG_STDLIB_DIR > <blangd-dir>/stdlib.
+		// A missing or non-string stdlibPath (or non-object initializationOptions)
+		// counts as unset — Json::get is null-safe, so malformed input cannot throw.
+		const Json &opt = params.get( "initializationOptions" ).get( "stdlibPath" );
+		std::string initOpt = opt.isString() ? opt.asString() : std::string();
+		const char *env = std::getenv( "BLANG_STDLIB_DIR" );
+		mStdlib = locateStdlib( initOpt, env != nullptr ? env : "", mExeDir );
 		mInitialized = true;
 		sendResult( id, initializeResult() );
 		return;
@@ -277,8 +286,15 @@ void Server::closeDocument( const Json &params )
 
 void Server::publishDiagnostics( const std::string &uri, const std::string &text )
 {
-	mCompiles[ uri ] = compileDocument( uriToPath( uri ), text );
-	const std::vector<QLang::Diagnostic> &diags = mCompiles[ uri ].diagnostics;
+	// Build the new result first, then DESTROY the old one (erase) rather than
+	// move-assigning over it: memberwise assignment would release the old
+	// `context` before its `module`/`fileScope` co-owners (declaration order),
+	// while destruction releases them in reverse order — `context` last, the
+	// KG-7 order CompileResult documents (analyze F4 / review L1).
+	CompileResult fresh = compileDocument( uriToPath( uri ), text, mStdlib );
+	mCompiles.erase( uri );
+	auto inserted = mCompiles.emplace( uri, std::move( fresh ) );
+	const std::vector<QLang::Diagnostic> &diags = inserted.first->second.diagnostics;
 
 	Json list = Json::array();
 	for ( const auto &d : diags )

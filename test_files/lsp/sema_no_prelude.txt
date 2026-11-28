@@ -1,0 +1,10 @@
+# fail/sema fixtures the LSP re-verification leg runs through the
+# stdlib-not-found route (initializationOptions.stdlibPath pointed at a directory
+# with no stdlib), instead of the default stdlib/prelude context.
+#
+# Why: these fixtures assert behavior WITHOUT the prelude. In the stdlib context
+# blangd now uses (modules-v2-lsp U2, the same context as `bcc file.b`), the
+# prelude legitimately makes them clean (research R4: exactly one of the 58
+# fail/sema fixtures changes outcome). Routing them through the fallback keeps
+# the coverage; no fixture or .expected file is edited.
+test_files/fail/sema/buffer_without_prelude.b

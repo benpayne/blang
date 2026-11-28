@@ -76,7 +76,7 @@ vector<string> selectStdlibFiles( const string &stdlibDir,
 	// function `sort` stays qualified as collections.sort). A program defining its
 	// own Map/Set shadows the prelude via the prelude-scope hierarchy. `buffer` (the
 	// Buffer prelude type) was already unconditional. Placed before cli (cli uses Map).
-	for ( const char *name : { "sys", "buffer", "collections", "fs", "net" } )
+	for ( const std::string &name : baseModuleNames() )
 		addIfPresent( name );
 
 	// Origin's import-gated extras: only pulled in when the program imports
@@ -97,6 +97,36 @@ vector<string> selectStdlibFiles( const string &stdlibDir,
 			addIfPresent( name );
 	}
 	return files;
+}
+
+const vector<string> &baseModuleNames()
+{
+	static const vector<string> kBase = { "sys", "buffer", "collections", "fs", "net" };
+	return kBase;
+}
+
+// Get directory of the running executable (moved verbatim from bcc's getExeDir).
+string executableDir( const char *argv0 )
+{
+	// Try /proc/self/exe first (Linux)
+	char buf[4096];
+	ssize_t len = readlink( "/proc/self/exe", buf, sizeof( buf ) - 1 );
+	if ( len > 0 )
+	{
+		buf[len] = '\0';
+		string exePath = buf;
+		size_t slash = exePath.rfind( '/' );
+		if ( slash != string::npos )
+			return exePath.substr( 0, slash );
+	}
+
+	// Fallback: assume the sibling tools/stdlib are in argv0's directory
+	string arg0 = argv0;
+	size_t slash = arg0.rfind( '/' );
+	if ( slash != string::npos )
+		return arg0.substr( 0, slash );
+
+	return ".";
 }
 
 } // namespace BlangStdlib

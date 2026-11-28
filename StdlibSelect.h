@@ -36,6 +36,18 @@ std::set<std::string> scanImports( const std::string &sourceText );
 std::vector<std::string> selectStdlibFiles( const std::string &stdlibDir,
 	const std::set<std::string> &imports );
 
+// The base modules every program is combined with, in dependency-safe order
+// (sys, buffer, collections, fs, net). The ONE copy of that list: the selection
+// above iterates it, and blangd's stdlib-usability check (lsp/StdlibLocation)
+// reads it, so "usable" can never disagree with what bcc always combines.
+const std::vector<std::string> &baseModuleNames();
+
+// Directory of the running executable: readlink(/proc/self/exe), else argv0's
+// directory, else ".". Moved verbatim from bcc's getExeDir (modules-v2-lsp U2) so
+// bcc (qcc + stdlib lookup) and blangd (its blangd-relative stdlib route) locate
+// "next to the binary" by one rule. A filesystem read only — never a process.
+std::string executableDir( const char *argv0 );
+
 } // namespace BlangStdlib
 
 #endif // BLANG_STDLIB_SELECT_H_

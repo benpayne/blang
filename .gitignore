@@ -7,3 +7,4 @@ build-asan/
 docs/epics/*/launch-payload.json
 build-fuzz/
 docs/epics/*/launch-payload.json
+__pycache__/
