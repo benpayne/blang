@@ -4,8 +4,10 @@
 // Shared compiler-frontend entry points (defined in QModule.cpp), used by the
 // qcc driver, the LSP server, and the fuzz harness.
 
+#include <cstdint>
 #include <string>
 #include <ostream>
+#include <vector>
 
 #include "Type.h"
 
@@ -19,6 +21,40 @@ extern QLang::Scope *gScope;
 // The single diagnostic reporting path. Null until a driver installs one; the
 // top-level parse-catch falls back to a local engine when unset.
 extern QLang::DiagnosticEngine *gDiag;
+
+// modules-v2-lsp U4 (research R4): one type name written in TYPE position, as
+// the parser resolved it (QType.cpp). `location` is the name token (the member
+// token of a qualified `net.HttpServer`), `length` its byte length, `target` the
+// struct/enum/protocol the token bound to (non-owning; never null).
+struct TypeReference
+{
+	SourceLocation location;
+	uint32_t length = 0;
+	const QLang::Symbol *target = nullptr;
+};
+
+// The parse-time sink for TypeReferences: null (the default — qcc) records
+// nothing and costs one null check per resolved type. ProjectCompile installs it
+// around one module's Module::Parse only when CompilePlan::recordTypeReferences
+// is set (blangd). The recording lookup is side-effect free (findSymbol only).
+extern std::vector<TypeReference> *gTypeReferenceSink;
+
+// RAII installer: sets gTypeReferenceSink for its lifetime, restores on exit
+// (including a CompileError unwinding through Module::Parse).
+class TypeReferenceSinkScope
+{
+public:
+	explicit TypeReferenceSinkScope( std::vector<TypeReference> *sink ) : mPrev( gTypeReferenceSink )
+	{
+		gTypeReferenceSink = sink;
+	}
+	~TypeReferenceSinkScope() { gTypeReferenceSink = mPrev; }
+	TypeReferenceSinkScope( const TypeReferenceSinkScope & ) = delete;
+	TypeReferenceSinkScope &operator=( const TypeReferenceSinkScope & ) = delete;
+
+private:
+	std::vector<TypeReference> *mPrev;
+};
 
 // Build the global scope with every compiler builtin: primitive types,
 // print/println/to_json, the Printable protocol, and Option/Result. Returned

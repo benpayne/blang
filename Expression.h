@@ -638,6 +638,8 @@ namespace QLang
 	class ConstructExpression : public Expression
 	{
 	public:
+		// modules-v2-lsp U4: read-only navigation access (lsp/Navigation).
+		StructDefinition *getStructDef() const { return mStructDef; }
 		ConstructExpression( StructDefinition *structDef ) : mStructDef( structDef ) {}
 		void addArg( Expression *arg ) { mArgs.push_back( arg ); }
 		void addTypeArg( Type *typeArg ) { mTypeArgs.push_back( typeArg ); }
@@ -658,6 +660,8 @@ namespace QLang
 	class EnumConstructExpression : public Expression
 	{
 	public:
+		// modules-v2-lsp U4: read-only navigation access (lsp/Navigation).
+		EnumDefinition *getEnumDef() const { return mEnumDef; }
 		EnumConstructExpression( EnumDefinition *enumDef, int variantIndex )
 			: mEnumDef( enumDef ), mVariantIndex( variantIndex ) {}
 
@@ -740,6 +744,8 @@ namespace QLang
 	class FunctionRefExpression : public Expression
 	{
 	public:
+		// modules-v2-lsp U4: read-only navigation access (lsp/Navigation).
+		FunctionDefinition *getFunction() const { return mFunction; }
 		FunctionRefExpression( FunctionDefinition *func ) : mFunction( func ) {}
 
 	private:

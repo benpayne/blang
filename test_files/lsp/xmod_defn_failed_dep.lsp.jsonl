@@ -1,0 +1,17 @@
+# modules-v2-lsp U4 (specs/044-lsp-xmodule-navigation) FR-010: the dependency's own compile fails (U3's dep_failed fixture),
+# so the consumer has no interface for it: definition and hover on `lib.value()` (6:14) answer null with
+# strict framing (no stray output).
+# stdlibPath=${ROOT}/stdlib pins stdlib URIs to the repository stdlib/ (no build dir in a golden).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/stdlib"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/projects/dep_failed/app/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/dep_failed/app/main.b"}, "position": {"line": 6, "character": 14}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/dep_failed/app/main.b"}, "position": {"line": 6, "character": 14}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "shutdown"}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

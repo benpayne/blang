@@ -251,6 +251,7 @@ private:
 		else
 		{
 			self.ok = true;
+			mOut.interfaceRuns.emplace_back( self.bmodPath, run );   // U4 navigation
 			return self;
 		}
 		mOut.unresolvedNames.insert( self.name );

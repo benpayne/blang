@@ -52,6 +52,9 @@ struct ProjectContextResult
 	std::string moduleOrigin;  // realpath(root) — bcc's --module-origin
 	// The dependency SOURCE compiles (kept for U4 navigation).
 	std::vector<std::shared_ptr<Run>> depRuns;
+	// U4 (research R2): each SUCCESSFULLY derived dependency's interface path
+	// (exactly the CompileInput::path of its interface input) and its source Run.
+	std::vector<std::pair<std::string, std::shared_ptr<Run>>> interfaceRuns;
 	std::vector<SetupDiagnostic> setup;
 	std::set<std::string> unresolvedNames;   // for the cascade suppression (D-5)
 };

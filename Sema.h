@@ -32,6 +32,12 @@ namespace QLang
 		// on false). Extern .bmod modules are not analyzed (contracts/sema-pass).
 		static bool analyze( Module *module, Scope *scope, DiagnosticEngine &diag );
 
+		// modules-v2-lsp U4 (research R3): the receiver type Sema's method-call
+		// resolution used for `mc` (visitExpr's result, which it also stamps as
+		// the receiver's resolved type). Read-only; shared with blangd so the
+		// editor resolves a use-capability receiver from the SAME type.
+		static Type *receiverType( const MethodCallExpression *mc );
+
 	private:
 		Sema( Scope *scope, DiagnosticEngine &diag, const std::string &moduleId = "" )
 			: mScope( scope ), mDiag( diag ), mModuleId( moduleId ) {}

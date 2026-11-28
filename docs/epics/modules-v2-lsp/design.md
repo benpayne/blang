@@ -149,6 +149,34 @@ margin at today's stdlib size (1,625 lines).
 | D5 | A full context recompile per `didChange`; caching only after a measured REQ-009 miss and an explicit ownership design | Measured ~0.09 s, and caching across reparses is the KG-7 bug class | Incremental reparsing (non-goal); an always-on stdlib cache in v1 |
 | D6 | The project locator mirrors `bcc`'s rules exactly: `blang.toml` walk-up, `discoverSourceFiles`, dep paths relative to the declaring `blang.toml`, git checkout path `~/.cache/blang/git/<name>-<hash(url@pin)>`, origin = `realpath(depDir)` | Identity and mangling digests must match `bcc` or capability and collision diagnostics diverge. Where possible, share the helpers rather than copy them | Workspace-root-relative resolution (would disagree with `bcc` for nested projects) |
 
+### D4 addendum — settled for U4 (manager ruling, 2026-11-26)
+
+The U4 architect **confirmed** D4 for types and free functions and **amended** it
+for members and for type names inside a signature. The manager accepted the
+amendment, recording that D4 belongs to this epic's design document and is not
+part of the frozen modules-v2 record. Done-condition 5 needs hover on the
+use-capability method case, and the original text did not cover it.
+`specs/044-lsp-xmodule-navigation/spec.md` FR-008 is the normative statement.
+In summary:
+
+- **Bound module**: the hover shows `<q>.<name>`, where `<q>` is the viewer's
+  import name or alias for the defining module. This applies to dependencies,
+  stdlib modules and sibling project sources alike.
+- **Prelude, core and generic parameters**: shown bare.
+- **Unbound (use-capability only)**: the hover shows `<m>.<name>`, where `<m>`
+  is the defining module's human name (the module name a `.bmod`
+  `// foreign-type:` header prints).
+- **Ties**: when one module is bound under two qualifiers, the
+  lexicographically smallest qualifier wins.
+- **Members (amendment)**: a method or `init` is shown as
+  `fn <owner>.<member>(...)`, where `<owner>` is the owning type's display name.
+  Example: `fn boxq.Box.get(self) -> T`.
+- **Signature (amendment)**: the declared signature is shown, and every foreign
+  type named inside it follows the same rule, relative to the viewing module.
+- **Scope**: the rule governs hover text only. It does not change any `qcc`
+  diagnostic. A declaration of the viewing document's own module still renders
+  exactly as it did before U4.
+
 ## Invariants — must not break
 
 - Every pre-existing gate stays green: `run_tests.sh` (both modes),

@@ -397,24 +397,11 @@ int main( int argc, char *argv[] )
 		// struct of that name is filtered out of allStructs below — making CodeGen's
 		// flat mStructDefMap agree with the scope registries (the user's definition
 		// wins in all three).
-		const std::set<std::string> &suppressedPrelude = ctx->suppressedPrelude();
-
+		// modules-v2-lsp U4: the collection is CompileContext::useCapabilityTypes
+		// (lifted verbatim, shared with blangd's use-capability navigation).
 		std::vector<SmartPtr<StructDefinition>> allStructs;
 		std::vector<SmartPtr<EnumDefinition>> allEnums;
-		for ( std::size_t idx = 0; idx < modules.size(); idx++ )
-		{
-			bool isPreludeProvider = ctx->isPreludeProvider( moduleRecords[idx] );
-			for ( auto &s : modules[idx]->getStructList() )
-			{
-				// Shadowed prelude struct: drop it so mStructDefMap holds the
-				// user's same-named definition (the scope registries already do).
-				if ( isPreludeProvider && suppressedPrelude.count( s->getName() ) )
-					continue;
-				allStructs.push_back( s );
-			}
-			for ( auto &e : modules[idx]->getEnumList() )
-				allEnums.push_back( e );
-		}
+		ctx->useCapabilityTypes( allStructs, allEnums );
 
 		if ( combineMode )
 		{

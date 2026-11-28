@@ -152,6 +152,9 @@ public:
 	// scan time. getLineNumber()/getLinePosition() delegate here so error
 	// reporting is token-accurate rather than reflecting file read-ahead.
 	SourceLocation getTokenLocation();
+	// modules-v2-lsp U4: location of the token most recently CONSUMED by
+	// getSymbol() (no scanning, no state change). Unset when none was consumed.
+	SourceLocation getPrevTokenLocation() const;
 	const std::string &getFileName() const { return mReader->getFileName(); }
 	uint32_t getLineNumber() { return getTokenLocation().line; }
 	uint32_t getLinePosition() { return getTokenLocation().col; }

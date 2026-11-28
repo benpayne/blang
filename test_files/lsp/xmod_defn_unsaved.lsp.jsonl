@@ -1,0 +1,22 @@
+# modules-v2-lsp U4 (specs/044-lsp-xmodule-navigation) FR-005: the defining dependency file is OPEN with unsaved edits:
+# two lines inserted above `pub fn helper` in lib/lib.b (buffer only), the app re-sent so it recompiles
+# against the buffer; definition on `lib.helper()` (4:14) lands on the BUFFER position (0-based line 6,
+# on disk it is line 4) under lib.b's file:// URI.
+# stdlibPath=${ROOT}/stdlib pins stdlib URIs to the repository stdlib/ (no build dir in a golden).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/stdlib"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/projects/unsaved_dep/app/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"open": "test_files/lsp/projects/unsaved_dep/lib/lib.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/lib/lib.b", "version": 2}, "contentChanges": [{"text": "pub fn base() -> int {\n\treturn 40;\n}\n\n// inserted line 1 (unsaved)\n// inserted line 2 (unsaved)\npub fn helper() -> int {\n\treturn 1;\n}\n\npub fn wrap<T>(T v) -> T {\n\tif base() > 0 {\n\t\treturn v;\n\t}\n\treturn v;\n}\n\npub fn tail() -> int {\n\treturn 3;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b", "version": 2}, "contentChanges": [{"text": "// modules-v2-lsp U3 fixture: the consumer of an open, unsaved dependency.\nimport lib;\n\nfn main() -> int {\n\tint a = lib.helper();\n\tint b = lib.wrap(a);\n\tprintln(\"{}\", a + b);\n\treturn 0;\n}\n"}]}}}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/unsaved_dep/app/main.b"}, "position": {"line": 4, "character": 14}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "shutdown"}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}

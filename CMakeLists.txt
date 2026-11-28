@@ -113,6 +113,7 @@ add_executable(blangd
 	lsp/StdlibLocation.cpp
 	lsp/ProjectContext.cpp
 	lsp/AstLocator.cpp
+	lsp/Navigation.cpp
 	lsp/Server.cpp
 	lsp/blangd_main.cpp)
 set_target_properties(blangd PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
@@ -420,7 +421,7 @@ add_test(NAME resolver_reuse COMMAND resolverReuseTest)
 # KG-7 regression: parsing function bodies / extern params / impl methods /
 # lambdas / match arms must not leak the parser's AST or scopes. Meaningful under
 # build-asan (LeakSanitizer fails the process at exit on any leak).
-add_executable(parserLeakTest ParserLeakTest.cpp lsp/Compile.cpp lsp/StdlibLocation.cpp lsp/ProjectContext.cpp ${BLANG_FRONTEND_SOURCES})
+add_executable(parserLeakTest ParserLeakTest.cpp lsp/Compile.cpp lsp/StdlibLocation.cpp lsp/ProjectContext.cpp lsp/AstLocator.cpp lsp/Navigation.cpp ${BLANG_FRONTEND_SOURCES})
 set_target_properties(parserLeakTest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(parserLeakTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(parserLeakTest blang_sqlgen blang_sha256)

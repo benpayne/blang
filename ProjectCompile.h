@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "Frontend.h"
 #include "Type.h"
 #include "Expression.h"
 #include "RefCount.h"
@@ -66,6 +67,9 @@ struct CompilePlan
 	std::string moduleOrigin;           // qcc --module-origin (applies to kSource inputs)
 	IdentityPolicy identity = IdentityPolicy::kCanonical;
 	bool lexerTrace = false;            // per-token lexer trace (qcc: verbose && !dumpLocations)
+	// modules-v2-lsp U4: record every resolved type-position name into its
+	// ModuleRecord::typeReferences (blangd navigation). qcc never sets it.
+	bool recordTypeReferences = false;
 };
 
 enum class ModuleRole { kUser, kPreludeProvider, kNamespaced, kInterface, kStandalone };
@@ -79,6 +83,11 @@ struct ModuleRecord
 	Scope *scope = nullptr;          // set at routing; owned by the CompileContext
 	bool recorded = false;           // set ONLY at the recorded step (after injection) — F1
 	SmartPtr<Module> module;         // assigned ONLY when recorded; null for every dropped input
+	// modules-v2-lsp U4 (research R4): the type names this module wrote in TYPE
+	// position, as the parser resolved them — recorded only when the plan sets
+	// recordTypeReferences (blangd); always empty for qcc. Targets are non-owning
+	// (owned by this context's modules/scopes — KG-7).
+	std::vector<TypeReference> typeReferences;
 };
 
 class CompileContext
@@ -100,6 +109,14 @@ public:
 	bool isPreludeProvider( std::size_t recordIndex ) const;
 	std::string codegenPrefix( std::size_t recordIndex ) const;
 	const std::set<std::string> &suppressedPrelude() const { return mSuppressedPrelude; }
+	// modules-v2-lsp U4 (research R3): the D7 USE-CAPABILITY type set — every
+	// struct/enum of every RECORDED module, in record order, minus a prelude
+	// provider's struct a user module shadows (suppressedPrelude()). This is the
+	// exact set qcc hands CodeGen::registerExternalTypes (its flat mStructDefMap,
+	// through which a value held without a name binding dispatches its methods);
+	// lifted verbatim from qcc.cpp so qcc and blangd share ONE copy. Appends.
+	void useCapabilityTypes( std::vector<SmartPtr<StructDefinition>> &structs,
+		std::vector<SmartPtr<EnumDefinition>> &enums ) const;
 
 private:
 	friend class ProjectCompile;

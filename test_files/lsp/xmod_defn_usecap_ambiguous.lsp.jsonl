@@ -1,0 +1,17 @@
+# modules-v2-lsp U4 (specs/044-lsp-xmodule-navigation) T027: a use-capability receiver whose type NAME is exported by
+# two imported modules (pa.Box and pb.Box). The compiler's use-capability set holds two `Box` structs, so
+# navigation never guesses: definition and hover on `x.get()` (8:17) answer null.
+# stdlibPath=${ROOT}/stdlib pins stdlib URIs to the repository stdlib/ (no build dir in a golden).
+{"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"processId": null, "rootUri": "file://${ROOT}", "capabilities": {}, "initializationOptions": {"stdlibPath": "${ROOT}/stdlib"}}}}
+{"wait_id": 1}
+{"send": {"jsonrpc": "2.0", "method": "initialized", "params": {}}}
+{"open": "test_files/lsp/projects/usecap_ambiguous/app/main.b"}
+{"wait_method": "textDocument/publishDiagnostics"}
+{"send": {"jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/usecap_ambiguous/app/main.b"}, "position": {"line": 8, "character": 17}}}}
+{"wait_id": 2}
+{"send": {"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover", "params": {"textDocument": {"uri": "file://${ROOT}/test_files/lsp/projects/usecap_ambiguous/app/main.b"}, "position": {"line": 8, "character": 17}}}}
+{"wait_id": 3}
+{"send": {"jsonrpc": "2.0", "id": 4, "method": "shutdown"}}
+{"wait_id": 4}
+{"send": {"jsonrpc": "2.0", "method": "exit"}}
+{"expect_exit": 0}
